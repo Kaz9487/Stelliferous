@@ -25,6 +25,7 @@ PUBLIC_MODULES = {
     'lib/tensor_layout.bend',
     'lib/tensor_window.bend',
     'lib/math_activation.bend',
+    'lib/tensor_training.bend',
 }
 errors = []
 source_files = []

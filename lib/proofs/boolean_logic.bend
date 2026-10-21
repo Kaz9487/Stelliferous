@@ -93,3 +93,32 @@ def or_associative(+first: Bool,+second: Bool,+third: Bool) ->
   match first:
     case False{}: {==}
     case True{}: {==}
+
+# Boolean predicates agree when each truth witness implies the other.
+def equivalent(+first: Bool,+second: Bool,
+  forward: {first == True{} : Bool} -> {second == True{} : Bool},
+  backward: {second == True{} : Bool} -> {first == True{} : Bool}) -> {first == second : Bool}:
+  match first second:
+    case False{} False{}: {==}
+    case True{} True{}: {==}
+    case True{} False{}: Empty.absurd({True{} == False{} : Bool},WordEncoding.false_true(forward({==})))
+    case False{} True{}: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(backward({==})))
+
+def and_associative(+first: Bool,+second: Bool,+third: Bool) -> {(first && second) && third == first && (second && third) : Bool}:
+  match first:
+    case False{}: {==}
+    case True{}: {==}
+
+def and_true(+a: Bool,+b: Bool,ha: {a == True{} : Bool},hb: {b == True{} : Bool}) -> {a && b == True{} : Bool}:
+  %Equal.sym(Bool,a,True{},ha) : {_ && b == True{} : Bool}
+  hb
+
+def not_true(value: Bool,evidence: {Bool.not(value) == True{} : Bool}) -> {value == False{} : Bool}:
+  match value:
+    case False{}: {==}
+    case True{}: Empty.absurd({True{} == False{} : Bool},WordEncoding.false_true(evidence))
+
+def and_false_right(+left: Bool) -> {left && False{} == False{} : Bool}:
+  match left:
+    case True{}: {==}
+    case False{}: {==}

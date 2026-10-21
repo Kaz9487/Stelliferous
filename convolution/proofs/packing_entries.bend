@@ -23,9 +23,8 @@ import ../../lib/proofs/word_arithmetic.bend as WordArithmetic
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./convolution_guard_facts.bend as Guards
 import ./reduction_coordinate_bounds.bend as Coordinates
-import ./supported_padded_coordinates.bend as Padded
 import ./packing_tabulation.bend as PackingTabulation
-import ./packing_loop_refinement.bend as LoopLaws
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LoopLaws
 import ./packing_tile_equality.bend as Tiles
 import ./packing_entry_coordinates.bend as Entry
 
@@ -171,7 +170,7 @@ def column_end(+limits: Machine.Limits,+p: ConvSpec.Problem,+position: U32,+vali
   Arithmetic.add((position % uw : U32),8,half,half_ok,
     %Equal.sym(Nat,U32.to_nat((position % uw : U32)),col_n,column_exact) : {Nat.is_le(Nat.add(_,8n),U32.to_nat(half)) == True{} : Bool}
     %Equal.sym(Nat,Nat.add(col_n,8n),1n+Nat.add(col_n,7n),Addition.successor_right(col_n,7n)) : {Nat.is_le(_,U32.to_nat(half)) == True{} : Bool}
-    Padded.add_seven_bound(limits,1n+col_n,Order.transitive(1n+col_n,wn,U32.to_nat(Machine.capacity(limits)),Order.strict_follow(col_n,wn,small),
+    Encoded.add_seven_bound(limits,1n+col_n,Order.transitive(1n+col_n,wn,U32.to_nat(Machine.capacity(limits)),Order.strict_follow(col_n,wn,small),
         Coordinates.width_bound(limits,p,valid,support))))
 
 # The first native test says the eight positions of the tile stay in its output row.

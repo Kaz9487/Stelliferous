@@ -1,4 +1,7 @@
 import Base
+import ../../lib/kernel_spatial_packing.bend as Packing
+import ../../lib/proofs/kernel_spatial_packing_samples.bend as SpatialSamples
+import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/kernel_packing_samples.bend as PackingSamples
@@ -21,43 +24,33 @@ def pixel(+x: Tree.Tree<F32>,+pos: U32,+q: U32,+h: U32,+w: U32,+k: U32,+stride: 
         U32),w),_) == (Tree.pack(F32,x),value(x,pos,q,h,w,k,stride,pad,output_width)) : Array<F32> & F32}
   {==}
 
-def pack_input(input: Tree.Tree<F32>) -> Array<F32>:
-  Tree.pack(F32,input)
+def address(+row: U32,+column: U32,channel: U32,+height: U32,+width: U32) -> PackingSamples.PixelAddress:
+  PackingSamples.PixelAddress{(channel + row * width + column : U32),U32.is_lt(row,height) && U32.is_lt(column,width)}
 
-def address_sample(input: Tree.Tree<F32>,address: PackingSamples.PixelAddress) -> F32:
-  PackingSamples.PixelAddress{index,inside} = address
-  PackingSamples.masked(Tree.read(F32,input,index),inside)
+def square_address(+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,+padding: U32) ->
+  {address((row + (0 - padding : U32) : U32),(column + (0 - padding : U32) : U32),(0 + channel : U32),height,width) ==
+    address((row - padding : U32),(column - padding : U32),channel,height,width) : PackingSamples.PixelAddress}:
+  Equal.trans(PackingSamples.PixelAddress,address((row + (0 - padding : U32) : U32),(column + (0 - padding : U32) : U32),(0 + channel : U32),height,width),
+    address((row - padding : U32),(column + (0 - padding : U32) : U32),(0 + channel : U32),height,width),address((row - padding : U32),(column - padding : U32),channel,height,width),
+    Equal.cong(U32,PackingSamples.PixelAddress,r => address(r,(column + (0 - padding : U32) : U32),(0 + channel : U32),height,width),(row + (0 - padding : U32) : U32),(row - padding : U32),Arithmetic.add_zero_subtract(row,padding)),
+    Equal.trans(PackingSamples.PixelAddress,address((row - padding : U32),(column + (0 - padding : U32) : U32),(0 + channel : U32),height,width),
+      address((row - padding : U32),(column - padding : U32),(0 + channel : U32),height,width),address((row - padding : U32),(column - padding : U32),channel,height,width),
+      Equal.cong(U32,PackingSamples.PixelAddress,c => address((row - padding : U32),c,(0 + channel : U32),height,width),(column + (0 - padding : U32) : U32),(column - padding : U32),Arithmetic.add_zero_subtract(column,padding)),
+      Equal.cong(U32,PackingSamples.PixelAddress,c => address((row - padding : U32),(column - padding : U32),c,height,width),(0 + channel : U32),channel,Arithmetic.add_zero_left(channel))))
 
-def block_sample(input: Tree.Tree<F32>,context: PackingSamples.PixelBlock,index: Nat) -> F32:
-  address_sample(input,PackingSamples.pixel_address(context,index))
+def square_sample(+input: Tree.Tree<F32>,+position: U32,+reduction: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+output_width: U32,+inner: U32,+index: Nat) ->
+  {SpatialSamples.window_sample(input,SpatialSamples.window_context(Packing.square(height,width,kernel,stride,padding,output_width,inner),position,reduction),index) ==
+    value(input,(position + U32.from_nat(index) : U32),reduction,height,width,kernel,stride,padding,output_width) : F32}:
+  +sample_position = (position + U32.from_nat(index) : U32)
+  +row = (sample_position / output_width * stride + reduction / kernel % kernel : U32)
+  +column = (sample_position % output_width * stride + reduction % kernel : U32)
+  +channel = (reduction / (kernel * kernel) * height * width : U32)
+  Equal.cong(PackingSamples.PixelAddress,F32,pixel => SpatialSamples.address_sample(input,pixel),
+    address((row + (0 - padding : U32) : U32),(column + (0 - padding : U32) : U32),(0 + channel : U32),height,width),
+    address((row - padding : U32),(column - padding : U32),channel,height,width),square_address(row,column,channel,height,width,padding))
 
-def native_address_read(+input: Tree.Tree<F32>,+address: PackingSamples.PixelAddress) ->
-  {PackingSamples.read_pixel_address(pack_input(input),address) ==
-    (pack_input(input),address_sample(input,address)) : Array<F32> & F32}:
-  PackingSamples.PixelAddress{+index,+inside} = address
-  %Equal.sym(Array<F32> & F32,Array.get(F32,pack_input(input),index),
-    (pack_input(input),Tree.read(F32,input,index)),StorageLaws.read(F32,input,index)) :
-    {PackingSamples.mask_pixel(inside,_) == (pack_input(input),PackingSamples.masked(Tree.read(F32,input,index),inside)) : Array<F32> & F32}
-  {==}
-
-# The cache itself computes the original address for every index, not only 8 lanes.
-law prepared_pixel_matches_direct_read:
-  for -input: Array<F32>
-  for +position: U32
-  for +reduction: U32
-  for +height: U32
-  for +width: U32
-  for +kernel: U32
-  for +stride: U32
-  for +padding: U32
-  for +output_width: U32
-  for +index: Nat
-  {PackingSamples.read_block_pixel(input,PackingSamples.pixel_block(position,reduction,height,width,kernel,stride,padding,output_width),index) ==
-    PackingSamples.pixel(input,(position + U32.from_nat(index) : U32),reduction,height,width,kernel,stride,padding,output_width) : Array<F32> & F32}
-
-def prepared_pixel_matches_direct_read(input,position,reduction,height,width,kernel,stride,padding,output_width,index):
-  {==}
-
-def native_block_read(+input: Tree.Tree<F32>,+context: PackingSamples.PixelBlock,+index: Nat) -> {PackingSamples.read_block_pixel(pack_input(input),context,
-    index) == (pack_input(input),block_sample(input,context,index)) : Array<F32> & F32}:
-  native_address_read(input,PackingSamples.pixel_address(context,index))
+def square_first(+input: Tree.Tree<F32>,+position: U32,+reduction: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+output_width: U32,+inner: U32) ->
+  {SpatialSamples.window_value(input,Packing.square(height,width,kernel,stride,padding,output_width,inner),position,reduction) == value(input,position,reduction,height,width,kernel,stride,padding,output_width) : F32}:
+  Equal.trans(F32,SpatialSamples.window_value(input,Packing.square(height,width,kernel,stride,padding,output_width,inner),position,reduction),value(input,(position + 0 : U32),reduction,height,width,kernel,stride,padding,output_width),value(input,position,reduction,height,width,kernel,stride,padding,output_width),
+    square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,0n),
+    Equal.cong(U32,F32,pos => value(input,pos,reduction,height,width,kernel,stride,padding,output_width),(position + 0 : U32),position,Arithmetic.add_zero(position)))

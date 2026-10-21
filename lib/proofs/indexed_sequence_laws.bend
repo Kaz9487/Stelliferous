@@ -1,9 +1,6 @@
 import Base
 import ./natural_addition.bend as Addition
 import ../math_sequence.bend as Sequence
-import ./nat_division.bend as Division
-import ./word_encoding.bend as WordEncoding
-import ./binary_radix.bend as Radix
 
 def get_tabulated(~Element: Data,~Context: Data,~sample: Context -> Nat -> Element,+length: Nat,+index: Sequence.Index(length),+offset: Nat,
   +context: Context) -> {Sequence.get(Element,length,index,Sequence.tabulate(~Element,~Context,~sample,length,offset,context)) == sample(context,

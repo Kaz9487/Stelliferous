@@ -2,14 +2,14 @@
 
 [English](getting_started.md) | [繁體中文](getting_started.zh-TW.md)
 
-The examples import the published package `stelliferous@0.0.2.0` from BendHub. A program of your own needs only Bend, Clang and those import lines. The steps below set up this repository, with the library source in [lib](../lib/README.md), its proofs and its benchmarks.
+The examples import the published package `stelliferous@0.0.3.0` from BendHub. A program of your own needs only Bend, Clang and those import lines. The steps below set up this repository, with the library source in [lib](../lib/README.md), its proofs and its benchmarks.
 
 ## Install
 
 Requires Git, Node.js, [Bun](https://bun.sh), Python 3 and Clang (or the C compiler named by `CC`), on Linux, macOS or WSL.
 
 ```sh
-git clone --depth 1 --branch v2.0.36 https://github.com/bendlang/bend.git .tools/bend
+git clone --depth 1 --branch v2.0.37 https://github.com/bendlang/bend.git .tools/bend
 git -C .tools/bend rev-parse HEAD    # must print the commit in scripts/toolchain.json
 ```
 
@@ -21,8 +21,8 @@ On Windows the launcher runs itself inside WSL, so the commands below also work 
 
 ```python
 import Base
-import stelliferous@0.0.2.0/tensor_f32.bend as F
-import stelliferous@0.0.2.0/math_activation.bend as Act
+import stelliferous@0.0.3.0/tensor_f32.bend as F
+import stelliferous@0.0.3.0/math_activation.bend as Act
 
 def main() -> List<&2,F32>:
   # 1.0 .. 16.0 as [batch, channels, height, width]
@@ -66,7 +66,7 @@ def text(result: Result<&2,&2,F.Problem(),F32>) -> String:
     case Fail{problem}: F.describe(problem)
 
 def main() -> String:
-  # [2] + [3] fails; relu, sum and item pass the failure on
+  # [2] + [3] fails, and relu, sum and item pass the failure on
   text(F.item(F.sum(F.relu(F.add(F.zeros([2]),F.zeros([3]))))))
 ```
 
@@ -85,7 +85,7 @@ def block(input: F.Tensor(),weights: F.Tensor(),bias: F.Tensor()) -> F.Tensor():
 def network(image: F.Tensor()) -> F.Tensor():
   first  = block(image,F.full([4,1,3,3],0.1),F.zeros([4]))
   second = block(first,F.full([8,4,3,3],0.01),F.ones([8]))
-  F.mean_axis(F.mean_axis(second,3),2)
+  F.mean_axes(second,[2,3])
 ```
 
 ```sh
@@ -93,9 +93,38 @@ node scripts/bend_launcher.mjs examples/small_network.bend -o out/small_network
 ./out/small_network
 ```
 
+## Train a network
+
+A layer is a value. `forward` returns what its `backward` reads, `backward` puts the gradients in the layer, and `sgd_step` applies them. A Conv-BatchNorm-SiLU block in front of the rest of a network:
+
+```python
+import stelliferous@0.0.3.0/tensor_training.bend as Train
+
+# the layers of a network in order
+type Network is Type:
+  End{}
+  Then{layer: Train.Layer,rest: Network}
+
+# conv -> batch norm -> SiLU in front of the rest of the network
+def block(weights: F.Tensor(),bias: F.Tensor(),rest: Network) -> Network:
+  Then{Train.conv2d_layer(weights,bias,1,1),Then{Train.batch_norm_layer(32),Then{Train.activation_layer(Act.silu()),rest}}}
+
+# Train.forward(x, layer)          -> (y, (saved, layer))
+# Train.backward(dy, saved, layer) -> (dx, layer)
+# Train.sgd_step(layer, rate)      -> layer
+```
+
+[examples/training/learning.bend](../examples/training/learning.bend) trains two such blocks for 40 steps. The check runs it on 1, 2, 4 and 8 threads:
+
+```sh
+python run.py gradients
+```
+
+Every bit must equal the NumPy reference, and the losses and layers must agree with PyTorch to rounding.
+
 ## Load and save values
 
-A file holds FP32 values, little-endian, in row-major order, with no header; NumPy writes one with `array.astype('<f4').tofile(path)`. A file that cannot be read, or does not hold the values of the shape, gives a failed tensor. [examples/save_and_load.bend](../examples/save_and_load.bend):
+A file holds FP32 values, little-endian, in row-major order, with no header. NumPy writes one with `array.astype('<f4').tofile(path)`. A file that cannot be read, or does not hold the values of the shape, gives a failed tensor. [examples/save_and_load.bend](../examples/save_and_load.bend):
 
 ```python
 def main() -> IO(Unit):
@@ -125,7 +154,7 @@ weights : F.Tensor() <- F.load_npy("out/weights/named/model.0.conv.weight.npy")
 `F.take` gives a tensor of the weights by name, and `F.keep` puts a copy there for a later step, such as a skip connection. [examples/yolov5/yolov5n.bend](../examples/yolov5/yolov5n.bend) is a complete model.
 
 ```python
-# A step takes tensors by name; the lines of a do block run in order.
+# A step takes tensors by name. The lines of a do block run in order.
 def block(x: F.Tensor(),+name: String) -> F.Model(F.Tensor()):
   do F.Model<F.Tensor()>:
     weights : F.Tensor() <- F.take(name ++ ".weight")
@@ -134,15 +163,22 @@ def block(x: F.Tensor(),+name: String) -> F.Model(F.Tensor()):
 
 def main() -> IO(Unit):
   do IO<Unit>:
-    # folder/names.txt lists the names; folder/<name>.npy holds each tensor
+    # folder/names.txt lists the names, and folder/<name>.npy holds each tensor
     weights : F.Weights() <- F.load_weights("out/weights/named")
     result : F.Tensor() <- F.expect(F.run(F.Tensor(),block(F.zeros([1,3,8,8]),"stem"),weights))
     ...
 ```
 
+`F.load_checkpoint` reads a PyTorch `.pt` checkpoint directly, one tensor per state-dict entry under its PyTorch name:
+
+```python
+# the official checkpoint, FP16 widened to FP32, with names such as "model.0.conv.weight"
+weights : F.Weights() <- F.load_checkpoint("data/weights/yolov5n-v7.0.pt")
+```
+
 ## Use several workers
 
-A tensor carries a worker count. Read the pool size once and set it on the input; results keep it.
+A tensor carries a worker count. Read the pool size once and set it on the input. Results keep it.
 
 ```python
 def main() -> IO(Unit):

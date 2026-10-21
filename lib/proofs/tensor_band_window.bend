@@ -12,7 +12,7 @@ import ../tensor_band.bend as Bands
 import ../machine_limits.bend as Machine
 import ./nat_extrema.bend as Extrema
 import ./storage_shape.bend as Shape
-import ./tensor_band_dense.bend as BandDense
+import ./tensor_band_from_whole.bend as FromWhole
 import ./tensor_band_halo.bend as BandHalo
 import ./machine_limit_bounds.bend as Limits
 import ./nat_division_order.bend as DivisionOrder
@@ -33,7 +33,6 @@ import ./tensor_band_inspection.bend as Inspection
 import ./tensor_band_repartition.bend as BandRepartition
 import ./tensor_band_values.bend as BandValues
 import ./boolean_logic.bend as Boolean
-import ./row_major_coordinates.bend as RowCoordinates
 import ./storage_allocation_refinement.bend as AllocationLaws
 import ./storage_tree_model.bend as Tree
 import ./tensor_band_count.bend as BandCount
@@ -65,14 +64,6 @@ def partition(+core_first: Nat,+core_end: Nat,+needed_first: Nat,+needed_end: Na
   Covered<core_first,core_end,needed_first,needed_end,row>:
   partition_selected(Nat.is_lt(row,core_first),Nat.is_lt(row,core_end),core_first,core_end,needed_first,needed_end,row,{==},{==},bounds)
 
-def before_last(+row: Nat,+end: Nat,inside: {Nat.is_lt(row,end) == True{} : Bool}) -> {Nat.is_le(row,Nat.sub(end,1n)) == True{} : Bool}:
-  match row end:
-    case 0n end: Order.zero_le(Nat.sub(end,1n))
-    case 1n+previous 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(inside))
-    case 1n+ +previous 1n+ +last:
-      %Equal.sym(Nat,Nat.sub(last,0n),last,Order.subtract_zero(last)) : {Nat.is_le(row,_) == True{} : Bool}
-      Order.strict_follow(previous,last,inside)
-
 def needed_first(height: Nat,first: Nat,stride: Nat,padding: Nat) -> Nat:
   Nat.min(height,Nat.sub(Nat.mul(first,stride),padding))
 
@@ -91,7 +82,7 @@ def sample(+height: Nat,+first: Nat,+end: Nat,+stride: Nat,+kernel: Nat,+padding
   +lower = DivisionOrder.subtract_le(Nat.mul(first,stride),coordinate,padding,
     Order.transitive(Nat.mul(first,stride),Nat.mul(output_row,stride),coordinate,RowMajor.mul_le(first,output_row,stride,first_before),Order.le_add(Nat.mul(output_row,stride),kernel_row)))
   +upper = Order.le_lt_trans(coordinate,Nat.add(Nat.mul(last,stride),kernel_row),limit,
-    Order.add_le(Nat.mul(output_row,stride),Nat.mul(last,stride),kernel_row,RowMajor.mul_le(output_row,last,stride,before_last(output_row,end,end_after))),
+    Order.add_le(Nat.mul(output_row,stride),Nat.mul(last,stride),kernel_row,RowMajor.mul_le(output_row,last,stride,Order.before_last(output_row,end,end_after))),
     Order.offset_lt(Nat.mul(last,stride),kernel_row,kernel,kernel_inside))
   Shape.Both{Order.transitive(needed_first(height,first,stride,padding),Nat.sub(Nat.mul(first,stride),padding),Nat.sub(coordinate,padding),Extrema.minimum_right(height,Nat.sub(Nat.mul(first,stride),padding)),lower),
     Extrema.minimum_strict_lower(height,Nat.sub(limit,padding),Nat.sub(coordinate,padding),image_inside,Interval.shifted_inside(padding,limit,coordinate,unpadded,upper))}
@@ -180,7 +171,7 @@ def clipped(+images: U32,+channels: U32,+height: U32,+width: U32,+limits: Machin
   lower: {Nat.is_le(Nat.mul(image,U32.to_nat(height)),U32.to_nat(first)) == True{} : Bool},
   +first_inside: {Nat.is_le(U32.to_nat(first),Nat.add(Nat.mul(image,U32.to_nat(height)),U32.to_nat(height))) == True{} : Bool},
   +end_inside: {Nat.is_le(U32.to_nat(end),Nat.add(Nat.mul(image,U32.to_nat(height)),U32.to_nat(height))) == True{} : Bool}) ->
-  BandDense.LeafFacts<Bands.Geometry{images,channels,height,width},first,BandWindow.subtract_clipped(end,first),capacity,Machine.half_word(limits)>:
+  FromWhole.LeafFacts<Bands.Geometry{images,channels,height,width},first,BandWindow.subtract_clipped(end,first),capacity,Machine.half_word(limits)>:
   +geometry = {Bands.Geometry{images,channels,height,width} : Bands.Geometry}
   +row_total = Nat.mul(U32.to_nat(images),U32.to_nat(height))
   +image_end = Nat.add(Nat.mul(image,U32.to_nat(height)),U32.to_nat(height))
@@ -195,7 +186,7 @@ def clipped(+images: U32,+channels: U32,+height: U32,+width: U32,+limits: Machin
   +within = {
     %Equal.sym(Nat,Nat.add(U32.to_nat(first),U32.to_nat(BandWindow.subtract_clipped(end,first))),Nat.max(U32.to_nat(first),U32.to_nat(end)),exact) : {Nat.is_le(_,image_end) == True{} : Bool}
     Extrema.maximum_upper(U32.to_nat(first),U32.to_nat(end),image_end,first_inside,end_inside) : {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(BandWindow.subtract_clipped(end,first))),image_end) == True{} : Bool}}
-  BandDense.bounds_leaf(images,channels,height,width,limits,first,BandWindow.subtract_clipped(end,first),capacity,
+  FromWhole.bounds_leaf(images,channels,height,width,limits,first,BandWindow.subtract_clipped(end,first),capacity,
     BandPlan.ImageSpan{image,image_inside,BandPlan.LeafWithin{lower,within}},
     BandPlan.LeafWithin{Order.zero_le(U32.to_nat(first)),Order.transitive(Nat.add(U32.to_nat(first),U32.to_nat(BandWindow.subtract_clipped(end,first))),image_end,row_total,within,image_room)},domain)
 
@@ -270,10 +261,10 @@ def raw_fits(+images: U32,+channels: U32,+height: U32,+width: U32,+image: U32,+c
     image_range(images,channels,height,width,image,U32.max(core_end,needed_first),needed_end,limits,capacity,domain,image_inside,maximum_below(core_end,needed_first,height,core_inside,first_inside),end_inside)}
 
 def empty_range(+images: U32,+channels: U32,+height: U32,+width: U32,+first: U32,+rows: U32,+limits: Machine.Limits,+capacity: U32,
-  domain: BandGather.Domain<Bands.Geometry{images,channels,height,width},limits,capacity>,facts: BandDense.LeafFacts<Bands.Geometry{images,channels,height,width},first,rows,capacity,Machine.half_word(limits)>) ->
-  BandDense.LeafFacts<Bands.Geometry{images,channels,height,width},first,0,capacity,Machine.half_word(limits)>:
-  BandDense.LeafFacts{allocation,contents,BandShape.Fields{local,rows_fit,length_exact}} = facts
-  BandDense.bounds_leaf(images,channels,height,width,limits,first,0,capacity,BandPlan.EmptySpan{{==}},BandPlan.LeafWithin{Order.zero_le(U32.to_nat(first)),
+  domain: BandGather.Domain<Bands.Geometry{images,channels,height,width},limits,capacity>,facts: FromWhole.LeafFacts<Bands.Geometry{images,channels,height,width},first,rows,capacity,Machine.half_word(limits)>) ->
+  FromWhole.LeafFacts<Bands.Geometry{images,channels,height,width},first,0,capacity,Machine.half_word(limits)>:
+  FromWhole.LeafFacts{allocation,contents,BandShape.Fields{local,rows_fit,length_exact}} = facts
+  FromWhole.bounds_leaf(images,channels,height,width,limits,first,0,capacity,BandPlan.EmptySpan{{==}},BandPlan.LeafWithin{Order.zero_le(U32.to_nat(first)),
     %Equal.sym(Nat,Nat.add(U32.to_nat(first),0n),U32.to_nat(first),Addition.zero_right(U32.to_nat(first))) : {Nat.is_le(_,Nat.mul(U32.to_nat(images),U32.to_nat(height))) == True{} : Bool}
     Order.transitive(U32.to_nat(first),Nat.add(U32.to_nat(first),U32.to_nat(rows)),Nat.mul(U32.to_nat(images),U32.to_nat(height)),Order.le_add(U32.to_nat(first),U32.to_nat(rows)),rows_fit)},domain)
 
@@ -372,26 +363,6 @@ def nonempty_window(+images: U32,+channels: U32,+height: U32,+width: U32,+kernel
   BandHalo.LeafFacts(Bands.Geometry{images,channels,height,width},BandWindow.window(BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width},first,rows),capacity,Machine.half_word(limits)):
   bounded_window(images,channels,height,width,kernel,stride,padding,output_height,output_width,first,rows,limits,capacity,domain,halo_bounds_coordinates(images,channels,height,width,first,rows,length,limits,capacity,domain,metadata,positive))
 
-def planned(~Element: Data,+geometry: BandWindow.Geometry,source: Model.Model<Element>,+limits: Machine.Limits,+capacity: U32,
-  +domain: BandGather.Domain<BandWindow.input_geometry(geometry),limits,capacity>,metadata: BandShape.Contents(~Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)),
-  positive: BandPlan.Nonempty(Model.layout(~Element,source))) -> BandHalo.Fits(geometry,Model.layout(~Element,source),capacity,Machine.half_word(limits)):
-  BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} = geometry
-  match source:
-    case Model.Leaf{Buffer.Model{tree,length,certificate},+first,+rows}: nonempty_window(images,channels,height,width,kernel,stride,padding,output_height,output_width,first,rows,length,limits,capacity,domain,metadata,positive)
-    case Model.Fork{+left,+right}:
-      Shape.Both{left_metadata,right_metadata} = metadata
-      Shape.Both{left_positive,right_positive} = positive
-      Shape.Both{planned(~Element,geometry,left,limits,capacity,domain,left_metadata,left_positive),planned(~Element,geometry,right,limits,capacity,domain,right_metadata,right_positive)}
-
-def prepared(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+fill: Element,+source: Model.Model<Element>,
-  +limits: Machine.Limits,+capacity: U32,+domain: BandGather.Domain<BandWindow.input_geometry(geometry),limits,capacity>,
-  +well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),
-  positive: BandPlan.Nonempty(Model.layout(~Element,source))) ->
-  BandHalo.Prepared(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),BandHalo.refinement_contents(~Element,BandWindow.prepare(~Element,geometry,fill,Model.layout(~Element,source),Model.pack(~Element,source)))):
-  BandShape.WellFormed{metadata,ready,coverage} = well_formed
-  BandHalo.prepared(~Element,~Logical,~original,logical,geometry,fill,Model.layout(~Element,source),source,limits,capacity,domain,well_formed,values,
-    planned(~Element,geometry,source,limits,capacity,domain,metadata,positive))
-
 # A leaf window is the shared range copy of its rows from the upper halo, the
 # core and the lower halo. Given a source for every window row, the window
 # holds the original values of its rows, as a halo range does.
@@ -483,7 +454,7 @@ def copied(~Element: Data,+geometry: Bands.Geometry,+fill: Element,+first: U32,+
   {Buffer.contents(~Element,BandWindow.assembled(~Element,False{},fill,geometry,BandWindow.Rows{first,rows},BandWindow.Rows{core_first,core_rows},BandWindow.Rows{above_first,above_rows},
       BandWindow.Rows{below_first,below_rows},Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))) ==
     BandRepartition.leaf_buffer(~Element,geometry,fill,first,rows,Model.content(~Element,sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows))) : Buffer.Content<Element>}:
-  +request = {BandRange.Request{geometry,first,rows,0} : BandRange.Request}
+  +request = {Bands.Range{geometry,first,rows,0} : Bands.Range}
   +count = Bands.local_count(geometry,rows)
   +source = sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)
   +fresh = {Buffer.Content{Tree.fresh(Element,Storage.depth_for(count),fill),U32.to_nat(count)} : Buffer.Content<Element>}
@@ -540,49 +511,48 @@ def assembly_cell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Ele
   +limits: Machine.Limits,+capacity: U32,+domain: BandGather.Domain<geometry,limits,capacity>,
   metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,source)),ready: Model.Ready(~Element,source),
   values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,source)),within: BandPlan.Within(Model.layout(~Element,source),0n,U32.to_nat(Machine.capacity(limits))),
-  locations: BandRange.RowLocations(~Element,BandRange.Request{geometry,first,rows,0},source),
-  target: BandDense.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>,+channel: Nat,+row: Nat,+column: Nat,
+  locations: BandRange.RowLocations(~Element,Bands.Range{geometry,first,rows,0},source),
+  target: FromWhole.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>,+channel: Nat,+row: Nat,+column: Nat,
   +channel_inside: {Nat.is_lt(channel,BandValues.channels(geometry)) == True{} : Bool},+row_inside: {Nat.is_lt(row,U32.to_nat(rows)) == True{} : Bool},
   +column_inside: {Nat.is_lt(column,BandValues.width(geometry)) == True{} : Bool}) ->
   BandValues.At(~Element,~Logical,~original,logical,geometry,first,rows,
     Buffer.content_tree(~Element,BandRepartition.leaf_buffer(~Element,geometry,fill,first,rows,Model.content(~Element,source))),Buffer.content_length(~Element,BandRepartition.leaf_buffer(~Element,geometry,fill,first,rows,Model.content(~Element,source))),channel,row,column):
   Bands.Geometry{+images,+channels,+height,+width} = geometry
-  BandDense.LeafFacts{allocation,contents,+target_metadata} = target
+  FromWhole.LeafFacts{allocation,contents,+target_metadata} = target
   BandShape.Fields{local,rows_fit,length_exact} = target_metadata
   +count = Bands.local_count(Bands.Geometry{images,channels,height,width},rows)
   +output = BandCount.model(~Element,count,fill)
   +output_ready = BandCount.bounded_model(~Element,count,fill,allocation)
   Shape.Both{BandValues.position_within(Bands.Geometry{images,channels,height,width},rows,U32.to_nat(count),channel,row,column,length_exact,channel_inside,row_inside,column_inside),
-    BandRange.located_written_point(~Element,~Logical,~original,logical,BandRange.Request{Bands.Geometry{images,channels,height,width},first,rows,0},source,output,limits,U32.to_nat(count),capacity,domain,
+    BandRange.located_written_point(~Element,~Logical,~original,logical,Bands.Range{Bands.Geometry{images,channels,height,width},first,rows,0},source,output,limits,U32.to_nat(count),capacity,domain,
       BandRepartition.target_bounds(~Element,Bands.Geometry{images,channels,height,width},first,rows,output,limits,capacity,domain,target_metadata,output_ready),metadata,ready,target_metadata,output_ready,values,within,locations,
       channel,row,column,channel_inside,row_inside,column_inside)}
 
 # What one assembled window supplies to every cell.
-type AssemblyCells<-Element: Data,-Logical: Data,-original: Logical -> U32 -> Element> is Data:
-  AssemblyCells{logical: Logical,geometry: Bands.Geometry,fill: Element,first: U32,rows: U32,source: Model.Model<Element>,limits: Machine.Limits,capacity: U32,
-    domain: BandGather.Domain<geometry,limits,capacity>,metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,source)),ready: Model.Ready(~Element,source),
-    values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,source)),within: BandPlan.Within(Model.layout(~Element,source),0n,U32.to_nat(Machine.capacity(limits))),
-    locations: BandRange.RowLocations(~Element,BandRange.Request{geometry,first,rows,0},source),target: BandDense.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>}
+type AssemblyCellScope<-Element: Data,-Logical: Data,-original: Logical -> U32 -> Element> is Data:
+  AssemblyCellScope{logical: Logical,geometry: Bands.Geometry,fill: Element,first: U32,rows: U32,source: Model.Model<Element>,limits: Machine.Limits,capacity: U32,domain: BandGather.Domain<geometry,limits,capacity>,metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,source)),ready: Model.Ready(~Element,source),values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,source)),within: BandPlan.Within(Model.layout(~Element,source),0n,U32.to_nat(Machine.capacity(limits))),locations: BandRange.RowLocations(~Element,Bands.Range{geometry,first,rows,0},source),target: FromWhole.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>}
 
-def cells_geometry(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,evidence: AssemblyCells<Element,Logical,original>) -> Bands.Geometry:
-  AssemblyCells{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target} = evidence
-  geometry
+def assembly_cell_channels(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: AssemblyCellScope<Element,Logical,original>) -> Nat:
+  AssemblyCellScope{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target} = scope
+  BandValues.channels(geometry)
 
-def cells_rows(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,evidence: AssemblyCells<Element,Logical,original>) -> U32:
-  AssemblyCells{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target} = evidence
-  rows
+def assembly_cell_rows(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: AssemblyCellScope<Element,Logical,original>) -> Nat:
+  AssemblyCellScope{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target} = scope
+  U32.to_nat(rows)
 
-def AssemblyCell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+evidence: AssemblyCells<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
-  AssemblyCells{logical,+geometry,+fill,+first,+rows,+source,limits,capacity,domain,metadata,ready,values,within,locations,target} = evidence
+def assembly_cell_width(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: AssemblyCellScope<Element,Logical,original>) -> Nat:
+  AssemblyCellScope{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target} = scope
+  BandValues.width(geometry)
+
+def AssemblyCell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: AssemblyCellScope<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
+  AssemblyCellScope{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target} = scope
   BandValues.At(~Element,~Logical,~original,logical,geometry,first,rows,
     Buffer.content_tree(~Element,BandRepartition.leaf_buffer(~Element,geometry,fill,first,rows,Model.content(~Element,source))),Buffer.content_length(~Element,BandRepartition.leaf_buffer(~Element,geometry,fill,first,rows,Model.content(~Element,source))),channel,row,column)
 
-def assembly_leaf_cell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+evidence: AssemblyCells<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat,
-  channel_inside: {Nat.is_lt(channel,BandValues.channels(cells_geometry(~Element,~Logical,~original,evidence))) == True{} : Bool},
-  row_inside: {Nat.is_lt(row,U32.to_nat(cells_rows(~Element,~Logical,~original,evidence))) == True{} : Bool},
-  column_inside: {Nat.is_lt(column,BandValues.width(cells_geometry(~Element,~Logical,~original,evidence))) == True{} : Bool}) ->
-  AssemblyCell(~Element,~Logical,~original,evidence,channel,row,column):
-  AssemblyCells{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target} = evidence
+def assembly_leaf_cell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: AssemblyCellScope<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat,
+  +channel_inside: {Nat.is_lt(channel,assembly_cell_channels(~Element,~Logical,~original,scope)) == True{} : Bool},+row_inside: {Nat.is_lt(row,assembly_cell_rows(~Element,~Logical,~original,scope)) == True{} : Bool},+column_inside: {Nat.is_lt(column,assembly_cell_width(~Element,~Logical,~original,scope)) == True{} : Bool}) ->
+  AssemblyCell(~Element,~Logical,~original,scope,channel,row,column):
+  AssemblyCellScope{+logical,+geometry,+fill,+first,+rows,+source,+limits,+capacity,+domain,+metadata,+ready,+values,+within,+locations,+target} = scope
   assembly_cell(~Element,~Logical,~original,logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target,channel,row,column,channel_inside,row_inside,column_inside)
 
 # The copied assembly_window satisfies the halo range relation for its own rows.
@@ -590,14 +560,13 @@ def copied_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Ele
   +limits: Machine.Limits,+capacity: U32,+domain: BandGather.Domain<geometry,limits,capacity>,
   +metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,source)),+ready: Model.Ready(~Element,source),
   +values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,source)),+within: BandPlan.Within(Model.layout(~Element,source),0n,U32.to_nat(Machine.capacity(limits))),
-  +locations: BandRange.RowLocations(~Element,BandRange.Request{geometry,first,rows,0},source),
-  +target: BandDense.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
+  +locations: BandRange.RowLocations(~Element,Bands.Range{geometry,first,rows,0},source),
+  +target: FromWhole.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
   BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{first,rows},BandRepartition.leaf_buffer(~Element,geometry,fill,first,rows,Model.content(~Element,source))):
-  BandDense.LeafFacts{allocation,contents,+target_metadata} = target
+  FromWhole.LeafFacts{allocation,contents,+target_metadata} = target
   Shape.Both{BandRepartition.leaf_ready(~Element,geometry,fill,first,rows,Model.content(~Element,source),capacity,Machine.half_word(limits),target),
     Shape.Both{target_metadata,
-      BandValues.cells(~AssemblyCells<Element,Logical,original>,~AssemblyCell(~Element,~Logical,~original),~cells_geometry(~Element,~Logical,~original),~cells_rows(~Element,~Logical,~original),~assembly_leaf_cell(~Element,~Logical,~original),
-        AssemblyCells{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target})}}
+      BandValues.table(~AssemblyCellScope<Element,Logical,original>,~AssemblyCell(~Element,~Logical,~original),~assembly_cell_channels(~Element,~Logical,~original),~assembly_cell_rows(~Element,~Logical,~original),~assembly_cell_width(~Element,~Logical,~original),~assembly_leaf_cell(~Element,~Logical,~original),AssemblyCellScope{logical,geometry,fill,first,rows,source,limits,capacity,domain,metadata,ready,values,within,locations,target})}}
 
 def exact_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: Bands.Geometry,+first: U32,+rows: U32,
   +core: Buffer.Model<Element>,+core_first: U32,+core_rows: U32,+exact: {U32.is_eq(first,core_first) && U32.is_eq(rows,core_rows) == True{} : Bool},
@@ -605,9 +574,9 @@ def exact_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Elem
   BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{first,rows},Buffer.contents(~Element,Buffer.pack(~Element,core))):
   %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,core)),Buffer.content(~Element,core),Buffer.packed_contents(~Element,core)) :
     BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{first,rows},_)
-  %Equal.sym(U32,first,core_first,BandRange.same_word(first,core_first,Boolean.left(U32.is_eq(first,core_first),U32.is_eq(rows,core_rows),exact))) :
+  %Equal.sym(U32,first,core_first,Arithmetic.equal_of_is_eq(first,core_first,Boolean.left(U32.is_eq(first,core_first),U32.is_eq(rows,core_rows),exact))) :
     BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{_,rows},Buffer.content(~Element,core))
-  %Equal.sym(U32,rows,core_rows,BandRange.same_word(rows,core_rows,Boolean.right(U32.is_eq(first,core_first),U32.is_eq(rows,core_rows),exact))) :
+  %Equal.sym(U32,rows,core_rows,Arithmetic.equal_of_is_eq(rows,core_rows,Boolean.right(U32.is_eq(first,core_first),U32.is_eq(rows,core_rows),exact))) :
     BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{core_first,_},Buffer.content(~Element,core))
   core_values
 
@@ -618,8 +587,8 @@ def copied_assembled_values(~Element: Data,~Logical: Data,~original: Logical -> 
   +core_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{core_first,core_rows},Buffer.content(~Element,core)),
   +below_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{below_first,below_rows},Buffer.content(~Element,below)),
   +within: BandPlan.Within(Model.layout(~Element,sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),0n,U32.to_nat(Machine.capacity(limits))),
-  +locations: BandRange.RowLocations(~Element,BandRange.Request{geometry,first,rows,0},sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),
-  +target: BandDense.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
+  +locations: BandRange.RowLocations(~Element,Bands.Range{geometry,first,rows,0},sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),
+  +target: FromWhole.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
   BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{first,rows},
     Buffer.contents(~Element,BandWindow.assembled(~Element,False{},fill,geometry,BandWindow.Rows{first,rows},BandWindow.Rows{core_first,core_rows},BandWindow.Rows{above_first,above_rows},
       BandWindow.Rows{below_first,below_rows},Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)))):
@@ -648,8 +617,8 @@ def assembled_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> 
   +core_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{core_first,core_rows},Buffer.content(~Element,core)),
   +below_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{below_first,below_rows},Buffer.content(~Element,below)),
   +within: BandPlan.Within(Model.layout(~Element,sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),0n,U32.to_nat(Machine.capacity(limits))),
-  +locations: BandRange.RowLocations(~Element,BandRange.Request{geometry,first,rows,0},sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),
-  +target: BandDense.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
+  +locations: BandRange.RowLocations(~Element,Bands.Range{geometry,first,rows,0},sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),
+  +target: FromWhole.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
   BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{first,rows},
     Buffer.contents(~Element,BandWindow.assembled(~Element,exact,fill,geometry,BandWindow.Rows{first,rows},BandWindow.Rows{core_first,core_rows},BandWindow.Rows{above_first,above_rows},
       BandWindow.Rows{below_first,below_rows},Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)))):
@@ -667,8 +636,8 @@ def assembly_window(~Element: Data,~Logical: Data,~original: Logical -> U32 -> E
   +core_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{core_first,core_rows},Buffer.content(~Element,core)),
   +below_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{below_first,below_rows},Buffer.content(~Element,below)),
   +within: BandPlan.Within(Model.layout(~Element,sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),0n,U32.to_nat(Machine.capacity(limits))),
-  +locations: BandRange.RowLocations(~Element,BandRange.Request{geometry,first,rows,0},sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),
-  +target: BandDense.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
+  +locations: BandRange.RowLocations(~Element,Bands.Range{geometry,first,rows,0},sources(~Element,above,above_first,above_rows,core,core_first,core_rows,below,below_first,below_rows)),
+  +target: FromWhole.LeafFacts<geometry,first,rows,capacity,Machine.half_word(limits)>) ->
   BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{first,rows},
     Buffer.contents(~Element,BandWindow.assemble(~Element,fill,geometry,BandWindow.Rows{first,rows},BandWindow.Rows{core_first,core_rows},BandWindow.Rows{above_first,above_rows},
       BandWindow.Rows{below_first,below_rows},Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)))):
@@ -677,17 +646,6 @@ def assembly_window(~Element: Data,~Logical: Data,~original: Logical -> U32 -> E
 
 # Every row of an actual leaf window lies in its upper halo, its core or its
 # lower halo, and the window rows form an allocatable range of one image.
-def difference_positive(+end: Nat,+begin: Nat,positive: {Nat.is_lt(0n,Nat.sub(end,begin)) == True{} : Bool}) -> {Nat.is_lt(begin,end) == True{} : Bool}:
-  match end begin:
-    case 0n +begin: Empty.absurd({Nat.is_lt(begin,0n) == True{} : Bool},WordEncoding.false_true(%Order.zero_subtract(begin) : {Nat.is_lt(0n,_) == True{} : Bool} positive))
-    case 1n+end 0n: {==}
-    case 1n+ +end 1n+ +begin: difference_positive(end,begin,positive)
-
-def common_offset(+offset: Nat,+left: Nat,+right: Nat) -> {Nat.sub(Nat.add(offset,left),Nat.add(offset,right)) == Nat.sub(left,right) : Nat}:
-  match offset:
-    case 0n: {==}
-    case 1n+ +rest: common_offset(rest,left,right)
-
 # A row inside [begin, end) of an absolute source range is located there.
 def located_in(+first: U32,+rows: U32,+row: Nat,+begin: Nat,+end: Nat,
   +first_exact: {U32.to_nat(first) == begin : Nat},+rows_exact: {U32.to_nat(rows) == Nat.sub(end,begin) : Nat},
@@ -744,14 +702,6 @@ def raw_sources(~Element: Data,above: Buffer.Model<Element>,core: Buffer.Model<E
   sources(~Element,above,(base + needed_first : U32),BandWindow.subtract_clipped((base + U32.min(core_first,needed_end) : U32),(base + needed_first : U32)),
     core,first,rows,below,(base + U32.max(core_end,needed_first) : U32),BandWindow.subtract_clipped((base + needed_end : U32),(base + U32.max(core_end,needed_first) : U32)))
 
-def minimum_room(+left: U32,+right: U32,+height: U32,right_room: {Nat.is_le(U32.to_nat(right),U32.to_nat(height)) == True{} : Bool}) ->
-  {Nat.is_le(U32.to_nat(U32.min(left,right)),U32.to_nat(height)) == True{} : Bool}:
-  minimum_right_below(left,right,height,right_room)
-
-def maximum_room(+left: U32,+right: U32,+height: U32,left_room: {Nat.is_le(U32.to_nat(left),U32.to_nat(height)) == True{} : Bool},
-  right_room: {Nat.is_le(U32.to_nat(right),U32.to_nat(height)) == True{} : Bool}) -> {Nat.is_le(U32.to_nat(U32.max(left,right)),U32.to_nat(height)) == True{} : Bool}:
-  maximum_below(left,right,height,left_room,right_room)
-
 def located_selected(~Element: Data,+above: Buffer.Model<Element>,+core: Buffer.Model<Element>,+below: Buffer.Model<Element>,
   +base: U32,+height: U32,+core_first: U32,+core_end: U32,+rows: U32,+needed_first: U32,+needed_end: U32,+first: U32,+capacity: U32,+row: Nat,
   +capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},+endpoint_room: {Nat.is_le(Nat.add(U32.to_nat(base),U32.to_nat(height)),U32.to_nat(capacity)) == True{} : Bool},+first_room: {Nat.is_le(U32.to_nat(needed_first),U32.to_nat(height)) == True{} : Bool},
@@ -795,10 +745,10 @@ def located_row(~Element: Data,+above: Buffer.Model<Element>,+core: Buffer.Model
   BandPlan.Located(Model.layout(~Element,raw_sources(~Element,above,core,below,base,core_first,core_end,needed_first,needed_end,first,rows)),Nat.add(U32.to_nat(base),row)):
   ImageWindow{+capacity_ok,+endpoint_room,+core_room,+first_room,+end_room,+first_exact,+core_exact} = image
   located_selected(~Element,above,core,below,base,height,core_first,core_end,rows,needed_first,needed_end,first,capacity,row,capacity_ok,endpoint_room,first_room,end_room,
-    first_exact,core_exact,minimum_room(core_first,needed_end,height,end_room),maximum_room(core_end,needed_first,height,core_room,first_room),covered)
+    first_exact,core_exact,minimum_right_below(core_first,needed_end,height,end_room),maximum_below(core_end,needed_first,height,core_room,first_room),covered)
 
-def raw_request(+geometry: Bands.Geometry,+base: U32,+needed_first: U32,+needed_end: U32) -> BandRange.Request:
-  BandRange.Request{geometry,(base + needed_first : U32),BandWindow.subtract_clipped((base + needed_end : U32),(base + needed_first : U32)),0}
+def raw_request(+geometry: Bands.Geometry,+base: U32,+needed_first: U32,+needed_end: U32) -> Bands.Range:
+  Bands.Range{geometry,(base + needed_first : U32),BandWindow.subtract_clipped((base + needed_end : U32),(base + needed_first : U32)),0}
 
 def raw_row(~Element: Data,+geometry: Bands.Geometry,+above: Buffer.Model<Element>,+core: Buffer.Model<Element>,+below: Buffer.Model<Element>,
   +base: U32,+height: U32,+core_first: U32,+core_end: U32,+rows: U32,+needed_first: U32,+needed_end: U32,+first: U32,+capacity: U32,
@@ -811,10 +761,10 @@ def raw_row(~Element: Data,+geometry: Bands.Geometry,+above: Buffer.Model<Elemen
   +begin = U32.to_nat(needed_first)
   +end = U32.to_nat(needed_end)
   +difference = {
-    %common_offset(origin,end,begin) : {Nat.is_lt(row,_) == True{} : Bool}
+    %RowMajor.subtract_common_prefix(origin,end,begin) : {Nat.is_lt(row,_) == True{} : Bool}
     %rows_span(base,needed_first,needed_end,height,capacity,capacity_ok,endpoint_room,first_room,end_room) : {Nat.is_lt(row,_) == True{} : Bool}
     inside : {Nat.is_lt(row,Nat.sub(end,begin)) == True{} : Bool}}
-  +ordered = difference_positive(end,begin,Order.le_lt_trans(0n,row,Nat.sub(end,begin),Order.zero_le(row),difference))
+  +ordered = Order.difference_positive(begin,end,Order.le_lt_trans(0n,row,Nat.sub(end,begin),Order.zero_le(row),difference))
   +local = Nat.add(begin,row)
   +upper = {
     %Order.restore_shift(begin,end,Bounds.strict_le(begin,end,ordered)) : {Nat.is_lt(local,_) == True{} : Bool}
@@ -851,7 +801,7 @@ def Sourced(~Element: Data,+geometry: Bands.Geometry,window: BandWindow.RowWindo
   first: U32,rows: U32) -> Data:
   match window:
     case BandWindow.RowWindow{output,BandWindow.Rows{above_first,above_rows},BandWindow.Rows{below_first,below_rows},BandWindow.Rows{window_first,window_rows}}:
-      BandRange.RowLocations(~Element,BandRange.Request{geometry,window_first,window_rows,0},
+      BandRange.RowLocations(~Element,Bands.Range{geometry,window_first,window_rows,0},
         sources(~Element,above,above_first,above_rows,core,first,rows,below,below_first,below_rows))
 
 def nonempty_sources(~Element: Data,active: Bool,+geometry: Bands.Geometry,+above: Buffer.Model<Element>,+core: Buffer.Model<Element>,+below: Buffer.Model<Element>,
@@ -1010,7 +960,7 @@ def samples_point(+height: U32,+output_first: U32,+output_end: U32,+stride: U32,
   Shape.Both{first_before,+end_after} = output
   +product = Nat.mul(Nat.sub(U32.to_nat(output_end),1n),U32.to_nat(stride))
   +first_room = Order.transitive(Nat.mul(U32.to_nat(output_first),U32.to_nat(stride)),product,U32.to_nat(capacity),
-    RowMajor.mul_le(U32.to_nat(output_first),Nat.sub(U32.to_nat(output_end),1n),U32.to_nat(stride),Order.transitive(U32.to_nat(output_first),output_row,Nat.sub(U32.to_nat(output_end),1n),first_before,before_last(output_row,U32.to_nat(output_end),end_after))),
+    RowMajor.mul_le(U32.to_nat(output_first),Nat.sub(U32.to_nat(output_end),1n),U32.to_nat(stride),Order.transitive(U32.to_nat(output_first),output_row,Nat.sub(U32.to_nat(output_end),1n),first_before,Order.before_last(output_row,U32.to_nat(output_end),end_after))),
     Order.transitive(product,Nat.add(product,U32.to_nat(kernel)),U32.to_nat(capacity),Order.le_add(product,U32.to_nat(kernel)),window_room))
   +one_room = Order.transitive(1n,U32.to_nat(output_end),U32.to_nat(capacity),Order.strict_follow(0n,U32.to_nat(output_end),Order.le_lt_trans(0n,output_row,U32.to_nat(output_end),Order.zero_le(output_row),end_after)),end_room)
   %Equal.sym(Nat,U32.to_nat(samples_first(height,output_first,stride,padding)),needed_first(U32.to_nat(height),U32.to_nat(output_first),U32.to_nat(stride),U32.to_nat(padding)),first_decoded(height,output_first,stride,padding,capacity,capacity_ok,first_room,padding_room)) :
@@ -1291,7 +1241,7 @@ def rows_mapped(+height: U32,+output_height: U32,+stride: U32,+start: U32,+count
     subtract_clipped(finish,begin,capacity,capacity_ok,
       Order.transitive(U32.to_nat(finish),U32.to_nat(output_height),U32.to_nat(capacity),end_below(output_height,core_end,stride,U32.is_eq(core_end,height)),output_height_room),
       Order.transitive(U32.to_nat(begin),U32.to_nat(output_height),U32.to_nat(capacity),below(output_height,(start % height : U32),stride),output_height_room)),
-    Equal.sym(Nat,Nat.sub(Nat.add(base,U32.to_nat(finish)),Nat.add(base,U32.to_nat(begin))),Nat.sub(U32.to_nat(finish),U32.to_nat(begin)),common_offset(base,U32.to_nat(finish),U32.to_nat(begin))))
+    Equal.sym(Nat,Nat.sub(Nat.add(base,U32.to_nat(finish)),Nat.add(base,U32.to_nat(begin))),Nat.sub(U32.to_nat(finish),U32.to_nat(begin)),RowMajor.subtract_common_prefix(base,U32.to_nat(finish),U32.to_nat(begin))))
 
 def rows(+height: U32,+output_height: U32,+stride: U32,+start: U32,+count: U32,+capacity: U32,+division_capacity: U32,
   +capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},+division_ok: {U32.is_le(division_capacity,2147483648) == True{} : Bool},

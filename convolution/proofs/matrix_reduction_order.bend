@@ -2,7 +2,6 @@ import ../../lib/proofs/ordered_reduction_split.bend as Ordered
 # Flattening preserves the exact matrix reduction sequence, not just its set.
 import Base
 import ../../lib/proofs/traversal_reduction_refinement.bend as ReductionLaws
-import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/natural_addition.bend as Addition
 import ../matrix_specification.bend as MatrixSpec
 import ../../lib/ordered_matrix.bend as OrderedMatrix
@@ -103,12 +102,8 @@ law matrix_reduction_is_consecutive:
 def matrix_reduction_is_consecutive(channels,kernel):
   channels_in_order(channels,0n,kernel)
 
-def address_taps(indices: List<&2,Nat>,+input_base: Nat,+weight_base: Nat) -> List<&2,ReductionLaws.AddressPair>:
-  match indices:
-    case Nil{}:
-      []
-    case +index <> tail:
-      ReductionLaws.AddressPair{U32.from_nat(Nat.add(input_base,index)),U32.from_nat(Nat.add(weight_base,index))} <> address_taps(tail,input_base,weight_base)
+def address_taps(indices: List<&2,Nat>,input_base: Nat,weight_base: Nat) -> List<&2,ReductionLaws.AddressPair>:
+  ReductionLaws.address_taps(indices,input_base,weight_base)
 
 def matrix_tap(index: MatrixSpec.Reduction,+kernel: Nat,input_base: Nat,weight_base: Nat) -> ReductionLaws.AddressPair:
   MatrixSpec.KIndex{input_channel_index,kernel_row_index,kernel_column_index} = index
@@ -137,27 +132,9 @@ def matrix_taps_flatten(+indices: List<&2,MatrixSpec.Reduction>,+kernel: Nat,+in
           weight_base) == ReductionLaws.AddressPair{U32.from_nat(Nat.add(input_base,index)),U32.from_nat(Nat.add(weight_base,index))} <> _ : List<&2,ReductionLaws.AddressPair>}
       {==}
 
-def address_successor(+base: Nat,+index: Nat) -> {(U32.from_nat(Nat.add(base,index)) + 1 : U32) == U32.from_nat(Nat.add(base,1n+index)) : U32}:
-  %Equal.sym(Nat,Nat.add(base,1n+index),1n+Nat.add(base,index),Addition.successor_right(base,index)) : {(U32.from_nat(Nat.add(base,
-          index)) + 1 : U32) == U32.from_nat(_) : U32}
-  Bounds.add_one(U32.from_nat(Nat.add(base,index)))
-
 def consecutive_taps(+count: Nat,+start: Nat,+input_base: Nat,+weight_base: Nat) -> {ReductionLaws.addresses(count,U32.from_nat(Nat.add(input_base,start)),
     U32.from_nat(Nat.add(weight_base,start))) == address_taps(Ranges.range(count,start),input_base,weight_base) : List<&2,ReductionLaws.AddressPair>}:
-  match count:
-    case 0n:
-      {==}
-    case 1n+ +rest:
-      +first = {ReductionLaws.AddressPair{U32.from_nat(Nat.add(input_base,start)),U32.from_nat(Nat.add(weight_base,start))} : ReductionLaws.AddressPair}
-      %Equal.sym(U32,(U32.from_nat(Nat.add(input_base,start)) + 1 : U32),U32.from_nat(Nat.add(input_base,1n+start)),address_successor(input_base,
-          start)) : {first <> ReductionLaws.addresses(rest,_,(U32.from_nat(Nat.add(weight_base,
-              start)) + 1 : U32)) == first <> address_taps(Ranges.range(rest,1n+start),input_base,weight_base) : List<&2,ReductionLaws.AddressPair>}
-      %Equal.sym(U32,(U32.from_nat(Nat.add(weight_base,start)) + 1 : U32),U32.from_nat(Nat.add(weight_base,1n+start)),
-        address_successor(weight_base,start)) : {first <> ReductionLaws.addresses(rest,U32.from_nat(Nat.add(input_base,1n+start)),
-          _) == first <> address_taps(Ranges.range(rest,1n+start),input_base,weight_base) : List<&2,ReductionLaws.AddressPair>}
-      %consecutive_taps(rest,1n+start,input_base,weight_base) : {first <> ReductionLaws.addresses(rest,U32.from_nat(Nat.add(input_base,1n+start)),
-          U32.from_nat(Nat.add(weight_base,1n+start))) == first <> _ : List<&2,ReductionLaws.AddressPair>}
-      {==}
+  ReductionLaws.consecutive_taps(count,start,input_base,weight_base)
 
 law kernel_taps_follow_matrix_reduction:
   for +channels: Nat

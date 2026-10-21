@@ -4,7 +4,6 @@ import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./tree_indexing.bend as TreeIndex
 import ./native_array_model.bend as NativeArrayModel
 import ./address_index.bend as AddressIndex
-import ./array_tree_structure.bend as ArrayTreeStructure
 import ./word_capacity_bounds.bend as WordCapacityBounds
 
 # Native addresses equal natural indices for balanced capacities <= 2^30.

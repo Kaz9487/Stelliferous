@@ -4,7 +4,7 @@
 
 The example uses the official COCO-pretrained YOLOv5n model and sample images from [Ultralytics YOLOv5 v7.0](https://github.com/ultralytics/yolov5/tree/v7.0). The checkpoint filename includes its upstream version.
 
-YOLOv5 v7.0 distributes its repository under [GPL-3.0](https://github.com/ultralytics/yolov5/blob/v7.0/LICENSE). The complete upstream text is reproduced in [LICENSE.yolov5](LICENSE.yolov5). These assets retain their upstream licensing and ownership; the project's own license (MIT or Apache-2.0) applies to original project code.
+YOLOv5 v7.0 distributes its repository under [GPL-3.0](https://github.com/ultralytics/yolov5/blob/v7.0/LICENSE). The complete upstream text is reproduced in [LICENSE.yolov5](LICENSE.yolov5). These assets retain their upstream licensing and ownership. The project's own license (MIT or Apache-2.0) applies to original project code.
 
 | File | Upstream source | SHA-256 |
 |---|---|---|

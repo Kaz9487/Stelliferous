@@ -4,8 +4,8 @@ import Base
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./list_array_storage.bend as ListStorage
-import ./dense_read_refinement.bend as DenseRead
-import ./dense_array_initialization.bend as DenseArrayInitialization
+import ./flat_read_refinement.bend as FlatRead
+import ./array_fill_readback.bend as ArrayFill
 import ./storage_capacity.bend as StorageCapacity
 import ../../lib/proofs/array_allocation_bounds.bend as ArrayAllocation
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
@@ -43,13 +43,13 @@ def ready(+xs: List<&2,F32>,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) 
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(ConvSpec.length(xs))),ConvSpec.length(xs),eq) : {Nat.is_le(_,U32.to_nat(upper)) == True{} : Bool}
     bound))
 
-def prefix(+xs: List<&2,F32>,proof: Ready(xs)) -> {DenseArrayInitialization.take(ConvSpec.length(xs),
+def prefix(+xs: List<&2,F32>,proof: Ready(xs)) -> {ArrayFill.take(ConvSpec.length(xs),
     TreeIndex.flatten(ListStorage.representation(xs))) == xs : List<&2,F32>}:
   Shape.Both{+limit,+room} = proof
-  %Equal.sym(List<&2,F32>,TreeIndex.flatten(ListStorage.representation(xs)),DenseArrayInitialization.fill(xs,
-      0n,TreeIndex.flatten(initial(xs))),DenseArrayInitialization.filled(xs,0,initial(xs),depth(xs),
-      Shape.fresh(F32,depth(xs),0.0),limit,room)) : {DenseArrayInitialization.take(ConvSpec.length(xs),_) == xs : List<&2,F32>}
-  DenseArrayInitialization.prefix(xs,TreeIndex.flatten(initial(xs)),
+  %Equal.sym(List<&2,F32>,TreeIndex.flatten(ListStorage.representation(xs)),ArrayFill.fill(xs,
+      0n,TreeIndex.flatten(initial(xs))),ArrayFill.filled(xs,0,initial(xs),depth(xs),
+      Shape.fresh(F32,depth(xs),0.0),limit,room)) : {ArrayFill.take(ConvSpec.length(xs),_) == xs : List<&2,F32>}
+  ArrayFill.prefix(xs,TreeIndex.flatten(initial(xs)),
     %Equal.sym(Nat,ConvSpec.length(TreeIndex.flatten(initial(xs))),U32.to_nat(Tree.capacity(F32,initial(xs))),
       StorageCapacity.length(depth(xs),initial(xs),Shape.fresh(F32,depth(xs),0.0),limit)) : {Nat.is_le(ConvSpec.length(xs),_) == True{} : Bool}
     room)
@@ -58,7 +58,7 @@ def inside(+xs: List<&2,F32>,+i: U32,proof: Ready(xs),h: {Nat.is_lt(U32.to_nat(i
     Tree.capacity(F32,ListStorage.representation(xs))) == True{} : Bool}:
   Shape.Both{limit,room} = proof
   %Equal.sym(U32,Tree.capacity(F32,ListStorage.representation(xs)),Tree.capacity(F32,initial(xs)),
-    DenseArrayInitialization.capacity(xs,0,initial(xs),depth(xs),Shape.fresh(F32,depth(xs),0.0))) : {U32.is_lt(i,_) == True{} : Bool}
+    ArrayFill.capacity(xs,0,initial(xs),depth(xs),Shape.fresh(F32,depth(xs),0.0))) : {U32.is_lt(i,_) == True{} : Bool}
   U32Division.nat_lt_native(i,Tree.capacity(F32,initial(xs)),Bounds.nat_trans(U32.to_nat(i),ConvSpec.length(xs),
       U32.to_nat(Tree.capacity(F32,initial(xs))),h,room))
 
@@ -73,12 +73,12 @@ def read(xs,i,proof,index_bound):
   Shape.Both{+limit,+room} = proof
   %prefix(xs,Shape.Both{limit,room}) : {Tree.read(F32,ListStorage.representation(xs),i) == ConvSpec.at(U32.to_nat(i),
       _) : F32}
-  %Equal.sym(F32,ConvSpec.at(U32.to_nat(i),DenseArrayInitialization.take(ConvSpec.length(xs),
+  %Equal.sym(F32,ConvSpec.at(U32.to_nat(i),ArrayFill.take(ConvSpec.length(xs),
         TreeIndex.flatten(ListStorage.representation(xs)))),ConvSpec.at(U32.to_nat(i),
-      TreeIndex.flatten(ListStorage.representation(xs))),DenseArrayInitialization.take_at(ConvSpec.length(xs),
+      TreeIndex.flatten(ListStorage.representation(xs))),ArrayFill.take_at(ConvSpec.length(xs),
       U32.to_nat(i),TreeIndex.flatten(ListStorage.representation(xs)),index_bound)) : {Tree.read(F32,
       ListStorage.representation(xs),i) == _ : F32}
-  DenseRead.dense(depth(xs),ListStorage.representation(xs),i,DenseArrayInitialization.balanced(xs,0,initial(xs),depth(xs),
+  FlatRead.flat(depth(xs),ListStorage.representation(xs),i,ArrayFill.balanced(xs,0,initial(xs),depth(xs),
       Shape.fresh(F32,depth(xs),0.0)),limit,inside(xs,i,
         Shape.Both{limit,room},index_bound))
 

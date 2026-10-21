@@ -44,12 +44,15 @@ def capacity(+elements: U32) -> Nat:
   +value = (U32.max(1,elements) - 1 : U32)
   capacity_loop(32n,value,1n,U32.is_zero(value))
 
-def float_parts(parts: Nat & Nat) -> F32:
-  (high,low) = parts
-  (F32.from_nat(high) * 4294967296.0 + F32.from_nat(low) : F32)
+# A byte count as an F32: its high word times 2^32 plus its low word, which
+# F32.from_nat reads as the count modulo 2^32.
+def high_word(halvings: Nat,+bytes: Nat) -> Nat:
+  match halvings:
+    case 0n: bytes
+    case 1n+rest: high_word(rest,Nat.div(bytes,2n))
 
-def payload_float(bytes: Nat) -> F32:
-  float_parts(Nat.divmod(bytes,Nat.double(2147483648n)))
+def payload_float(+bytes: Nat) -> F32:
+  (F32.from_nat(high_word(32n,bytes)) * 4294967296.0 + F32.from_nat(bytes) : F32)
 
 def weight_bytes(work: Work) -> Nat:
   Work{positions,inner,rows,owners,geometry,activation} = work
@@ -107,10 +110,6 @@ def fork_window(+offset: U32,+half: U32,+window: InputRows,+geometry: Geometry) 
   +parent = {InputRows{first,count,capacity} : InputRows}
   ForkInput{input_bytes(copy,band,parent,channels,width),input_transfer(copy,band,parent,channels,width),left_rows(copy,band,parent,channels,width)}
 
-def fork_input(+offset: U32,+half: U32,+window: InputRows,+work: Work) -> ForkInput:
-  Work{positions,inner,rows,owners,+geometry,activation} = work
-  fork_window(offset,half,window,geometry)
-
 def forked_bytes(+fork: ForkInput) -> Nat:
   ForkInput{+bytes,transfer,left} = fork
   bytes
@@ -155,7 +154,8 @@ def merge(bytes: Nat,transfer: Nat,byte_ns: F32,left: Movement,right: Movement) 
   Movement{Nat.add(lp,rp),Nat.add(lo,ro),Nat.add(bytes,Nat.add(lc,rc)),
     (copy + F32.max(lt,rt) : F32),(copy + lw + rw : F32),F32.min(lmin,rmin)}
 
-def movement(depth: Nat,+offset: U32,+span: U32,+window: InputRows,+work: Work,+config: Cost.Configuration) -> Movement:
+def movement_with(~Context: Data,~fork: @+offset: U32 -> @+half: U32 -> @+window: InputRows -> @+geometry: Context -> ForkInput,
+  depth: Nat,+offset: U32,+span: U32,+window: InputRows,+geometry: Context,+work: Work,+config: Cost.Configuration) -> Movement:
   match depth:
     case 0n:
       Work{+positions,inner,rows,owners,geometry,activation} = work
@@ -163,9 +163,14 @@ def movement(depth: Nat,+offset: U32,+span: U32,+window: InputRows,+work: Work,+
     case 1n+ +rest:
       Cost.Configuration{mac,byte_ns,operation_ns,grain,wake} = config
       +half = (span / 16 * 8 : U32)
-      +fork = fork_input(offset,half,window,work)
-      merge(fork_bytes(work,forked_bytes(fork)),fork_bytes(work,forked_transfer(fork)),byte_ns,movement(rest,offset,half,forked_left(fork),work,config),
-        movement(rest,(offset + half : U32),(span - half : U32),window,work,config))
+      +input = fork(offset,half,window,geometry)
+      merge(fork_bytes(work,forked_bytes(input)),fork_bytes(work,forked_transfer(input)),byte_ns,
+        movement_with(~Context,~fork,rest,offset,half,forked_left(input),geometry,work,config),
+        movement_with(~Context,~fork,rest,(offset + half : U32),(span - half : U32),window,geometry,work,config))
+
+def movement(depth: Nat,offset: U32,span: U32,window: InputRows,+work: Work,config: Cost.Configuration) -> Movement:
+  Work{positions,inner,rows,owners,geometry,activation} = work
+  movement_with(~Geometry,~fork_window,depth,offset,span,window,geometry,work,config)
 
 def workspace(+depth: U32,+work: Work,cost: Movement) -> Nat:
   Work{+positions,inner,rows,owners,geometry,activation} = work
@@ -206,16 +211,22 @@ def candidate(+depth: U32,+work: Work,+config: Cost.Configuration,+budget: Maybe
   choose((U32.is_zero(depth) || F32.is_le(grain,minimum)) && fits(budget,workspace(depth,work,cost)),
     depth,workspace(depth,work,cost),estimate(depth,work,config,cost,workers),best)
 
-def candidates(remaining: Nat,allowed: Bool,+depth: U32,+tasks: U32,+ceiling: U32,+workers: U32,+span: U32,+work: Work,+config: Cost.Configuration,
+def candidates_with(~Context: Data,~fork: @+offset: U32 -> @+half: U32 -> @+window: InputRows -> @+geometry: Context -> ForkInput,
+  remaining: Nat,allowed: Bool,+depth: U32,+tasks: U32,+ceiling: U32,+workers: U32,+span: U32,+geometry: Context,+work: Work,+config: Cost.Configuration,
   +budget: Maybe<&2,Nat>,best: Plan) -> Plan:
   match remaining allowed:
     case 0n allowed: best
     case 1n+rest False{}: best
     case 1n+rest True{}:
       +next_tasks = (tasks * 2 : U32)
-      candidates(rest,U32.is_le(tasks,(ceiling / 2 : U32)) && U32.is_le(1,(span / 8 / next_tasks : U32)),
-        (depth + 1 : U32),next_tasks,ceiling,workers,span,work,config,budget,
-        candidate(depth,work,config,budget,workers,movement(U32.to_nat(depth),0,span,root_rows(work),work,config),best))
+      candidates_with(~Context,~fork,rest,U32.is_le(tasks,(ceiling / 2 : U32)) && U32.is_le(1,(span / 8 / next_tasks : U32)),
+        (depth + 1 : U32),next_tasks,ceiling,workers,span,geometry,work,config,budget,
+        candidate(depth,work,config,budget,workers,movement_with(~Context,~fork,U32.to_nat(depth),0,span,root_rows(work),geometry,work,config),best))
+
+def candidates(remaining: Nat,allowed: Bool,depth: U32,tasks: U32,ceiling: U32,workers: U32,span: U32,+work: Work,config: Cost.Configuration,
+  budget: Maybe<&2,Nat>,best: Plan) -> Plan:
+  Work{positions,inner,rows,owners,geometry,activation} = work
+  candidates_with(~Geometry,~fork_window,remaining,allowed,depth,tasks,ceiling,workers,span,geometry,work,config,budget,best)
 
 # workers is the runtime's pool size. As in XNNPACK, several workers take up to
 # five tasks each, so idle workers pick up the remaining ones; one worker never

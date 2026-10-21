@@ -14,15 +14,15 @@ for case in cases:
     case['expected'] = oracle(case)
 (REPORT / 'cases.json').write_text(json.dumps(cases, indent=2))
 
-helpers = """def input(+xs: List<&2,F32>) -> DenseArray.Buffer<F32>:
-  DenseArray.from_list(~F32,xs,DenseArray.allocation_depth(Bool.pick(U32,List.is_empty(&2,F32,xs),1,U32.from_nat(Spec.length(xs)))),0.0,Spec.length(xs))
+helpers = """def input(+xs: List<&2,F32>) -> Storage.Buffer<F32>:
+  Storage.from_list(~F32,xs,Storage.allocation_depth(Bool.pick(U32,List.is_empty(&2,F32,xs),1,U32.from_nat(Spec.length(xs)))),0.0,Spec.length(xs))
 
 def convert(+channels: Nat,outcome: Tensor.Outcome) -> Spec.ConvOutcome:
   match outcome:
     case Tensor.Rejected{}: Spec.Rejected{}
     case Tensor.Unsupported{}: Spec.Rejected{}
     case Tensor.Accepted{+height,+width,values}:
-      Spec.Accepted{height,width,DenseArray.read_list(F32,Nat.mul(channels,Nat.mul(height,width)),0,values)}
+      Spec.Accepted{height,width,Storage.read_list(F32,Nat.mul(channels,Nat.mul(height,width)),0,values)}
 
 def candidate(+problem: Spec.Problem) -> Spec.ConvOutcome:
   Spec.Problem{shape,+xs,+ws,+bs} = problem
@@ -43,7 +43,7 @@ for entry, module in [
     )
     if entry.startswith('array_api'):
         source += (
-            'import ../../convolution/scalar_kernel.bend as Scalar\nimport ../../convolution/inference.bend as Convolution\nimport ../../lib/storage_buffer.bend as DenseArray\n\n'
+            'import ../../convolution/scalar_kernel.bend as Scalar\nimport ../../convolution/inference.bend as Convolution\nimport ../../lib/storage_buffer.bend as Storage\n\n'
             + (helpers.replace('None{}', 'Some{0n}') if entry.endswith('zero_workspace') else helpers)
         )
     for index, case in enumerate(cases):

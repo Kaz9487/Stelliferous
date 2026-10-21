@@ -6,7 +6,6 @@ import ./list_array_allocation.bend as ListArrayAllocation
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/padded_interval.bend as PaddedInterval
 import ../specification.bend as ConvSpec
-import ../scalar_kernel.bend as ScalarConv
 import ../../lib/kernel_spatial_packing.bend as Packing
 
 def axis(+p: U32,+pad: U32,+extent: U32) -> Bool:

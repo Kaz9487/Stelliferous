@@ -192,14 +192,6 @@ def read(-Element: Data,+depth: Nat,-storage: Array<Element>,+index: U32,+witnes
 type ArrayWitness<-Element: Data,-storage: Array<Element>> is Data:
   ArrayWitness{depth: Nat,witness: Witness(Element,depth,storage)}
 
-def allocated(-Element: Data,+depth: Nat,value: Element) -> ArrayWitness<Element,Array.new(Element,depth,value)>:
-  ArrayWitness{depth,fresh(Element,depth,value)}
-
-def stored(-Element: Data,-storage: Array<Element>,+index: U32,-value: Element,evidence: ArrayWitness<Element,storage>) ->
-  ArrayWitness<Element,Array.set(Element,storage,index,value)>:
-  ArrayWitness{+depth,witness} = evidence
-  ArrayWitness{depth,write(Element,depth,storage,index,value,witness)}
-
 def observed(-Element: Data,-storage: Array<Element>,index: U32,evidence: ArrayWitness<Element,storage>) ->
   Read<Element,storage,Array.get(Element,storage,index)>:
   ArrayWitness{depth,witness} = evidence

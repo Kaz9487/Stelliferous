@@ -35,7 +35,7 @@ python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models o
 
 ## 配置
 
-計算 `blk_new`、`blk_copy`、`blk_node`、`blk_half` 的呼叫次數、payload 位元組與進位後的 heap 位元組，以及一般的 heap 請求。數字是累計值，包含容量的 padding；不是存活位元組，也不是 RSS。計時不採用。`--models` 與 `--model-stem` 可指定其他資料夾裡的模型。
+計算 `blk_new`、`blk_copy`、`blk_node`、`blk_half` 的呼叫次數、payload 位元組與進位後的 heap 位元組，以及一般的 heap 請求。數字是累計值，包含容量的 padding。不是存活位元組，也不是 RSS。計時不採用。`--models` 與 `--model-stem` 可指定其他資料夾裡的模型。
 
 ## 時間軸
 
@@ -44,7 +44,7 @@ python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models o
 - Claim 表示哪個 worker 持有 runtime ring，不代表哪顆 CPU 在執行。
 - Wake、copy 與 dispatch 的區間互相重疊，不可相加。
 - Dispatch 區段包含被 inline 進去的 C。
-- `--event-capacity` 設定 trace 大小（每個事件 48 位元組）；trace 溢位時工具會失敗。
+- `--event-capacity` 設定 trace 大小（每個事件 48 位元組）。trace 溢位時工具會失敗。
 
 `timeline_claims.py --kind conv` 列出某一種運算的每一個。
 
@@ -54,4 +54,4 @@ python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models o
 
 ## Forward 比較
 
-量測手寫的 [yolov5n.bend](../../examples/yolov5/yolov5n.bend)，不是產生出來的程式。以相同的旗標編譯存下的 C 與目前的 C，要求每一層的輸出逐位元相同，接著交替執行五輪，回報各輪的中位數與四分位距。Baseline 資料夾放 `out/models/yolov5n.c` 與它的建置紀錄的複本；輸出資料夾必須是新的或空的。
+量測手寫的 [yolov5n.bend](../../examples/yolov5/yolov5n.bend)，不是產生出來的程式。以相同的旗標編譯存下的 C 與目前的 C，要求每一層的輸出逐位元相同，接著交替執行五輪，回報各輪的中位數與四分位距。Baseline 資料夾放 `out/models/yolov5n.c` 與它的建置紀錄的複本。輸出資料夾必須是新的或空的。

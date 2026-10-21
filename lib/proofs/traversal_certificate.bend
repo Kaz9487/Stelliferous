@@ -40,18 +40,6 @@ def map_in_place(~Element: Data,~Context: Data,~map: Context -> Element -> Eleme
   Certificate.Certificate{+depth,equation} = certificate
   Certificate.Certificate{depth,map_equation(~Element,~Context,~map,count,position,context,output,depth,equation)}
 
-def fold(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~ReaderCertificate: @-reader: Reader -> Data,
-  ~ReaderEvidence: @-reader: Reader -> Data,~witness: @-reader: Reader -> ReaderCertificate(reader) -> ReaderEvidence(reader),
-  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
-  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) ->
-    TraversalWitness.Sample<Reader,Element,reader,read(reader,context,index)>,
-  count: Nat,position: U32,context: Context,-reader: Reader,-initial: Accumulator,+certificate: ReaderCertificate(reader)) ->
-  ReaderCertificate(TraversalWitness.first(~Reader,~Accumulator,Traversal.fold(~Reader,~Element,~Accumulator,~Context,~read,~combine,count,position,reader,initial,context))):
-  %Equal.sym(Reader,TraversalWitness.first(~Reader,~Accumulator,Traversal.fold(~Reader,~Element,~Accumulator,~Context,~read,~combine,count,position,reader,initial,context)),reader,
-    TraversalWitness.fold(~Reader,~Element,~Accumulator,~Context,~ReaderEvidence,~read,~combine,~read_preserves,
-      count,reader,position,context,initial,witness(reader,certificate))) : ReaderCertificate(_)
-  certificate
-
 # Metadata preparation belongs inside the erased preservation proof. Passing a
 # prepared cursor to a live certificate helper would retain or rebuild it.
 def operation_source(~Reader: Type,~Element: Data,~Metadata: Data,~ReaderCertificate: @-reader: Reader -> Data,

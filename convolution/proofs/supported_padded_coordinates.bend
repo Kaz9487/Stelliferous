@@ -4,7 +4,6 @@ import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import Base
 import ../../lib/proofs/binary_radix.bend as Radix
 import ../../lib/proofs/nat_division.bend as Division
-import ../../lib/proofs/natural_addition.bend as Addition
 import ./convolution_guard_facts.bend as Guards
 import ./concrete_support_guard.bend as Support
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
@@ -13,22 +12,14 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/u32_division.bend as U32Division
-import ../../lib/proofs/u32_shift.bend as U32Shift
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
-import ../../lib/proofs/word_encoding.bend as WordEncoding
 import ../specification.bend as ConvSpec
+import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 
 def scalar(+limits: Machine.Limits,+p: ConvSpec.Problem,proof: Support.FastSupported<limits,
   p>) -> Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>:
   Support.FastSupported{s,a,b} = proof
   s
-
-def product_has_right(+a: Nat,+b: Nat,positive: {Nat.is_lt(0n,a) == True{} : Bool}) -> {Nat.is_le(b,Nat.mul(a,b)) == True{} : Bool}:
-  match a:
-    case 0n:
-      Empty.absurd({Nat.is_le(b,0n) == True{} : Bool},WordEncoding.false_true(positive))
-    case 1n+p:
-      Order.le_add(b,Nat.mul(p,b))
 
 def scalar_output_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,
   support: Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
@@ -43,7 +34,7 @@ def spatial_bound_facts(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guar
   Guards.Valid{v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10} = valid
   Guards.Supported{h0,h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11} = support
   Order.transitive(Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)),Nat.mul(Guards.output_channel_count(p),Nat.mul(ConvSpec.out_height(p),
-        ConvSpec.out_width(p))),U32.to_nat(Machine.capacity(limits)),product_has_right(Guards.output_channel_count(p),
+        ConvSpec.out_width(p))),U32.to_nat(Machine.capacity(limits)),DivisionOrder.le_multiple(Guards.output_channel_count(p),
       Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)),v1),h9)
 
 def padded_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid<p>,
@@ -83,19 +74,6 @@ def spatial_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Va
   support: Support.FastSupported<limits,p>) -> {U32.to_nat(spatial(p)) == Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)) : Nat}:
   scalar_spatial_exact(limits,p,valid,scalar(limits,p,support))
 
-def add_in_double(+n: Nat,+small: U32,+large: U32,relation: {U32.to_nat(large) == Nat.double(U32.to_nat(small)) : Nat},bound: {Nat.is_le(n,
-      U32.to_nat(small)) == True{} : Bool},seven: {Nat.is_le(7n,U32.to_nat(small)) == True{} : Bool}) -> {Nat.is_le(Nat.add(n,7n),
-    U32.to_nat(large)) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat(large),Nat.double(U32.to_nat(small)),relation) : {Nat.is_le(Nat.add(n,7n),_) == True{} : Bool}
-  %Addition.double(U32.to_nat(small)) : {Nat.is_le(Nat.add(n,7n),_) == True{} : Bool}
-  Encoded.sum_bounds(n,7n,U32.to_nat(small),U32.to_nat(small),bound,seven)
-
-def add_seven_bound(+limits: Machine.Limits,+n: Nat,bound: {Nat.is_le(n,
-      U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) -> {Nat.is_le(Nat.add(n,7n),
-    U32.to_nat(Machine.half_word(limits))) == True{} : Bool}:
-  add_in_double(n,Machine.capacity(limits),Machine.half_word(limits),Limits.doubled_capacity(limits),bound,Bounds.as_nat_le(7,
-      Machine.capacity(limits),Limits.seven_within_capacity(limits)))
-
 def added_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Valid<p>,
   +support: Support.FastSupported<limits,p>) -> {U32.to_nat((spatial(p) + 7 : U32)) == Nat.add(Nat.mul(ConvSpec.out_height(p),
       ConvSpec.out_width(p)),7n) : Nat}:
@@ -104,7 +82,7 @@ def added_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Vali
   Arithmetic.add(spatial(p),7,Machine.half_word(limits),Limits.half_word_fits(limits),
     %Equal.sym(Nat,U32.to_nat(spatial(p)),Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)),e) : {Nat.is_le(Nat.add(_,7n),
         U32.to_nat(Machine.half_word(limits))) == True{} : Bool}
-    add_seven_bound(limits,Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)),spatial_bound_facts(limits,p,valid,scalar(limits,p,support))))
+    Encoded.add_seven_bound(limits,Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)),spatial_bound_facts(limits,p,valid,scalar(limits,p,support))))
 
 def divided_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid<p>,
   support: Support.FastSupported<limits,

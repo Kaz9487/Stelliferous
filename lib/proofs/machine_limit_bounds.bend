@@ -3,6 +3,7 @@ import Base
 import ../machine_limits.bend as Machine
 import ./u32_shift.bend as U32Shift
 import ./nat_order.bend as Order
+import ./nat_to_u32_bounds.bend as Bounds
 
 def dimension_fits(+limits: Machine.Limits) -> {U32.is_le(Machine.dimension(limits),2147483648) == True{} : Bool}:
   Machine.Limits{d,c,k,h,Machine.Facts{df,cf,kf,hf,da,ca,db,cb,dc,dk,ddk,ch,sc,sh,chb}} = limits
@@ -63,3 +64,7 @@ def double_bound(+limits: Machine.Limits,+value: Nat,bounded: {Nat.is_le(value,U
   %Equal.sym(Nat,U32.to_nat(Machine.half_word(limits)),Nat.double(U32.to_nat(Machine.capacity(limits))),doubled_capacity(limits)) :
     {Nat.is_le(Nat.double(value),_) == True{} : Bool}
   Order.double_le(value,U32.to_nat(Machine.capacity(limits)),bounded)
+
+def dimension_capacity(+limits: Machine.Limits,+value: Nat,room: {Nat.is_le(value,U32.to_nat(Machine.dimension(limits))) == True{} : Bool}) ->
+  {Nat.is_le(value,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  Order.transitive(value,U32.to_nat(Machine.dimension(limits)),U32.to_nat(Machine.capacity(limits)),room,Bounds.as_nat_le(Machine.dimension(limits),Machine.capacity(limits),dimension_within_capacity(limits)))

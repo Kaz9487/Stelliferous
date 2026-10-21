@@ -1,9 +1,12 @@
-# Dense block states keep their sources and refine the ordered convolution.
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LibPacking
+# Block states keep their sources and refine the ordered convolution.
 import Base
+import ../../lib/kernel_window.bend as Window
+import ../../lib/proofs/u32_extrema.bend as U32Extrema
 import ../../lib/kernel_pipeline.bend as Pipeline
 import ../../lib/proofs/natural_addition.bend as Addition
-import ./blocked_pipeline_bounds.bend as BlockBounds
-import ./tile_partition_bounds.bend as Partition
+import ../../lib/proofs/kernel_pipeline_bounds.bend as BlockBounds
+import ../../lib/proofs/kernel_partition_bounds.bend as Partition
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/nat_extrema.bend as Extrema
@@ -11,7 +14,7 @@ import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/boolean_logic.bend as Boolean
-import ./gemm_output_relocation.bend as Relocation
+import ../../lib/proofs/kernel_gemm_readback.bend as GemmReadback
 import ../specification.bend as ConvSpec
 import ../inference.bend as NativeConv
 import ../../lib/machine_limits.bend as Machine
@@ -22,10 +25,9 @@ import ../../lib/proofs/write_program.bend as Writes
 import ../../lib/proofs/kernel_gemm_refinement.bend as GemmLaws
 import ../../lib/proofs/kernel_gemm_writes.bend as GemmWrites
 import ../../lib/kernel_gemm.bend as Gemm
-import ./blocked_pipeline_model.bend as Model
+import ../../lib/proofs/kernel_pipeline_model.bend as Model
 import ./input_storage.bend as Inputs
 import ./prepared_packing_samples.bend as Prepared
-import ./packing_storage_refinement.bend as PackingStorage
 import ./packing_tabulation.bend as Tabulation
 import ./packing_contents.bend as PackingContents
 import ./packing_tile_bounds.bend as PackingBounds
@@ -36,7 +38,6 @@ import ./microkernel_inference_refinement.bend as Inference
 import ./microkernel_leaf_readback.bend as MicroLeaf
 import ./gemm_dot_matches_matrix.bend as GemmDot
 import ./reduction_coordinate_bounds.bend as Coordinates
-import ./supported_padded_coordinates.bend as Padded
 import ./output_values.bend as Values
 
 def with_positions(work: Pipeline.Work,positions: U32) -> Pipeline.Work:
@@ -56,7 +57,7 @@ def tiles(+problem: ConvSpec.Problem,+storage: Inputs.Contract<problem>,+start: 
   Prepared.packed_output(Prepared.workspace_pack(problem,storage,start,span,workspace))
 
 def output(+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+storage: Inputs.Contract<problem>,+start: U32,+span: U32,workspace: Tree.Tree<Tile.Tile8>,previous: Tree.Tree<F32>) -> Tree.Tree<F32>:
-  GemmLaws.run_at(MicroLeaf.rows(problem),tiles(problem,storage,(origin + start : U32),span,workspace),GemmDot.reordered(problem,storage),Inputs.bias_tree(problem,storage),previous,span,Coordinates.native_inner(problem),start,positions)
+  GemmLaws.run_at(~True{},MicroLeaf.rows(problem),tiles(problem,storage,(origin + start : U32),span,workspace),GemmDot.reordered(problem,storage),Inputs.bias_tree(problem,storage),previous,span,Coordinates.native_inner(problem),start,positions)
 
 def step_state(+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+storage: Inputs.Contract<problem>,+start: U32,+span: U32,+workspace: Tree.Tree<Tile.Tile8>,+previous: Tree.Tree<F32>) ->
   {Model.step(work(problem,positions),(origin + start : U32),start,span,state(problem,storage,workspace,previous)) ==
@@ -64,7 +65,7 @@ def step_state(+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+storage:
   ConvSpec.Problem{shape,+input_values,+weight_values,+bias_values} = problem
   ConvSpec.Shape{+input_channels,+output_channels,+height,+width,+kernel,+stride,+padding} = shape
   +problem = {ConvSpec.Problem{ConvSpec.Shape{input_channels,output_channels,height,width,kernel,stride,padding},input_values,weight_values,bias_values} : ConvSpec.Problem}
-  %Equal.sym(PackingStorage.Packed,Prepared.workspace_pack(problem,storage,(origin + start : U32),span,workspace),PackingStorage.Packed{Inputs.input_tree(problem,storage),tiles(problem,storage,(origin + start : U32),span,workspace)},Prepared.workspace_pair(problem,storage,(origin + start : U32),span,workspace)) :
+  %Equal.sym(LibPacking.Packed,Prepared.workspace_pack(problem,storage,(origin + start : U32),span,workspace),LibPacking.Packed{Inputs.input_tree(problem,storage),tiles(problem,storage,(origin + start : U32),span,workspace)},Prepared.workspace_pair(problem,storage,(origin + start : U32),span,workspace)) :
     {Model.packed(MicroLeaf.rows(problem),positions,Coordinates.native_inner(problem),start,span,GemmDot.reordered(problem,storage),Inputs.bias_tree(problem,storage),previous,_) ==
       state(problem,storage,tiles(problem,storage,(origin + start : U32),span,workspace),output(problem,origin,positions,storage,start,span,workspace,previous)) : Model.State}
   Model.packed_result(MicroLeaf.rows(problem),positions,Coordinates.native_inner(problem),start,span,GemmDot.reordered(problem,storage),Inputs.bias_tree(problem,storage),previous,Inputs.input_tree(problem,storage),tiles(problem,storage,(origin + start : U32),span,workspace))
@@ -84,9 +85,9 @@ def output_balanced(+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+sto
   +input = tiles(problem,storage,(origin + start : U32),span,workspace)
   +weights = GemmDot.reordered(problem,storage)
   +bias = Inputs.bias_tree(problem,storage)
-  +writes = GemmWrites.all_writes(GemmWrites.job_count(MicroLeaf.rows(problem),span),0,Gemm.Layout{MicroLeaf.rows(problem),span,Coordinates.native_inner(problem),start,positions},input,weights,bias)
+  +writes = GemmWrites.all_writes(~True{},GemmWrites.job_count(MicroLeaf.rows(problem),span),0,Gemm.Layout{MicroLeaf.rows(problem),span,Coordinates.native_inner(problem),start,positions},input,weights,bias)
   %Equal.sym(Tree.Tree<F32>,output(problem,origin,positions,storage,start,span,workspace,previous),Writes.pure(F32,writes,previous),
-    GemmWrites.run_at_writes(MicroLeaf.rows(problem),input,weights,bias,previous,span,Coordinates.native_inner(problem),start,positions)) : Shape.Balanced(F32,depth,_)
+    GemmWrites.run_at_writes(~True{},MicroLeaf.rows(problem),input,weights,bias,previous,span,Coordinates.native_inner(problem),start,positions)) : Shape.Balanced(F32,depth,_)
   Writes.writes_preserve_balance(F32,writes,previous,depth,balanced)
 
 # Only the prefix packed for this block is sampled by the unchanged dot chain.
@@ -127,7 +128,7 @@ def block_preserves_before(+limits: Machine.Limits,+problem: ConvSpec.Problem,+o
   {Tree.read(F32,output(problem,origin,positions,storage,start,span,workspace,previous),U32.from_nat(Nat.add(Nat.mul(channel,U32.to_nat(positions)),point))) ==
     Tree.read(F32,previous,U32.from_nat(Nat.add(Nat.mul(channel,U32.to_nat(positions)),point))) : F32}:
   +query = MicroLeaf.leaf_query(limits,problem,storage,tiles(problem,storage,(origin + start : U32),span,workspace),span,blocks,channel,0n,span_exact,Support.fast(limits,problem,supported),span_bound,channel_inside,span_positive)
-  Relocation.run_preserves_before(query,start,positions,previous,output_depth,point,output_balanced,output_depth_ok,output_room,end_room,columns_room,point_inside,before)
+  GemmReadback.run_at_preserves_before(~True{},query,start,positions,previous,output_depth,point,output_balanced,output_depth_ok,output_room,end_room,columns_room,point_inside,before)
 
 # The loop carries fixed geometry separately from the two changing trees.
 type Geometry<-limits: Machine.Limits,-problem: ConvSpec.Problem,-origin: U32,-positions: U32,-padded: U32,-span: U32,-cap: U32> is Data:
@@ -139,7 +140,7 @@ type Geometry<-limits: Machine.Limits,-problem: ConvSpec.Problem,-origin: U32,-p
     columns_room: {Nat.is_le(U32.to_nat(positions),U32.to_nat(Machine.half_word(limits))) == True{} : Bool},
     sum_room: {Nat.is_le(Nat.add(U32.to_nat(padded),U32.to_nat(span)),U32.to_nat(cap)) == True{} : Bool},
     span_positive: {Nat.is_lt(0n,U32.to_nat(span)) == True{} : Bool},
-    padded_aligned: Partition.BlockAligned<padded>,span_aligned: Partition.BlockAligned<span>}
+    padded_aligned: Partition.BlockAligned<padded>,span_aligned: Partition.BlockAligned<span>,padded_value: {padded == Window.padded(positions) : U32}}
 
 def current(+start: U32,+padded: U32,+span: U32) -> U32:
   U32.min(span,(padded - start : U32))
@@ -156,7 +157,7 @@ type StepGeometry<-problem: ConvSpec.Problem,-origin: U32,-positions: U32,-start
 def step_geometry(+limits: Machine.Limits,+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+start: U32,+padded: U32,+span: U32,+cap: U32,
   +geometry: Geometry<limits,problem,origin,positions,padded,span,cap>,
   +inside: {Nat.is_lt(U32.to_nat(start),U32.to_nat(padded)) == True{} : Bool},+aligned: Partition.BlockAligned<start>) -> StepGeometry<problem,origin,positions,start,padded,span>:
-  Geometry{+origin_end,+pack_room,+valid,+supported,+cap_ok,+padded_bound,+padded_end,+columns_room,+sum_room,+span_positive,+padded_aligned,+span_aligned} = geometry
+  Geometry{+origin_end,+pack_room,+valid,+supported,+cap_ok,+padded_bound,+padded_end,+columns_room,+sum_room,+span_positive,+padded_aligned,+span_aligned,+padded_value} = geometry
   +ordered = Bounds.strict_le(U32.to_nat(start),U32.to_nat(padded),inside)
   +padded_room = Order.transitive(U32.to_nat(padded),Nat.add(U32.to_nat(padded),U32.to_nat(span)),U32.to_nat(cap),Order.le_add(U32.to_nat(padded),U32.to_nat(span)),sum_room)
   +difference = Arithmetic.subtract(padded,start,cap,cap_ok,ordered,Order.transitive(Nat.sub(U32.to_nat(padded),U32.to_nat(start)),U32.to_nat(padded),U32.to_nat(cap),Order.sub_le(U32.to_nat(padded),U32.to_nat(start)),padded_room))
@@ -187,20 +188,20 @@ def step_geometry(+limits: Machine.Limits,+problem: ConvSpec.Problem,+origin: U3
 
 type Memory<-problem: ConvSpec.Problem,-origin: U32,-positions: U32,-span: U32,-workspace: Tree.Tree<Tile.Tile8>,-previous: Tree.Tree<F32>,-tile_depth: Nat,-output_depth: Nat> is Data:
   Memory{tile_balanced: Shape.Balanced(Tile.Tile8,tile_depth,workspace),tile_depth_ok: {Nat.is_le(tile_depth,30n) == True{} : Bool},
-    tile_room: {Nat.is_le(Nat.mul(PackingBounds.groups(span),Coordinates.inner(problem)),U32.to_nat(Tree.capacity(Tile.Tile8,workspace))) == True{} : Bool},
+    tile_room: {Nat.is_le(Nat.mul(PackingBounds.groups(U32.min(span,Window.padded(positions))),Coordinates.inner(problem)),U32.to_nat(Tree.capacity(Tile.Tile8,workspace))) == True{} : Bool},
     output_balanced: Shape.Balanced(F32,output_depth,previous),output_depth_ok: {Nat.is_le(output_depth,30n) == True{} : Bool},
     output_room: {Nat.is_le(Nat.mul(U32.to_nat(MicroLeaf.rows(problem)),U32.to_nat(positions)),U32.to_nat(Tree.capacity(F32,previous))) == True{} : Bool}}
 
-def block_tile_room(+limits: Machine.Limits,+problem: ConvSpec.Problem,+span: U32,+clipped: U32,+workspace: Tree.Tree<Tile.Tile8>,
+def block_tile_room(+limits: Machine.Limits,+problem: ConvSpec.Problem,+positions: U32,+span: U32,+clipped: U32,+workspace: Tree.Tree<Tile.Tile8>,
   +valid: {ConvSpec.valid(problem) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,problem) == True{} : Bool},
   +span_bound: {Nat.is_le(U32.to_nat(clipped),Support.padded(problem)) == True{} : Bool},
-  +clipped_bound: {Nat.is_le(U32.to_nat(clipped),U32.to_nat(span)) == True{} : Bool},
-  +tile_room: {Nat.is_le(Nat.mul(PackingBounds.groups(span),Coordinates.inner(problem)),U32.to_nat(Tree.capacity(Tile.Tile8,workspace))) == True{} : Bool}) ->
+  +clipped_bound: {Nat.is_le(U32.to_nat(clipped),U32.to_nat(U32.min(span,Window.padded(positions)))) == True{} : Bool},
+  +tile_room: {Nat.is_le(Nat.mul(PackingBounds.groups(U32.min(span,Window.padded(positions))),Coordinates.inner(problem)),U32.to_nat(Tree.capacity(Tile.Tile8,workspace))) == True{} : Bool}) ->
   {Nat.is_le(U32.to_nat(PackingBounds.count(clipped,problem)),U32.to_nat(Tree.capacity(Tile.Tile8,workspace))) == True{} : Bool}:
   %Equal.sym(Nat,U32.to_nat(PackingBounds.count(clipped,problem)),Nat.mul(PackingBounds.groups(clipped),Coordinates.inner(problem)),PackingBounds.count_exact(limits,problem,clipped,Guards.valid(problem,valid),Support.fast(limits,problem,supported),span_bound)) :
     {Nat.is_le(_,U32.to_nat(Tree.capacity(Tile.Tile8,workspace))) == True{} : Bool}
-  Order.transitive(Nat.mul(PackingBounds.groups(clipped),Coordinates.inner(problem)),Nat.mul(PackingBounds.groups(span),Coordinates.inner(problem)),U32.to_nat(Tree.capacity(Tile.Tile8,workspace)),
-    RowMajor.mul_le(PackingBounds.groups(clipped),PackingBounds.groups(span),Coordinates.inner(problem),DivisionOrder.quotient_le(U32.to_nat(clipped),U32.to_nat(span),8n,{==},clipped_bound)),tile_room)
+  Order.transitive(Nat.mul(PackingBounds.groups(clipped),Coordinates.inner(problem)),Nat.mul(PackingBounds.groups(U32.min(span,Window.padded(positions))),Coordinates.inner(problem)),U32.to_nat(Tree.capacity(Tile.Tile8,workspace)),
+    RowMajor.mul_le(PackingBounds.groups(clipped),PackingBounds.groups(U32.min(span,Window.padded(positions))),Coordinates.inner(problem),DivisionOrder.quotient_le(U32.to_nat(clipped),U32.to_nat(U32.min(span,Window.padded(positions))),8n,{==},clipped_bound)),tile_room)
 
 def memory_advanced(+limits: Machine.Limits,+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+storage: Inputs.Contract<problem>,+start: U32,+span: U32,+clipped: U32,
   +workspace: Tree.Tree<Tile.Tile8>,+previous: Tree.Tree<F32>,+tile_depth: Nat,+output_depth: Nat,
@@ -214,7 +215,7 @@ def memory_advanced(+limits: Machine.Limits,+problem: ConvSpec.Problem,+origin: 
   +next_output = output(problem,origin,positions,storage,start,clipped,workspace,previous)
   +next_tiles_balanced = tiles_balanced(limits,problem,storage,(origin + start : U32),clipped,workspace,tile_depth,Guards.valid(problem,valid),Support.fast(limits,problem,supported),span_bound,sample_range,tile_balanced)
   +next_output_balanced = output_balanced(problem,origin,positions,storage,start,clipped,workspace,previous,output_depth,previous_balanced)
-  Memory{next_tiles_balanced,tile_depth_ok,Shape.transfer_room(Tile.Tile8,tile_depth,workspace,next_tiles,Nat.mul(PackingBounds.groups(span),Coordinates.inner(problem)),tile_balanced,next_tiles_balanced,tile_room),
+  Memory{next_tiles_balanced,tile_depth_ok,Shape.transfer_room(Tile.Tile8,tile_depth,workspace,next_tiles,Nat.mul(PackingBounds.groups(U32.min(span,Window.padded(positions))),Coordinates.inner(problem)),tile_balanced,next_tiles_balanced,tile_room),
     next_output_balanced,output_depth_ok,Shape.transfer_room(F32,output_depth,previous,next_output,Nat.mul(U32.to_nat(MicroLeaf.rows(problem)),U32.to_nat(positions)),previous_balanced,next_output_balanced,output_room)}
 
 def address(+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+channel: Nat,+row: Nat,+column: Nat) -> U32:
@@ -229,6 +230,17 @@ type Point<-problem: ConvSpec.Problem,-origin: U32,-positions: U32,-channel: Nat
     spatial_inside: {Nat.is_lt(local_position(problem,origin,row,column),U32.to_nat(positions)) == True{} : Bool},
     padded_inside: {Nat.is_lt(local_position(problem,origin,row,column),U32.to_nat(padded)) == True{} : Bool}}
 
+def current_prefix_bound(+positions: U32,+start: U32,+padded: U32,+span: U32,
+  +padded_value: {padded == Window.padded(positions) : U32},
+  clipped: {U32.to_nat(current(start,padded,span)) == Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))) : Nat}) ->
+  {Nat.is_le(U32.to_nat(current(start,padded,span)),U32.to_nat(U32.min(span,Window.padded(positions)))) == True{} : Bool}:
+  %Equal.sym(Nat,U32.to_nat(U32.min(span,Window.padded(positions))),Nat.min(U32.to_nat(span),U32.to_nat(Window.padded(positions))),U32Extrema.minimum(span,Window.padded(positions))) : {Nat.is_le(U32.to_nat(current(start,padded,span)),_) == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(current(start,padded,span)),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),clipped) : {Nat.is_le(_,Nat.min(U32.to_nat(span),U32.to_nat(Window.padded(positions)))) == True{} : Bool}
+  %padded_value : {Nat.is_le(Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),Nat.min(U32.to_nat(span),U32.to_nat(_))) == True{} : Bool}
+  Extrema.minimum_lower(U32.to_nat(span),U32.to_nat(padded),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),
+    Extrema.minimum_left(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),
+    Order.transitive(Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),Nat.sub(U32.to_nat(padded),U32.to_nat(start)),U32.to_nat(padded),Extrema.minimum_right(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),Order.sub_le(U32.to_nat(padded),U32.to_nat(start))))
+
 def point_written(+before: Bool,+limits: Machine.Limits,+problem: ConvSpec.Problem,+origin: U32,+positions: U32,+storage: Inputs.Contract<problem>,+start: U32,+padded: U32,+span: U32,+cap: U32,
   +workspace: Tree.Tree<Tile.Tile8>,+previous: Tree.Tree<F32>,+tile_depth: Nat,+output_depth: Nat,+channel: Nat,+row: Nat,+column: Nat,
   +geometry: Geometry<limits,problem,origin,positions,padded,span,cap>,+step: StepGeometry<problem,origin,positions,start,padded,span>,
@@ -240,7 +252,7 @@ def point_written(+before: Bool,+limits: Machine.Limits,+problem: ConvSpec.Probl
   {Tree.read(F32,output(problem,origin,positions,storage,start,current(start,padded,span),workspace,previous),address(problem,origin,positions,channel,row,column)) == Values.matrix_value(problem,channel,row,column) : F32}:
   match before:
     case True{}:
-      Geometry{origin_end,pack_room,valid,+supported,cap_ok,padded_bound,padded_end,+columns_room,sum_room,span_positive,padded_aligned,span_aligned} = geometry
+      Geometry{origin_end,pack_room,valid,+supported,cap_ok,padded_bound,padded_end,+columns_room,sum_room,span_positive,padded_aligned,span_aligned,+padded_value} = geometry
       StepGeometry{pack_exact,advance,clipped,+positive,+span_bound,sample_range,+end_room,+aligned,next_aligned} = step
       Partition.BlockAligned{+blocks,+span_exact} = aligned
       Memory{tile_balanced,tile_depth_ok,tile_room,+output_balanced,+output_depth_ok,+output_room} = memory
@@ -248,7 +260,7 @@ def point_written(+before: Bool,+limits: Machine.Limits,+problem: ConvSpec.Probl
       Equal.trans(F32,Tree.read(F32,output(problem,origin,positions,storage,start,current(start,padded,span),workspace,previous),address(problem,origin,positions,channel,row,column)),Tree.read(F32,previous,address(problem,origin,positions,channel,row,column)),Values.matrix_value(problem,channel,row,column),
         block_preserves_before(limits,problem,origin,positions,storage,start,current(start,padded,span),blocks,workspace,previous,output_depth,channel,local_position(problem,origin,row,column),supported,output_balanced,output_depth_ok,output_room,span_exact,span_bound,positive,end_room,columns_room,channel_inside,spatial_inside,before_exact),earlier)
     case False{}:
-      Geometry{+origin_end,+pack_room,+valid,+supported,cap_ok,padded_bound,padded_end,+columns_room,sum_room,span_positive,padded_aligned,span_aligned} = geometry
+      Geometry{+origin_end,+pack_room,+valid,+supported,cap_ok,padded_bound,padded_end,+columns_room,sum_room,span_positive,padded_aligned,span_aligned,+padded_value} = geometry
       StepGeometry{+pack_exact,+advance,+clipped,positive,+span_bound,+sample_range,+end_room,+aligned,next_aligned} = step
       Partition.BlockAligned{+blocks,+span_exact} = aligned
       Memory{+tile_balanced,+tile_depth_ok,+tile_room,+output_balanced,+output_depth_ok,+output_room} = memory
@@ -259,9 +271,8 @@ def point_written(+before: Bool,+limits: Machine.Limits,+problem: ConvSpec.Probl
       +restored = Order.restore_shift(U32.to_nat(start),position,lower)
       %restored : {Tree.read(F32,output(problem,origin,positions,storage,start,current(start,padded,span),workspace,previous),U32.from_nat(Nat.add(Nat.mul(channel,U32.to_nat(positions)),_))) == Values.matrix_value(problem,channel,row,column) : F32}
       block_readback(limits,problem,origin,positions,storage,start,current(start,padded,span),blocks,workspace,tile_depth,previous,output_depth,channel,local,row,column,valid,supported,tile_balanced,tile_depth_ok,
-        block_tile_room(limits,problem,span,current(start,padded,span),workspace,valid,supported,span_bound,
-          %Equal.sym(Nat,U32.to_nat(current(start,padded,span)),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),clipped) : {Nat.is_le(_,U32.to_nat(span)) == True{} : Bool}
-          Extrema.minimum_left(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),tile_room),
+        block_tile_room(limits,problem,positions,span,current(start,padded,span),workspace,valid,supported,span_bound,
+          current_prefix_bound(positions,start,padded,span,padded_value,clipped),tile_room),
         output_balanced,output_depth_ok,output_room,span_exact,span_bound,sample_range,end_room,columns_room,channel_inside,
         %Equal.sym(Nat,U32.to_nat(current(start,padded,span)),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),clipped) : {Nat.is_lt(local,_) == True{} : Bool}
         BlockBounds.clipped_contains(U32.to_nat(start),U32.to_nat(padded),U32.to_nat(span),position,Bounds.strict_le(U32.to_nat(start),U32.to_nat(padded),inside),lower,padded_inside,
@@ -289,7 +300,7 @@ def step_memory(+limits: Machine.Limits,+problem: ConvSpec.Problem,+origin: U32,
   +workspace: Tree.Tree<Tile.Tile8>,+previous: Tree.Tree<F32>,+tile_depth: Nat,+output_depth: Nat,
   geometry: Geometry<limits,problem,origin,positions,padded,span,cap>,step: StepGeometry<problem,origin,positions,start,padded,span>,memory: Memory<problem,origin,positions,span,workspace,previous,tile_depth,output_depth>) ->
   Memory<problem,origin,positions,span,tiles(problem,storage,(origin + start : U32),current(start,padded,span),workspace),output(problem,origin,positions,storage,start,current(start,padded,span),workspace,previous),tile_depth,output_depth>:
-  Geometry{+origin_end,+pack_room,+valid,+supported,cap_ok,padded_bound,padded_end,columns_room,sum_room,span_positive,padded_aligned,span_aligned} = geometry
+  Geometry{+origin_end,+pack_room,+valid,+supported,cap_ok,padded_bound,padded_end,columns_room,sum_room,span_positive,padded_aligned,span_aligned,+padded_value} = geometry
   StepGeometry{pack_exact,advance,clipped,positive,+span_bound,+sample_range,end_room,aligned,next_aligned} = step
   memory_advanced(limits,problem,origin,positions,storage,start,span,current(start,padded,span),workspace,previous,tile_depth,output_depth,valid,supported,span_bound,sample_range,memory)
 

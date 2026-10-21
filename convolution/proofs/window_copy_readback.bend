@@ -15,10 +15,11 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/natural_addition.bend as Addition
 import ../../lib/proofs/word_encoding.bend as WordEncoding
-import ./dense_array_initialization.bend as DenseArrayInitialization
+import ./array_fill_readback.bend as ArrayFill
 import ../../lib/proofs/nat_interval.bend as Interval
 import ./input_storage.bend as Inputs
 import ./window_samples.bend as Samples
+import ../../lib/proofs/tensor_band_plan.bend as TensorBandPlan
 
 def plane_values(+channel: U32,+count: U32,+source_stride: U32,+source_start: U32,+input: Tree.Tree<F32>) -> List<&2,F32>:
   Tree.read_sequence(~F32,U32.to_nat(count),(channel * source_stride + source_start : U32),input)
@@ -81,15 +82,6 @@ def plane_length(+channel: U32,+count: U32,+source_stride: U32,+source_start: U3
     Inputs.length_matches_list(plane_values(channel,count,source_stride,source_start,input)),
     StorageLaws.sequence_length(~F32,U32.to_nat(count),(channel * source_stride + source_start : U32),input))
 
-def plane_start(+channel: U32,+count: U32,+rest: Nat,+limit: U32,+limit_ok: {U32.is_le(limit,2147483648) == True{} : Bool},
-  +bound: {Nat.is_le(Nat.mul(Nat.add(U32.to_nat(channel),1n+rest),U32.to_nat(count)),U32.to_nat(limit)) == True{} : Bool}) ->
-  {U32.to_nat((channel * count : U32)) == Nat.mul(U32.to_nat(channel),U32.to_nat(count)) : Nat}:
-  Arithmetic.multiply(channel,count,limit,limit_ok,
-    Order.transitive(Nat.mul(U32.to_nat(channel),U32.to_nat(count)),Nat.mul(1n+U32.to_nat(channel),U32.to_nat(count)),U32.to_nat(limit),
-      Samples.le_after(U32.to_nat(count),Nat.mul(U32.to_nat(channel),U32.to_nat(count))),
-      Order.transitive(Nat.mul(1n+U32.to_nat(channel),U32.to_nat(count)),Nat.mul(Nat.add(U32.to_nat(channel),1n+rest),U32.to_nat(count)),U32.to_nat(limit),
-        RowMajor.mul_le(1n+U32.to_nat(channel),Nat.add(U32.to_nat(channel),1n+rest),U32.to_nat(count),successor_le(U32.to_nat(channel),rest)),bound)))
-
 # Planes at or after this channel start above the query, so they keep its value.
 def outside_planes(+remaining: Nat,+channel: U32,+count: U32,+source_stride: U32,+source_start: U32,+input: Tree.Tree<F32>,
   +tree: Tree.Tree<F32>,+depth: Nat,+query: U32,+limit: U32,+limit_ok: {U32.is_le(limit,2147483648) == True{} : Bool},
@@ -110,7 +102,7 @@ def outside_planes(+remaining: Nat,+channel: U32,+count: U32,+source_stride: U32
       +values = plane_values(channel,count,source_stride,source_start,input)
       +written = Tree.write_sequence(~F32,values,start,tree)
       +next = (channel + 1 : U32)
-      +start_exact = plane_start(channel,count,rest,limit,limit_ok,whole_fits)
+      +start_exact = TensorBandPlan.image_start_exact(channel,count,rest,limit,limit_ok,whole_fits)
       +length_exact = plane_length(channel,count,source_stride,source_start,input)
       +grow = RowMajor.mul_le(1n+channel_nat,Nat.add(channel_nat,1n+rest),count_nat,successor_le(channel_nat,rest))
       +plane_room = {%Equal.sym(Nat,U32.to_nat(start),Nat.mul(channel_nat,count_nat),start_exact) :
@@ -121,9 +113,9 @@ def outside_planes(+remaining: Nat,+channel: U32,+count: U32,+source_stride: U32
         {Nat.is_le(Nat.add(U32.to_nat(start),ConvSpec.length(values)),U32.to_nat(capacity)) == True{} : Bool}}
       +outside = {Interval.Before{%Equal.sym(Nat,U32.to_nat(start),Nat.mul(channel_nat,count_nat),start_exact) : {Nat.is_lt(U32.to_nat(query),_) == True{} : Bool}
         below} : Interval.Outside<U32.to_nat(start),ConvSpec.length(values),U32.to_nat(query)>}
-      +written_capacity = DenseArrayInitialization.capacity(values,start,tree,depth,balanced)
+      +written_capacity = ArrayFill.capacity(values,start,tree,depth,balanced)
       +next_exact = next_channel(channel,rest,limit,limit_ok,channels_fit)
-      +later = outside_planes(rest,next,count,source_stride,source_start,input,written,depth,query,limit,limit_ok,DenseArrayInitialization.balanced(values,start,tree,depth,balanced),depth_ok,
+      +later = outside_planes(rest,next,count,source_stride,source_start,input,written,depth,query,limit,limit_ok,ArrayFill.balanced(values,start,tree,depth,balanced),depth_ok,
         %Equal.sym(Nat,U32.to_nat(next),1n+channel_nat,next_exact) : {Nat.is_le(Nat.add(_,rest),U32.to_nat(limit)) == True{} : Bool}
         %Addition.successor_right(channel_nat,rest) : {Nat.is_le(_,U32.to_nat(limit)) == True{} : Bool}
         channels_fit,
@@ -137,9 +129,9 @@ def outside_planes(+remaining: Nat,+channel: U32,+count: U32,+source_stride: U32
         %Equal.sym(U32,Tree.capacity(F32,written),capacity,written_capacity) : {U32.is_lt(query,_) == True{} : Bool}
         query_inside,
         %Equal.sym(Nat,U32.to_nat(next),1n+channel_nat,next_exact) : {Nat.is_lt(U32.to_nat(query),Nat.mul(_,count_nat)) == True{} : Bool}
-        Samples.lt_le(U32.to_nat(query),Nat.mul(channel_nat,count_nat),Nat.mul(1n+channel_nat,count_nat),below,Samples.le_after(count_nat,Nat.mul(channel_nat,count_nat))))
+        Bounds.nat_trans(U32.to_nat(query),Nat.mul(channel_nat,count_nat),Nat.mul(1n+channel_nat,count_nat),below,Samples.le_after(count_nat,Nat.mul(channel_nat,count_nat))))
       Equal.trans(F32,Tree.read(F32,planes(rest,next,count,source_stride,source_start,count,input,written),query),Tree.read(F32,written,query),
-        Tree.read(F32,tree,query),later,DenseArrayInitialization.read_filled_outside(values,start,tree,depth,query,balanced,depth_ok,plane_room,query_inside,outside))
+        Tree.read(F32,tree,query),later,ArrayFill.read_filled_outside(values,start,tree,depth,query,balanced,depth_ok,plane_room,query_inside,outside))
 
 def before_distinct(+smaller: Nat,+larger: Nat,+ordered: {Nat.is_le(smaller,larger) == True{} : Bool},
   +distinct: {Nat.is_eq(smaller,larger) == False{} : Bool}) -> {Nat.is_lt(smaller,larger) == True{} : Bool}:
@@ -193,7 +185,7 @@ def inside_planes(+remaining: Nat,+same: Bool,+channel: U32,+count: U32,+source_
       +values = plane_values(channel,count,source_stride,source_start,input)
       +written = Tree.write_sequence(~F32,values,start,tree)
       +next = (channel + 1 : U32)
-      +start_exact = plane_start(channel,count,rest,limit,limit_ok,whole_fits)
+      +start_exact = TensorBandPlan.image_start_exact(channel,count,rest,limit,limit_ok,whole_fits)
       +length_exact = plane_length(channel,count,source_stride,source_start,input)
       +grow = RowMajor.mul_le(1n+channel_nat,Nat.add(channel_nat,1n+rest),count_nat,successor_le(channel_nat,rest))
       +plane_room = {%Equal.sym(Nat,U32.to_nat(start),Nat.mul(channel_nat,count_nat),start_exact) :
@@ -202,9 +194,9 @@ def inside_planes(+remaining: Nat,+same: Bool,+channel: U32,+count: U32,+source_
         %Order.commutative(count_nat,Nat.mul(channel_nat,count_nat)) : {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
         Order.transitive(Nat.mul(1n+channel_nat,count_nat),Nat.mul(Nat.add(channel_nat,1n+rest),count_nat),U32.to_nat(capacity),grow,room) :
         {Nat.is_le(Nat.add(U32.to_nat(start),ConvSpec.length(values)),U32.to_nat(capacity)) == True{} : Bool}}
-      +written_capacity = DenseArrayInitialization.capacity(values,start,tree,depth,balanced)
+      +written_capacity = ArrayFill.capacity(values,start,tree,depth,balanced)
       +next_exact = next_channel(channel,rest,limit,limit_ok,channels_fit)
-      +later = outside_planes(rest,next,count,source_stride,source_start,input,written,depth,query,limit,limit_ok,DenseArrayInitialization.balanced(values,start,tree,depth,balanced),depth_ok,
+      +later = outside_planes(rest,next,count,source_stride,source_start,input,written,depth,query,limit,limit_ok,ArrayFill.balanced(values,start,tree,depth,balanced),depth_ok,
         %Equal.sym(Nat,U32.to_nat(next),1n+channel_nat,next_exact) : {Nat.is_le(Nat.add(_,rest),U32.to_nat(limit)) == True{} : Bool}
         %Addition.successor_right(channel_nat,rest) : {Nat.is_le(_,U32.to_nat(limit)) == True{} : Bool}
         channels_fit,
@@ -222,7 +214,7 @@ def inside_planes(+remaining: Nat,+same: Bool,+channel: U32,+count: U32,+source_
         %equal : {Nat.is_lt(Nat.add(Nat.mul(_,count_nat),column),Nat.mul(1n+channel_nat,count_nat)) == True{} : Bool}
         %Order.commutative(column,Nat.mul(channel_nat,count_nat)) : {Nat.is_lt(_,Nat.mul(1n+channel_nat,count_nat)) == True{} : Bool}
         Order.add_lt(column,count_nat,Nat.mul(channel_nat,count_nat),column_inside))
-      +filled = DenseArrayInitialization.read_filled_range(values,start,tree,depth,query,column,balanced,depth_ok,
+      +filled = ArrayFill.read_filled_range(values,start,tree,depth,query,column,balanced,depth_ok,
         %Equal.sym(Nat,U32.to_nat(start),Nat.mul(channel_nat,count_nat),start_exact) : {U32.to_nat(query) == Nat.add(_,column) : Nat}
         %Equal.sym(Nat,channel_nat,target,equal) : {U32.to_nat(query) == Nat.add(Nat.mul(_,count_nat),column) : Nat}
         query_exact,
@@ -275,11 +267,11 @@ def inside_planes(+remaining: Nat,+same: Bool,+channel: U32,+count: U32,+source_
       +values = plane_values(channel,count,source_stride,source_start,input)
       +written = Tree.write_sequence(~F32,values,start,tree)
       +next = (channel + 1 : U32)
-      +written_capacity = DenseArrayInitialization.capacity(values,start,tree,depth,balanced)
+      +written_capacity = ArrayFill.capacity(values,start,tree,depth,balanced)
       +next_exact = next_channel(channel,rest,limit,limit_ok,channels_fit)
       +before = before_distinct(channel_nat,target,after,same_exact)
       inside_planes(rest,Nat.is_eq(U32.to_nat(next),target),next,count,source_stride,source_start,input,written,depth,query,limit,limit_ok,
-        DenseArrayInitialization.balanced(values,start,tree,depth,balanced),depth_ok,
+        ArrayFill.balanced(values,start,tree,depth,balanced),depth_ok,
         %Equal.sym(Nat,U32.to_nat(next),1n+channel_nat,next_exact) : {Nat.is_le(Nat.add(_,rest),U32.to_nat(limit)) == True{} : Bool}
         %Addition.successor_right(channel_nat,rest) : {Nat.is_le(_,U32.to_nat(limit)) == True{} : Bool}
         channels_fit,

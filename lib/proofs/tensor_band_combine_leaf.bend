@@ -26,32 +26,28 @@ import ./nat_division.bend as Division
 import ./nat_interval.bend as Interval
 import ./nat_to_u32_bounds.bend as Bounds
 import ./natural_addition.bend as Addition
-import ./ordered_ranges.bend as Ranges
-import ./sequence_membership.bend as Members
 import ./storage_certificate.bend as Certificate
 import ./storage_readback.bend as StorageReadback
 import ./storage_refinement.bend as StorageLaws
-import ./tensor_band_dense.bend as BandDense
+import ./tensor_band_from_whole.bend as FromWhole
 import ./tensor_band_each.bend as Each
 import ./tensor_band_gather.bend as BandGather
 import ./tensor_band_inspection.bend as Inspection
 import ./tensor_band_plan.bend as BandPlan
-import ./tensor_shape_refinement.bend as ShapeLaws
 import ./traversal_array_refinement.bend as ArrayLaws
 import ./traversal_map_readback.bend as MapReadback
 import ./u32_full_range.bend as FullRange
 import ../tensor_access.bend as Access
 import ../traversal_array.bend as Traversal
 import ../traversal_loop.bend as Loop
-import ../traversal_partition.bend as Partition
 
 # Alignment preserves values and valid band storage in both actual branches.
 # The target planner supplies Fits and Coverage; no same-plan premise is needed.
 def same_plan(+left: Bands.Plan,+right: Bands.Plan,+same: {Bands.same_plan(left,right) == True{} : Bool}) -> {left == right : Bands.Plan}:
   match left right:
     case Bands.Rows{+first,+rows} Bands.Rows{+other_first,+other_rows}:
-      %ShapeLaws.native_equal(first,other_first,Boolean.left(U32.is_eq(first,other_first),U32.is_eq(rows,other_rows),same)) : {Bands.Rows{first,rows} == Bands.Rows{_,other_rows} : Bands.Plan}
-      %ShapeLaws.native_equal(rows,other_rows,Boolean.right(U32.is_eq(first,other_first),U32.is_eq(rows,other_rows),same)) : {Bands.Rows{first,rows} == Bands.Rows{first,_} : Bands.Plan}
+      %Arithmetic.equal_of_is_eq(first,other_first,Boolean.left(U32.is_eq(first,other_first),U32.is_eq(rows,other_rows),same)) : {Bands.Rows{first,rows} == Bands.Rows{_,other_rows} : Bands.Plan}
+      %Arithmetic.equal_of_is_eq(rows,other_rows,Boolean.right(U32.is_eq(first,other_first),U32.is_eq(rows,other_rows),same)) : {Bands.Rows{first,rows} == Bands.Rows{first,_} : Bands.Plan}
       {==}
     case Bands.Split{+left,+right} Bands.Split{+other_left,+other_right}:
       %same_plan(left,other_left,Boolean.left(Bands.same_plan(left,other_left),Bands.same_plan(right,other_right),same)) : {Bands.Split{left,right} == Bands.Split{_,other_right} : Bands.Plan}
@@ -61,6 +57,13 @@ def same_plan(+left: Bands.Plan,+right: Bands.Plan,+same: {Bands.same_plan(left,
       Empty.absurd({Bands.Rows{first,rows} == Bands.Split{left,right} : Bands.Plan},WordEncoding.false_true(same))
     case Bands.Split{left,right} Bands.Rows{first,rows}:
       Empty.absurd({Bands.Split{left,right} == Bands.Rows{first,rows} : Bands.Plan},WordEncoding.false_true(same))
+
+def same_plan_self(+plan: Bands.Plan) -> {Bands.same_plan(plan,plan) == True{} : Bool}:
+  match plan:
+    case Bands.Rows{+first,+rows}:
+      Boolean.and_true(U32.is_eq(first,first),U32.is_eq(rows,rows),Arithmetic.equal_reflexive(first),Arithmetic.equal_reflexive(rows))
+    case Bands.Split{+left,+right}:
+      Boolean.and_true(Bands.same_plan(left,left),Bands.same_plan(right,right),same_plan_self(left),same_plan_self(right))
 
 def selected_layout(~Element: Data,same: Bool,+geometry: Bands.Geometry,+fill: Element,+layout: Bands.Plan,+source: Model.Model<Element>,
   compared: {Bands.same_plan(layout,Model.layout(~Element,source)) == same : Bool}) ->
@@ -85,7 +88,7 @@ def aligned_layout(~Element: Data,+geometry: Bands.Geometry,+fill: Element,+layo
 def selected_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,same: Bool,+logical: Logical,+geometry: Bands.Geometry,+fill: Element,+layout: Bands.Plan,+source: Model.Model<Element>,
   +limits: Machine.Limits,+capacity: U32,domain: BandGather.Domain<geometry,limits,capacity>,
   shape: BandShape.WellFormed<Element,geometry,Model.content(~Element,source)>,values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,source)),
-  target: BandDense.Fits(geometry,layout,capacity,Machine.half_word(limits))) ->
+  target: FromWhole.Fits(geometry,layout,capacity,Machine.half_word(limits))) ->
   BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.contents(~Element,Bands.align_when(~Element,same,geometry,fill,layout,Model.pack(~Element,source)))):
   match same:
     case True{}:
@@ -94,7 +97,7 @@ def selected_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> E
     case False{}: BandRepartition.repartitioned_values(~Element,~Logical,~original,logical,geometry,fill,layout,source,limits,capacity,domain,shape,values,target)
 
 def selected_well_formed(~Element: Data,same: Bool,+geometry: Bands.Geometry,+fill: Element,+layout: Bands.Plan,+source: Model.Model<Element>,+capacity: U32,+division_capacity: U32,
-  shape: BandShape.WellFormed<Element,geometry,Model.content(~Element,source)>,target: BandDense.Fits(geometry,layout,capacity,division_capacity),coverage: BandPlan.Coverage(layout,0n,Inspection.total_rows(geometry))) ->
+  shape: BandShape.WellFormed<Element,geometry,Model.content(~Element,source)>,target: FromWhole.Fits(geometry,layout,capacity,division_capacity),coverage: BandPlan.Coverage(layout,0n,Inspection.total_rows(geometry))) ->
   BandShape.WellFormed<Element,geometry,Model.contents(~Element,Bands.align_when(~Element,same,geometry,fill,layout,Model.pack(~Element,source)))>:
   match same:
     case True{}:
@@ -105,38 +108,25 @@ def selected_well_formed(~Element: Data,same: Bool,+geometry: Bands.Geometry,+fi
 def aligned_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: Bands.Geometry,+fill: Element,+layout: Bands.Plan,+source: Model.Model<Element>,
   +limits: Machine.Limits,+capacity: U32,domain: BandGather.Domain<geometry,limits,capacity>,
   shape: BandShape.WellFormed<Element,geometry,Model.content(~Element,source)>,values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,source)),
-  target: BandDense.Fits(geometry,layout,capacity,Machine.half_word(limits))) ->
+  target: FromWhole.Fits(geometry,layout,capacity,Machine.half_word(limits))) ->
   BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.contents(~Element,Bands.align(~Element,geometry,fill,layout,Model.pack(~Element,source)))):
   %Equal.sym(Bands.Bands(~Element) & Bands.Plan,Bands.plan(~Element,Model.pack(~Element,source)),(Model.pack(~Element,source),Model.layout(~Element,source)),Model.plan(~Element,source)) :
     BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.contents(~Element,Bands.align_planned(~Element,geometry,fill,layout,_)))
   selected_values(~Element,~Logical,~original,Bands.same_plan(layout,Model.layout(~Element,source)),logical,geometry,fill,layout,source,limits,capacity,domain,shape,values,target)
 
 def aligned_well_formed(~Element: Data,+geometry: Bands.Geometry,+fill: Element,+layout: Bands.Plan,+source: Model.Model<Element>,+capacity: U32,+division_capacity: U32,
-  shape: BandShape.WellFormed<Element,geometry,Model.content(~Element,source)>,target: BandDense.Fits(geometry,layout,capacity,division_capacity),coverage: BandPlan.Coverage(layout,0n,Inspection.total_rows(geometry))) ->
+  shape: BandShape.WellFormed<Element,geometry,Model.content(~Element,source)>,target: FromWhole.Fits(geometry,layout,capacity,division_capacity),coverage: BandPlan.Coverage(layout,0n,Inspection.total_rows(geometry))) ->
   BandShape.WellFormed<Element,geometry,Model.contents(~Element,Bands.align(~Element,geometry,fill,layout,Model.pack(~Element,source)))>:
   %Equal.sym(Bands.Bands(~Element) & Bands.Plan,Bands.plan(~Element,Model.pack(~Element,source)),(Model.pack(~Element,source),Model.layout(~Element,source)),Model.plan(~Element,source)) :
     BandShape.WellFormed<Element,geometry,Model.contents(~Element,Bands.align_planned(~Element,geometry,fill,layout,_))>
   selected_well_formed(~Element,Bands.same_plan(layout,Model.layout(~Element,source)),geometry,fill,layout,source,capacity,division_capacity,shape,target,coverage)
 
-# Actual one-axis storage fits and checked Buffer validity. Counting and
-# contiguous descriptor facts belong to tensor_vector_view_refinement.
-def positive_nat(value: Nat,nonzero: {Nat.is_eq(value,0n) == False{} : Bool}) -> {Nat.is_lt(0n,value) == True{} : Bool}:
-  match value:
-    case 0n:
-      Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(Equal.sym(Bool,True{},False{},nonzero)))
-    case 1n+rest: {==}
-
-def positive(+count: U32,nonzero: {U32.is_zero(count) == False{} : Bool}) -> {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool}:
-  positive_nat(U32.to_nat(count),
-    %Comparison.eq(count,0) : {_ == False{} : Bool}
-    nonzero)
-
 def native_positive(+count: U32,nonzero: {U32.is_zero(count) == False{} : Bool}) -> {U32.is_lt(0,count) == True{} : Bool}:
   %Equal.sym(Bool,U32.is_lt(0,count),Nat.is_lt(0n,U32.to_nat(count)),Comparison.lt(0,count)) : {_ == True{} : Bool}
-  positive(count,nonzero)
+  Arithmetic.word_nonzero_positive(count,nonzero)
 
 def predecessor_inside(+count: U32,nonzero: {U32.is_zero(count) == False{} : Bool}) -> {U32.is_lt((count - 1 : U32),count) == True{} : Bool}:
-  +lower = positive(count,nonzero)
+  +lower = Arithmetic.word_nonzero_positive(count,nonzero)
   +ordered = Order.strict_follow(0n,U32.to_nat(count),lower)
   %Equal.sym(Bool,U32.is_lt((count - 1 : U32),count),Nat.is_lt(U32.to_nat((count - 1 : U32)),U32.to_nat(count)),Comparison.lt((count - 1 : U32),count)) : {_ == True{} : Bool}
   %Equal.sym(Nat,U32.to_nat((count - 1 : U32)),Nat.sub(U32.to_nat(count),1n),
@@ -189,10 +179,6 @@ def fits(+count: U32,one_last: {Shapes.checked_multiply((count - 1 : U32),1) == 
     {Views.fits_nonempty(_,Vector.vector(count),count) == True{} : Bool}
   fits_when(count,U32.is_zero(count),{==},one_last)
 
-def native_length(+count: U32,+length: Nat,exact: {U32.to_nat(count) == length : Nat}) -> {U32.from_nat(length) == count : U32}:
-  %exact : {U32.from_nat(_) == count : U32}
-  Arithmetic.native_roundtrip(count)
-
 def certificate(~Element: Data,input: Buffer.Model<Element>) -> Certificate.Certificate<Element,Tree.pack(Element,Buffer.tree(~Element,input))>:
   Buffer.Model{tree,length,certificate} = input
   certificate
@@ -206,7 +192,7 @@ def valid(~Element: Data,+count: U32,+input: Buffer.Model<Element>,exact: {U32.t
   +model = {Buffer.Model{tree,length,Certificate.Certificate{depth,equation}} : Buffer.Model<Element>}
   %Shape.capacity(Element,depth,tree,Buffer.balanced(~Element,model)) :
     {Operations.valid_buffer(length,_,Vector.vector(count)) == True{} : Bool}
-  %Equal.sym(U32,U32.from_nat(length),count,native_length(count,length,exact)) :
+  %Equal.sym(U32,U32.from_nat(length),count,Arithmetic.from_nat_exact(count,length,exact)) :
     {Nat.is_le(length,U32.to_nat(Tree.capacity(Element,tree))) && Views.fits(Vector.vector(count),_) == True{} : Bool}
   %Equal.sym(Bool,Nat.is_le(length,U32.to_nat(Tree.capacity(Element,tree))),True{},room) :
     {_ && Views.fits(Vector.vector(count),count) == True{} : Bool}
@@ -270,7 +256,7 @@ def combine(~Element: Data,~operation: Element -> Element -> Element,~kernel: Op
   %Equal.sym(Bands.Bands(~Element) & Bands.Plan,Bands.plan(~Element,Model.pack(~Element,left)),(Model.pack(~Element,left),Model.layout(~Element,left)),Model.plan(~Element,left)) :
     {Model.contents(~Element,Bands.combine_planned_with(~Element,~kernel,geometry,parallel,_,Model.pack(~Element,right))) == model(~Element,~operation,geometry,left,right) : Model.Content<Element>}
   Each.zipped(~Element,~Bands.Geometry,~Bands.combine_band_with(~Element,~kernel),~band_model(~Element,~operation),~band(~Element,~operation,~kernel,~kernel_law),
-    left,right,parallel && Bands.same_image(geometry,Model.layout(~Element,left)),parallel,geometry,geometry)
+    left,right,parallel,geometry)
 
 # The actual binary operation retains the left owner's complete row layout,
 # independently of scheduling, checked rejection, or malformed right trees.
@@ -303,56 +289,6 @@ def combine_layout(~Element: Data,~operation: Element -> Element -> Element,~ker
       Model.contents(~Element,Bands.combine_with(~Element,~kernel,geometry,parallel,Model.pack(~Element,left),Model.pack(~Element,right))),
       model(~Element,~operation,geometry,left,right),combine(~Element,~operation,~kernel,~kernel_law,geometry,parallel,left,right)),
     model_layout(~Element,~operation,geometry,left,right))
-
-# Actual alignment yields equal layout trees. Their constructor fields give
-# the common first/rows needed by every checked binary leaf and recursive fork.
-def row_first(layout: Bands.Plan) -> U32:
-  match layout:
-    case Bands.Rows{first,rows}: first
-    case Bands.Split{left,right}: 0
-
-def row_count(layout: Bands.Plan) -> U32:
-  match layout:
-    case Bands.Rows{first,rows}: rows
-    case Bands.Split{left,right}: 0
-
-def layout_match_leaf(layout: Bands.Plan) -> Bool:
-  match layout:
-    case Bands.Rows{first,rows}: True{}
-    case Bands.Split{left,right}: False{}
-
-def left_plan(layout: Bands.Plan) -> Bands.Plan:
-  match layout:
-    case Bands.Rows{first,rows}: Bands.Rows{0,0}
-    case Bands.Split{left,right}: left
-
-def right_plan(layout: Bands.Plan) -> Bands.Plan:
-  match layout:
-    case Bands.Rows{first,rows}: Bands.Rows{0,0}
-    case Bands.Split{left,right}: right
-
-def Common(~Element: Data,left: Model.Model<Element>,right: Model.Model<Element>) -> Data:
-  match left right:
-    case Model.Leaf{left,+first,+rows} Model.Leaf{right,+other_first,+other_rows}:
-      Shape.Both<{first == other_first : U32},{rows == other_rows : U32}>
-    case Model.Fork{left,right} Model.Fork{other_left,other_right}:
-      Shape.Both<Common(~Element,left,other_left),Common(~Element,right,other_right)>
-    case left right: Empty
-
-def matched(~Element: Data,+left: Model.Model<Element>,+right: Model.Model<Element>,+same: {Model.layout(~Element,left) == Model.layout(~Element,right) : Bands.Plan}) -> Common(~Element,left,right):
-  match left right:
-    case Model.Leaf{left,+first,+rows} Model.Leaf{right,+other_first,+other_rows}:
-      Shape.Both{Equal.cong(Bands.Plan,U32,layout => row_first(layout),Bands.Rows{first,rows},Bands.Rows{other_first,other_rows},same),
-        Equal.cong(Bands.Plan,U32,layout => row_count(layout),Bands.Rows{first,rows},Bands.Rows{other_first,other_rows},same)}
-    case Model.Fork{+left,+right} Model.Fork{+other_left,+other_right}:
-      +first_plan = {Bands.Split{Model.layout(~Element,left),Model.layout(~Element,right)} : Bands.Plan}
-      +second_plan = {Bands.Split{Model.layout(~Element,other_left),Model.layout(~Element,other_right)} : Bands.Plan}
-      Shape.Both{matched(~Element,left,other_left,Equal.cong(Bands.Plan,Bands.Plan,layout => left_plan(layout),first_plan,second_plan,same)),
-        matched(~Element,right,other_right,Equal.cong(Bands.Plan,Bands.Plan,layout => right_plan(layout),first_plan,second_plan,same))}
-    case Model.Leaf{buffer,+first,+rows} Model.Fork{+left,+right}:
-      WordEncoding.false_true(Equal.sym(Bool,True{},False{},Equal.cong(Bands.Plan,Bool,layout => layout_match_leaf(layout),Bands.Rows{first,rows},Bands.Split{Model.layout(~Element,left),Model.layout(~Element,right)},same)))
-    case Model.Fork{+left,+right} Model.Leaf{buffer,+first,+rows}:
-      WordEncoding.false_true(Equal.cong(Bands.Plan,Bool,layout => layout_match_leaf(layout),Bands.Split{Model.layout(~Element,left),Model.layout(~Element,right)},Bands.Rows{first,rows},same))
 
 # Ordered in-place binary readback. A store changes only its own address;
 # later addresses still contain their original left values. The right reader
@@ -522,33 +458,30 @@ def combined_cell(~Element: Data,~Left: Data,~Right: Data,~operation: Element ->
         Equal.cong(Element,Element,element => operation(left_value(left_context,pixel),element),Tree.read(Element,right_tree,index),right_value(right_context,pixel),right_equal)))}
 
 # What one pair of aligned leaves supplies to every cell.
-type LeafCells<-Element: Data,-Left: Data,-Right: Data,-left_value: Left -> U32 -> Element,-right_value: Right -> U32 -> Element> is Data:
-  LeafCells{left_context: Left,right_context: Right,geometry: Bands.Geometry,first: U32,rows: U32,left: Buffer.Model<Element>,right: Buffer.Model<Element>,
-    ready: Buffer.Sized<Element,left>,left_values: BandValues.Leaf(~Element,~Left,~left_value,left_context,geometry,first,rows,Buffer.tree(~Element,left),Buffer.length(~Element,left)),
-    right_values: BandValues.Leaf(~Element,~Right,~right_value,right_context,geometry,first,rows,Buffer.tree(~Element,right),Buffer.length(~Element,right))}
+type CellScope<-Element: Data,-Left: Data,-Right: Data,-left_value: Left -> U32 -> Element,-right_value: Right -> U32 -> Element> is Data:
+  CellScope{left_context: Left,right_context: Right,geometry: Bands.Geometry,first: U32,rows: U32,left: Buffer.Model<Element>,right: Buffer.Model<Element>,ready: Buffer.Sized<Element,left>,left_values: BandValues.Leaf(~Element,~Left,~left_value,left_context,geometry,first,rows,Buffer.tree(~Element,left),Buffer.length(~Element,left)),right_values: BandValues.Leaf(~Element,~Right,~right_value,right_context,geometry,first,rows,Buffer.tree(~Element,right),Buffer.length(~Element,right))}
 
-def cells_geometry(~Element: Data,~Left: Data,~Right: Data,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,evidence: LeafCells<Element,Left,Right,left_value,right_value>) -> Bands.Geometry:
-  LeafCells{left_context,right_context,geometry,first,rows,left,right,ready,left_values,right_values} = evidence
-  geometry
+def cell_channels(~Element: Data,~Left: Data,~Right: Data,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,+scope: CellScope<Element,Left,Right,left_value,right_value>) -> Nat:
+  CellScope{left_context,right_context,geometry,first,rows,left,right,ready,left_values,right_values} = scope
+  BandValues.channels(geometry)
 
-def cells_rows(~Element: Data,~Left: Data,~Right: Data,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,evidence: LeafCells<Element,Left,Right,left_value,right_value>) -> U32:
-  LeafCells{left_context,right_context,geometry,first,rows,left,right,ready,left_values,right_values} = evidence
-  rows
+def cell_rows(~Element: Data,~Left: Data,~Right: Data,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,+scope: CellScope<Element,Left,Right,left_value,right_value>) -> Nat:
+  CellScope{left_context,right_context,geometry,first,rows,left,right,ready,left_values,right_values} = scope
+  U32.to_nat(rows)
 
-def Cell(~Element: Data,~Left: Data,~Right: Data,~operation: Element -> Element -> Element,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,+evidence: LeafCells<Element,Left,Right,left_value,right_value>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
-  LeafCells{left_context,right_context,geometry,first,rows,+left,+right,ready,left_values,right_values} = evidence
+def cell_width(~Element: Data,~Left: Data,~Right: Data,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,+scope: CellScope<Element,Left,Right,left_value,right_value>) -> Nat:
+  CellScope{left_context,right_context,geometry,first,rows,left,right,ready,left_values,right_values} = scope
+  BandValues.width(geometry)
+
+def Cell(~Element: Data,~Left: Data,~Right: Data,~operation: Element -> Element -> Element,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,+scope: CellScope<Element,Left,Right,left_value,right_value>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
+  CellScope{left_context,right_context,geometry,first,rows,left,right,ready,left_values,right_values} = scope
   BandValues.At(~Element,~Context<Left,Right>,~value(~Element,~Left,~Right,~operation,~left_value,~right_value),Context{left_context,right_context},geometry,first,rows,
     Buffer.content_tree(~Element,leaf_content(~Element,~operation,Buffer.content(~Element,left),Buffer.content(~Element,right))),Buffer.content_length(~Element,leaf_content(~Element,~operation,Buffer.content(~Element,left),Buffer.content(~Element,right))),channel,row,column)
 
-def leaf_cell(~Element: Data,~Left: Data,~Right: Data,~operation: Element -> Element -> Element,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,+evidence: LeafCells<Element,Left,Right,left_value,right_value>,+channel: Nat,+row: Nat,+column: Nat,
-  channel_inside: {Nat.is_lt(channel,BandValues.channels(cells_geometry(~Element,~Left,~Right,~left_value,~right_value,evidence))) == True{} : Bool},
-  row_inside: {Nat.is_lt(row,U32.to_nat(cells_rows(~Element,~Left,~Right,~left_value,~right_value,evidence))) == True{} : Bool},
-  column_inside: {Nat.is_lt(column,BandValues.width(cells_geometry(~Element,~Left,~Right,~left_value,~right_value,evidence))) == True{} : Bool}) ->
-  Cell(~Element,~Left,~Right,~operation,~left_value,~right_value,evidence,channel,row,column):
-  LeafCells{+left_context,+right_context,+geometry,+first,+rows,+left,+right,ready,left_values,right_values} = evidence
-  +channel_inside = channel_inside
-  +row_inside = row_inside
-  +column_inside = column_inside
+def leaf_cell(~Element: Data,~Left: Data,~Right: Data,~operation: Element -> Element -> Element,~left_value: Left -> U32 -> Element,~right_value: Right -> U32 -> Element,+scope: CellScope<Element,Left,Right,left_value,right_value>,+channel: Nat,+row: Nat,+column: Nat,
+  +channel_inside: {Nat.is_lt(channel,cell_channels(~Element,~Left,~Right,~left_value,~right_value,scope)) == True{} : Bool},+row_inside: {Nat.is_lt(row,cell_rows(~Element,~Left,~Right,~left_value,~right_value,scope)) == True{} : Bool},+column_inside: {Nat.is_lt(column,cell_width(~Element,~Left,~Right,~left_value,~right_value,scope)) == True{} : Bool}) ->
+  Cell(~Element,~Left,~Right,~operation,~left_value,~right_value,scope,channel,row,column):
+  CellScope{+left_context,+right_context,+geometry,+first,+rows,+left,+right,+ready,+left_values,+right_values} = scope
   combined_cell(~Element,~Left,~Right,~operation,~left_value,~right_value,left_context,right_context,geometry,first,rows,left,right,channel,row,column,ready,
     BandValues.leaf_cell(~Element,~Left,~left_value,left_context,geometry,first,rows,Buffer.tree(~Element,left),Buffer.length(~Element,left),channel,row,column,left_values,channel_inside,row_inside,column_inside),
     BandValues.leaf_cell(~Element,~Right,~right_value,right_context,geometry,first,rows,Buffer.tree(~Element,right),Buffer.length(~Element,right),channel,row,column,right_values,channel_inside,row_inside,column_inside))
@@ -562,8 +495,7 @@ def semantics_leaf(~Element: Data,~Left: Data,~Right: Data,~operation: Element -
     Model.RowBand{leaf_content(~Element,~operation,Buffer.content(~Element,left),Buffer.content(~Element,right)),first,rows}):
   Buffer.Model{+tree,+length,+certificate} = left
   Buffer.Model{+right_tree,+right_length,+right_certificate} = right
-  BandValues.cells(~LeafCells<Element,Left,Right,left_value,right_value>,~Cell(~Element,~Left,~Right,~operation,~left_value,~right_value),~cells_geometry(~Element,~Left,~Right,~left_value,~right_value),~cells_rows(~Element,~Left,~Right,~left_value,~right_value),~leaf_cell(~Element,~Left,~Right,~operation,~left_value,~right_value),
-    LeafCells{left_context,right_context,geometry,first,rows,Buffer.Model{tree,length,certificate},Buffer.Model{right_tree,right_length,right_certificate},ready,left_values,right_values})
+  BandValues.table(~CellScope<Element,Left,Right,left_value,right_value>,~Cell(~Element,~Left,~Right,~operation,~left_value,~right_value),~cell_channels(~Element,~Left,~Right,~left_value,~right_value),~cell_rows(~Element,~Left,~Right,~left_value,~right_value),~cell_width(~Element,~Left,~Right,~left_value,~right_value),~leaf_cell(~Element,~Left,~Right,~operation,~left_value,~right_value),CellScope{left_context,right_context,geometry,first,rows,Buffer.Model{tree,length,certificate},Buffer.Model{right_tree,right_length,right_certificate},ready,left_values,right_values})
 
 # Connect the checked native binary leaf to its pointwise tree model. Its
 # premises are the actual owners' Ready, exact local counts, and successful

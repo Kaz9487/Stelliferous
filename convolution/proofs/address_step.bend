@@ -1,7 +1,6 @@
 import ../../lib/proofs/storage_shape.bend as Shape
 import Base
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/proofs/word_encoding.bend as WordEncoding
 import ./array_tree_structure.bend as ArrayTreeStructure
 import ./native_array_model.bend as NativeArrayModel
 import ./tree_indexing.bend as TreeIndex

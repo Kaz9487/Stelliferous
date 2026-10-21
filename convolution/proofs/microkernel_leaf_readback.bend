@@ -1,14 +1,10 @@
 # One packed leaf of the four-row-unit microkernel reads back the frozen matrix
-# value at every channel/column; this replaces the paired-kernel leaf theorem.
+# value at every channel and column.
 import Base
-import ./gemm_output_relocation.bend as Relocation
 import ../../lib/tensor.bend as Tensors
 import ../../lib/storage_buffer.bend as Storage
-import ../../lib/tensor_f32.bend as F
 import ../../lib/kernel_tile.bend as Tile
-import ../../lib/kernel_rows.bend as Rows
 import ../../lib/math_sequence.bend as Sequence
-import ../../lib/traversal_reduction.bend as Reduction
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/storage_shape.bend as Shape
@@ -21,7 +17,6 @@ import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
-import ../../lib/proofs/u32_comparison.bend as Comparison
 import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/natural_addition.bend as Addition
@@ -44,15 +39,16 @@ import ./packing_readback.bend as PackingReadback
 import ./packed_output_bounds.bend as Output
 import ./packed_output_allocation.bend as PackedOutputAllocation
 import ./output_values.bend as Values
-import ./tile_partition_bounds.bend as TilePartitionBounds
+import ../../lib/proofs/kernel_partition_bounds.bend as TilePartitionBounds
 import ./packed_leaf_bounds.bend as LeafBounds
 import ./packing_storage_refinement.bend as PackingStorage
 import ./tile_layout.bend as TileLayout
 import ./gather_storage_model.bend as GatherModel
-import ../../lib/traversal_partition.bend as Partition
 import ./weight_reorder_bounds.bend as WeightBounds
-import ./gemm_output_readback.bend as GemmReadback
+import ../../lib/proofs/kernel_gemm_readback.bend as GemmReadback
 import ./gemm_dot_matches_matrix.bend as GemmDot
+import ../../lib/proofs/encoded_coordinates.bend as Encoding
+import ../../lib/proofs/traversal_partition_refinement.bend as PartitionLaws
 
 def rows(+problem: ConvSpec.Problem) -> U32:
   U32.from_nat(Guards.output_channel_count(problem))
@@ -62,50 +58,14 @@ def allocated(+rows: U32,+span: U32) -> Tree.Tree<F32>:
 
 # The kernel stores accumulator plus bias; activation is a separate pass.
 def output(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,tiles: Tree.Tree<Tile.Tile8>,+span: U32) -> Tree.Tree<F32>:
-  GemmLaws.run(rows(problem),tiles,GemmDot.reordered(problem,storage_contract),Inputs.bias_tree(problem,storage_contract),
+  GemmLaws.run(~True{},rows(problem),tiles,GemmDot.reordered(problem,storage_contract),Inputs.bias_tree(problem,storage_contract),
     allocated(rows(problem),span),span,Coordinates.native_inner(problem))
 
-def row_number_of(+row: Nat,small: {Nat.is_lt(row,4n) == True{} : Bool}) -> {CoordinateLaws.row_number(GemmDot.row_of(row)) == row : Nat}:
-  match row:
-    case 0n: {==}
-    case 1n+a:
-      match a:
-        case 0n: {==}
-        case 1n+b:
-          match b:
-            case 0n: {==}
-            case 1n+c:
-              match c:
-                case 0n: {==}
-                case 1n+d:
-                  Empty.absurd({CoordinateLaws.row_number(GemmDot.row_of(4n+d)) == 4n+d : Nat},WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(d,0n),True{},Equal.sym(Bool,Nat.is_lt(d,0n),False{},Division.lt_zero(d)),small)))
+def row_number_of(+row: Nat,small: {Nat.is_lt(row,4n) == True{} : Bool}) -> {CoordinateLaws.row_number(Accumulator.row_of(row)) == row : Nat}:
+  GemmReadback.row_number_of(row,small)
 
 def lane_value_of(+lane: Nat,small: {Nat.is_lt(lane,8n) == True{} : Bool}) -> {Sequence.index_value(8n,GemmDot.lane_of(lane)) == lane : Nat}:
-  match lane:
-    case 0n: {==}
-    case 1n+a:
-      match a:
-        case 0n: {==}
-        case 1n+b:
-          match b:
-            case 0n: {==}
-            case 1n+c:
-              match c:
-                case 0n: {==}
-                case 1n+d:
-                  match d:
-                    case 0n: {==}
-                    case 1n+e:
-                      match e:
-                        case 0n: {==}
-                        case 1n+f:
-                          match f:
-                            case 0n: {==}
-                            case 1n+g:
-                              match g:
-                                case 0n: {==}
-                                case 1n+h:
-                                  Empty.absurd({Sequence.index_value(8n,GemmDot.lane_of(8n+h)) == 8n+h : Nat},WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(h,0n),True{},Equal.sym(Bool,Nat.is_lt(h,0n),False{},Division.lt_zero(h)),small)))
+  GemmReadback.lane_value_of(lane,small)
 
 def lane_position(+offset: U32,+group: Nat,+lane: Nat,+position: Nat,
   +lane_small: {Nat.is_lt(lane,8n) == True{} : Bool},
@@ -129,13 +89,13 @@ def parity_dot(~Evidence: LeafContract.Evidence(),~samples: LeafContract.Samplin
   +base_exact: {U32.to_nat(base) == Nat.mul(block,Coordinates.inner(problem)) : Nat},
   +channel_exact: {channel == Nat.add(Nat.mul(block,8n),Nat.add(Nat.mul(parity,4n),CoordinateLaws.row_number(row))) : Nat},
   +channel_inside: {Nat.is_lt(channel,Guards.output_channel_count(problem)) == True{} : Bool}) ->
-  {GemmDot.selected_dot(upper,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
+  {ReductionModel.ordered_selected(upper,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
       ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),U32.from_nat(0n),base)) ==
     Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0) : F32}:
   match parity:
     case 0n:
       %Equal.sym(Bool,upper,False{},upper_exact) :
-        {GemmDot.selected_dot(_,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
+        {ReductionModel.ordered_selected(_,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
           ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),U32.from_nat(0n),base)) ==
           Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0) : F32}
       GemmDot.job_dot(~Evidence,~samples,~False{},limits,problem,storage_contract,valid,supported,tiles,offset,span,base,group,block,row,GemmDot.lane_of(lane),channel,output_row,output_column,
@@ -147,7 +107,7 @@ def parity_dot(~Evidence: LeafContract.Evidence(),~samples: LeafContract.Samplin
       match rest:
         case 0n:
           %Equal.sym(Bool,upper,True{},upper_exact) :
-            {GemmDot.selected_dot(_,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
+            {ReductionModel.ordered_selected(_,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
               ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),U32.from_nat(0n),base)) ==
               Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0) : F32}
           GemmDot.job_dot(~Evidence,~samples,~True{},limits,problem,storage_contract,valid,supported,tiles,offset,span,base,group,block,row,GemmDot.lane_of(lane),channel,output_row,output_column,
@@ -156,7 +116,7 @@ def parity_dot(~Evidence: LeafContract.Evidence(),~samples: LeafContract.Samplin
               CoordinateLaws.weight_coordinate(True{},row)) : {channel == Nat.add(Nat.mul(block,8n),_) : Nat}
             channel_exact,channel_inside)
         case 1n+more:
-          Empty.absurd({GemmDot.selected_dot(upper,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
+          Empty.absurd({ReductionModel.ordered_selected(upper,ReductionModel.RowLane{row,GemmDot.lane_of(lane)},Coordinates.inner(problem),
               ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),U32.from_nat(0n),base)) ==
             Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0) : F32},
             WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(more,0n),True{},Equal.sym(Bool,Nat.is_lt(more,0n),False{},Division.lt_zero(more)),parity_small)))
@@ -173,7 +133,7 @@ def leaf_query(+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage_contr
     tiles,GemmDot.reordered(problem,storage_contract),Inputs.bias_tree(problem,storage_contract),channel,column,
     Limits.half_word_fits(limits),span_exact,
     {%Equal.sym(Nat,U32.to_nat(rows(problem)),channels,rows_exact) : {Nat.is_le(Nat.add(_,3n),U32.to_nat(half)) == True{} : Bool}
-      Order.transitive(Nat.add(channels,3n),Nat.add(channels,7n),U32.to_nat(half),GemmReadback.add_small(channels,3n,7n,{==}),
+      Order.transitive(Nat.add(channels,3n),Nat.add(channels,7n),U32.to_nat(half),Order.offset_le(channels,3n,7n,{==}),
         WeightBounds.padded_rows_bound(limits,problem,fast)) : {Nat.is_le(Nat.add(U32.to_nat(rows(problem)),3n),U32.to_nat(half)) == True{} : Bool}},
     {%Equal.sym(Nat,U32.to_nat(rows(problem)),channels,rows_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(span)),U32.to_nat(half)) == True{} : Bool}
       Order.transitive(Nat.mul(channels,U32.to_nat(span)),U32.to_nat(Machine.capacity(limits)),U32.to_nat(half),
@@ -187,11 +147,7 @@ def leaf_query(+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage_contr
 def eight_split(+channel: Nat,+unit: Nat,+row: Nat,+block: Nat,+parity: Nat,
   +channel_split: {channel == Nat.add(Nat.mul(unit,4n),row) : Nat},+unit_split: {unit == Nat.add(Nat.mul(block,2n),parity) : Nat}) ->
   {channel == Nat.add(Nat.mul(block,8n),Nat.add(Nat.mul(parity,4n),row)) : Nat}:
-  %Addition.associative(Nat.mul(block,8n),Nat.mul(parity,4n),row) : {channel == _ : Nat}
-  %RowMajor.assoc(block,2n,4n) : {channel == Nat.add(Nat.add(_,Nat.mul(parity,4n)),row) : Nat}
-  %RowMajor.distrib(Nat.mul(block,2n),parity,4n) : {channel == Nat.add(_,row) : Nat}
-  %unit_split : {channel == Nat.add(Nat.mul(_,4n),row) : Nat}
-  channel_split
+  GemmReadback.eight_split(channel,unit,row,block,parity,channel_split,unit_split)
 
 def groups_exact(+span: U32,+blocks: Nat,+span_exact: {U32.to_nat(span) == Nat.mul(blocks,8n) : Nat}) -> {PackingBounds.groups(span) == blocks : Nat}:
   %Equal.sym(Nat,U32.to_nat(span),Nat.mul(blocks,8n),span_exact) : {Nat.div(_,8n) == blocks : Nat}
@@ -208,7 +164,7 @@ def input_base_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: 
   +native = Coordinates.native_inner(problem)
   +cap = Machine.capacity(limits)
   +inner_exact = Coordinates.inner_exact(limits,problem,valid,Padded.scalar(limits,problem,fast))
-  GemmDot.word_from_exact((group_word * native : U32),Nat.mul(group,inner),
+  Encoding.encoding((group_word * native : U32),Nat.mul(group,inner),
     %group_exact : {U32.to_nat((group_word * native : U32)) == Nat.mul(_,inner) : Nat}
     %inner_exact : {U32.to_nat((group_word * native : U32)) == Nat.mul(U32.to_nat(group_word),_) : Nat}
     Arithmetic.multiply(group_word,native,cap,Limits.capacity_fits(limits),
@@ -241,30 +197,25 @@ def weight_base_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid:
 
 def parity_exact(+unit_word: U32,+unit: Nat,+unit_exact: {U32.to_nat(unit_word) == unit : Nat}) ->
   {U32.is_eq((unit_word % 2 : U32),1) == Nat.is_eq(Nat.mod(unit,2n),1n) : Bool}:
-  Equal.trans(Bool,U32.is_eq((unit_word % 2 : U32),1),Nat.is_eq(U32.to_nat((unit_word % 2 : U32)),1n),Nat.is_eq(Nat.mod(unit,2n),1n),
-    Comparison.eq((unit_word % 2 : U32),1),
-    Equal.cong(Nat,Bool,value => Nat.is_eq(value,1n),U32.to_nat((unit_word % 2 : U32)),Nat.mod(unit,2n),
-      Equal.trans(Nat,U32.to_nat((unit_word % 2 : U32)),Nat.mod(U32.to_nat(unit_word),2n),Nat.mod(unit,2n),
-        U32Division.modulo(unit_word,2,2147483648,{==},{==},{==}),
-        Equal.cong(Nat,Nat,value => Nat.mod(value,2n),U32.to_nat(unit_word),unit,unit_exact))))
+  GemmReadback.parity_exact(unit_word,unit,unit_exact)
 
 def normalized_dot(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,+tiles: Tree.Tree<Tile.Tile8>,+upper: Bool,+key: ReductionModel.RowLane,
   +input_word: U32,+group: Nat,+base: U32,
   +inner_exact: {U32.to_nat(Coordinates.native_inner(problem)) == Coordinates.inner(problem) : Nat},
   +input_exact: {input_word == U32.from_nat(Nat.mul(group,Coordinates.inner(problem))) : U32}) ->
-  {GemmDot.selected_dot(upper,key,U32.to_nat(Coordinates.native_inner(problem)),ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),input_word,0,base)) ==
-    GemmDot.selected_dot(upper,key,Coordinates.inner(problem),
+  {ReductionModel.ordered_selected(upper,key,U32.to_nat(Coordinates.native_inner(problem)),ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),input_word,0,base)) ==
+    ReductionModel.ordered_selected(upper,key,Coordinates.inner(problem),
       ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),U32.from_nat(0n),base)) : F32}:
-  +target = GemmDot.selected_dot(upper,key,Coordinates.inner(problem),
+  +target = ReductionModel.ordered_selected(upper,key,Coordinates.inner(problem),
     ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),U32.from_nat(0n),base))
-  %Equal.sym(Nat,U32.to_nat(Coordinates.native_inner(problem)),Coordinates.inner(problem),inner_exact) : {GemmDot.selected_dot(upper,key,_,ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),input_word,0,base)) == target : F32}
-  %Equal.sym(U32,input_word,U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),input_exact) : {GemmDot.selected_dot(upper,key,Coordinates.inner(problem),ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),_,0,base)) == target : F32}
+  %Equal.sym(Nat,U32.to_nat(Coordinates.native_inner(problem)),Coordinates.inner(problem),inner_exact) : {ReductionModel.ordered_selected(upper,key,_,ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),input_word,0,base)) == target : F32}
+  %Equal.sym(U32,input_word,U32.from_nat(Nat.mul(group,Coordinates.inner(problem))),input_exact) : {ReductionModel.ordered_selected(upper,key,Coordinates.inner(problem),ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),_,0,base)) == target : F32}
   {==}
 
 def channel_row_exact(+channel: Nat,+block: Nat,+parity: Nat,+row: Nat,+row_small: {Nat.is_lt(row,4n) == True{} : Bool},
   +split: {channel == Nat.add(Nat.mul(block,8n),Nat.add(Nat.mul(parity,4n),row)) : Nat}) ->
-  {channel == Nat.add(Nat.mul(block,8n),Nat.add(Nat.mul(parity,4n),CoordinateLaws.row_number(GemmDot.row_of(row)))) : Nat}:
-  %Equal.sym(Nat,CoordinateLaws.row_number(GemmDot.row_of(row)),row,row_number_of(row,row_small)) : {channel == Nat.add(Nat.mul(block,8n),Nat.add(Nat.mul(parity,4n),_)) : Nat}
+  {channel == Nat.add(Nat.mul(block,8n),Nat.add(Nat.mul(parity,4n),CoordinateLaws.row_number(Accumulator.row_of(row)))) : Nat}:
+  %Equal.sym(Nat,CoordinateLaws.row_number(Accumulator.row_of(row)),row,row_number_of(row,row_small)) : {channel == Nat.add(Nat.mul(block,8n),Nat.add(Nat.mul(parity,4n),_)) : Nat}
   split
 
 def eight_position(+offset: U32,+column: Nat,+group: Nat,+lane: Nat,+position: Nat,
@@ -293,7 +244,7 @@ def selection_matches(~Evidence: LeafContract.Evidence(),~samples: LeafContract.
   +channel_inside: {Nat.is_lt(channel,Guards.output_channel_count(problem)) == True{} : Bool},+column_inside: {Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},
   +position: {Nat.add(U32.to_nat(offset),column) == Coordinates.position(problem,output_row,output_column) : Nat},
   +row_inside: {Nat.is_lt(output_row,ConvSpec.out_height(problem)) == True{} : Bool},+column_in_width: {Nat.is_lt(output_column,ConvSpec.out_width(problem)) == True{} : Bool}) ->
-  {GemmReadback.select_lane(Nat.mod(column,8n),GemmReadback.select_row(Nat.mod(channel,4n),
+  {GemmReadback.select_lane(Nat.mod(column,8n),Accumulator.select_row(~Tile.Tile8,Nat.mod(channel,4n),
       GemmReadback.unit_accumulators(leaf_query(limits,problem,storage_contract,tiles,span,blocks,channel,column,span_exact,Support.fast(limits,problem,supported),span_bound,channel_inside,column_inside),
         Nat.div(channel,4n),Nat.div(column,8n)))) ==
     Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0) : F32}:
@@ -340,20 +291,20 @@ def selection_matches(~Evidence: LeafContract.Evidence(),~samples: LeafContract.
   +input_word = (group_word * native : U32)
   +input_exact = input_base_exact(limits,problem,facts,fast,span,group_word,group,span_bound,group_exact,packing_group)
   +upper = U32.is_eq((unit_word % 2 : U32),1)
-  +key = {ReductionModel.RowLane{GemmDot.row_of(row),GemmDot.lane_of(lane)} : ReductionModel.RowLane}
+  +key = {ReductionModel.RowLane{Accumulator.row_of(row),GemmDot.lane_of(lane)} : ReductionModel.RowLane}
   +accumulators = GemmReadback.unit_accumulators(query,unit,group)
   +state = ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),input_word,0,base)
-  Equal.trans(F32,GemmReadback.select_lane(lane,GemmReadback.select_row(row,accumulators)),ReductionModel.accumulator_at(key,accumulators),
+  Equal.trans(F32,GemmReadback.select_lane(lane,Accumulator.select_row(~Tile.Tile8,row,accumulators)),ReductionModel.accumulator_at(key,accumulators),
     Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0),
     GemmDot.selected_key(row,lane,accumulators),
-    Equal.trans(F32,ReductionModel.accumulator_at(key,accumulators),GemmDot.selected_dot(upper,key,U32.to_nat(native),state),
+    Equal.trans(F32,ReductionModel.accumulator_at(key,accumulators),ReductionModel.ordered_selected(upper,key,U32.to_nat(native),state),
       Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0),
-      GemmDot.accumulator_dot(upper,key,U32.to_nat(native),state),
-      Equal.trans(F32,GemmDot.selected_dot(upper,key,U32.to_nat(native),state),
-        GemmDot.selected_dot(upper,key,inner,ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,inner)),U32.from_nat(0n),base)),
+      ReductionModel.selected_ordered(upper,key,U32.to_nat(native),state),
+      Equal.trans(F32,ReductionModel.ordered_selected(upper,key,U32.to_nat(native),state),
+        ReductionModel.ordered_selected(upper,key,inner,ReductionModel.initial(tiles,GemmDot.reordered(problem,storage_contract),U32.from_nat(Nat.mul(group,inner)),U32.from_nat(0n),base)),
         Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0),
         normalized_dot(problem,storage_contract,tiles,upper,key,input_word,group,base,inner_exact,input_exact),
-        parity_dot(~Evidence,~samples,limits,problem,storage_contract,valid,supported,tiles,offset,span,base,group,block,GemmDot.row_of(row),lane,channel,output_row,output_column,
+        parity_dot(~Evidence,~samples,limits,problem,storage_contract,valid,supported,tiles,offset,span,base,group,block,Accumulator.row_of(row),lane,channel,output_row,output_column,
           upper,parity,parity_exact(unit_word,unit,unit_exact),parity_small,certificate,packing_group,lane_small,
           eight_position(offset,column,group,lane,Coordinates.position(problem,output_row,output_column),column_split,position),
           row_inside,column_in_width,base_exact,channel_row_exact(channel,block,parity,row,row_small,channel_eight),channel_inside))))
@@ -366,10 +317,10 @@ def wanted_matches(~Evidence: LeafContract.Evidence(),~samples: LeafContract.Sam
   +channel_inside: {Nat.is_lt(channel,Guards.output_channel_count(problem)) == True{} : Bool},+column_inside: {Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},
   +position: {Nat.add(U32.to_nat(offset),column) == Coordinates.position(problem,output_row,output_column) : Nat},
   +row_inside: {Nat.is_lt(output_row,ConvSpec.out_height(problem)) == True{} : Bool},+column_in_width: {Nat.is_lt(output_column,ConvSpec.out_width(problem)) == True{} : Bool}) ->
-  {GemmReadback.wanted(leaf_query(limits,problem,storage_contract,tiles,span,blocks,channel,column,span_exact,Support.fast(limits,problem,supported),span_bound,channel_inside,column_inside)) ==
+  {GemmReadback.wanted(~True{},leaf_query(limits,problem,storage_contract,tiles,span,blocks,channel,column,span_exact,Support.fast(limits,problem,supported),span_bound,channel_inside,column_inside)) ==
     Values.matrix_value(problem,channel,output_row,output_column) : F32}:
   +query = leaf_query(limits,problem,storage_contract,tiles,span,blocks,channel,column,span_exact,Support.fast(limits,problem,supported),span_bound,channel_inside,column_inside)
-  +selection = GemmReadback.select_lane(Nat.mod(column,8n),GemmReadback.select_row(Nat.mod(channel,4n),GemmReadback.unit_accumulators(query,Nat.div(channel,4n),Nat.div(column,8n))))
+  +selection = GemmReadback.select_lane(Nat.mod(column,8n),Accumulator.select_row(~Tile.Tile8,Nat.mod(channel,4n),GemmReadback.unit_accumulators(query,Nat.div(channel,4n),Nat.div(column,8n))))
   +matrix = Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),problem,channel,output_row,output_column,0.0)
   +bias_read = Tree.read(F32,Inputs.bias_tree(problem,storage_contract),U32.from_nat(channel))
   %Equal.sym(F32,selection,matrix,selection_matches(~Evidence,~samples,limits,problem,storage_contract,valid,supported,tiles,offset,span,blocks,channel,column,output_row,output_column,
@@ -392,12 +343,12 @@ def relocated_readback(~Evidence: LeafContract.Evidence(),~samples: LeafContract
   +end_room: {Nat.is_le(Nat.add(U32.to_nat(output_start),U32.to_nat(span)),Nat.add(U32.to_nat(columns),7n)) == True{} : Bool},
   +columns_room: {Nat.is_le(U32.to_nat(columns),U32.to_nat(Machine.half_word(limits))) == True{} : Bool},
   +in_output: {Nat.is_lt(Nat.add(U32.to_nat(output_start),column),U32.to_nat(columns)) == True{} : Bool}) ->
-  {Tree.read(F32,GemmLaws.run_at(rows(problem),tiles,GemmDot.reordered(problem,storage_contract),Inputs.bias_tree(problem,storage_contract),buffer,span,Coordinates.native_inner(problem),output_start,columns),
+  {Tree.read(F32,GemmLaws.run_at(~True{},rows(problem),tiles,GemmDot.reordered(problem,storage_contract),Inputs.bias_tree(problem,storage_contract),buffer,span,Coordinates.native_inner(problem),output_start,columns),
       U32.from_nat(Nat.add(Nat.mul(channel,U32.to_nat(columns)),Nat.add(U32.to_nat(output_start),column)))) == Values.matrix_value(problem,channel,output_row,output_column) : F32}:
   +query = leaf_query(limits,problem,storage_contract,tiles,span,blocks,channel,column,span_exact,Support.fast(limits,problem,supported),span_bound,channel_inside,column_inside)
-  Equal.trans(F32,Tree.read(F32,GemmLaws.run_at(rows(problem),tiles,GemmDot.reordered(problem,storage_contract),Inputs.bias_tree(problem,storage_contract),buffer,span,Coordinates.native_inner(problem),output_start,columns),
-      U32.from_nat(Nat.add(Nat.mul(channel,U32.to_nat(columns)),Nat.add(U32.to_nat(output_start),column)))),GemmReadback.wanted(query),Values.matrix_value(problem,channel,output_row,output_column),
-    Relocation.run_readback(query,output_start,columns,buffer,depth,balanced,depth_ok,output_room,end_room,columns_room,in_output),
+  Equal.trans(F32,Tree.read(F32,GemmLaws.run_at(~True{},rows(problem),tiles,GemmDot.reordered(problem,storage_contract),Inputs.bias_tree(problem,storage_contract),buffer,span,Coordinates.native_inner(problem),output_start,columns),
+      U32.from_nat(Nat.add(Nat.mul(channel,U32.to_nat(columns)),Nat.add(U32.to_nat(output_start),column)))),GemmReadback.wanted(~True{},query),Values.matrix_value(problem,channel,output_row,output_column),
+    GemmReadback.run_at_readback(~True{},query,output_start,columns,buffer,depth,balanced,depth_ok,output_room,end_room,columns_room,in_output),
     wanted_matches(~Evidence,~samples,limits,problem,storage_contract,valid,supported,tiles,offset,span,blocks,channel,column,output_row,output_column,
       certificate,span_exact,span_bound,channel_inside,column_inside,position,row_inside,column_in_width))
 
@@ -422,7 +373,7 @@ def allocation_readback(~Evidence: LeafContract.Evidence(),~samples: LeafContrac
   +rows_exact = SupportedCoordinateBounds.co_exact(limits,problem,Padded.scalar(limits,problem,fast))
   +span_positive = Order.le_lt_trans(0n,column,U32.to_nat(span),Order.zero_le(column),column_inside)
   +positive = {%Equal.sym(Nat,U32.to_nat(count),Nat.mul(channels,U32.to_nat(span)),exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Support.positive_mul(channels,U32.to_nat(span),PackedOutputAllocation.channel_positive(problem,facts),span_positive) : {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool}}
+    Order.product_positive(channels,U32.to_nat(span),PackedOutputAllocation.channel_positive(problem,facts),span_positive) : {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool}}
   +depth_same = Depth.positive_depth(count,positive)
   +depth_ok = {%Equal.sym(Nat,Tensors.depth_for(count),Storage.allocation_depth(count),depth_same) : {Nat.is_le(_,30n) == True{} : Bool}
     depth_bound : {Nat.is_le(Tensors.depth_for(count),30n) == True{} : Bool}}
@@ -433,8 +384,8 @@ def allocation_readback(~Evidence: LeafContract.Evidence(),~samples: LeafContrac
     %exact : {Nat.is_le(_,U32.to_nat(Tree.capacity(F32,Tree.fresh(F32,Storage.allocation_depth(count),0.0)))) == True{} : Bool}
     room : {Nat.is_le(Nat.mul(U32.to_nat(rows(problem)),U32.to_nat(span)),U32.to_nat(Tree.capacity(F32,allocated(rows(problem),span)))) == True{} : Bool}}
   Equal.trans(F32,Tree.read(F32,output(problem,storage_contract,tiles,span),U32.from_nat(Nat.add(Nat.mul(channel,U32.to_nat(span)),column))),
-    GemmReadback.wanted(query),Values.matrix_value(problem,channel,output_row,output_column),
-    GemmReadback.run_readback(query,allocated(rows(problem),span),Tensors.depth_for(count),Shape.fresh(F32,Tensors.depth_for(count),0.0),depth_ok,output_room),
+    GemmReadback.wanted(~True{},query),Values.matrix_value(problem,channel,output_row,output_column),
+    GemmReadback.run_readback(~True{},query,allocated(rows(problem),span),Tensors.depth_for(count),Shape.fresh(F32,Tensors.depth_for(count),0.0),depth_ok,output_room),
     wanted_matches(~Evidence,~samples,limits,problem,storage_contract,valid,supported,tiles,offset,span,blocks,channel,column,output_row,output_column,
       certificate,span_exact,span_bound,channel_inside,column_inside,position,row_inside,column_in_width))
 
@@ -446,7 +397,7 @@ def first_group(+span: U32,+blocks: Nat,+span_exact: {U32.to_nat(span) == Nat.mu
     span_positive)
 
 # The leaf boundary accepts any packing provenance that proves its samples.
-# Band callers need neither a global eight-aligned offset nor dense packing.
+# Band callers need neither a global eight-aligned offset nor whole-tensor packing.
 def every_position_from_samples(~Evidence: LeafContract.Evidence(),~samples: LeafContract.Sampling(~Evidence),+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,
   +input: Tree.Tree<Tile.Tile8>,+offset: U32,+span: U32,+channel: Nat,+column: Nat,+output_row_index: Nat,+output_column_index: Nat,
   +valid: {ConvSpec.valid(problem) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,problem) == True{} : Bool},
@@ -464,7 +415,7 @@ def every_position_from_samples(~Evidence: LeafContract.Evidence(),~samples: Lea
     certificate,span_exact,span_bound,channel_inside,column_inside,position,row_inside,x_inside,
     PackedOutputAllocation.allocated(limits,problem,span,0n,geometry,first_group(span,blocks,span_exact,span_positive)))
 
-# Preserve the original dense/root contract by supplying its existing evidence.
+# Preserve the original whole-tensor/root contract by supplying its existing evidence.
 def every_position_matches_matrix(+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,
   +input: Tree.Tree<Tile.Tile8>,+offset: U32,+span: U32,+channel: Nat,+column: Nat,+output_row_index: Nat,+output_column_index: Nat,
   +valid: {ConvSpec.valid(problem) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,problem) == True{} : Bool},
@@ -477,7 +428,7 @@ def every_position_matches_matrix(+limits: Machine.Limits,+problem: ConvSpec.Pro
   Prepared.LeafEvidence{+packing_contract,+span_bound,+offset_alignment,+span_alignment,+range_bound,+contents} = certificate
   +certificate = {Prepared.LeafEvidence{packing_contract,span_bound,offset_alignment,span_alignment,range_bound,contents} :
     Prepared.LeafCertificate(problem,offset,span,input)}
-  every_position_from_samples(~LeafContract.dense_evidence,~LeafContract.dense_samples,limits,problem,storage_contract,input,offset,span,channel,column,output_row_index,output_column_index,
+  every_position_from_samples(~LeafContract.leaf_evidence,~LeafContract.leaf_samples,limits,problem,storage_contract,input,offset,span,channel,column,output_row_index,output_column_index,
     valid,supported,certificate,span_bound,span_alignment,channel_inside,column_inside,position,row_inside,x_inside)
 
 # The actual leaf allocates its packed buffer with the tail-recursive depth.
@@ -491,13 +442,19 @@ def packed_tiles(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<p
 def leaf_output(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,+offset: U32,+span: U32) -> Tree.Tree<F32>:
   output(problem,storage_contract,packed_tiles(problem,storage_contract,offset,span),span)
 
-def layout_result(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,layout: TileLayout.Layout()) -> GatherModel.ConvResult():
-  match layout:
-    case Partition.Leaf{unit,+offset,+span,details}:
-      Partition.Leaf{leaf_output(problem,storage_contract,offset,span),offset,span,rows(problem)}
-    case Partition.Fork{left,right}:
-      Partition.Fork{layout_result(problem,storage_contract,left),layout_result(problem,storage_contract,right)}
+type Stored is Data:
+  Stored{problem: ConvSpec.Problem,storage_contract: Inputs.Contract<problem>}
 
+def part_output(+context: Stored,+offset: U32,+span: U32,+details: Unit,block: Unit) -> Tree.Tree<F32>:
+  Stored{+problem,+storage_contract} = context
+  leaf_output(problem,storage_contract,offset,span)
+
+def part_rows(+context: Stored,+details: Unit) -> U32:
+  Stored{+problem,storage_contract} = context
+  rows(problem)
+
+def layout_result(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,layout: TileLayout.Layout()) -> GatherModel.ConvResult():
+  PartitionLaws.map(~&2,~&2,~Unit,~Tree.Tree<F32>,~Unit,~U32,~Stored,~part_output,~part_rows,Stored{problem,storage_contract},layout)
 def packed_matches(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,+offset: U32,+span: U32,
   +positive: {Nat.is_lt(0n,U32.to_nat(PackingBounds.count(span,problem))) == True{} : Bool}) ->
   {packed_tiles(problem,storage_contract,offset,span) == Prepared.packed_output(Prepared.allocated_pack(problem,storage_contract,offset,span)) : Tree.Tree<Tile.Tile8>}:
@@ -515,7 +472,7 @@ def leaf_positive(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Gua
   +span_positive: {Nat.is_lt(0n,U32.to_nat(span)) == True{} : Bool}) -> {Nat.is_lt(0n,U32.to_nat(PackingBounds.count(span,problem))) == True{} : Bool}:
   %Equal.sym(Nat,U32.to_nat(PackingBounds.count(span,problem)),Nat.mul(PackingBounds.groups(span),Coordinates.inner(problem)),
     PackingBounds.count_exact(limits,problem,span,valid,fast,span_bound)) : {Nat.is_lt(0n,_) == True{} : Bool}
-  Support.positive_mul(PackingBounds.groups(span),Coordinates.inner(problem),first_group(span,blocks,span_exact,span_positive),Coordinates.inner_positive(problem,valid))
+  Order.product_positive(PackingBounds.groups(span),Coordinates.inner(problem),first_group(span,blocks,span_exact,span_positive),Coordinates.inner_positive(problem,valid))
 
 # Gather proofs use this form: the leaf is identified by its layout.
 def leaf_every_position(+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,

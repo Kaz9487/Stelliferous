@@ -3,23 +3,16 @@ import ../../lib/proofs/machine_limit_bounds.bend as Limits
 # A tabulated packed pixel -> convolution sample, with real guard-derived bounds.
 import Base
 import ./input_storage.bend as Inputs
-import ../../lib/storage_buffer.bend as Storage
 import ../../lib/math_sequence.bend as Sequence
-import ./packing_tile_bounds.bend as PackingBounds
-import ../inference.bend as NativeConv
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ./list_array_storage.bend as ListStorage
 import ./convolution_guard_facts.bend as Guards
 import ./concrete_support_guard.bend as Support
-import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
-import ./native_weight_refinement.bend as NativeWeightRefinement
 import ./native_sample_refinement.bend as NativeSampleRefinement
 import ./packing_lane_reads.bend as LaneReads
 import ./packing_readback.bend as PackingReadback
 import ../../lib/proofs/binary_radix.bend as Radix
-import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../specification.bend as ConvSpec

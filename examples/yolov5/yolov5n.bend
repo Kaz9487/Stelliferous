@@ -3,6 +3,7 @@
 import Base
 import ../../lib/tensor_f32.bend as F
 import ../../lib/math_activation.bend as Act
+import ./batch_norm.bend as BatchNorm
 
 # Blocks
 
@@ -116,6 +117,19 @@ def decoded(pair: F.Tensor() & F.Tensor(),anchors: F.Tensor(),+grid: U32,+stride
 def decode(logits: F.Tensor(),anchors: F.Tensor(),+grid: U32,+stride: F32) -> F.Tensor():
   F.reshape(F.transpose(decoded(F.copy(F.reshape(F.sigmoid(logits),[3,85,grid,grid])),anchors,grid,stride),[0,2,3,1]),[1,(3 * grid * grid : U32),85])
 
+# The anchors of one scale as [3,2,1,1] in pixels; the checkpoint keeps them in grid cells.
+def anchors(all: F.Tensor(),+level: U32,+stride: F32) -> F.Tensor():
+  F.mul_scalar(F.reshape(F.slice(all,0,level,1,1),[3,2,1,1]),stride)
+
+def later(second: F.Tensor(),third: F.Tensor(),levels: F.Tensor() & F.Tensor(),+size: U32) -> F.Parts():
+  (middle,last) = levels
+  F.cons(decode(second,anchors(middle,1,16.0),(size / 16 : U32),16.0),
+    F.single(decode(third,anchors(last,2,32.0),(size / 32 : U32),32.0)))
+
+def scales(first: F.Tensor(),second: F.Tensor(),third: F.Tensor(),levels: F.Tensor() & F.Tensor(),+size: U32) -> F.Tensor():
+  (all,kept) = levels
+  F.concat(F.cons(decode(first,anchors(all,0,8.0),(size / 8 : U32),8.0),later(second,third,F.copy(kept),size)),1)
+
 # The raw output of one scale: a 1x1 convolution without activation.
 def logits(x: F.Tensor(),+name: String,+label: String,+trace: Bool) -> F.Model(F.Tensor()):
   do F.Model<F.Tensor()>:
@@ -130,9 +144,8 @@ def detect(p5: F.Tensor(),+size: U32,+trace: Bool) -> F.Model(F.Tensor()):
     p4 : F.Tensor() <- F.take("p4")
     second : F.Tensor() <- logits(p4,"model.24.m.1","head_1",trace)
     third : F.Tensor() <- logits(p5,"model.24.m.2","head_2",trace)
-    F.Model.pure(F.Tensor(),F.concat(F.cons(decode(first,F.from_list([3,2,1,1],[10.0,13.0,16.0,30.0,33.0,23.0]),(size / 8 : U32),8.0),
-      F.cons(decode(second,F.from_list([3,2,1,1],[30.0,61.0,62.0,45.0,59.0,119.0]),(size / 16 : U32),16.0),
-      F.single(decode(third,F.from_list([3,2,1,1],[116.0,90.0,156.0,198.0,373.0,326.0]),(size / 32 : U32),32.0)))),1))
+    levels : F.Tensor() <- F.take("model.24.anchors")
+    F.Model.pure(F.Tensor(),scales(first,second,third,F.copy(levels),size))
 
 # Network
 
@@ -263,7 +276,7 @@ def finish(pair: F.Tensor() & F.Weights(),+folder: String) -> IO(Unit):
 def begin(+size: U32,input: String,+output: String,trace: Bool,extra: Nat) -> IO(Unit):
   do IO<Unit>:
     workers : U32 <- IO.thread_count()
-    weights : F.Weights() <- F.load_weights("out/weights/named")
+    weights : F.Weights() <- BatchNorm.load("data/weights/yolov5n-v7.0.pt")
     image : F.Tensor() <- F.load_raw(input,[1,3,size,size])
     result : F.Tensor() & F.Weights() <- repeated(extra,Inputs{image,weights},size,workers,trace)
     finish(result,output)

@@ -23,7 +23,7 @@ from allocation_instrumentation import replace_once  # noqa: E402
 from compare_forward import baseline_stem  # noqa: E402
 
 PHASES = ('unclassified', 'band_execute', 'band_run', 'halo_prepare', 'halo_assemble',
-          'band_gather', 'dense_partition', 'dense_finish', 'range_copy', 'dense_pipeline')
+          'band_gather', 'partition_run', 'pipeline_finish', 'range_copy', 'pipeline_run')
 KINDS = dict(turn=1, wake=2, claim=3, finish=4, forward_begin=5, forward_end=6,
              operation_begin=7, operation_end=8, dispatch=9, dispatch_span=10,
              block_copy=11, host_grow=12, windowed_entry=13)
@@ -108,13 +108,13 @@ def phase_of(name):
     if re.search(r'_TENSOR_BAND_GATHER(?:_|$)', name):
         return 'band_gather'
     if re.search(r'_TRAVERSAL_PARTITION_RUN(?:_|$)', name):
-        return 'dense_partition'
+        return 'partition_run'
     if re.search(r'_KERNEL_PIPELINE_FINISH(?:_|$)', name):
-        return 'dense_finish'
+        return 'pipeline_finish'
     if re.search(r'_(?:TENSOR_BAND_RANGE|STORAGE_COPY_RANGE)(?:_|$)', name):
         return 'range_copy'
     if re.search(r'_KERNEL_PIPELINE_(?:RUN|RUN_PACKED)(?:_|$)', name):
-        return 'dense_pipeline'
+        return 'pipeline_run'
     return 'unclassified'
 
 
@@ -231,8 +231,8 @@ def instrument(source, capacity):
             'OUTLINE void pool_turn(bool grow,u32 rows){uint64_t trace_turn_start=trace_now();static u32 turn;', 'pool turn begin')
     replace('POOL_WAIT(a32_load_acq(&pool_done) != 0, pool_join) }',
             'POOL_WAIT(a32_load_acq(&pool_done) != 0, pool_join)\n  trace_add(1,trace_turn_start,trace_now(),0,trace_fid,grow);\n}', 'pool turn end')
-    replace('u32 cur = row_grow((Env){ H, ALC[0] }, io_stk, 0, CUBE_G, want);',
-            'uint64_t trace_host_start=trace_now();u32 cur=row_grow((Env){H,ALC[0]},io_stk,0,CUBE_G,want);trace_add(12,trace_host_start,trace_now(),0,trace_fid,0);', 'host frontier growth')
+    replace('u32 cur = row_grow((Env){ H, ALC[0] }, io_stk, 0, CUBE_G, want, f);',
+            'uint64_t trace_host_start=trace_now();u32 cur=row_grow((Env){H,ALC[0]},io_stk,0,CUBE_G,want,f);trace_add(12,trace_host_start,trace_now(),0,trace_fid,0);', 'host frontier growth')
     replace('OUTLINE Term blk_copy(Env e, Term a) {',
             'OUTLINE Term blk_copy(Env e,Term a){uint64_t trace_copy_start=trace_now();', 'block copy begin')
     replace('blk_fill(e, dst, blk_loc(e.mem, a), 1ull << cls, arr); return term_blk(arr, blk_cls(a), dst);',
@@ -260,7 +260,7 @@ def instrument(source, capacity):
                 'free(label);trace_operation_begin();return term_pak(CID_UNIT,0);', 'save boundary begin')
         replace('tensor_started=io_tick();trace_forward_begin();',
                 'tensor_started=io_tick();trace_forward_begin();trace_operation_begin();', 'first operation')
-        protocol = 'unmarked dense operation from previous save return to current save entry; dense expect_storage transfers its owner; state-save IO excluded'
+        protocol = 'unmarked operation from previous save return to current save entry; expect_storage transfers its owner; state-save IO excluded'
     availability = {phase: [item['name'] for item in catalog if item['phase'] == phase] for phase in PHASES[1:]}
     return source, dict(anchors=anchors, case_count=len(cases), declaration_count=len(declarations),
                         case_identifiers=catalog, phases=availability,

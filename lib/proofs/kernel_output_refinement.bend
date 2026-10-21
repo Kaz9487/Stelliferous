@@ -40,26 +40,26 @@ def next_lane(+inside: Bool,-native: Array<F32>,+previous: List<&2,Writes.Assign
       Writes.native(F32,lane_writes(inside,offset,value),Writes.native(F32,previous,output)),
       Writes.concatenated_native(F32,previous,lane_writes(inside,offset,value),output)))
 
-def tail_assignments(+count: U32,+offset: U32,+bias: F32,+accumulator: Tile.Tile8) -> List<&2,Writes.Assignment<F32>>:
-  a = lane_writes(U32.is_lt(0,count),offset,(Tile.lane0(accumulator) + bias : F32))
-  a = append_lane(U32.is_lt(1,count),a,(offset + 1 : U32),(Tile.lane1(accumulator) + bias : F32))
-  a = append_lane(U32.is_lt(2,count),a,(offset + 2 : U32),(Tile.lane2(accumulator) + bias : F32))
-  a = append_lane(U32.is_lt(3,count),a,(offset + 3 : U32),(Tile.lane3(accumulator) + bias : F32))
-  a = append_lane(U32.is_lt(4,count),a,(offset + 4 : U32),(Tile.lane4(accumulator) + bias : F32))
-  a = append_lane(U32.is_lt(5,count),a,(offset + 5 : U32),(Tile.lane5(accumulator) + bias : F32))
-  a = append_lane(U32.is_lt(6,count),a,(offset + 6 : U32),(Tile.lane6(accumulator) + bias : F32))
-  append_lane(U32.is_lt(7,count),a,(offset + 7 : U32),(Tile.lane7(accumulator) + bias : F32))
+def tail_assignments(+biased: Bool,+count: U32,+offset: U32,+bias: F32,+accumulator: Tile.Tile8) -> List<&2,Writes.Assignment<F32>>:
+  a = lane_writes(U32.is_lt(0,count),offset,Bool.pick(F32,biased,(Tile.lane0(accumulator) + bias : F32),Tile.lane0(accumulator)))
+  a = append_lane(U32.is_lt(1,count),a,(offset + 1 : U32),Bool.pick(F32,biased,(Tile.lane1(accumulator) + bias : F32),Tile.lane1(accumulator)))
+  a = append_lane(U32.is_lt(2,count),a,(offset + 2 : U32),Bool.pick(F32,biased,(Tile.lane2(accumulator) + bias : F32),Tile.lane2(accumulator)))
+  a = append_lane(U32.is_lt(3,count),a,(offset + 3 : U32),Bool.pick(F32,biased,(Tile.lane3(accumulator) + bias : F32),Tile.lane3(accumulator)))
+  a = append_lane(U32.is_lt(4,count),a,(offset + 4 : U32),Bool.pick(F32,biased,(Tile.lane4(accumulator) + bias : F32),Tile.lane4(accumulator)))
+  a = append_lane(U32.is_lt(5,count),a,(offset + 5 : U32),Bool.pick(F32,biased,(Tile.lane5(accumulator) + bias : F32),Tile.lane5(accumulator)))
+  a = append_lane(U32.is_lt(6,count),a,(offset + 6 : U32),Bool.pick(F32,biased,(Tile.lane6(accumulator) + bias : F32),Tile.lane6(accumulator)))
+  append_lane(U32.is_lt(7,count),a,(offset + 7 : U32),Bool.pick(F32,biased,(Tile.lane7(accumulator) + bias : F32),Tile.lane7(accumulator)))
 
-def tail_native(+count: U32,-output: Array<F32>,+offset: U32,+bias: F32,+accumulator: Tile.Tile8) ->
-  {Gemm.store_tail(count,output,offset,bias,accumulator) == Writes.native(F32,tail_assignments(count,offset,bias,accumulator),output) : Array<F32>}:
-  +v0 = (Tile.lane0(accumulator) + bias : F32)
-  +v1 = (Tile.lane1(accumulator) + bias : F32)
-  +v2 = (Tile.lane2(accumulator) + bias : F32)
-  +v3 = (Tile.lane3(accumulator) + bias : F32)
-  +v4 = (Tile.lane4(accumulator) + bias : F32)
-  +v5 = (Tile.lane5(accumulator) + bias : F32)
-  +v6 = (Tile.lane6(accumulator) + bias : F32)
-  +v7 = (Tile.lane7(accumulator) + bias : F32)
+def tail_native(+biased: Bool,+count: U32,-output: Array<F32>,+offset: U32,+bias: F32,+accumulator: Tile.Tile8) ->
+  {Gemm.store_tail(biased,count,output,offset,bias,accumulator) == Writes.native(F32,tail_assignments(biased,count,offset,bias,accumulator),output) : Array<F32>}:
+  +v0 = Bool.pick(F32,biased,(Tile.lane0(accumulator) + bias : F32),Tile.lane0(accumulator))
+  +v1 = Bool.pick(F32,biased,(Tile.lane1(accumulator) + bias : F32),Tile.lane1(accumulator))
+  +v2 = Bool.pick(F32,biased,(Tile.lane2(accumulator) + bias : F32),Tile.lane2(accumulator))
+  +v3 = Bool.pick(F32,biased,(Tile.lane3(accumulator) + bias : F32),Tile.lane3(accumulator))
+  +v4 = Bool.pick(F32,biased,(Tile.lane4(accumulator) + bias : F32),Tile.lane4(accumulator))
+  +v5 = Bool.pick(F32,biased,(Tile.lane5(accumulator) + bias : F32),Tile.lane5(accumulator))
+  +v6 = Bool.pick(F32,biased,(Tile.lane6(accumulator) + bias : F32),Tile.lane6(accumulator))
+  +v7 = Bool.pick(F32,biased,(Tile.lane7(accumulator) + bias : F32),Tile.lane7(accumulator))
   +a0 = lane_writes(U32.is_lt(0,count),offset,v0)
   +a1 = append_lane(U32.is_lt(1,count),a0,(offset + 1 : U32),v1)
   +a2 = append_lane(U32.is_lt(2,count),a1,(offset + 2 : U32),v2)
@@ -85,66 +85,79 @@ def tail_native(+count: U32,-output: Array<F32>,+offset: U32,+bias: F32,+accumul
 
 # Keep stores as syntax: readback proofs can reason about one row without
 # repeatedly normalizing the capacity of all thirty-two nested writes.
-def store(count: U32,output: Writes.Program<F32>,offset: U32,bias: F32,accumulator: Tile.Tile8) -> Writes.Program<F32>:
-  Writes.Append{tail_assignments(count,offset,bias,accumulator),output}
+def store(+biased: Bool,count: U32,output: Writes.Program<F32>,offset: U32,bias: F32,accumulator: Tile.Tile8) -> Writes.Program<F32>:
+  Writes.Append{tail_assignments(biased,count,offset,bias,accumulator),output}
 
-def stored(+count: U32,+output: Writes.Program<F32>,+offset: U32,+bias: F32,+accumulator: Tile.Tile8) ->
-  {Gemm.store_tail(count,Tree.pack(F32,Writes.evaluate(F32,output)),offset,bias,accumulator) == Tree.pack(F32,Writes.evaluate(F32,store(count,output,offset,bias,accumulator))) : Array<F32>}:
-  Equal.trans(Array<F32>,Gemm.store_tail(count,Tree.pack(F32,Writes.evaluate(F32,output)),offset,bias,accumulator),
-    Writes.native(F32,tail_assignments(count,offset,bias,accumulator),Tree.pack(F32,Writes.evaluate(F32,output))),
-    Tree.pack(F32,Writes.evaluate(F32,store(count,output,offset,bias,accumulator))),
-    tail_native(count,Tree.pack(F32,Writes.evaluate(F32,output)),offset,bias,accumulator),
-    Writes.refinement(F32,tail_assignments(count,offset,bias,accumulator),Writes.evaluate(F32,output)))
+def stored(+biased: Bool,+count: U32,+output: Writes.Program<F32>,+offset: U32,+bias: F32,+accumulator: Tile.Tile8) ->
+  {Gemm.store_tail(biased,count,Tree.pack(F32,Writes.evaluate(F32,output)),offset,bias,accumulator) == Tree.pack(F32,Writes.evaluate(F32,store(biased,count,output,offset,bias,accumulator))) : Array<F32>}:
+  Equal.trans(Array<F32>,Gemm.store_tail(biased,count,Tree.pack(F32,Writes.evaluate(F32,output)),offset,bias,accumulator),
+    Writes.native(F32,tail_assignments(biased,count,offset,bias,accumulator),Tree.pack(F32,Writes.evaluate(F32,output))),
+    Tree.pack(F32,Writes.evaluate(F32,store(biased,count,output,offset,bias,accumulator))),
+    tail_native(biased,count,Tree.pack(F32,Writes.evaluate(F32,output)),offset,bias,accumulator),
+    Writes.refinement(F32,tail_assignments(biased,count,offset,bias,accumulator),Writes.evaluate(F32,output)))
 
-def row(valid: Bool,+index: U32,+position: U32,+columns: U32,accumulator: Tile.Tile8,owners: Owners) -> Owners:
+def row(+biased: Bool,valid: Bool,+index: U32,+position: U32,+columns: U32,accumulator: Tile.Tile8,owners: Owners) -> Owners:
   match valid owners:
     case False{} owners: owners
     case True{} Owners{+bias,output}:
-      Owners{bias,store(U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator)}
+      Owners{bias,store(biased,U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator)}
 
-def row_matches(+valid: Bool,+index: U32,+position: U32,+columns: U32,+accumulator: Tile.Tile8,+owners: Owners) ->
-  {Gemm.write_row(valid,index,position,columns,accumulator,represent(owners)) ==
-    represent(row(valid,index,position,columns,accumulator,owners)) : Array<F32> & Array<F32>}:
+def row_values(+biased: Bool,+index: U32,+position: U32,+columns: U32,+accumulator: Tile.Tile8,+bias: Tree.Tree<F32>,+output: Writes.Program<F32>) ->
+  {Gemm.write_values(biased,Tree.pack(F32,bias),Tree.pack(F32,Writes.evaluate(F32,output)),(index * columns + position : U32),accumulator,U32.min(8,(columns - position : U32)),index) ==
+    (Tree.pack(F32,bias),Tree.pack(F32,Writes.evaluate(F32,store(biased,U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator)))) : Array<F32> & Array<F32>}:
+  match biased:
+    case True{}:
+      %Equal.sym(Array<F32> & F32,Array.get(F32,Tree.pack(F32,bias),index),(Tree.pack(F32,bias),Tree.read(F32,bias,index)),StorageLaws.read(F32,bias,index)) :
+        {Gemm.write_bias(Tree.pack(F32,Writes.evaluate(F32,output)),(index * columns + position : U32),accumulator,U32.min(8,(columns - position : U32)),_) ==
+          (Tree.pack(F32,bias),Tree.pack(F32,Writes.evaluate(F32,store(True{},U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator)))) : Array<F32> & Array<F32>}
+      Equal.cong(Array<F32>,Array<F32> & Array<F32>,result => (Tree.pack(F32,bias),result),
+        Gemm.store_tail(True{},U32.min(8,(columns - position : U32)),Tree.pack(F32,Writes.evaluate(F32,output)),(index * columns + position : U32),Tree.read(F32,bias,index),accumulator),
+        Tree.pack(F32,Writes.evaluate(F32,store(True{},U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator))),
+        stored(True{},U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator))
+    case False{}:
+      Equal.cong(Array<F32>,Array<F32> & Array<F32>,result => (Tree.pack(F32,bias),result),
+        Gemm.store_tail(False{},U32.min(8,(columns - position : U32)),Tree.pack(F32,Writes.evaluate(F32,output)),(index * columns + position : U32),0.0,accumulator),
+        Tree.pack(F32,Writes.evaluate(F32,store(False{},U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),0.0,accumulator))),
+        stored(False{},U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),0.0,accumulator))
+
+def row_matches(+biased: Bool,+valid: Bool,+index: U32,+position: U32,+columns: U32,+accumulator: Tile.Tile8,+owners: Owners) ->
+  {Gemm.write_row(biased,valid,index,position,columns,accumulator,represent(owners)) ==
+    represent(row(biased,valid,index,position,columns,accumulator,owners)) : Array<F32> & Array<F32>}:
   match valid owners:
     case False{} owners: {==}
     case True{} Owners{+bias,+output}:
-      %Equal.sym(Array<F32> & F32,Array.get(F32,Tree.pack(F32,bias),index),(Tree.pack(F32,bias),Tree.read(F32,bias,index)),StorageLaws.read(F32,bias,index)) :
-        {Gemm.write_bias(Tree.pack(F32,Writes.evaluate(F32,output)),(index * columns + position : U32),accumulator,U32.min(8,(columns - position : U32)),_) ==
-          (Tree.pack(F32,bias),Tree.pack(F32,Writes.evaluate(F32,store(U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator)))) : Array<F32> & Array<F32>}
-      Equal.cong(Array<F32>,Array<F32> & Array<F32>,result => (Tree.pack(F32,bias),result),
-        Gemm.store_tail(U32.min(8,(columns - position : U32)),Tree.pack(F32,Writes.evaluate(F32,output)),(index * columns + position : U32),Tree.read(F32,bias,index),accumulator),
-        Tree.pack(F32,Writes.evaluate(F32,store(U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator))),
-        stored(U32.min(8,(columns - position : U32)),output,(index * columns + position : U32),Tree.read(F32,bias,index),accumulator))
+      row_values(biased,index,position,columns,accumulator,bias,output)
 
-def next(+valid: Bool,+index: U32,+position: U32,+columns: U32,+accumulator: Tile.Tile8,-native: Array<F32> & Array<F32>,+owners: Owners,
+def next(+biased: Bool,+valid: Bool,+index: U32,+position: U32,+columns: U32,+accumulator: Tile.Tile8,-native: Array<F32> & Array<F32>,+owners: Owners,
   equation: {native == represent(owners) : Array<F32> & Array<F32>}) ->
-  {Gemm.write_row(valid,index,position,columns,accumulator,native) == represent(row(valid,index,position,columns,accumulator,owners)) : Array<F32> & Array<F32>}:
+  {Gemm.write_row(biased,valid,index,position,columns,accumulator,native) == represent(row(biased,valid,index,position,columns,accumulator,owners)) : Array<F32> & Array<F32>}:
   %Equal.sym(Array<F32> & Array<F32>,native,represent(owners),equation) :
-    {Gemm.write_row(valid,index,position,columns,accumulator,_) == represent(row(valid,index,position,columns,accumulator,owners)) : Array<F32> & Array<F32>}
-  row_matches(valid,index,position,columns,accumulator,owners)
+    {Gemm.write_row(biased,valid,index,position,columns,accumulator,_) == represent(row(biased,valid,index,position,columns,accumulator,owners)) : Array<F32> & Array<F32>}
+  row_matches(biased,valid,index,position,columns,accumulator,owners)
 
-def write(context: Gemm.Context,+accumulators: Rows.Rows<Tile.Tile8>,bias: Tree.Tree<F32>,output: Writes.Program<F32>) -> Owners:
+def write(+biased: Bool,context: Gemm.Context,+accumulators: Rows.Rows<Tile.Tile8>,bias: Tree.Tree<F32>,output: Writes.Program<F32>) -> Owners:
   Gemm.Context{+index,+position,+rows,+columns,input_base,weight_base} = context
-  owners = row(U32.is_lt(index,rows),index,position,columns,Rows.first(~Tile.Tile8,accumulators),Owners{bias,output})
-  owners = row(U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,Rows.second(~Tile.Tile8,accumulators),owners)
-  owners = row(U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,Rows.third(~Tile.Tile8,accumulators),owners)
-  row(U32.is_lt((index + 3 : U32),rows),(index + 3 : U32),position,columns,Rows.fourth(~Tile.Tile8,accumulators),owners)
+  owners = row(biased,U32.is_lt(index,rows),index,position,columns,Rows.first(~Tile.Tile8,accumulators),Owners{bias,output})
+  owners = row(biased,U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,Rows.second(~Tile.Tile8,accumulators),owners)
+  owners = row(biased,U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,Rows.third(~Tile.Tile8,accumulators),owners)
+  row(biased,U32.is_lt((index + 3 : U32),rows),(index + 3 : U32),position,columns,Rows.fourth(~Tile.Tile8,accumulators),owners)
 
-def write_matches(+context: Gemm.Context,+accumulators: Rows.Rows<Tile.Tile8>,+bias: Tree.Tree<F32>,+output: Writes.Program<F32>) ->
-  {Gemm.write(context,accumulators,Tree.pack(F32,bias),Tree.pack(F32,Writes.evaluate(F32,output))) == represent(write(context,accumulators,bias,output)) : Array<F32> & Array<F32>}:
+def write_matches(+biased: Bool,+context: Gemm.Context,+accumulators: Rows.Rows<Tile.Tile8>,+bias: Tree.Tree<F32>,+output: Writes.Program<F32>) ->
+  {Gemm.write(biased,context,accumulators,Tree.pack(F32,bias),Tree.pack(F32,Writes.evaluate(F32,output))) == represent(write(biased,context,accumulators,bias,output)) : Array<F32> & Array<F32>}:
   Gemm.Context{+index,+position,+rows,+columns,input_base,weight_base} = context
   +a = Rows.first(~Tile.Tile8,accumulators)
   +b = Rows.second(~Tile.Tile8,accumulators)
   +c = Rows.third(~Tile.Tile8,accumulators)
   +d = Rows.fourth(~Tile.Tile8,accumulators)
   +initial = {Owners{bias,output} : Owners}
-  +first = row(U32.is_lt(index,rows),index,position,columns,a,initial)
-  +second = row(U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,b,first)
-  +third = row(U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,c,second)
-  -one = Gemm.write_row(U32.is_lt(index,rows),index,position,columns,a,represent(initial))
-  -two = Gemm.write_row(U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,b,one)
-  -three = Gemm.write_row(U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,c,two)
-  next(U32.is_lt((index + 3 : U32),rows),(index + 3 : U32),position,columns,d,three,third,
-    next(U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,c,two,second,
-      next(U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,b,one,first,
-        row_matches(U32.is_lt(index,rows),index,position,columns,a,initial))))
+  +first = row(biased,U32.is_lt(index,rows),index,position,columns,a,initial)
+  +second = row(biased,U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,b,first)
+  +third = row(biased,U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,c,second)
+  -one = Gemm.write_row(biased,U32.is_lt(index,rows),index,position,columns,a,represent(initial))
+  -two = Gemm.write_row(biased,U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,b,one)
+  -three = Gemm.write_row(biased,U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,c,two)
+  next(biased,U32.is_lt((index + 3 : U32),rows),(index + 3 : U32),position,columns,d,three,third,
+    next(biased,U32.is_lt((index + 2 : U32),rows),(index + 2 : U32),position,columns,c,two,second,
+      next(biased,U32.is_lt((index + 1 : U32),rows),(index + 1 : U32),position,columns,b,one,first,
+        row_matches(biased,U32.is_lt(index,rows),index,position,columns,a,initial))))
+

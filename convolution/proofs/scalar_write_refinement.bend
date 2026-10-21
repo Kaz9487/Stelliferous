@@ -1,5 +1,5 @@
 import ../../lib/proofs/storage_shape.bend as Shape
-# The dense specification of one native Array.set, with an in-bounds index.
+# The flat specification of one native Array.set, with an in-bounds index.
 import Base
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./tree_indexing.bend as TreeIndex
@@ -127,7 +127,7 @@ law write_route:
 def write_route(tree,i,v):
   store(tree,Tree.capacity(F32,tree),U32.and(i,U32.sub(Tree.capacity(F32,tree),1)),v)
 
-law dense:
+law flat:
   for +depth: Nat
   for +tree: Tree.Tree<F32>
   for +i: U32
@@ -137,7 +137,7 @@ law dense:
   for in_bounds: {U32.is_lt(i,Tree.capacity(F32,tree)) == True{} : Bool}
   {TreeIndex.flatten(Tree.write(F32,tree,i,v)) == set(U32.to_nat(i),v,
       TreeIndex.flatten(tree)) : List<&2,F32>}
-def dense(depth,tree,i,v,balanced,depth_ok,in_bounds):
+def flat(depth,tree,i,v,balanced,depth_ok,in_bounds):
   %Equal.sym(Tree.Tree<F32>,Tree.write(F32,tree,i,v),replace(tree,
       NativeArrayModel.wrapped_route(tree,i),v),write_route(tree,i,v)) : {TreeIndex.flatten(_) == set(U32.to_nat(i),v,
       TreeIndex.flatten(tree)) : List<&2,F32>}

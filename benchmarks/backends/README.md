@@ -9,15 +9,15 @@ python run.py backends            # CPU
 python run.py backends --cuda     # also the handwritten C and CUDA programs
 ```
 
-Results go to `out/results/backends/`; the report is `out/results/backend_comparison.md`.
+Results go to `out/results/backends/`, and the report is `out/results/backend_comparison.md`.
 
 ## Method
 
 - Each backend runs two warmups and seven samples in one process.
 - Timed: allocation, packing, kernels, gather and decode. Not timed: loading, compilation, preprocessing, diagnostic dumps and NMS.
-- Bend runs the [example program](../../examples/yolov5/yolov5n.bend). It copies its image and weights before each timed forward; its allocator and workers stay alive. Its clock counts milliseconds.
+- Bend runs the [example program](../../examples/yolov5/yolov5n.bend). It copies its image and weights before each timed forward. Its allocator and workers stay alive. Its clock counts milliseconds.
 - CPU affinity and frequency are not pinned. GPU timings synchronize before reading the clock.
-- Numerical validation runs separately; a missing result fails the run.
+- Numerical validation runs separately, and a missing result fails the run.
 
 ## Settings
 
@@ -40,5 +40,5 @@ python -m pip install --target out/python_packages threadpoolctl
 | [bench_numpy.py](bench_numpy.py), [bench_torch.py](bench_torch.py), [run_bend.sh](run_bend.sh) | Run and sample one backend |
 | [run_cpu.sh](run_cpu.sh) | Selects the CPU cases and records the environment |
 | [run_cuda.sh](run_cuda.sh), [probe_cuda.py](probe_cuda.py) | The CUDA capability check and backends |
-| [validate.py](validate.py) | Numerical thresholds; `--backends` selects which results are required |
+| [validate.py](validate.py) | Numerical thresholds. `--backends` selects which results are required |
 | [write_report.py](write_report.py) | The report, in both languages |

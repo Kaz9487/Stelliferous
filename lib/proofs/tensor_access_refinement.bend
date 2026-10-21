@@ -13,8 +13,9 @@ import ./traversal_array_refinement.bend as ArrayLaws
 import ./traversal_visit_refinement.bend as Visit
 import ./tensor_visit_refinement.bend as TensorVisit
 import ./tensor_cursor_refinement.bend as CursorLaws
-import ../kernel_block.bend as Block
 import ./nat_order.bend as Order
+import ./tensor_cursor_model.bend as CursorModel
+import ./ordered_fold_refinement.bend as Fold
 
 type ModelResult<-Reader: Data,-Element: Data> is Data:
   ModelResult{reader: Reader,output: Tree.Tree<Element>}
@@ -614,143 +615,130 @@ def combine(~Element: Data,~operation: Element -> Element -> Element,+fast: Bool
         update_strided_visit(~Element,~operation,count,Cursor.prepare(source),destination,input,output),
         visited_update(~Element,~operation,count,source,destination,input,output))
 
-type FoldResult<-Reader: Data,-Accumulator: Data> is Data:
-  FoldResult{reader: Reader,accumulator: Accumulator}
+# The reduction of the lines of a view: the coordinates of the next run of
+# the view without its last axis, and the runs of a line.
+type LineCoordinates<-Accumulator: Data> is Data:
+  LineCoordinates{coordinates: CursorLaws.Coordinates,runs: Nat,extent: U32,stride: U32,initial: Accumulator}
 
-def fold_model_result(~Reader: Data,~Accumulator: Data,~Context: Data,state: Traversal.State<&2,&2,Reader,Accumulator,Context>) -> FoldResult<Reader,Accumulator>:
-  Traversal.State{reader,accumulator,position,context} = state
-  FoldResult{reader,accumulator}
+def pack_line(~Accumulator: Data,line: LineCoordinates<Accumulator>) -> Access.Lines<Accumulator>:
+  LineCoordinates{coordinates,runs,extent,stride,initial} = line
+  Access.Lines{CursorLaws.pack(coordinates),runs,extent,stride,initial}
 
-def pack_fold(~Reader: Type,~Model: Data,~Accumulator: Data,~pack_reader: Model -> Reader,result: FoldResult<Model,Accumulator>) -> Reader & Accumulator:
-  FoldResult{reader,accumulator} = result
-  (pack_reader(reader),accumulator)
+def after_runs(count: Nat,coordinates: CursorLaws.Coordinates) -> CursorLaws.Coordinates:
+  Loop.run(~CursorLaws.Coordinates,~CursorLaws.next,count,coordinates)
 
-def indexed_fold_finished(~Reader: Type,~Model: Data,~Accumulator: Data,~Context: Data,~pack_reader: Model -> Reader,
-  +state: Traversal.State<&2,&2,Model,Accumulator,Context>) ->
-  {Traversal.finish_fold(~Reader,~Accumulator,~Context,ArrayLaws.represent_fold(~Reader,~Model,~Accumulator,~Context,~pack_reader,state)) ==
-    pack_fold(~Reader,~Model,~Accumulator,~pack_reader,fold_model_result(~Model,~Accumulator,~Context,state)) : Reader & Accumulator}:
-  Traversal.State{reader,accumulator,position,context} = state
+def next_line(~Accumulator: Data,line: LineCoordinates<Accumulator>) -> LineCoordinates<Accumulator>:
+  LineCoordinates{coordinates,+runs,extent,stride,initial} = line
+  LineCoordinates{after_runs(runs,coordinates),runs,extent,stride,initial}
+
+# The ordered fold of count runs from the coordinates: each run folds extent
+# values stride apart from the address of its coordinates.
+def run_values(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,count: Nat,+tree: Tree.Tree<Element>,
+  coordinates: CursorLaws.Coordinates,+extent: U32,+stride: U32,accumulator: Accumulator) -> Accumulator:
+  match count:
+    case 0n: accumulator
+    case 1n+rest:
+      +coordinates = coordinates
+      run_values(~Element,~Accumulator,~operation,rest,tree,CursorLaws.next(coordinates),extent,stride,
+        Fold.values(~Tree.Tree<Element>,~Element,~Accumulator,~Traversal.Strided,~ArrayLaws.sample_strided(~Element),~operation,U32.to_nat(extent),0,tree,
+          Traversal.Strided{TensorVisit.address(coordinates),stride},accumulator))
+
+def run_position(count: Nat,+position: U32) -> U32:
+  match count:
+    case 0n: position
+    case 1n+rest: run_position(rest,(position + 1 : U32))
+
+def sample_line(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  tree: Tree.Tree<Element>,line: LineCoordinates<Accumulator>) -> Element:
+  LineCoordinates{coordinates,runs,extent,stride,initial} = line
+  finish(run_values(~Element,~Accumulator,~operation,runs,tree,coordinates,extent,stride,initial))
+
+# The runs of a line fold the model's runs and move the cursor past them.
+def runs_match(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,count: Nat,+tree: Tree.Tree<Element>,
+  +coordinates: CursorLaws.Coordinates,+extent: U32,+stride: U32,+accumulator: Accumulator,+position: U32) ->
+  {Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,~Access.fold_run(~Element,~Accumulator,~operation),count,
+      Traversal.State{Tree.pack(Element,tree),accumulator,position,Access.Runs{CursorLaws.pack(coordinates),extent,stride}}) ==
+    Traversal.State{Tree.pack(Element,tree),run_values(~Element,~Accumulator,~operation,count,tree,coordinates,extent,stride,accumulator),run_position(count,position),
+      Access.Runs{CursorLaws.pack(after_runs(count,coordinates)),extent,stride}} : Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>}:
+  match count:
+    case 0n: {==}
+    case 1n+rest:
+      CursorLaws.Coordinates{+axes,+offset,+valid} = coordinates
+      +address = U32.from_nat(CursorModel.address(axes,offset))
+      +values = Fold.values(~Tree.Tree<Element>,~Element,~Accumulator,~Traversal.Strided,~ArrayLaws.sample_strided(~Element),~operation,U32.to_nat(extent),0,tree,
+        Traversal.Strided{address,stride},accumulator)
+      +next = CursorLaws.next(CursorLaws.Coordinates{axes,offset,valid})
+      +stepped = {
+        %Equal.sym(Array<Element> & Accumulator,
+          Traversal.fold_rounds(~Array<Element>,~Element,~Accumulator,~Traversal.Strided,~Traversal.strided(~Element),~operation,U32.to_nat(extent),0,Tree.pack(Element,tree),accumulator,
+            Traversal.Strided{address,stride}),
+          (Tree.pack(Element,tree),values),
+          Fold.rounds(~Array<Element>,~Tree.Tree<Element>,~Element,~Accumulator,~Traversal.Strided,~ArrayLaws.pack_tree(~Element),~Traversal.strided(~Element),
+            ~ArrayLaws.sample_strided(~Element),~operation,~ArrayLaws.strided_read_refines_storage(~Element),U32.to_nat(extent),0,tree,Traversal.Strided{address,stride},accumulator)) :
+          {Access.ran(~Element,~Accumulator,CursorLaws.represent_axes(axes),address,extent,stride,position,_) ==
+            Traversal.State{Tree.pack(Element,tree),values,(position + 1 : U32),Access.Runs{CursorLaws.pack(next),extent,stride}} : Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>}
+        %Equal.sym(Cursor.Cursor,Cursor.advance(CursorLaws.represent_axes(axes),address),CursorLaws.represent(CursorModel.advance(axes),offset),
+          CursorLaws.advance(axes,offset,valid)) :
+          {Traversal.State{Tree.pack(Element,tree),values,(position + 1 : U32),Access.Runs{_,extent,stride}} ==
+            Traversal.State{Tree.pack(Element,tree),values,(position + 1 : U32),Access.Runs{CursorLaws.pack(next),extent,stride}} : Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>}
+        {==} :
+        {Access.fold_run(~Element,~Accumulator,~operation,Traversal.State{Tree.pack(Element,tree),accumulator,position,Access.Runs{CursorLaws.pack(CursorLaws.Coordinates{axes,offset,valid}),extent,stride}}) ==
+          Traversal.State{Tree.pack(Element,tree),values,(position + 1 : U32),Access.Runs{CursorLaws.pack(next),extent,stride}} : Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>}}
+      %Equal.sym(Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,
+          Access.fold_run(~Element,~Accumulator,~operation,Traversal.State{Tree.pack(Element,tree),accumulator,position,Access.Runs{CursorLaws.pack(CursorLaws.Coordinates{axes,offset,valid}),extent,stride}}),
+          Traversal.State{Tree.pack(Element,tree),values,(position + 1 : U32),Access.Runs{CursorLaws.pack(next),extent,stride}},stepped) :
+        {Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,~Access.fold_run(~Element,~Accumulator,~operation),rest,_) ==
+          Traversal.State{Tree.pack(Element,tree),run_values(~Element,~Accumulator,~operation,1n+rest,tree,CursorLaws.Coordinates{axes,offset,valid},extent,stride,accumulator),
+            run_position(1n+rest,position),Access.Runs{CursorLaws.pack(after_runs(1n+rest,CursorLaws.Coordinates{axes,offset,valid})),extent,stride}} :
+          Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>}
+      runs_match(~Element,~Accumulator,~operation,rest,tree,next,extent,stride,values,(position + 1 : U32))
+
+def line_matches(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  +tree: Tree.Tree<Element>,+line: LineCoordinates<Accumulator>) ->
+  {Access.fold_line(~Element,~Accumulator,~operation,~finish,Tree.pack(Element,tree),pack_line(~Accumulator,line)) ==
+    (Tree.pack(Element,tree),Traversal.Visited{pack_line(~Accumulator,next_line(~Accumulator,line)),sample_line(~Element,~Accumulator,~operation,~finish,tree,line)}) :
+    Array<Element> & Traversal.Visited<Access.Lines<Accumulator>,Element>}:
+  LineCoordinates{+coordinates,+runs,+extent,+stride,+initial} = line
+  %Equal.sym(Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,
+      Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,~Access.fold_run(~Element,~Accumulator,~operation),runs,
+        Traversal.State{Tree.pack(Element,tree),initial,0,Access.Runs{CursorLaws.pack(coordinates),extent,stride}}),
+      Traversal.State{Tree.pack(Element,tree),run_values(~Element,~Accumulator,~operation,runs,tree,coordinates,extent,stride,initial),run_position(runs,0),
+        Access.Runs{CursorLaws.pack(after_runs(runs,coordinates)),extent,stride}},
+      runs_match(~Element,~Accumulator,~operation,runs,tree,coordinates,extent,stride,initial,0)) :
+    {Access.folded_line(~Element,~Accumulator,~finish,runs,initial,_) ==
+      (Tree.pack(Element,tree),Traversal.Visited{pack_line(~Accumulator,next_line(~Accumulator,LineCoordinates{coordinates,runs,extent,stride,initial})),
+        sample_line(~Element,~Accumulator,~operation,~finish,tree,LineCoordinates{coordinates,runs,extent,stride,initial})}) :
+      Array<Element> & Traversal.Visited<Access.Lines<Accumulator>,Element>}
   {==}
 
-def visit_fold_finished(~Reader: Type,~Model: Data,~Accumulator: Data,~Context: Data,~Coordinates: Data,~pack_reader: Model -> Reader,~pack_context: Coordinates -> Context,
-  +state: Traversal.State<&2,&2,Model,Accumulator,Coordinates>) ->
-  {Traversal.finish_fold(~Reader,~Accumulator,~Context,Visit.represent_fold(~Reader,~Model,~Accumulator,~Context,~Coordinates,~pack_reader,~pack_context,state)) ==
-    pack_fold(~Reader,~Model,~Accumulator,~pack_reader,fold_model_result(~Model,~Accumulator,~Coordinates,state)) : Reader & Accumulator}:
-  Traversal.State{reader,accumulator,position,context} = state
-  {==}
+def lines_model(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  count: Nat,view: Views.View,runs: Nat,extent: U32,stride: U32,initial: Accumulator,input: Tree.Tree<Element>,output: Tree.Tree<Element>) -> ModelResult<Tree.Tree<Element>,Element>:
+  finish_model(~Tree.Tree<Element>,~Element,~LineCoordinates<Accumulator>,
+    Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,LineCoordinates<Accumulator>>,
+      ~Visit.model_step(~Tree.Tree<Element>,~Element,~LineCoordinates<Accumulator>,~sample_line(~Element,~Accumulator,~operation,~finish),~next_line(~Accumulator)),count,
+      Traversal.State{input,output,0,LineCoordinates{CursorLaws.initial(view),runs,extent,stride,initial}}))
 
-def fold_relation(~Reader: Type,~Model: Data,~Accumulator: Data,~Context: Data,~Coordinates: Data,~pack_reader: Model -> Reader,
-  ~represent: Traversal.State<&2,&2,Model,Accumulator,Coordinates> -> Traversal.State<&1,&2,Reader,Accumulator,Context>,
-  ~finishes: @+state: Traversal.State<&2,&2,Model,Accumulator,Coordinates> ->
-    {Traversal.finish_fold(~Reader,~Accumulator,~Context,represent(state)) == pack_fold(~Reader,~Model,~Accumulator,~pack_reader,fold_model_result(~Model,~Accumulator,~Coordinates,state)) : Reader & Accumulator},
-  -actual: Traversal.State<&1,&2,Reader,Accumulator,Context>,+state: Traversal.State<&2,&2,Model,Accumulator,Coordinates>,
-  equation: {actual == represent(state) : Traversal.State<&1,&2,Reader,Accumulator,Context>}) ->
-  {Traversal.finish_fold(~Reader,~Accumulator,~Context,actual) == pack_fold(~Reader,~Model,~Accumulator,~pack_reader,fold_model_result(~Model,~Accumulator,~Coordinates,state)) : Reader & Accumulator}:
-  Equal.trans(Reader & Accumulator,Traversal.finish_fold(~Reader,~Accumulator,~Context,actual),Traversal.finish_fold(~Reader,~Accumulator,~Context,represent(state)),
-    pack_fold(~Reader,~Model,~Accumulator,~pack_reader,fold_model_result(~Model,~Accumulator,~Coordinates,state)),
-    Equal.cong(Traversal.State<&1,&2,Reader,Accumulator,Context>,Reader & Accumulator,state => Traversal.finish_fold(~Reader,~Accumulator,~Context,state),actual,represent(state),equation),finishes(state))
-
-def reduce_model(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
-  fast: Bool,count: Nat,view: Views.View,input: Tree.Tree<Element>,initial: Accumulator) -> FoldResult<Tree.Tree<Element>,Accumulator>:
-  match fast:
-    case True{}:
-      Views.View{axes,offset} = view
-      fold_model_result(~Tree.Tree<Element>,~Accumulator,~Traversal.Offsets,
-        Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Accumulator,Traversal.Offsets>,
-          ~ArrayLaws.model_fold_step(~Tree.Tree<Element>,~Element,~Accumulator,~Traversal.Offsets,~ArrayLaws.sample_offset(~Element),~operation),count,
-          Traversal.State{input,initial,0,Traversal.Offsets{offset,0}}))
-    case False{}:
-      fold_model_result(~Tree.Tree<Element>,~Accumulator,~CursorLaws.Coordinates,
-        Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Accumulator,CursorLaws.Coordinates>,
-          ~Visit.model_fold_step(~Tree.Tree<Element>,~Element,~Accumulator,~CursorLaws.Coordinates,~TensorVisit.sample(~Element),~CursorLaws.next,~operation),count,
-          Traversal.State{input,initial,0,CursorLaws.initial(view)}))
-
-def reduce(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
-  +fast: Bool,+count: Nat,+view: Views.View,+input: Tree.Tree<Element>,+initial: Accumulator) ->
-  {Access.reduce_run(~Element,~Accumulator,~operation,fast,count,view,Tree.pack(Element,input),initial) ==
-    pack_fold(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~ArrayLaws.pack_tree(~Element),reduce_model(~Element,~Accumulator,~operation,fast,count,view,input,initial)) : Array<Element> & Accumulator}:
-  match fast:
-    case True{}:
-      Views.View{axes,+offset} = view
-      fold_relation(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Traversal.Offsets,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element),
-        ~ArrayLaws.represent_fold(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element)),
-        ~indexed_fold_finished(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element)),
-        Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Traversal.Offsets>,~Traversal.fold_step(~Array<Element>,~Element,~Accumulator,~Traversal.Offsets,~Traversal.source_offset(~Element),~operation),count,
-          Traversal.State{Tree.pack(Element,input),initial,0,Traversal.Offsets{offset,0}}),
-        Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Accumulator,Traversal.Offsets>,~ArrayLaws.model_fold_step(~Tree.Tree<Element>,~Element,~Accumulator,~Traversal.Offsets,~ArrayLaws.sample_offset(~Element),~operation),count,
-          Traversal.State{input,initial,0,Traversal.Offsets{offset,0}}),
-        ArrayLaws.fold_refines_ordered_model(~Array<Element>,~Tree.Tree<Element>,~Element,~Accumulator,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element),~Traversal.source_offset(~Element),~ArrayLaws.sample_offset(~Element),~operation,~ArrayLaws.offset_read_refines_storage(~Element),count,
-          Traversal.State{input,initial,0,Traversal.Offsets{offset,0}}))
-    case False{}:
-      %Equal.sym(Cursor.Cursor,Cursor.prepare(view),CursorLaws.pack(CursorLaws.initial(view)),CursorLaws.initial_matches(view)) :
-        {Traversal.finish_fold(~Array<Element>,~Accumulator,~Cursor.Cursor,Traversal.visit_fold(~Array<Element>,~Element,~Accumulator,~Cursor.Cursor,~Cursor.read(~Element),~operation,count,
-          Traversal.State{Tree.pack(Element,input),initial,0,_})) ==
-          pack_fold(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~ArrayLaws.pack_tree(~Element),reduce_model(~Element,~Accumulator,~operation,False{},count,view,input,initial)) : Array<Element> & Accumulator}
-      fold_relation(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),
-        ~Visit.represent_fold(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack),
-        ~visit_fold_finished(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack),
-        Traversal.visit_fold(~Array<Element>,~Element,~Accumulator,~Cursor.Cursor,~Cursor.read(~Element),~operation,count,Traversal.State{Tree.pack(Element,input),initial,0,CursorLaws.pack(CursorLaws.initial(view))}),
-        Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Accumulator,CursorLaws.Coordinates>,
-          ~Visit.model_fold_step(~Tree.Tree<Element>,~Element,~Accumulator,~CursorLaws.Coordinates,~TensorVisit.sample(~Element),~CursorLaws.next,~operation),count,Traversal.State{input,initial,0,CursorLaws.initial(view)}),
-        TensorVisit.fold(~Element,~Accumulator,~operation,count,Traversal.State{input,initial,0,CursorLaws.initial(view)}))
-
-def mapped_tree(~Element: Data,state: Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Unit>) -> Tree.Tree<Element>:
-  Traversal.State{reader,output,position,context} = state
-  output
-
-def map_finished(~Element: Data,+state: Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Unit>) ->
-  {Traversal.mapped_output(~Element,~Unit,ArrayLaws.represent_map(~Element,~Unit,state)) == Tree.pack(Element,mapped_tree(~Element,state)) : Array<Element>}:
-  Traversal.State{Unit{},output,position,context} = state
-  {==}
-
-def apply_model(~Element: Data,~operation: Element -> Element,count: Nat,position: U32,input: Tree.Tree<Element>) -> Tree.Tree<Element>:
-  mapped_tree(~Element,Loop.run(~Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Unit>,~ArrayLaws.model_map_step(~Element,~Unit,~ArrayLaws.unindexed(~Element,~Unit,~Access.apply_element(~Element,~operation))),count,Traversal.State{Unit{},input,position,Unit{}}))
-
-def apply(~Element: Data,~operation: Element -> Element,+count: Nat,+position: U32,+input: Tree.Tree<Element>) ->
-  {Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),count,position,Unit{},Tree.pack(Element,input)) == Tree.pack(Element,apply_model(~Element,~operation,count,position,input)) : Array<Element>}:
-  %Equal.sym(Traversal.State<&2,&1,Unit,Array<Element>,Unit>,
-    Loop.run(~Traversal.State<&2,&1,Unit,Array<Element>,Unit>,~Traversal.map_step(~Element,~Unit,~Access.apply_element(~Element,~operation)),count,Traversal.State{Unit{},Tree.pack(Element,input),position,Unit{}}),
-    ArrayLaws.represent_map(~Element,~Unit,Loop.run(~Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Unit>,~ArrayLaws.model_map_step(~Element,~Unit,~ArrayLaws.unindexed(~Element,~Unit,~Access.apply_element(~Element,~operation))),count,Traversal.State{Unit{},input,position,Unit{}})),
-    ArrayLaws.map_loop_refines_model(~Element,~Unit,~Access.apply_element(~Element,~operation),count,Traversal.State{Unit{},input,position,Unit{}})) :
-    {Traversal.mapped_output(~Element,~Unit,_) == Tree.pack(Element,apply_model(~Element,~operation,count,position,input)) : Array<Element>}
-  map_finished(~Element,Loop.run(~Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Unit>,~ArrayLaws.model_map_step(~Element,~Unit,~ArrayLaws.unindexed(~Element,~Unit,~Access.apply_element(~Element,~operation))),count,Traversal.State{Unit{},input,position,Unit{}}))
-
-def sample_indexed(~Element: Data,~operation: U32 -> Element -> Element,tree: Tree.Tree<Element>,context: Traversal.Offsets,position: U32) -> Element:
-  +position = position
-  operation(position,ArrayLaws.sample_offset(~Element,tree,context,position))
-
-def indexed_read(~Element: Data,~operation: U32 -> Element -> Element,+tree: Tree.Tree<Element>,+context: Traversal.Offsets,+position: U32) ->
-  {Access.read_indexed(~Element,~operation,ArrayLaws.pack_tree(~Element,tree),context,position) ==
-    (ArrayLaws.pack_tree(~Element,tree),sample_indexed(~Element,~operation,tree,context,position)) : Array<Element> & Element}:
-  %Equal.sym(Array<Element> & Element,Traversal.source_offset(~Element,ArrayLaws.pack_tree(~Element,tree),context,position),
-    (ArrayLaws.pack_tree(~Element,tree),ArrayLaws.sample_offset(~Element,tree,context,position)),
-    ArrayLaws.offset_read_refines_storage(~Element,tree,context,position)) :
-    {Access.indexed_value(~Element,~operation,position,_) ==
-      (ArrayLaws.pack_tree(~Element,tree),sample_indexed(~Element,~operation,tree,context,position)) : Array<Element> & Element}
-  {==}
-
-# Output element i is operation(i, input element i) for a contiguous view.
-def apply_indexed_model(~Element: Data,~operation: U32 -> Element -> Element,count: Nat,view: Views.View,
-  input: Tree.Tree<Element>,output: Tree.Tree<Element>) -> ModelResult<Tree.Tree<Element>,Element>:
-  Views.View{axes,offset} = view
-  finish_model(~Tree.Tree<Element>,~Element,~Traversal.Offsets,
-    Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,Traversal.Offsets>,
-      ~ArrayLaws.model_step(~Tree.Tree<Element>,~Element,~Traversal.Offsets,~sample_indexed(~Element,~operation),~Traversal.destination_offset),count,
-      Traversal.State{input,output,0,Traversal.Offsets{offset,0}}))
-
-def apply_indexed(~Element: Data,~operation: U32 -> Element -> Element,+count: Nat,+view: Views.View,+input: Tree.Tree<Element>,+output: Tree.Tree<Element>) ->
-  {Access.apply_indexed_run(~Element,~operation,count,view,Tree.pack(Element,input),Tree.pack(Element,output)) ==
-    pack_result(~Array<Element>,~Tree.Tree<Element>,~Element,~ArrayLaws.pack_tree(~Element),apply_indexed_model(~Element,~operation,count,view,input,output)) :
+def lines(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  +count: Nat,+view: Views.View,+runs: Nat,+extent: U32,+stride: U32,+initial: Accumulator,+input: Tree.Tree<Element>,+output: Tree.Tree<Element>) ->
+  {Access.reduce_lines(~Element,~Accumulator,~operation,~finish,count,view,runs,extent,stride,initial,Tree.pack(Element,input),Tree.pack(Element,output)) ==
+    pack_result(~Array<Element>,~Tree.Tree<Element>,~Element,~ArrayLaws.pack_tree(~Element),lines_model(~Element,~Accumulator,~operation,~finish,count,view,runs,extent,stride,initial,input,output)) :
     Array<Element> & Array<Element>}:
-  Views.View{axes,+offset} = view
-  finish_relation(~Array<Element>,~Tree.Tree<Element>,~Element,~Traversal.Offsets,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element),
-    ~ArrayLaws.represent(~Array<Element>,~Tree.Tree<Element>,~Element,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element)),
-    ~indexed_finished(~Array<Element>,~Tree.Tree<Element>,~Element,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element)),
-    Traversal.run(~Array<Element>,~Element,~Traversal.Offsets,~Access.read_indexed(~Element,~operation),~Traversal.destination_offset,count,
-      Traversal.State{Tree.pack(Element,input),Tree.pack(Element,output),0,Traversal.Offsets{offset,0}}),
-    Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,Traversal.Offsets>,
-      ~ArrayLaws.model_step(~Tree.Tree<Element>,~Element,~Traversal.Offsets,~sample_indexed(~Element,~operation),~Traversal.destination_offset),count,
-      Traversal.State{input,output,0,Traversal.Offsets{offset,0}}),
-    ArrayLaws.traversal_refines_model(~Array<Element>,~Tree.Tree<Element>,~Element,~Traversal.Offsets,~ArrayLaws.pack_tree(~Element),
-      ~Access.read_indexed(~Element,~operation),~sample_indexed(~Element,~operation),~Traversal.destination_offset,~indexed_read(~Element,~operation),
-      count,Traversal.State{input,output,0,Traversal.Offsets{offset,0}}))
+  +line = {LineCoordinates{CursorLaws.initial(view),runs,extent,stride,initial} : LineCoordinates<Accumulator>}
+  %Equal.sym(Cursor.Cursor,Cursor.prepare(view),CursorLaws.pack(CursorLaws.initial(view)),CursorLaws.initial_matches(view)) :
+    {Traversal.finish(~Array<Element>,~Element,~Access.Lines<Accumulator>,
+      Traversal.visit(~Array<Element>,~Element,~Access.Lines<Accumulator>,~Access.fold_line(~Element,~Accumulator,~operation,~finish),count,
+        Traversal.State{Tree.pack(Element,input),Tree.pack(Element,output),0,Access.Lines{_,runs,extent,stride,initial}})) ==
+      pack_result(~Array<Element>,~Tree.Tree<Element>,~Element,~ArrayLaws.pack_tree(~Element),lines_model(~Element,~Accumulator,~operation,~finish,count,view,runs,extent,stride,initial,input,output)) :
+      Array<Element> & Array<Element>}
+  finish_relation(~Array<Element>,~Tree.Tree<Element>,~Element,~Access.Lines<Accumulator>,~LineCoordinates<Accumulator>,~ArrayLaws.pack_tree(~Element),
+    ~Visit.represent(~Array<Element>,~Tree.Tree<Element>,~Element,~Access.Lines<Accumulator>,~LineCoordinates<Accumulator>,~ArrayLaws.pack_tree(~Element),~pack_line(~Accumulator)),
+    ~finished(~Array<Element>,~Tree.Tree<Element>,~Element,~Access.Lines<Accumulator>,~LineCoordinates<Accumulator>,~ArrayLaws.pack_tree(~Element),~pack_line(~Accumulator)),
+    Traversal.visit(~Array<Element>,~Element,~Access.Lines<Accumulator>,~Access.fold_line(~Element,~Accumulator,~operation,~finish),count,
+      Traversal.State{Tree.pack(Element,input),Tree.pack(Element,output),0,pack_line(~Accumulator,line)}),
+    Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,LineCoordinates<Accumulator>>,
+      ~Visit.model_step(~Tree.Tree<Element>,~Element,~LineCoordinates<Accumulator>,~sample_line(~Element,~Accumulator,~operation,~finish),~next_line(~Accumulator)),count,
+      Traversal.State{input,output,0,line}),
+    Visit.visit(~Array<Element>,~Tree.Tree<Element>,~Element,~Access.Lines<Accumulator>,~LineCoordinates<Accumulator>,~ArrayLaws.pack_tree(~Element),~pack_line(~Accumulator),
+      ~Access.fold_line(~Element,~Accumulator,~operation,~finish),~sample_line(~Element,~Accumulator,~operation,~finish),~next_line(~Accumulator),
+      ~line_matches(~Element,~Accumulator,~operation,~finish),count,Traversal.State{input,output,0,line}))
+

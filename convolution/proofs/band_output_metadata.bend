@@ -33,19 +33,19 @@ import ../../lib/proofs/tensor_band_allocated_metadata.bend as Allocated
 # Actual shape/support guards supply the window mapping's machine envelope.
 # The source Domain and accepted batch output bound are retained in the frame.
 def window_guards_height(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> U32:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   U32.from_nat(h)
 
 def output_height(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> U32:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   U32.from_nat(ConvSpec.axis_size(h,k,s,p))
 
 def window_guards_stride(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> U32:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   U32.from_nat(s)
 
 def window_guards_images(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> U32:
-  PipelineExecution.Frame{logical,activation,dimensions,window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,dimensions,window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   window_guards_images
 
 type Envelope<-Logical: Data,-frame: PipelineExecution.Frame<Logical>> is Data:
@@ -73,7 +73,7 @@ def rows_room(+window_guards_images: Nat,+channels: Nat,+window_guards_height: N
     RowMajor.mul_le(window_guards_height,density,window_guards_images,inside),room)
 
 def Words(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> Data:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   LeafValues.Words<ci,co,h,w,k,s,p>
 
 def stride_word(+ci: Nat,+co: Nat,+h: Nat,+w: Nat,+k: Nat,+s: Nat,+p: Nat,words: LeafValues.Words<ci,co,h,w,k,s,p>) -> {U32.to_nat(U32.from_nat(s)) == s : Nat}:
@@ -86,11 +86,11 @@ def output_height_word(+ci: Nat,+co: Nat,+h: Nat,+w: Nat,+k: Nat,+s: Nat,+p: Nat
   oh
 
 def stride_value(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> Nat:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   s
 
 def output_channels(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> Nat:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   co
 
 def window_guards_from_words(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+words: Words(~Logical,frame),
@@ -98,14 +98,15 @@ def window_guards_from_words(~Logical: Data,+frame: PipelineExecution.Frame<Logi
   +height_room: {Nat.is_le(U32.to_nat(window_guards_height(~Logical,frame)),U32.to_nat(Machine.capacity(PipelineExecution.convolution_limits(~Logical,frame)))) == True{} : Bool},
   +stride_positive: {Nat.is_lt(0n,stride_value(~Logical,frame)) == True{} : Bool},
   +stride_room: {Nat.is_le(stride_value(~Logical,frame),U32.to_nat(Machine.capacity(PipelineExecution.convolution_limits(~Logical,frame)))) == True{} : Bool},
-  +outputs_positive: {Nat.is_lt(0n,output_channels(~Logical,frame)) == True{} : Bool}) -> Envelope<Logical,frame>:
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+window_guards_images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
-  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +outputs_positive: {Nat.is_lt(0n,output_channels(~Logical,frame)) == True{} : Bool},
+  +plane: {Nat.is_le(LeafValues.output_plane(PipelineExecution.dimensions(~Logical,frame)),U32.to_nat(Machine.capacity(PipelineExecution.convolution_limits(~Logical,frame)))) == True{} : Bool}) -> Envelope<Logical,frame>:
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+window_guards_images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
+  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   +s_exact = stride_word(ci,co,h,w,k,s,p,words)
   +oh_exact = output_height_word(ci,co,h,w,k,s,p,words)
   +oh = ConvSpec.axis_size(h,k,s,p)
   +ow = ConvSpec.axis_size(w,k,s,p)
-  +oh_room = LeafValues.output_height_room(limits,window_guards_images,co,h,w,k,s,p,Caller.images_positive(window_guards_images,True{},ci,co,h,w,k,s,p,eligible),outputs_positive,room)
+  +oh_room = LeafValues.output_height_room(limits,co,h,w,k,s,p,outputs_positive,plane)
   +native_stride_room = {
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(s)),s,s_exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     stride_room : {Nat.is_le(U32.to_nat(U32.from_nat(s)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
@@ -122,17 +123,17 @@ def window_guards_from_words(~Logical: Data,+frame: PipelineExecution.Frame<Logi
     {==}}
 
 def window_guards_envelope(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>) -> Envelope<Logical,frame>:
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+window_guards_images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+window_guards_images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
   +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
-  +frame = {PipelineExecution.Frame{logical,activation,dimensions,window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +frame = {PipelineExecution.Frame{logical,activation,dimensions,window_guards_images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   +problem = Caller.problem(~Logical,~original,logical,dimensions,sw,sb,0n)
   +problem_valid = Caller.valid(~Logical,~original,logical,dimensions,sw,sb,0n,valid)
   +problem_supported = Caller.supported(~Logical,~original,logical,limits,dimensions,sw,sb,0n,supported)
   +support = Padded.scalar(limits,problem,Support.fast(limits,problem,problem_supported))
   window_guards_from_words(~Logical,frame,Caller.words(limits,problem,problem_valid,problem_supported),
-    TensorBandWindow.height_positive(PipelineExecution.input_geometry(~Logical,frame),limits,capacity,domain),PipelineExecution.input_height_room(~Logical,frame),Caller.stride_positive(problem,problem_valid),
+    TensorBandWindow.height_positive(PipelineExecution.input_geometry(~Logical,frame),limits,capacity,domain),PipelineExecution.input_height_room(~Logical,~original,frame),Caller.stride_positive(problem,problem_valid),
     Order.transitive(s,U32.to_nat(Machine.dimension(limits)),U32.to_nat(Machine.capacity(limits)),SupportedCoordinateBounds.stride_bound(limits,problem,support),Bounds.as_nat_le(Machine.dimension(limits),Machine.capacity(limits),Limits.dimension_within_capacity(limits))),
-    Caller.outputs_positive(problem,problem_valid))
+    Caller.outputs_positive(problem,problem_valid),Caller.plane_room(limits,problem,problem_supported))
 
 # The real native window rows refine the monotone global output row map.
 # Source metadata and the accepted Frame guards discharge the word premises.
@@ -183,18 +184,18 @@ def plan_mapping_coordinates(~Logical: Data,+frame: PipelineExecution.Frame<Logi
 
 def plan_mapping_leaf(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32,+length: Nat,
   metadata: BandShape.Leaf(PipelineExecution.input_geometry(~Logical,frame),first,rows,length)) -> RowMapping<Logical,frame,first,rows>:
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
   BandShape.Fields{+local,+rows_fit,length_exact} = metadata
-  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   +envelope = window_guards_envelope(~Logical,~original,frame)
   from_envelope(~Logical,frame,first,rows,plan_mapping_coordinates(~Logical,frame,first,rows,local,envelope),
     Order.transitive(U32.to_nat(first),Nat.add(U32.to_nat(first),U32.to_nat(rows)),Nat.mul(U32.to_nat(images),U32.to_nat(U32.from_nat(h))),Order.le_add(U32.to_nat(first),U32.to_nat(rows)),rows_fit),envelope)
 
-def native_plan(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,plan: Bands.Plan) -> Bands.Plan:
-  match plan:
-    case Bands.Rows{+first,rows}: Bands.Rows{native_first(~Logical,frame,first),native_rows(~Logical,frame,first,rows)}
-    case Bands.Split{left,right}: Bands.Split{native_plan(~Logical,frame,left),native_plan(~Logical,frame,right)}
+def native_band(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32) -> Bands.Plan:
+  Bands.Rows{native_first(~Logical,frame,first),native_rows(~Logical,frame,first,rows)}
 
+def native_plan(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,plan: Bands.Plan) -> Bands.Plan:
+  Model.plan_map(~PipelineExecution.Frame<Logical>,~native_band(~Logical),frame,plan)
 def row_plan(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32,evidence: RowMapping<Logical,frame,first,rows>) ->
   {native_plan(~Logical,frame,Bands.Rows{first,rows}) == BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,mapping(~Logical,frame),Bands.Rows{first,rows}) : Bands.Plan}:
   RowMapping{first_exact,rows_exact} = evidence
@@ -231,9 +232,9 @@ def covered(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExec
 def coverage(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+source: Model.Model<F32>,
   evidence: BandShape.WellFormed<F32,PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,source)>) ->
   BandPlan.Coverage(native_plan(~Logical,frame,Model.layout(~F32,source)),0n,Nat.mul(U32.to_nat(window_guards_images(~Logical,frame)),U32.to_nat(output_height(~Logical,frame)))):
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
   BandShape.WellFormed{metadata,ready,coverage} = evidence
-  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   covered(~Logical,~original,frame,source,metadata,
     %Equal.sym(Bands.Plan,Model.layout(~F32,source),Model.content_layout(~F32,Model.content(~F32,source)),Model.layout_matches_content(~F32,source)) : BandPlan.Coverage(_,0n,Inspection.total_rows(PipelineExecution.input_geometry(~Logical,frame)))
     coverage,window_guards_envelope(~Logical,~original,frame))
@@ -241,7 +242,7 @@ def coverage(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExe
 # Actual mapped row descriptors retain image locality and batch containment.
 # Allocation length is supplied separately by the convolution leaf owner.
 def bounds_geometry(~Logical: Data,frame: PipelineExecution.Frame<Logical>) -> Bands.Geometry:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,+k,+s,+p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,+k,+s,+p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} = frame
   Bands.Geometry{images,U32.from_nat(co),U32.from_nat(ConvSpec.axis_size(h,k,s,p)),U32.from_nat(ConvSpec.axis_size(w,k,s,p))}
 
 def local(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32,
@@ -317,17 +318,17 @@ def fields(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+first: U32,+
   source_fit: {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),Nat.mul(U32.to_nat(window_guards_images(~Logical,frame)),U32.to_nat(window_guards_height(~Logical,frame)))) == True{} : Bool},
   +envelope: Envelope<Logical,frame>,length_exact: {length == bounds_elements(~Logical,frame,first,rows) : Nat}) ->
   BandShape.Leaf(bounds_geometry(~Logical,frame),native_first(~Logical,frame,first),native_rows(~Logical,frame,first,rows),length):
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
-  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
+  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   BandShape.Fields{local(~Logical,frame,first,rows,mapped,endpoints,envelope),rows_fit(~Logical,frame,first,rows,mapped,source_fit,envelope),length_exact}
 
 def from_source(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32,+source_length: Nat,+output_length: Nat,
   source: BandShape.Leaf(PipelineExecution.input_geometry(~Logical,frame),first,rows,source_length),
   length_exact: {output_length == bounds_elements(~Logical,frame,first,rows) : Nat}) ->
   BandShape.Leaf(bounds_geometry(~Logical,frame),native_first(~Logical,frame,first),native_rows(~Logical,frame,first,rows),output_length):
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
   BandShape.Fields{+local,+fit,+source_exact} = source
-  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   +source = {BandShape.Fields{local,fit,source_exact} : BandShape.Leaf(PipelineExecution.input_geometry(~Logical,frame),first,rows,source_length)}
   +envelope = window_guards_envelope(~Logical,~original,frame)
   fields(~Logical,frame,first,rows,output_length,plan_mapping_leaf(~Logical,~original,frame,first,rows,source_length,source),
@@ -336,7 +337,7 @@ def from_source(~Logical: Data,~original: Logical -> U32 -> F32,+frame: Pipeline
 # The real per-band output allocation is bounded by the accepted batch shape.
 # These caller facts use the existing convolution guard and leaf contract.
 def allocation_bounds_count(~Logical: Data,frame: PipelineExecution.Frame<Logical>,first: U32,rows: U32) -> U32:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room} = frame
   (U32.from_nat(co) * (TensorBandWindow.output_rows(BandWindow.window(LeafValues.geometry(images,KernelShape.Dimensions{ci,co,h,w,k,s,p}),first,rows)) * U32.from_nat(ConvSpec.axis_size(w,k,s,p)) : U32) : U32)
 
 def allocation_bounds_from_words(+images: U32,+ci: Nat,+co: Nat,+h: Nat,+w: Nat,+k: Nat,+s: Nat,+p: Nat,+limits: Machine.Limits,+first: U32,+rows: U32,
@@ -361,35 +362,35 @@ def allocation_bounds_from_words(+images: U32,+ci: Nat,+co: Nat,+h: Nat,+w: Nat,
 
 def bounded(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32) ->
   {U32.is_le(allocation_bounds_count(~Logical,frame,first,rows),1073741824) == True{} : Bool}:
-  PipelineExecution.Frame{+logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,parallel,+limits,capacity,+weights,+bias,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{+logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,parallel,+limits,capacity,+weights,+bias,we,be,domain,valid,supported,room} = frame
   +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
   +problem = Caller.problem(~Logical,~original,logical,dimensions,weights,bias,0n)
   +problem_valid = Caller.valid(~Logical,~original,logical,dimensions,weights,bias,0n,valid)
   +problem_supported = Caller.supported(~Logical,~original,logical,limits,dimensions,weights,bias,0n,supported)
   Counts.allocatable_of(U32.from_nat(co),TensorBandWindow.output_rows(BandWindow.window(LeafValues.geometry(images,dimensions),first,rows)),U32.from_nat(ConvSpec.axis_size(w,k,s,p)),
     allocation_bounds_from_words(images,ci,co,h,w,k,s,p,limits,first,rows,Caller.words(limits,problem,problem_valid,problem_supported),Caller.outputs_positive(problem,problem_valid),
-      LeafValues.right_factor_room(U32.to_nat(images),Nat.mul(co,Nat.mul(ConvSpec.axis_size(h,k,s,p),ConvSpec.axis_size(w,k,s,p))),Machine.capacity(limits),Caller.images_positive(images,True{},ci,co,h,w,k,s,p,eligible),room)))
+      Caller.plane_room(limits,problem,problem_supported)))
 
 def allocation_bounds_elements(~Logical: Data,frame: PipelineExecution.Frame<Logical>,first: U32,rows: U32) -> Nat:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room} = frame
   Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(TensorBandWindow.output_rows(BandWindow.window(LeafValues.geometry(images,KernelShape.Dimensions{ci,co,h,w,k,s,p}),first,rows))),U32.to_nat(U32.from_nat(ConvSpec.axis_size(w,k,s,p)))))
 
 def exact(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32) ->
   {U32.to_nat(allocation_bounds_count(~Logical,frame,first,rows)) == allocation_bounds_elements(~Logical,frame,first,rows) : Nat}:
-  PipelineExecution.Frame{+logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,parallel,+limits,capacity,+weights,+bias,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{+logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,parallel,+limits,capacity,+weights,+bias,we,be,domain,valid,supported,room} = frame
   +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
   +problem = Caller.problem(~Logical,~original,logical,dimensions,weights,bias,0n)
   +problem_valid = Caller.valid(~Logical,~original,logical,dimensions,weights,bias,0n,valid)
   +problem_supported = Caller.supported(~Logical,~original,logical,limits,dimensions,weights,bias,0n,supported)
   Counts.exact_of(U32.from_nat(co),TensorBandWindow.output_rows(BandWindow.window(LeafValues.geometry(images,dimensions),first,rows)),U32.from_nat(ConvSpec.axis_size(w,k,s,p)),
     allocation_bounds_from_words(images,ci,co,h,w,k,s,p,limits,first,rows,Caller.words(limits,problem,problem_valid,problem_supported),Caller.outputs_positive(problem,problem_valid),
-      LeafValues.right_factor_room(U32.to_nat(images),Nat.mul(co,Nat.mul(ConvSpec.axis_size(h,k,s,p),ConvSpec.axis_size(w,k,s,p))),Machine.capacity(limits),Caller.images_positive(images,True{},ci,co,h,w,k,s,p,eligible),room)))
+      Caller.plane_room(limits,problem,problem_supported)))
 
 # The actual convolution leaf returns an allocator-ready output owner. Its
 # size premise is discharged by the public shape/support and batch guards.
 def bands(~custom: F32 -> F32,~Logical: Data,frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32,
   core: Buffer.Model<F32>,above: Buffer.Model<F32>,below: Buffer.Model<F32>,weights: Buffer.Model<Tile.Tile8>,bias: Buffer.Model<F32>) -> Bands.Bands(~F32):
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},images,parallel,limits,capacity,source_weights,source_bias,we,be,domain,valid,supported,room,eligible} = frame
+  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},images,parallel,limits,capacity,source_weights,source_bias,we,be,domain,valid,supported,room} = frame
   +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
   +geometry = LeafValues.geometry(images,dimensions)
   BandPipeline.windowed(~custom,activation,geometry,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(k,k))),first,rows,BandWindow.window(geometry,first,rows),
@@ -398,9 +399,9 @@ def bands(~custom: F32 -> F32,~Logical: Data,frame: PipelineExecution.Frame<Logi
 def ready(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32,
   +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,+weights: Buffer.Model<Tile.Tile8>,+bias: Buffer.Model<F32>) ->
   Model.ContentReady(~F32,Model.contents(~F32,bands(~custom,~Logical,frame,first,rows,core,above,below,weights,bias))):
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+source_weights,+source_bias,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+source_weights,+source_bias,+we,+be,+domain,+valid,+supported,+room} = frame
   +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
-  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,source_weights,source_bias,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,source_weights,source_bias,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   +geometry = LeafValues.geometry(images,dimensions)
   KernelBandBufferShape.ready_leaf(allocation_bounds_count(~Logical,frame,first,rows),bands(~custom,~Logical,frame,first,rows,core,above,below,weights,bias),
     KernelBandBufferShape.windowed(~custom,activation,geometry,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(k,k))),first,rows,BandWindow.window(geometry,first,rows),
@@ -413,13 +414,13 @@ def when(~Logical: Data,enabled: Bool,+frame: PipelineExecution.Frame<Logical>,+
   {PipelineExecution.output_window(LeafValues.window_when(enabled,PipelineExecution.dimensions(~Logical,frame),first,rows)) ==
     Bands.Rows{native_first(~Logical,frame,first),native_rows(~Logical,frame,first,rows)} : Bands.Plan}:
   match enabled frame:
-    case True{} PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible}: {==}
-    case False{} PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible}: {==}
+    case True{} PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room}: {==}
+    case False{} PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room}: {==}
 
 def window_layout_window(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32) ->
   {PipelineExecution.output_window(BandWindow.window(PipelineExecution.window_geometry(~Logical,frame),first,rows)) == Bands.Rows{native_first(~Logical,frame,first),native_rows(~Logical,frame,first,rows)} : Bands.Plan}:
-  PipelineExecution.Frame{+logical,+activation,+dimensions,+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
-  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  PipelineExecution.Frame{+logical,+activation,+dimensions,+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
+  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   %Equal.sym(BandWindow.RowWindow,BandWindow.window(LeafValues.geometry(images,dimensions),first,rows),LeafValues.window_when(LeafValues.active(dimensions,first,rows),dimensions,first,rows),LeafValues.window_matches(images,dimensions,first,rows)) :
     {PipelineExecution.output_window(_) == Bands.Rows{native_first(~Logical,frame,first),native_rows(~Logical,frame,first,rows)} : Bands.Plan}
   when(~Logical,LeafValues.active(dimensions,first,rows),frame,first,rows)
@@ -433,9 +434,9 @@ def window_rows(+window: BandWindow.RowWindow) ->
 
 def metadata_elements(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+first: U32,+rows: U32) ->
   {allocation_bounds_elements(~Logical,frame,first,rows) == bounds_elements(~Logical,frame,first,rows) : Nat}:
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
   +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
-  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   +window = BandWindow.window(LeafValues.geometry(images,dimensions),first,rows)
   Equal.cong(U32,Nat,row => Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(row),U32.to_nat(U32.from_nat(ConvSpec.axis_size(w,k,s,p))))),
     TensorBandWindow.output_rows(window),native_rows(~Logical,frame,first,rows),
@@ -446,9 +447,9 @@ def metadata_leaf(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -
   +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,+weights: Buffer.Model<Tile.Tile8>,+bias: Buffer.Model<F32>,+source_length: Nat,
   source: BandShape.Leaf(PipelineExecution.input_geometry(~Logical,frame),first,rows,source_length)) ->
   BandShape.Contents(~F32,bounds_geometry(~Logical,frame),Model.contents(~F32,bands(~custom,~Logical,frame,first,rows,core,above,below,weights,bias))):
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room,+eligible} = frame
+  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,+parallel,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
   +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
-  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room,eligible} : PipelineExecution.Frame<Logical>}
+  +frame = {PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
   +geometry = LeafValues.geometry(images,dimensions)
   +window = BandWindow.window(geometry,first,rows)
   +count = allocation_bounds_count(~Logical,frame,first,rows)

@@ -3,7 +3,6 @@ import ../../lib/proofs/storage_shape.bend as Shape
 # Whole-list roundtrip through the actual native pack/unpack API.
 import Base
 import ./encoded_array_read.bend as EncodedRead
-import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./list_array_storage.bend as ListStorage
 import ./list_array_allocation.bend as ListArrayAllocation
@@ -13,7 +12,6 @@ import ../../lib/proofs/u32_successor.bend as U32Successor
 import ./storage_capacity.bend as StorageCapacity
 import ../../lib/proofs/u32_division.bend as U32Division
 import ../specification.bend as ConvSpec
-import ../scalar_kernel.bend as ScalarConv
 
 def enumerate(n: Nat,+i: Nat,+xs: List<&2,F32>) -> List<&2,F32>:
   match n:

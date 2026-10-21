@@ -12,6 +12,7 @@ import ../../lib/proofs/binary_radix.bend as Radix
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
+import ../../lib/proofs/nat_order.bend as Order
 
 type OutputPixel<-problem: ConvSpec.Problem> is Data:
   OutputPixel{channel: Nat,row: Nat,column: Nat,
@@ -57,7 +58,7 @@ def decode(+limits: Machine.Limits,+problem: ConvSpec.Problem,+pixel: OutputPixe
   +half_fits = Limits.half_word_fits(limits)
   +spatial_exact = Padded.scalar_spatial_exact(limits,problem,facts,support)
   +width_exact = Coordinates.width_exact(limits,problem,facts,support)
-  +spatial_positive = Support.positive_mul(output_height,output_width,{==},{==})
+  +spatial_positive = Order.product_positive(output_height,output_width,{==},{==})
   +position_bound = RowMajor.radix(row,output_height,column,output_width,row_bound,column_bound)
   +spatial_double = Limits.double_bound(limits,spatial,Padded.spatial_bound_facts(limits,problem,facts,support))
   +width_double = Limits.double_bound(limits,output_width,Coordinates.width_bound(limits,problem,facts,support))

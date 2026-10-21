@@ -5,7 +5,6 @@ import ../tensor_shape.bend as Shapes
 import ./tensor_cursor_model.bend as CursorModel
 import ./tensor_cursor_refinement.bend as CursorLaws
 import ./tensor_shape_refinement.bend as ShapeLaws
-import ./tensor_contiguous_bounds.bend as ContiguousBounds
 import ./storage_shape.bend as Shape
 import ./row_major_index.bend as RowMajor
 import ./natural_addition.bend as Addition
@@ -13,16 +12,12 @@ import ./boolean_logic.bend as Boolean
 import ./word_encoding.bend as WordEncoding
 import ./nat_order.bend as Order
 import ./tensor_linear_layout.bend as LinearLayout
+import ./bounded_u32_arithmetic.bend as Arithmetic
+import ./nat_division_order.bend as DivisionOrder
 
 def last_coordinate(+extent: Nat,+coordinate: Nat,
   inside: {Nat.is_lt(coordinate,extent) == True{} : Bool},last: {Nat.is_lt(1n+coordinate,extent) == False{} : Bool}) -> {extent == 1n+coordinate : Nat}:
-  match extent coordinate:
-    case 0n 0n: Empty.absurd({0n == 1n : Nat},WordEncoding.false_true(inside))
-    case 0n 1n+coordinate: Empty.absurd({0n == 2n+coordinate : Nat},WordEncoding.false_true(inside))
-    case 1n 0n: {==}
-    case 2n+extent 0n: Empty.absurd({2n+extent == 1n : Nat},WordEncoding.false_true(Equal.sym(Bool,True{},False{},last)))
-    case 1n+ +extent 1n+ +coordinate:
-      Equal.cong(Nat,Nat,value => 1n+value,extent,1n+coordinate,last_coordinate(extent,coordinate,inside,last))
+  Equal.sym(Nat,1n+coordinate,extent,DivisionOrder.not_below(coordinate,extent,inside,last))
 
 def carried_position(+extent: Nat,+coordinate: Nat,+tail_position: Nat,last: {extent == 1n+coordinate : Nat}) ->
   {1n+Nat.add(coordinate,Nat.mul(extent,tail_position)) == Nat.mul(extent,1n+tail_position) : Nat}:
@@ -112,20 +107,27 @@ def prepared_size(+axes: List<&2,Views.Axis>,+reversed: List<&2,CursorModel.Coor
       %product_reorder(ShapeLaws.elements(Views.axis_extents(tail)),U32.to_nat(extent),CursorModel.extent_product(reversed)) :
         {CursorModel.extent_product(CursorModel.prepare_axes(Views.Axis{extent,stride} <> tail,reversed)) == _ : Nat}
       %included_size(U32.to_nat(extent),U32.to_nat(stride),reversed,
-        ContiguousBounds.extent_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty))) :
+        Arithmetic.word_nonzero_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty))) :
         {CursorModel.extent_product(CursorModel.prepare_axes(Views.Axis{extent,stride} <> tail,reversed)) == Nat.mul(ShapeLaws.elements(Views.axis_extents(tail)),_) : Nat}
       prepared_size(tail,Bool.pick(List<&2,CursorModel.Coordinate>,Nat.is_lt(1n,U32.to_nat(extent)),CursorModel.Coordinate{U32.to_nat(extent),0n,U32.to_nat(stride)} <> reversed,reversed),
         Boolean.or_false_right(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty))
 
 def initial_size(+axes: List<&2,Views.Axis>,nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool}) ->
   {CursorModel.extent_product(CursorModel.prepare_axes(axes,[])) == ShapeLaws.elements(Views.axis_extents(axes)) : Nat}:
-  %ShapeLaws.times_one(ShapeLaws.elements(Views.axis_extents(axes))) : {CursorModel.extent_product(CursorModel.prepare_axes(axes,[])) == _ : Nat}
+  %Order.times_one(ShapeLaws.elements(Views.axis_extents(axes))) : {CursorModel.extent_product(CursorModel.prepare_axes(axes,[])) == _ : Nat}
   prepared_size(axes,[],nonempty)
 
 def iterate(count: Nat,axes: List<&2,CursorModel.Coordinate>) -> List<&2,CursorModel.Coordinate>:
   match count:
     case 0n: axes
     case 1n+remaining: iterate(remaining,CursorModel.advance(axes))
+
+# One more step after count steps is count plus one steps.
+def advance_iterate(count: Nat,+axes: List<&2,CursorModel.Coordinate>) ->
+  {CursorModel.advance(iterate(count,axes)) == iterate(1n+count,axes) : List<&2,CursorModel.Coordinate>}:
+  match count:
+    case 0n: {==}
+    case 1n+remaining: advance_iterate(remaining,CursorModel.advance(axes))
 
 def iterate_valid(count: Nat,+axes: List<&2,CursorModel.Coordinate>,valid: CursorLaws.Valid(axes)) -> CursorLaws.Valid(iterate(count,axes)):
   match count:

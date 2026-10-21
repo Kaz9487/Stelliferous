@@ -6,9 +6,8 @@ import ./convolution_guard_facts.bend as Guards
 import ./concrete_support_guard.bend as Support
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./supported_padded_coordinates.bend as Padded
-import ./reduction_coordinate_bounds.bend as Coordinates
 import ./packing_tile_bounds.bend as PackingBounds
-import ./tile_partition_bounds.bend as TilePartitionBounds
+import ../../lib/proofs/kernel_partition_bounds.bend as TilePartitionBounds
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/nat_order.bend as Order

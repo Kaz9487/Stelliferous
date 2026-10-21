@@ -16,46 +16,12 @@ import ../../lib/proofs/natural_addition.bend as Addition
 import ../../lib/proofs/nat_division.bend as Division
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/row_major_index.bend as RowMajor
-import ../../lib/proofs/word_encoding.bend as WordEncoding
 
 def window(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat) -> ConvSpec.Problem:
   ConvSpec.Problem{shape,input,weights,bias} = problem
   ConvSpec.Shape{+ci,co,height,+width,kernel,stride,padding} = shape
   ConvSpec.Problem{ConvSpec.Shape{ci,co,rows,width,kernel,stride,padding},
     WindowBandValues.values(Nat.mul(ci,Nat.mul(rows,width)),0n,WindowBandValues.Band{input,height,width,first,rows}),weights,bias}
-
-def lt_offset(+offset: Nat,+left: Nat,+right: Nat) -> {Nat.is_lt(Nat.add(offset,left),Nat.add(offset,right)) == Nat.is_lt(left,right) : Bool}:
-  match offset:
-    case 0n: {==}
-    case 1n+ +rest: lt_offset(rest,left,right)
-
-def le_offset(+offset: Nat,+left: Nat,+right: Nat) -> {Nat.is_le(Nat.add(offset,left),Nat.add(offset,right)) == Nat.is_le(left,right) : Bool}:
-  match offset:
-    case 0n: {==}
-    case 1n+ +rest: le_offset(rest,left,right)
-
-def succ_le(+value: Nat,+limit: Nat) -> {Nat.is_le(1n+value,limit) == Nat.is_lt(value,limit) : Bool}:
-  match value limit:
-    case 0n 0n: {==}
-    case 1n+rest 0n: {==}
-    case 0n 1n+ +rest: Order.zero_le(rest)
-    case 1n+ +left 1n+ +right: succ_le(left,right)
-
-def lt_le(+a: Nat,+b: Nat,+c: Nat,+ab: {Nat.is_lt(a,b) == True{} : Bool},+bc: {Nat.is_le(b,c) == True{} : Bool}) -> {Nat.is_lt(a,c) == True{} : Bool}:
-  %succ_le(a,c) : {_ == True{} : Bool}
-  Order.transitive(1n+a,b,c,Order.strict_follow(a,b,ab),bc)
-
-def sub_offset(+offset: Nat,+value: Nat,+amount: Nat,+order: {Nat.is_le(amount,value) == True{} : Bool}) ->
-  {Nat.sub(Nat.add(offset,value),amount) == Nat.add(offset,Nat.sub(value,amount)) : Nat}:
-  match value amount:
-    case 0n 0n: Order.subtract_zero(Nat.add(offset,0n))
-    case 1n+ +rest 0n: Order.subtract_zero(Nat.add(offset,1n+rest))
-    case 0n 1n+rest:
-      Empty.absurd({Nat.sub(Nat.add(offset,0n),1n+rest) == Nat.add(offset,Nat.sub(0n,1n+rest)) : Nat},WordEncoding.false_true(order))
-    case 1n+ +rest 1n+ +less:
-      %Equal.sym(Nat,Nat.add(offset,1n+rest),1n+Nat.add(offset,rest),Addition.successor_right(offset,rest)) :
-        {Nat.sub(_,1n+less) == Nat.add(offset,Nat.sub(rest,less)) : Nat}
-      sub_offset(offset,rest,less,order)
 
 def le_after(+first: Nat,+row: Nat) -> {Nat.is_le(row,Nat.add(first,row)) == True{} : Bool}:
   %Order.commutative(row,first) : {Nat.is_le(row,_) == True{} : Bool}
@@ -73,17 +39,46 @@ def row_shift(+block: Nat,+row: Nat,+stride: Nat,+kernel_row: Nat,+first: Nat,+f
     {Nat.add(Nat.mul(block,stride),Nat.add(Nat.mul(row,stride),kernel_row)) == Nat.add(_,Nat.add(Nat.mul(row,stride),kernel_row)) : Nat}
   {==}
 
-# No read needs a row above the window, unless the window starts at row 0.
-def low(+first: Nat,+padding: Nat,+row: Nat,+top: Either<&2,&2,{first == 0n : Nat},{Nat.is_le(padding,row) == True{} : Bool}>) ->
+# How the window's top meets the read rows from row to row + reach: the
+# window starts at row 0, the rows lie at or below the top padding of the
+# window, or the original rows lie in the padding above the image.
+type Top<-first: Nat,-padding: Nat,-row: Nat,-reach: Nat> is Data:
+  Start{zero: {first == 0n : Nat}}
+  Below{inside: {Nat.is_le(padding,row) == True{} : Bool}}
+  Above{outside: {Nat.is_le(Nat.add(Nat.add(first,row),reach),padding) == True{} : Bool}}
+
+def not_reached(+row: Nat,+padding: Nat,below: {Nat.is_lt(row,padding) == True{} : Bool}) -> {Nat.is_le(padding,row) == False{} : Bool}:
+  match row padding:
+    case 0n 0n: Empty.absurd({Nat.is_le(0n,0n) == False{} : Bool},Order.below_zero(0n,below))
+    case 1n+row 0n: Empty.absurd({Nat.is_le(0n,1n+row) == False{} : Bool},Order.below_zero(1n+row,below))
+    case 0n 1n+padding: {==}
+    case 1n+row 1n+padding: not_reached(row,padding,below)
+
+# A row whose successor fits below a bound is below it.
+def before_bound(+row: Nat,+bound: Nat,+room: {Nat.is_le(Nat.add(row,1n),bound) == True{} : Bool}) -> {Nat.is_lt(row,bound) == True{} : Bool}:
+  Bounds.nat_trans(row,1n+row,bound,Order.lt_succ(row,row,Order.reflexive(row)),
+    %Order.commutative(row,1n) : {Nat.is_le(_,bound) == True{} : Bool}
+    room)
+
+# No read needs a row above the window, unless the window starts at row 0 or
+# the read lies in the padding above the image in both problems.
+def low(+first: Nat,+padding: Nat,+row: Nat,+top: Top<first,padding,row,1n>) ->
   {Nat.is_le(padding,Nat.add(first,row)) == Nat.is_le(padding,row) : Bool}:
   match top:
-    case Inl{+zero}:
+    case Start{+zero}:
       %Equal.sym(Nat,first,0n,zero) : {Nat.is_le(padding,Nat.add(_,row)) == Nat.is_le(padding,row) : Bool}
       {==}
-    case Inr{+below}:
+    case Below{+below}:
       %Equal.sym(Bool,Nat.is_le(padding,Nat.add(first,row)),True{},Order.transitive(padding,row,Nat.add(first,row),below,le_after(first,row))) :
         {_ == Nat.is_le(padding,row) : Bool}
       %Equal.sym(Bool,Nat.is_le(padding,row),True{},below) : {True{} == _ : Bool}
+      {==}
+    case Above{+outside}:
+      +shifted = before_bound(Nat.add(first,row),padding,outside)
+      %Equal.sym(Bool,Nat.is_le(padding,Nat.add(first,row)),False{},not_reached(Nat.add(first,row),padding,shifted)) :
+        {_ == Nat.is_le(padding,row) : Bool}
+      %Equal.sym(Bool,Nat.is_le(padding,row),False{},not_reached(row,padding,Order.le_lt_trans(row,Nat.add(first,row),padding,le_after(first,row),shifted))) :
+        {False{} == _ : Bool}
       {==}
 
 # No read needs a row below the window, unless the window ends at the image end.
@@ -95,18 +90,18 @@ def high(+first: Nat,+rows: Nat,+height: Nat,+padding: Nat,+row: Nat,+fits: {Nat
       %Equal.sym(Nat,height,Nat.add(first,rows),full) : {Nat.is_lt(Nat.add(first,row),Nat.add(padding,_)) == Nat.is_lt(row,Nat.add(padding,rows)) : Bool}
       %Equal.sym(Nat,Nat.add(padding,Nat.add(first,rows)),Nat.add(first,Nat.add(padding,rows)),RowMajor.add_swap(padding,first,rows)) :
         {Nat.is_lt(Nat.add(first,row),_) == Nat.is_lt(row,Nat.add(padding,rows)) : Bool}
-      lt_offset(first,row,Nat.add(padding,rows))
+      Order.lt_offset(first,row,Nat.add(padding,rows))
     case Inr{+inside}:
       +shifted = {%Equal.sym(Bool,Nat.is_lt(Nat.add(first,row),Nat.add(first,Nat.add(padding,rows))),Nat.is_lt(row,Nat.add(padding,rows)),
-          lt_offset(first,row,Nat.add(padding,rows))) : {_ == True{} : Bool}
+          Order.lt_offset(first,row,Nat.add(padding,rows))) : {_ == True{} : Bool}
         inside : {Nat.is_lt(Nat.add(first,row),Nat.add(first,Nat.add(padding,rows))) == True{} : Bool}}
       +bounded = {%Equal.sym(Nat,Nat.add(first,Nat.add(padding,rows)),Nat.add(padding,Nat.add(first,rows)),RowMajor.add_swap(first,padding,rows)) :
           {Nat.is_le(_,Nat.add(padding,height)) == True{} : Bool}
         %Equal.sym(Bool,Nat.is_le(Nat.add(padding,Nat.add(first,rows)),Nat.add(padding,height)),Nat.is_le(Nat.add(first,rows),height),
-          le_offset(padding,Nat.add(first,rows),height)) : {_ == True{} : Bool}
+          Order.le_offset(padding,Nat.add(first,rows),height)) : {_ == True{} : Bool}
         fits : {Nat.is_le(Nat.add(first,Nat.add(padding,rows)),Nat.add(padding,height)) == True{} : Bool}}
       %Equal.sym(Bool,Nat.is_lt(Nat.add(first,row),Nat.add(padding,height)),True{},
-        lt_le(Nat.add(first,row),Nat.add(first,Nat.add(padding,rows)),Nat.add(padding,height),shifted,bounded)) :
+        Bounds.nat_trans(Nat.add(first,row),Nat.add(first,Nat.add(padding,rows)),Nat.add(padding,height),shifted,bounded)) :
         {_ == Nat.is_lt(row,Nat.add(padding,rows)) : Bool}
       %Equal.sym(Bool,Nat.is_lt(row,Nat.add(padding,rows)),True{},inside) : {True{} == _ : Bool}
       {==}
@@ -134,7 +129,7 @@ def inside_read(+input: List<&2,F32>,+ci: Nat,+height: Nat,+width: Nat,+first: N
   %Equal.sym(Nat & Nat,Nat.divmod(Nat.add(Nat.mul(channel,plane),offset),plane),(channel,offset),split) :
     {ConvSpec.at(Nat.add(Nat.mul(Pair.fst(Nat,Nat,_),Nat.mul(height,width)),Nat.add(Nat.mul(first,width),Pair.snd(Nat,Nat,_))),input) ==
       ConvSpec.at(Nat.add(Nat.mul(channel,Nat.mul(height,width)),Nat.add(Nat.mul(Nat.sub(Nat.add(first,row),padding),width),Nat.sub(column,padding))),input) : F32}
-  %Equal.sym(Nat,Nat.sub(Nat.add(first,row),padding),Nat.add(first,Nat.sub(row,padding)),sub_offset(first,row,padding,low_row)) :
+  %Equal.sym(Nat,Nat.sub(Nat.add(first,row),padding),Nat.add(first,Nat.sub(row,padding)),Order.subtract_from_sum(first,row,padding,low_row)) :
     {ConvSpec.at(Nat.add(Nat.mul(channel,Nat.mul(height,width)),Nat.add(Nat.mul(first,width),offset)),input) ==
       ConvSpec.at(Nat.add(Nat.mul(channel,Nat.mul(height,width)),Nat.add(Nat.mul(_,width),Nat.sub(column,padding))),input) : F32}
   %Equal.sym(Nat,Nat.mul(Nat.add(first,Nat.sub(row,padding)),width),Nat.add(Nat.mul(first,width),Nat.mul(Nat.sub(row,padding),width)),
@@ -171,7 +166,7 @@ def sample(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+channe
   +first_exact: {first == Nat.mul(block,Guards.stride(problem)) : Nat},
   +channel_inside: {Nat.is_lt(channel,Guards.input_channel_count(problem)) == True{} : Bool},
   +fits: {Nat.is_le(Nat.add(first,rows),Guards.height(problem)) == True{} : Bool},
-  +top: Either<&2,&2,{first == 0n : Nat},{Nat.is_le(Guards.pad(problem),Nat.add(Nat.mul(output_row,Guards.stride(problem)),kernel_row)) == True{} : Bool}>,
+  +top: Top<first,Guards.pad(problem),Nat.add(Nat.mul(output_row,Guards.stride(problem)),kernel_row),1n>,
   +bottom: Either<&2,&2,{Guards.height(problem) == Nat.add(first,rows) : Nat},
     {Nat.is_lt(Nat.add(Nat.mul(output_row,Guards.stride(problem)),kernel_row),Nat.add(Guards.pad(problem),rows)) == True{} : Bool}>) ->
   {ConvSpec.sample(window(problem,first,rows),channel,output_row,output_column,kernel_row,kernel_column) ==
@@ -198,11 +193,20 @@ def sample(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+channe
     input,ci,height,width,first,rows,padding,channel,row,column,channel_inside,{==})
 
 # Row-level cover facts give every kernel row's cover facts.
-def top_at(+first: Nat,+padding: Nat,+base: Nat,+kernel_row: Nat,+top: Either<&2,&2,{first == 0n : Nat},{Nat.is_le(padding,base) == True{} : Bool}>) ->
-  Either<&2,&2,{first == 0n : Nat},{Nat.is_le(padding,Nat.add(base,kernel_row)) == True{} : Bool}>:
+def top_at(+first: Nat,+padding: Nat,+base: Nat,+kernel: Nat,+kernel_row: Nat,+kernel_row_inside: {Nat.is_lt(kernel_row,kernel) == True{} : Bool},
+  +top: Top<first,padding,base,kernel>) -> Top<first,padding,Nat.add(base,kernel_row),1n>:
   match top:
-    case Inl{+zero}: Inl{zero}
-    case Inr{+below}: Inr{Order.transitive(padding,base,Nat.add(base,kernel_row),below,Order.le_add(base,kernel_row))}
+    case Start{+zero}: Start{zero}
+    case Below{+below}: Below{Order.transitive(padding,base,Nat.add(base,kernel_row),below,Order.le_add(base,kernel_row))}
+    case Above{+outside}:
+      +reached = Nat.add(first,base)
+      +tap = {%Addition.associative(first,base,kernel_row) : {Nat.is_le(Nat.add(_,1n),Nat.add(reached,kernel)) == True{} : Bool}
+        %Equal.sym(Nat,Nat.add(Nat.add(reached,kernel_row),1n),Nat.add(reached,Nat.add(kernel_row,1n)),Addition.associative(reached,kernel_row,1n)) :
+          {Nat.is_le(_,Nat.add(reached,kernel)) == True{} : Bool}
+        %Order.commutative(1n,kernel_row) : {Nat.is_le(Nat.add(reached,_),Nat.add(reached,kernel)) == True{} : Bool}
+        Order.offset_le(reached,1n+kernel_row,kernel,Order.strict_follow(kernel_row,kernel,kernel_row_inside)) :
+        {Nat.is_le(Nat.add(Nat.add(first,Nat.add(base,kernel_row)),1n),Nat.add(reached,kernel)) == True{} : Bool}}
+      Above{Order.transitive(Nat.add(Nat.add(first,Nat.add(base,kernel_row)),1n),Nat.add(reached,kernel),padding,tap,outside)}
 
 def bottom_at(+height: Nat,+first: Nat,+rows: Nat,+padding: Nat,+base: Nat,+kernel: Nat,+kernel_row: Nat,
   +kernel_row_inside: {Nat.is_lt(kernel_row,kernel) == True{} : Bool},
@@ -211,14 +215,14 @@ def bottom_at(+height: Nat,+first: Nat,+rows: Nat,+padding: Nat,+base: Nat,+kern
   match bottom:
     case Inl{+full}: Inl{full}
     case Inr{+room}:
-      Inr{lt_le(Nat.add(base,kernel_row),Nat.add(base,kernel),Nat.add(padding,rows),
-        %Equal.sym(Bool,Nat.is_lt(Nat.add(base,kernel_row),Nat.add(base,kernel)),Nat.is_lt(kernel_row,kernel),lt_offset(base,kernel_row,kernel)) : {_ == True{} : Bool}
+      Inr{Bounds.nat_trans(Nat.add(base,kernel_row),Nat.add(base,kernel),Nat.add(padding,rows),
+        %Equal.sym(Bool,Nat.is_lt(Nat.add(base,kernel_row),Nat.add(base,kernel)),Nat.is_lt(kernel_row,kernel),Order.lt_offset(base,kernel_row,kernel)) : {_ == True{} : Bool}
         kernel_row_inside,room)}
 
 def patch_agrees(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+output_row: Nat,+output_column: Nat,+index: MatrixSpec.Reduction,
   +first_exact: {first == Nat.mul(block,Guards.stride(problem)) : Nat},
   +fits: {Nat.is_le(Nat.add(first,rows),Guards.height(problem)) == True{} : Bool},
-  +top: Either<&2,&2,{first == 0n : Nat},{Nat.is_le(Guards.pad(problem),Nat.mul(output_row,Guards.stride(problem))) == True{} : Bool}>,
+  +top: Top<first,Guards.pad(problem),Nat.mul(output_row,Guards.stride(problem)),Guards.kernel(problem)>,
   +bottom: Either<&2,&2,{Guards.height(problem) == Nat.add(first,rows) : Nat},
     {Nat.is_le(Nat.add(Nat.mul(output_row,Guards.stride(problem)),Guards.kernel(problem)),Nat.add(Guards.pad(problem),rows)) == True{} : Bool}>,
   +bounds: ReductionBounds.IndexBounds(problem,index)) ->
@@ -229,7 +233,7 @@ def patch_agrees(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+
   Shape.Both{+kernel_row_inside,+kernel_column_inside} = spatial
   +base = Nat.mul(output_row,Guards.stride(problem))
   sample(problem,first,rows,block,channel,output_row,output_column,kernel_row,kernel_column,first_exact,channel_inside,fits,
-    top_at(first,Guards.pad(problem),base,kernel_row,top),
+    top_at(first,Guards.pad(problem),base,Guards.kernel(problem),kernel_row,kernel_row_inside,top),
     bottom_at(Guards.height(problem),first,rows,Guards.pad(problem),base,Guards.kernel(problem),kernel_row,kernel_row_inside,bottom))
 
 def weight_agrees(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+channel: Nat,+index: MatrixSpec.Reduction) ->
@@ -243,7 +247,7 @@ def agreements(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+ch
   +indices: List<&2,MatrixSpec.Reduction>,
   +first_exact: {first == Nat.mul(block,Guards.stride(problem)) : Nat},
   +fits: {Nat.is_le(Nat.add(first,rows),Guards.height(problem)) == True{} : Bool},
-  +top: Either<&2,&2,{first == 0n : Nat},{Nat.is_le(Guards.pad(problem),Nat.mul(output_row,Guards.stride(problem))) == True{} : Bool}>,
+  +top: Top<first,Guards.pad(problem),Nat.mul(output_row,Guards.stride(problem)),Guards.kernel(problem)>,
   +bottom: Either<&2,&2,{Guards.height(problem) == Nat.add(first,rows) : Nat},
     {Nat.is_le(Nat.add(Nat.mul(output_row,Guards.stride(problem)),Guards.kernel(problem)),Nat.add(Guards.pad(problem),rows)) == True{} : Bool}>,
   bounds: ReductionBounds.AllBounds(problem,indices)) ->
@@ -263,7 +267,7 @@ def agreements(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+ch
 def matrix_dot(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+channel: Nat,+output_row: Nat,+output_column: Nat,
   +first_exact: {first == Nat.mul(block,Guards.stride(problem)) : Nat},
   +fits: {Nat.is_le(Nat.add(first,rows),Guards.height(problem)) == True{} : Bool},
-  +top: Either<&2,&2,{first == 0n : Nat},{Nat.is_le(Guards.pad(problem),Nat.mul(output_row,Guards.stride(problem))) == True{} : Bool}>,
+  +top: Top<first,Guards.pad(problem),Nat.mul(output_row,Guards.stride(problem)),Guards.kernel(problem)>,
   +bottom: Either<&2,&2,{Guards.height(problem) == Nat.add(first,rows) : Nat},
     {Nat.is_le(Nat.add(Nat.mul(output_row,Guards.stride(problem)),Guards.kernel(problem)),Nat.add(Guards.pad(problem),rows)) == True{} : Bool}>) ->
   {Values.matrix_dot(MatrixSpec.kchannels(Guards.input_channel_count(problem),0n,Guards.kernel(problem)),window(problem,first,rows),channel,output_row,output_column,0.0) ==

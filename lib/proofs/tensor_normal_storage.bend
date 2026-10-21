@@ -3,10 +3,10 @@
 import Base
 import ../tensor.bend as Tensors
 import ./storage_buffer_model.bend as Buffer
-import ./storage_shape.bend as Shape
 import ./tensor_shape_refinement.bend as ShapeLaws
 import ./tensor_count_refinement.bend as Count
 import ./tensor_global_shape_count.bend as Global
+import ./tensor_contract.bend as Contract
 import ./nat_order.bend as Order
 
 def stored(~Element: Data,+model: Buffer.Model<Element>,+shape: List<&2,U32>,+fill: Element,+count: U32,
@@ -21,12 +21,12 @@ def stored(~Element: Data,+model: Buffer.Model<Element>,+shape: List<&2,U32>,+fi
     Order.equal_reflexive(length) : {Nat.is_eq(length,U32.to_nat(count)) == True{} : Bool}}
   %Equal.sym(Bool,Nat.is_eq(length,U32.to_nat(count)),True{},checked) :
     Global.Normal(~Element,Tensors.stored(~Element,_,Buffer.pack(~Element,model),shape,fill))
-  Shape.Both{
-    %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,model)),Buffer.content(~Element,model),Buffer.packed_contents(~Element,model)) : Buffer.ContentReady<Element,_>
-    Buffer.content_ready(~Element,model,ready),
-    Shape.Both{Global.Counted{count,accepted},
+  Global.whole_normal(~Element,Buffer.pack(~Element,model),shape,fill,1,Global.Counted{count,accepted},
+    Contract.WellFormed{
       %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,model)),Buffer.content(~Element,model),Buffer.packed_contents(~Element,model)) : {Buffer.content_length(~Element,_) == ShapeLaws.elements(shape) : Nat}
-      length_exact}}
+      length_exact,
+      %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,model)),Buffer.content(~Element,model),Buffer.packed_contents(~Element,model)) : Buffer.ContentReady<Element,_>
+      Buffer.content_ready(~Element,model,ready)})
 
 def from_storage(~Element: Data,+model: Buffer.Model<Element>,+shape: List<&2,U32>,+fill: Element,+counted: Global.Counted<shape>,
   ready: Buffer.Sized<Element,model>,length_exact: {Buffer.length(~Element,model) == ShapeLaws.elements(shape) : Nat}) ->

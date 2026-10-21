@@ -13,8 +13,11 @@ Run from the repository root, after [getting started](getting_started.md). On Wi
 | `python run.py layout` | Source layout, file names, imports, links, frozen file hashes |
 | `python run.py integration` | Native convolution cases on 1, 2, 4 and 8 threads, compared bit for bit |
 | `python run.py api` | Programs written against `F` only, on 1 and 4 threads, compared bit for bit with NumPy |
+| `python run.py gradients` | Convolution gradients, losses, one training step and 40 steps of a two-layer network learning a teacher's output, with 1, 2, 4 and 8 workers, compared bit for bit with `gradient_reference.py` and `training_reference.py`. The 40 steps and five steps of a classifier through cross entropy and the average pool also against PyTorch to rounding |
 | `python run.py model --case bus_640 --threads 4` | YOLOv5n: generate, compile, run, compare with PyTorch |
+| `python run.py checkpoint` | The official `.pt` checkpoint loaded in Bend, every tensor compared bit for bit with `torch.load` |
 | `python run.py benchmark` | Convolution operator timings |
+| `python run.py training --threads 4` | Time of one epoch of a ResNet-20-shaped network, 390 steps of batch 128, in Stelliferous and PyTorch |
 | `python run.py backends` | YOLOv5n forward time on NumPy, Stelliferous and PyTorch |
 | `python run.py summary` | Lists which recorded results passed, without rerunning them |
 
@@ -37,8 +40,8 @@ The [toolchain rules](toolchain_rules.md) explain each finding. [CI](../.github/
 
 | Folder | Content |
 |---|---|
-| `lib/` | The library; `lib/proofs/` holds its proofs. It imports nothing from the other folders |
-| `convolution/` | The frozen specification, the reference and the proved Array engine; `convolution/proofs/` |
+| `lib/` | The library. `lib/proofs/` holds its proofs. It imports nothing from the other folders |
+| `convolution/` | The frozen specification, the reference and the proved Array engine, with their proofs in `convolution/proofs/` |
 | `examples/` | Programs that use the public API |
 | `benchmarks/` | Numerical checks and timing workflows |
 | `scripts/` | The checker entry, layout and audit tools, the toolchain rules |
@@ -60,7 +63,7 @@ The compiler version has one source, [toolchain.json](../scripts/toolchain.json)
 - snake_case files and functions, PascalCase types and import aliases, one alias per imported file.
 - Documents are in English with a `.zh-TW.md` companion. Text files use LF.
 
-Format Python with `ruff format` and C with `clang-format`; versions are in [requirements-dev.txt](../requirements-dev.txt).
+Format Python with `ruff format` and C with `clang-format`. The versions are in [requirements-dev.txt](../requirements-dev.txt).
 
 ## Contributing
 

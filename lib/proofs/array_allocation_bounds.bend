@@ -8,31 +8,14 @@ import ./nat_order.bend as Order
 import ./u32_division.bend as U32Division
 import ./word_encoding.bend as WordEncoding
 
-def sub_zero(+n: Nat) -> {Nat.sub(n,0n) == n : Nat}:
-  match n:
-    case 0n:
-      {==}
-    case 1n+p:
-      {==}
-
-def positive_one(+n: Nat,h: {Nat.is_lt(0n,n) == True{} : Bool}) -> {Nat.is_le(1n,n) == True{} : Bool}:
-  match n:
-    case 0n:
-      Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(h))
-    case 1n+p:
-      Order.zero_le(p)
-
 def prior_lt(+n: Nat,+cap: Nat,pos: {Nat.is_lt(0n,n) == True{} : Bool},bound: {Nat.is_le(n,cap) == True{} : Bool}) -> {Nat.is_lt(Nat.sub(n,1n),
     cap) == True{} : Bool}:
   match n:
     case 0n:
       Empty.absurd({Nat.is_lt(0n,cap) == True{} : Bool},WordEncoding.false_true(pos))
     case 1n+ +p:
-      %Equal.sym(Nat,Nat.sub(p,0n),p,sub_zero(p)) : {Nat.is_lt(_,cap) == True{} : Bool}
+      %Equal.sym(Nat,Nat.sub(p,0n),p,Order.subtract_zero(p)) : {Nat.is_lt(_,cap) == True{} : Bool}
       Bounds.predecessor_strict(p,cap,bound)
-
-def strict_follow(+a: Nat,+b: Nat,h: {Nat.is_lt(a,b) == True{} : Bool}) -> {Nat.is_le(1n+a,b) == True{} : Bool}:
-  Order.strict_follow(a,b,h)
 
 def following(+n: Nat,+cap: Nat,bound: {Nat.is_lt(Nat.sub(n,1n),cap) == True{} : Bool}) -> {Nat.is_le(n,
     cap) == True{} : Bool}:
@@ -40,12 +23,12 @@ def following(+n: Nat,+cap: Nat,bound: {Nat.is_lt(Nat.sub(n,1n),cap) == True{} :
     case 0n:
       Order.zero_le(cap)
     case 1n+ +p:
-      %sub_zero(p) : {Nat.is_le(1n+_,cap) == True{} : Bool}
-      strict_follow(Nat.sub(p,0n),cap,bound)
+      %Order.subtract_zero(p) : {Nat.is_le(1n+_,cap) == True{} : Bool}
+      Order.strict_follow(Nat.sub(p,0n),cap,bound)
 
 def preceding(+n: U32,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},+pos: {Nat.is_lt(0n,U32.to_nat(n)) == True{} : Bool},
   +bound: {Nat.is_le(U32.to_nat(n),U32.to_nat(upper)) == True{} : Bool}) -> {U32.to_nat((n - 1 : U32)) == Nat.sub(U32.to_nat(n),1n) : Nat}:
-  Arithmetic.subtract(n,1,upper,upper_ok,positive_one(U32.to_nat(n),pos),Order.transitive(Nat.sub(U32.to_nat(n),1n),U32.to_nat(n),
+  Arithmetic.subtract(n,1,upper,upper_ok,Order.positive_one(U32.to_nat(n),pos),Order.transitive(Nat.sub(U32.to_nat(n),1n),U32.to_nat(n),
       U32.to_nat(upper),Order.sub_le(U32.to_nat(n),1n),bound))
 
 def machine_prior(+n: U32,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},+pos: {Nat.is_lt(0n,

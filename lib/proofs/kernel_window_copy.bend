@@ -5,6 +5,9 @@ import ../traversal_array.bend as Traversal
 import ./storage_tree_model.bend as Tree
 import ./contiguous_copy.bend as Contiguous
 import ./write_program.bend as Writes
+import ./nat_order.bend as Order
+import ./natural_addition.bend as Addition
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
 def plane_writes(+channel: U32,+count: U32,+source_stride: U32,+source_start: U32,+target_stride: U32,+input: Tree.Tree<F32>) ->
   List<&2,Writes.Assignment<F32>>:
@@ -39,3 +42,12 @@ def planes(+remaining: Nat,+channel: U32,+count: U32,+source_stride: U32,+source
           (Tree.pack(F32,input),Tree.pack(F32,Writes.pure(F32,here,output)))) ==
           (Tree.pack(F32,input),Tree.pack(F32,_)) : Array<F32> & Array<F32>}
       planes(rest,(channel + 1 : U32),count,source_stride,source_start,target_stride,input,Writes.pure(F32,here,output))
+
+def channel_successor(+channel: U32,+rest: Nat,+capacity: U32,+capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
+  channels_room: {Nat.is_le(Nat.add(U32.to_nat(channel),1n+rest),U32.to_nat(capacity)) == True{} : Bool}) ->
+  {U32.to_nat((channel + 1 : U32)) == 1n+U32.to_nat(channel) : Nat}:
+  %Addition.successor_width(U32.to_nat(channel)) : {U32.to_nat((channel + 1 : U32)) == _ : Nat}
+  Arithmetic.add(channel,1,capacity,capacity_ok,
+    %Equal.sym(Nat,Nat.add(U32.to_nat(channel),1n),1n+U32.to_nat(channel),Addition.successor_width(U32.to_nat(channel))) : {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
+    Order.strict_follow(U32.to_nat(channel),U32.to_nat(capacity),Order.room_index(U32.to_nat(channel),rest,U32.to_nat(capacity),channels_room)))
+

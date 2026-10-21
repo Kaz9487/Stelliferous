@@ -56,7 +56,7 @@ def generate_entry(graph):
     for index, tensor in enumerate(tensors):
         source.append(f'    Observation.emit_tensor_count({index},{shape_literal(tensor["shape"])})')
     for index in sorted(available):
-        source.append(f'    +state_{index} : Observation.Receipt = Observation.dense()')
+        source.append(f'    +state_{index} : Observation.Receipt = Observation.unplanned()')
     descriptions = []
     for index, operation in enumerate(graph['ops']):
         kind, output = operation['kind'], operation['output']
@@ -90,13 +90,13 @@ def generate_entry(graph):
             slots = operation['inputs']
             if not slots:
                 raise ValueError('Public concat requires a nonempty parts list')
-            plans = [f'Observation.layout({state(slot)})' for slot in slots]
-            # The model invokes public concat(axis=1); rank-three decode concat
-            # is not a channel concat and therefore retains the dense route.
-            expression = (f'Observation.concatenated({shape_literal(result_shape)},1,'
-                          '[' + ','.join(plans) + '])')
+            target = f'Observation.concat_last({shape_literal(tensors[slots[-1]]["shape"])},1,{state(slots[-1])})'
+            for slot in reversed(slots[:-1]):
+                target = f'Observation.concat_cons({shape_literal(tensors[slot]["shape"])},1,{state(slot)},{target})'
+            # The model invokes public concat(axis=1).
+            expression = f'Observation.concatenated({shape_literal(result_shape)},1,{target})'
             description['public_arguments'] = dict(axis=1, source='generate_yolo_graph emits F.concat(parts,1)')
-            description['layout_selection'] = 'all inputs banded with compatible plans and nonempty output; otherwise dense append'
+            description['layout_selection'] = 'the parts meet in one plan of the rows of their joining and arrive in it'
             description['parallel_scope'] = 'per-input aligned append; no whole-operation parallel choice'
         elif kind == 'pool':
             incoming = tensors[operation['input']]
@@ -183,21 +183,17 @@ def instrument_handwritten(source):
         extra = ''
         if symbol in ('CONV', 'LOGITS'):
             extra = f'plan_label(e,{arguments["name"][0]});'
-        elif re.fullmatch(r'LIB_TENSOR_CONVOLUTION_BAND_OUTPUT_\d+', symbol):
-            g = arguments['geometry']
+        elif re.fullmatch(r'LIB_KERNEL_BAND_PIPELINE_EXECUTE_\d+', symbol):
+            # The flattened kernel_band_pipeline.Context: window geometry (input
+            # images, channels, height, width, kernel, stride, padding, output
+            # height, width), output channels, inner, parallel, activation.
+            g = arguments['context']
+            if len(g) != 14 or len(arguments['bands']) != 1:
+                raise ValueError('Band pipeline context layout changed')
             extra = ('unsigned plan_leaves=0,plan_depth=0;'
-                     f'plan_tree(e,{arguments["input"][0]},0,&plan_leaves,&plan_depth);'
-                     'plan_emit("bands",plan_depth,plan_leaves,'
-                     + arguments['parallel'][0] + ','
-                     + ','.join(f'(unsigned){value}' for value in g[2:9]) + ');')
-        elif re.fullmatch(r'LIB_KERNEL_PIPELINE_RUN_PACKED_\d+', symbol):
-            w = arguments['work']
-            extra = (f'unsigned plan_depth={arguments["depth"][0]},plan_limit=0;'
-                     f'for(unsigned n=({w[7]}+7)/8;n>1;n>>=1)++plan_limit;'
-                     'if(plan_depth>plan_limit)plan_depth=plan_limit;'
-                     'plan_emit("dense",plan_depth,1u<<plan_depth,plan_depth>0,'
-                     f'{w[8]}/({w[3]}*{w[3]}),'
-                     + ','.join(w[:6]) + ');')
+                     f'plan_tree(e,{arguments["bands"][0]},0,&plan_leaves,&plan_depth);'
+                     'plan_emit("bands",plan_depth,plan_leaves,' + g[11] + ','
+                     + ','.join(f'(unsigned){g[i]}' for i in (1, 9, 2, 3, 4, 5, 6)) + ');')
         return match[0] + ('\n    ' + extra if extra else '')
 
     marker = source.index('static Term work_loop(')
@@ -242,11 +238,13 @@ def handwritten_plans(args):
             raise ValueError(f'Instrumented prediction differs at {threads} threads')
         rows = [json.loads(line.removeprefix('PLAN ')) for line in result.stderr.splitlines()
                 if line.startswith('PLAN ')]
+        if not rows:
+            raise ValueError(f'No convolution plan was observed at {threads} threads')
         runs.append(dict(threads=threads, convolutions=rows, prediction_bitwise=True))
     output.write_text(json.dumps(dict(model='examples/yolov5/yolov5n.bend', size=args.size,
         compiler_flags=flags, runs=runs,
-        scope='Executed handwritten convolution plans; depth is the effective dense split or '
-              'maximum band tree depth, leaves counts actual bands or dense partitions. '
+        scope='Executed handwritten convolution plans; depth is the maximum band tree depth, '
+              'leaves counts actual bands. '
               'Parallel is the scheduling choice, not measured CPU occupancy. '
               'Dimensions are ci, co, h, w, k, stride, padding. No timing estimates.'), indent=2) + '\n')
     print(output)
@@ -304,8 +302,8 @@ def main():
         if row['route'].startswith('invalid_'):
             raise ValueError(f'Actual public convolution guard rejected operation {row["operation"]}')
         row.update(description)
-        if row['route'] not in ('band_initial', 'dense_initial', 'dense_convolution'):
-            row['initial_or_dense_depth'] = None
+        if row['route'] != 'band_initial':
+            row['initial_depth'] = None
         if row['kind'] == 'concat':
             row['parallel'] = None
             row['append_parallel'] = [record for record in append_records if record['operation'] == row['operation']]
@@ -320,12 +318,12 @@ def main():
             row['estimated_error_fraction'] = (row['estimated_ns'] / 1e6 - actual['ms']) / actual['ms'] if row['estimated_ns'] is not None and actual['ms'] else None
     result = dict(case=graph['case'], threads=graph['threads'],
                   compiler_flags=flags, tensor_counts=counts, operations=rows,
-                  scope='Actual Bend planner metadata replay on ready dense parameters and valid graph owners; estimates are unmeasured. '
+                  scope='Actual Bend planner metadata replay on ready whole parameters and valid graph owners; estimates are unmeasured. '
                         'Layout maps reuse Windows.window; binary alignment and loop flags reuse the public schedulers. '
-                        'Concat reuses the actual compatible_plans/first_plan and geometry/count/zero guards; '
-                        'mixed or different plans use dense append. Comparisons cost metadata traversal; '
+                        'Combine and concat reuse the actual meet of their operands and the geometry/count/zero guards. '
+                        'Comparisons cost metadata traversal; '
                         'per-input parallel decisions do not model a whole-concat time. '
-                        'Non-convolution times and multi-image dense times are null. Snapshot gathers outside operations are excluded. '
+                        'Non-convolution times are null. Snapshot gathers outside operations are excluded. '
                         'This observes planner choices, not an execution trace or proof of runtime metadata.',
                   measured_profile=str(args.operations) if measured is not None else None)
     output.parent.mkdir(parents=True, exist_ok=True)

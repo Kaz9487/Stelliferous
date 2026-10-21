@@ -3,7 +3,6 @@
 # domain and chooses the actual limits before using this configuration.
 import Base
 import ../specification.bend as ConvSpec
-import ../../lib/tensor_convolution.bend as TensorConvolution
 import ../../lib/kernel_shape.bend as KernelShape
 import ../../lib/math_activation.bend as Activations
 import ../../lib/machine_limits.bend as Machine
@@ -43,9 +42,8 @@ def configured(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical
   weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
   +valid: {KernelShape.valid(dimensions,Caller.input_length(dimensions),ConvSpec.length(weights),ConvSpec.length(bias)) == True{} : Bool},
   +machine: {KernelShape.supports_packed(limits,dimensions,Caller.input_length(dimensions),weight_size(dimensions)) &&
-    Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
-  eligible: {TensorConvolution.uses_band_windows(TensorConvolution.Geometry{images,True{},dimensions}) == True{} : Bool}) -> PipelineExecution.Frame<Logical>:
+    Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) -> PipelineExecution.Frame<Logical>:
   +scalar_support = supported(~Logical,~original,logical,limits,dimensions,weights,bias,valid,
     Boolean.left(KernelShape.supports_packed(limits,dimensions,Caller.input_length(dimensions),weight_size(dimensions)),Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))),machine))
   PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,weights,bias,weight_evidence,bias_evidence,domain,valid,scalar_support,
-    Boolean.right(KernelShape.supports_packed(limits,dimensions,Caller.input_length(dimensions),weight_size(dimensions)),Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))),machine),eligible}
+    Boolean.right(KernelShape.supports_packed(limits,dimensions,Caller.input_length(dimensions),weight_size(dimensions)),Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))),machine)}

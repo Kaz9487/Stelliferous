@@ -10,6 +10,12 @@ import ./word_encoding.bend as WordEncoding
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./array_allocation_bounds.bend as ArrayAllocation
+import ./bounded_u32_arithmetic.bend as Arithmetic
+import ./word_subtraction.bend as Subtraction
+import ./word_bit_length.bend as WordLength
+import ./allocation_bit_bounds.bend as AllocationBits
+import ./word_power_of_two.bend as Power
+import ./storage_shape.bend as Shape
 
 def branch(+remaining: Nat,+value: U32,+bits: Nat,+zero: Bool,
   tail: {Tensors.significant_bits(remaining,U32.shr(value),1n+bits,U32.is_zero(U32.shr(value))) ==
@@ -96,3 +102,44 @@ def bounded_with(+count: U32,+upper: U32,upper_ok: {U32.is_le(upper,2147483648) 
 
 def bounded(+count: U32,within: {U32.is_le(count,1073741824) == True{} : Bool}) -> Sized<count>:
   bounded_with(count,1073741824,{==},{==},{==},within)
+
+# A guard cell after a count below 2^31 may require depth 31.
+type Guarded<-count: U32> is Data:
+  Guarded{depth_ok: {Nat.is_le(Tensors.depth_for((count + 1 : U32)),31n) == True{} : Bool},
+    room: {U32.is_lt(count,U32.shln(1,Tensors.depth_for((count + 1 : U32)))) == True{} : Bool}}
+
+def guard_depth(+count: U32,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},+bounded: {U32.is_lt(count,upper) == True{} : Bool}) ->
+  {Tensors.depth_for((count + 1 : U32)) == Storage.bit_length(32n,count) : Nat}:
+  +below = Bounds.as_nat_lt(count,upper,bounded)
+  +bound = {
+    %Equal.sym(Nat,Nat.add(U32.to_nat(count),1n),1n+U32.to_nat(count),Addition.successor_width(U32.to_nat(count))) : {Nat.is_le(_,U32.to_nat(upper)) == True{} : Bool}
+    Order.strict_follow(U32.to_nat(count),U32.to_nat(upper),below) : {Nat.is_le(Nat.add(U32.to_nat(count),1n),U32.to_nat(upper)) == True{} : Bool}}
+  +exact = Arithmetic.add(count,1,upper,upper_ok,bound)
+  +positive = {
+    %Equal.sym(Nat,U32.to_nat((count + 1 : U32)),Nat.add(U32.to_nat(count),1n),exact) : {Nat.is_lt(0n,_) == True{} : Bool}
+    Order.le_lt_trans(0n,U32.to_nat(count),Nat.add(U32.to_nat(count),1n),Order.zero_le(U32.to_nat(count)),Order.below_sum(U32.to_nat(count),0n)) :
+      {Nat.is_lt(0n,U32.to_nat((count + 1 : U32))) == True{} : Bool}}
+  Equal.trans(Nat,Tensors.depth_for((count + 1 : U32)),Storage.allocation_depth((count + 1 : U32)),Storage.bit_length(32n,count),
+    positive_depth((count + 1 : U32),positive),Equal.cong(U32,Nat,value => Storage.bit_length(32n,value),((count + 1 : U32) - 1 : U32),count,Subtraction.subtract_add(count,1)))
+
+def guarded_word(+count: U32,+bounded: {U32.is_lt(count,2147483648) == True{} : Bool}) ->
+  Shape.Both<{Nat.is_le(Storage.bit_length(32n,count),31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,Storage.bit_length(32n,count))) == True{} : Bool}>:
+  match count:
+    case U32{+word}:
+      +inside = bounded
+      %Equal.sym(Nat,Storage.bit_length(32n,count),WordLength.bit_length(32n,word),AllocationBits.native_length(word)) :
+        Shape.Both<{Nat.is_le(_,31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,_)) == True{} : Bool}>
+      Shape.Both{WordLength.bounded_length(32n,31n,word,inside),
+        %Equal.sym(U32,U32.shln(1,WordLength.bit_length(32n,word)),U32{Power.power(32n,WordLength.bit_length(32n,word))},Power.native_power(WordLength.bit_length(32n,word))) :
+          {U32.is_lt(count,_) == True{} : Bool} WordLength.length_covers_bounded_word(32n,31n,word,{==},inside)}
+
+
+def guarded_finish(+count: U32,+bounded: {U32.is_lt(count,2147483648) == True{} : Bool},
+  evidence: Shape.Both<{Nat.is_le(Storage.bit_length(32n,count),31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,Storage.bit_length(32n,count))) == True{} : Bool}>) -> Guarded<count>:
+  Shape.Both{depth_ok,room} = evidence
+  Guarded{
+    %Equal.sym(Nat,Tensors.depth_for((count + 1 : U32)),Storage.bit_length(32n,count),guard_depth(count,2147483648,{==},bounded)) : {Nat.is_le(_,31n) == True{} : Bool} depth_ok,
+    %Equal.sym(Nat,Tensors.depth_for((count + 1 : U32)),Storage.bit_length(32n,count),guard_depth(count,2147483648,{==},bounded)) : {U32.is_lt(count,U32.shln(1,_)) == True{} : Bool} room}
+
+def guarded(+count: U32,+bounded: {U32.is_lt(count,2147483648) == True{} : Bool}) -> Guarded<count>:
+  guarded_finish(count,bounded,guarded_word(count,bounded))

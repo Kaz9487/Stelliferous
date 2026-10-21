@@ -2,10 +2,8 @@
 import Base
 import ./blocked_pipeline_initial.bend as BlockedInitial
 import ./blocked_convolution_readback.bend as BlockedReadback
-import ./blocked_pipeline_model.bend as BlockedModel
-import ./blocked_pipeline_bounds.bend as BlockBounds
+import ../../lib/proofs/kernel_pipeline_model.bend as BlockedModel
 import ../../lib/proofs/kernel_pipeline_activation.bend as ActivationProofs
-import ../../lib/proofs/tensor_band_window.bend as TensorBandWindow
 import ./band_leaf_execution.bend as LeafExecution
 import ./concrete_support_guard.bend as Support
 import ./convolution_guard_facts.bend as Guards
@@ -17,38 +15,26 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../inference.bend as NativeConv
 import ../matrix_specification.bend as MatrixSpec
-import ./packing_contents.bend as PackingContents
-import ../../lib/proofs/natural_addition.bend as Addition
-import ./convolution_leaf_semantics.bend as LeafSemantics
 import ./gemm_dot_matches_matrix.bend as GemmDot
 import ./input_storage.bend as Inputs
 import ./microkernel_leaf_readback.bend as MicroLeaf
 import ./output_values.bend as Values
 import ./packing_tile_bounds.bend as PackingBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
-import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./supported_padded_coordinates.bend as Padded
-import ./tile_partition_bounds.bend as TilePartitionBounds
 import ./window_band_values.bend as WindowBandValues
 import ./window_leaf_readback.bend as LeafReadback
 import ./window_positions.bend as Positions
 import ./window_problem.bend as WindowProblem
 import ./window_samples.bend as Samples
 import ./window_start.bend as Start
-import ../scalar_kernel.bend as ScalarConv
 import ../../lib/kernel_spatial_packing.bend as Packing
-import ../../lib/kernel_tile.bend as Tile
 import ../../lib/kernel_window.bend as KernelWindow
 import ../../lib/math_activation.bend as Activations
-import ../../lib/proofs/boolean_logic.bend as Boolean
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
-import ../../lib/proofs/nat_division.bend as Division
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 import ../../lib/proofs/nat_extrema.bend as Extrema
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/proofs/u32_comparison.bend as Comparison
-import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/proofs/u32_extrema.bend as U32Extrema
 
 # A band leaf packs the image rows its outputs read as a shorter image and
@@ -72,10 +58,6 @@ def window_call(+problem: ConvSpec.Problem,+offset: U32,+first: U32,+rows: U32,+
   Packing.Call{U32.to_nat(PackingBounds.count(padded(positions),window)),window_start(problem,offset,first),
     U32.from_nat(Guards.height(window)),U32.from_nat(Guards.width(window)),U32.from_nat(Guards.kernel(window)),U32.from_nat(Guards.stride(window)),
     U32.from_nat(Guards.pad(window)),U32.from_nat(ConvSpec.out_width(window)),Coordinates.native_inner(window)}
-
-def output_room(+limits: Machine.Limits,+problem: ConvSpec.Problem,fast: Support.FastSupported<limits,problem>) -> {Support.output_bound(limits,problem) == True{} : Bool}:
-  Support.FastSupported{scalar,packing,output} = fast
-  output
 
 # The whole band leaf (packing, GEMM, activation and finish) at each real
 # output position holds the activated original matrix value.
@@ -126,17 +108,17 @@ def leaf_value(~custom: F32 -> F32,+activation: Activations.Activation,+limits: 
   +offset_room = Order.transitive(start_nat,Nat.add(start_nat,span_nat),U32.to_nat(Machine.capacity(limits)),Order.le_add(start_nat,span_nat),grid_room)
   +positions_room = Order.transitive(span_nat,Nat.add(start_nat,span_nat),U32.to_nat(Machine.capacity(limits)),Samples.le_after(start_nat,span_nat),grid_room)
   +reach = Order.transitive(skipped,Nat.mul(Nat.div(start_nat,out_width),out_width),start_nat,
-    RowMajor.mul_le(skip,Nat.div(start_nat,out_width),out_width,Positions.block_le_start(problem,first_rows,skip,start_nat,stride_ok,first_exact,top)),
+    RowMajor.mul_le(skip,Nat.div(start_nat,out_width),out_width,Positions.block_le_start(problem,first_rows,skip,start_nat,span_nat,stride_ok,first_exact,top)),
     DivisionOrder.product_below(start_nat,out_width,width_ok))
   +start_exact = Start.start_exact(limits,problem,facts,support,offset,first,skip,first_exact,reach,offset_room)
   +position = Nat.add(start_nat,column)
   +after = Order.le_add(start_nat,column)
-  +inside = {%Equal.sym(Bool,Nat.is_lt(Nat.add(start_nat,column),Nat.add(start_nat,span_nat)),Nat.is_lt(column,span_nat),Samples.lt_offset(start_nat,column,span_nat)) :
+  +inside = {%Equal.sym(Bool,Nat.is_lt(Nat.add(start_nat,column),Nat.add(start_nat,span_nat)),Nat.is_lt(column,span_nat),Order.lt_offset(start_nat,column,span_nat)) :
       {_ == True{} : Bool}
     column_inside : {Nat.is_lt(position,Nat.add(start_nat,span_nat)) == True{} : Bool}}
   +row = Nat.div(position,out_width)
   +column_index = Nat.mod(position,out_width)
-  +row_valid = Positions.quotient_lt(position,out_height,out_width,width_ok,Samples.lt_le(position,Nat.add(start_nat,span_nat),Nat.mul(out_height,out_width),inside,grid))
+  +row_valid = DivisionOrder.quotient_below(position,out_height,out_width,width_ok,Bounds.nat_trans(position,Nat.add(start_nat,span_nat),Nat.mul(out_height,out_width),inside,grid))
   +column_valid = DivisionOrder.remainder_small(position,out_width,width_ok)
   +ordered = Positions.block_le_row(problem,first_rows,window_rows,start_nat,span_nat,cover,position,stride_ok,width_ok,after)
   +virtual_row = Nat.sub(row,skip)
@@ -148,7 +130,7 @@ def leaf_value(~custom: F32 -> F32,+activation: Activations.Activation,+limits: 
   +last_inside = {%whole_exact : {Nat.is_lt(last,_) == True{} : Bool}
     Order.lt_succ(last,last,Order.reflexive(last)) : {Nat.is_lt(last,Nat.add(start_nat,span_nat)) == True{} : Bool}}
   +last_row = Nat.div(last,out_width)
-  +last_valid = Positions.quotient_lt(last,out_height,out_width,width_ok,Samples.lt_le(last,Nat.add(start_nat,span_nat),Nat.mul(out_height,out_width),last_inside,grid))
+  +last_valid = DivisionOrder.quotient_below(last,out_height,out_width,width_ok,Bounds.nat_trans(last,Nat.add(start_nat,span_nat),Nat.mul(out_height,out_width),last_inside,grid))
   +last_ordered = Positions.block_le_row(problem,first_rows,window_rows,start_nat,span_nat,cover,last,stride_ok,width_ok,last_after)
   +last_virtual = Positions.virtual_row_inside(problem,first_rows,window_rows,start_nat,span_nat,cover,last,stride_ok,width_ok,last_after,last_inside,last_valid)
   +window_height = ConvSpec.axis_size(window_rows,kernel,stride,padding)
@@ -181,10 +163,10 @@ def leaf_value(~custom: F32 -> F32,+activation: Activations.Activation,+limits: 
     {Tree.read(F32,BlockedModel.run(~custom,activation,BlockedReadback.work(window,positions),window_start,Inputs.input_tree(window,window_contract),GemmDot.reordered(window,window_contract),Inputs.bias_tree(window,window_contract)),U32.from_nat(Nat.add(Nat.mul(channel,span_nat),column))) == ActivationProofs.activation_value(~custom,activation,Values.matrix_value(window,channel,virtual_row,column_index)) : F32}}
   +indices = MatrixSpec.kchannels(ci,0n,kernel)
   +transfer = Samples.matrix_dot(problem,first_rows,window_rows,skip,channel,virtual_row,column_index,first_exact,fits,
-    Positions.virtual_top(problem,first_rows,window_rows,start_nat,span_nat,cover,position,stride_ok,width_ok,after),
+    Positions.virtual_top(problem,first_rows,window_rows,start_nat,span_nat,cover,position,stride_ok,width_ok,after,inside),
     Positions.virtual_bottom(problem,first_rows,window_rows,start_nat,span_nat,cover,position,stride_ok,width_ok,after,inside))
   +restored = Equal.cong(Nat,F32,value => Values.matrix_dot(indices,problem,channel,value,column_index,0.0),Nat.add(skip,virtual_row),row,
-    Positions.add_sub(skip,row,ordered))
+    Order.restore_shift(skip,row,ordered))
   Equal.trans(F32,Tree.read(F32,LeafExecution.leaf_tree(~custom,activation,MicroLeaf.rows(window),Coordinates.native_inner(window),positions,window_call(problem,offset,first,rows,positions),tree,GemmDot.reordered(window,window_contract),Inputs.bias_tree(window,window_contract)),U32.from_nat(Nat.add(Nat.mul(channel,span_nat),column))),
     ActivationProofs.activation_value(~custom,activation,Values.matrix_value(window,channel,virtual_row,column_index)),ActivationProofs.activation_value(~custom,activation,Values.matrix_value(problem,channel,row,column_index)),window_dot,
     Equal.cong(F32,F32,value => ActivationProofs.activation_value(~custom,activation,value),Values.matrix_value(window,channel,virtual_row,column_index),Values.matrix_value(problem,channel,row,column_index),
@@ -206,16 +188,6 @@ def capacity_fits(+limits: Machine.Limits) -> {U32.is_le(capacity(limits),214748
   %U32Extrema.pick_maximum(Machine.capacity(limits),Machine.coordinate(limits)) : {U32.is_le(_,2147483648) == True{} : Bool}
   selected_bound(U32.is_lt(Machine.capacity(limits),Machine.coordinate(limits)),Machine.capacity(limits),Machine.coordinate(limits),2147483648,Limits.capacity_fits(limits),Limits.coordinate_fits(limits))
 
-def storage_room(+limits: Machine.Limits) -> {Nat.is_le(U32.to_nat(Machine.capacity(limits)),U32.to_nat(capacity(limits))) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat(capacity(limits)),Nat.max(U32.to_nat(Machine.capacity(limits)),U32.to_nat(Machine.coordinate(limits))),U32Extrema.maximum(Machine.capacity(limits),Machine.coordinate(limits))) : {Nat.is_le(U32.to_nat(Machine.capacity(limits)),_) == True{} : Bool}
-  Extrema.maximum_left(U32.to_nat(Machine.capacity(limits)),U32.to_nat(Machine.coordinate(limits)))
-
 def coordinate_room(+limits: Machine.Limits) -> {Nat.is_le(U32.to_nat(Machine.coordinate(limits)),U32.to_nat(capacity(limits))) == True{} : Bool}:
   %Equal.sym(Nat,U32.to_nat(capacity(limits)),Nat.max(U32.to_nat(Machine.capacity(limits)),U32.to_nat(Machine.coordinate(limits))),U32Extrema.maximum(Machine.capacity(limits),Machine.coordinate(limits))) : {Nat.is_le(U32.to_nat(Machine.coordinate(limits)),_) == True{} : Bool}
   Extrema.maximum_right(U32.to_nat(Machine.capacity(limits)),U32.to_nat(Machine.coordinate(limits)))
-
-def core(+limits: Machine.Limits,+images: U32,+height: U32,+first: U32,+rows: U32,geometry: TensorBandWindow.CoreGeometry<images,height,first,rows,Machine.capacity(limits)>) ->
-  TensorBandWindow.CoreGeometry<images,height,first,rows,capacity(limits)>:
-  TensorBandWindow.CoreGeometry{image_inside,core_inside,first_exact,core_exact,endpoint_room} = geometry
-  TensorBandWindow.CoreGeometry{image_inside,core_inside,first_exact,core_exact,
-    Order.transitive(Nat.add(U32.to_nat((first / height * height : U32)),U32.to_nat(height)),U32.to_nat(Machine.capacity(limits)),U32.to_nat(capacity(limits)),endpoint_room,storage_room(limits))}

@@ -30,7 +30,6 @@ import ../../lib/proofs/tensor_allocation_depth.bend as Depth
 import ../../lib/proofs/nat_division.bend as Division
 import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/proofs/natural_addition.bend as Addition
-import ../../lib/proofs/tensor_cursor_refinement.bend as CursorLaws
 import ./storage_capacity.bend as StorageCapacity
 import ../../lib/proofs/array_allocation_bounds.bend as ArrayAllocation
 import ./window_positions.bend as Positions
@@ -68,11 +67,11 @@ def root_read(+context: RootContext,+index: Nat,+inside: {Nat.is_lt(index,root_l
   +width_positive = Boolean.every_condition_holds(Guards.valid_conditions(problem),7n,valid)
   +input_length = Boolean.every_condition_holds(Guards.valid_conditions(problem),2n,valid)
   +plane = Nat.mul(height,width)
-  +positive = Support.positive_mul(height,width,height_positive,width_positive)
+  +positive = Order.product_positive(height,width,height_positive,width_positive)
   %DivisionOrder.quotient_exact(index,plane,positive) :
     {Tree.read(F32,StorageLaws.sequence_storage(F32,ConvSpec.length(input),input,input_evidence),U32.from_nat(index)) == ConvSpec.at(_,input) : F32}
   Inputs.stored_value(input,input_evidence,index,
-    %Equal.sym(Nat,ConvSpec.length(input),Nat.mul(ci,plane),Guards.reflect(ConvSpec.length(input),Nat.mul(ci,plane),input_length)) :
+    %Equal.sym(Nat,ConvSpec.length(input),Nat.mul(ci,plane),Order.equal_of_is_eq(ConvSpec.length(input),Nat.mul(ci,plane),input_length)) :
       {Nat.is_lt(index,_) == True{} : Bool}
     inside)
 
@@ -92,7 +91,7 @@ def input_room(+limits: Machine.Limits,+problem: ConvSpec.Problem,
     output_bound,vertical_bound,horizontal_bound} = support
   +problem = {ConvSpec.Problem{ConvSpec.Shape{ci,co,height,width,kernel,stride,padding},input,weights,bias} : ConvSpec.Problem}
   +input_length = Boolean.every_condition_holds(Guards.valid_conditions(problem),2n,valid)
-  %Guards.reflect(ConvSpec.length(input),Nat.mul(ci,Nat.mul(height,width)),input_length) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+  %Order.equal_of_is_eq(ConvSpec.length(input),Nat.mul(ci,Nat.mul(height,width)),input_length) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
   input_bound
 
 def total_word(+channels: U32,+rows: U32,+width: U32) -> U32:
@@ -124,10 +123,10 @@ def total_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Conv
   +cap = U32.to_nat(capacity)
   +width_positive = valid_condition(problem,valid,7n)
   +window_small = Order.transitive(Nat.mul(ci,plane),Nat.mul(ci,area),cap,
-    WindowProblem.multiply_left_le(ci,plane,area,RowMajor.mul_le(count,Guards.height(problem),image_width,count_le)),
+    DivisionOrder.multiply_left_le(ci,plane,area,RowMajor.mul_le(count,Guards.height(problem),image_width,count_le)),
     input_room(limits,problem,Padded.scalar(limits,problem,Support.fast(limits,problem,supported)),valid))
   +pair_small = Order.transitive(Nat.mul(ci,count),Nat.mul(ci,plane),cap,
-    WindowProblem.multiply_left_le(ci,count,plane,RowMajor.product_covers(count,image_width,width_positive)),window_small)
+    DivisionOrder.multiply_left_le(ci,count,plane,RowMajor.product_covers(count,image_width,width_positive)),window_small)
   +pair_exact = {%channels_exact : {U32.to_nat((channels * rows : U32)) == Nat.mul(_,count) : Nat}
     Arithmetic.multiply(channels,rows,capacity,Limits.capacity_fits(limits),
       %Equal.sym(Nat,U32.to_nat(channels),ci,channels_exact) : {Nat.is_le(Nat.mul(_,count),cap) == True{} : Bool}
@@ -209,7 +208,7 @@ def copy_read_with(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {C
   +ci_positive = valid_condition(problem,valid,10n)
   +height_positive = valid_condition(problem,valid,8n)
   +width_positive = valid_condition(problem,valid,7n)
-  +area_positive = Support.positive_mul(height,image_width,height_positive,width_positive)
+  +area_positive = Order.product_positive(height,image_width,height_positive,width_positive)
   +rows_le = count_le(problem,parent_first,parent_rows,first,rows,within,parent_fits)
   +parent_le = Order.transitive(parent_count,Nat.add(parent_start,parent_count),height,Samples.le_after(parent_start,parent_count),parent_fits)
   +shift_le = Order.transitive(Nat.sub(start,parent_start),start,height,Order.sub_le(start,parent_start),
@@ -241,17 +240,17 @@ def copy_read_with(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {C
         {Nat.is_le(Nat.mul(_,U32.to_nat(width)),cap) == True{} : Bool}
       %width_back : {Nat.is_le(Nat.mul(Nat.sub(start,parent_start),_),cap) == True{} : Bool}
       shift_small) : {U32.to_nat(shift_word) == shift : Nat}}
-  +plane_positive = Support.positive_mul(count,image_width,rows_positive,width_positive)
+  +plane_positive = Order.product_positive(count,image_width,rows_positive,width_positive)
   +row = Nat.div(index,plane)
   +column = Nat.mod(index,plane)
-  +row_inside = Positions.quotient_lt(index,ci,plane,plane_positive,inside)
+  +row_inside = DivisionOrder.quotient_below(index,ci,plane,plane_positive,inside)
   +column_inside = DivisionOrder.remainder_small(index,plane,plane_positive)
   +window_total = Nat.mul(ci,plane)
-  +window_small = Order.transitive(window_total,Nat.mul(ci,area),cap,WindowProblem.multiply_left_le(ci,plane,area,RowMajor.mul_le(count,height,image_width,rows_le)),input_bound)
+  +window_small = Order.transitive(window_total,Nat.mul(ci,area),cap,DivisionOrder.multiply_left_le(ci,plane,area,RowMajor.mul_le(count,height,image_width,rows_le)),input_bound)
   +total_value = total_exact(limits,problem,valid,supported,channels,rows,width,channels_exact,width_exact,rows_le)
   +total = total_word(channels,rows,width)
   +total_positive = {%Equal.sym(Nat,U32.to_nat(total),window_total,total_value) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Support.positive_mul(ci,plane,ci_positive,plane_positive) : {Nat.is_lt(0n,U32.to_nat(total)) == True{} : Bool}}
+    Order.product_positive(ci,plane,ci_positive,plane_positive) : {Nat.is_lt(0n,U32.to_nat(total)) == True{} : Bool}}
   +depth = Tensors.depth_for(total)
   +depth_same = Depth.positive_depth(total,total_positive)
   +depth_ok = {%Equal.sym(Nat,Tensors.depth_for(total),Storage.allocation_depth(total),depth_same) : {Nat.is_le(_,30n) == True{} : Bool}
@@ -266,13 +265,13 @@ def copy_read_with(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {C
   +index_small = Order.transitive(index,window_total,cap,Bounds.strict_le(index,window_total,inside),window_small)
   +index_exact = Bounds.roundtrip(index,capacity,fits,index_small)
   +rows_room = {%Positions.sub_after(start,parent_start,count,after) : {Nat.is_le(_,parent_count) == True{} : Bool}
-    %CursorLaws.subtract_prefix(parent_start,parent_count) : {Nat.is_le(Nat.sub(Nat.add(start,count),parent_start),_) == True{} : Bool}
+    %Order.subtract_shift(parent_start,parent_count) : {Nat.is_le(Nat.sub(Nat.add(start,count),parent_start),_) == True{} : Bool}
     DivisionOrder.subtract_le(Nat.add(start,count),Nat.add(parent_start,parent_count),parent_start,within) :
     {Nat.is_le(Nat.add(Nat.sub(start,parent_start),count),parent_count) == True{} : Bool}}
-  +offset_room = {%Equal.sym(Bool,Nat.is_lt(Nat.add(shift,column),Nat.add(shift,plane)),Nat.is_lt(column,plane),Samples.lt_offset(shift,column,plane)) :
+  +offset_room = {%Equal.sym(Bool,Nat.is_lt(Nat.add(shift,column),Nat.add(shift,plane)),Nat.is_lt(column,plane),Order.lt_offset(shift,column,plane)) :
       {_ == True{} : Bool}
     column_inside : {Nat.is_lt(Nat.add(shift,column),Nat.add(shift,plane)) == True{} : Bool}}
-  +remainder_small = Samples.lt_le(Nat.add(shift,column),Nat.add(shift,plane),parent_plane,offset_room,
+  +remainder_small = Bounds.nat_trans(Nat.add(shift,column),Nat.add(shift,plane),parent_plane,offset_room,
     %RowMajor.distrib(Nat.sub(start,parent_start),count,image_width) : {Nat.is_le(_,parent_plane) == True{} : Bool}
     RowMajor.mul_le(Nat.add(Nat.sub(start,parent_start),count),parent_count,image_width,rows_room))
   +parent_positive = Order.le_lt_trans(0n,Nat.add(shift,column),parent_plane,Order.zero_le(Nat.add(shift,column)),remainder_small)
@@ -280,15 +279,15 @@ def copy_read_with(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {C
   +regrouped = Equal.sym(Nat,Nat.add(Nat.add(Nat.mul(row,parent_plane),shift),column),Nat.add(Nat.mul(row,parent_plane),Nat.add(shift,column)),
     Addition.associative(Nat.mul(row,parent_plane),shift,column))
   +source_inside = {%regrouped : {Nat.is_lt(_,Nat.mul(ci,parent_plane)) == True{} : Bool}
-    Samples.lt_le(Nat.add(Nat.mul(row,parent_plane),Nat.add(shift,column)),Nat.mul(1n+row,parent_plane),Nat.mul(ci,parent_plane),
+    Bounds.nat_trans(Nat.add(Nat.mul(row,parent_plane),Nat.add(shift,column)),Nat.mul(1n+row,parent_plane),Nat.mul(ci,parent_plane),
       %Order.commutative(Nat.mul(row,parent_plane),parent_plane) : {Nat.is_lt(Nat.add(Nat.mul(row,parent_plane),Nat.add(shift,column)),_) == True{} : Bool}
       %Equal.sym(Bool,Nat.is_lt(Nat.add(Nat.mul(row,parent_plane),Nat.add(shift,column)),Nat.add(Nat.mul(row,parent_plane),parent_plane)),
-        Nat.is_lt(Nat.add(shift,column),parent_plane),Samples.lt_offset(Nat.mul(row,parent_plane),Nat.add(shift,column),parent_plane)) : {_ == True{} : Bool}
+        Nat.is_lt(Nat.add(shift,column),parent_plane),Order.lt_offset(Nat.mul(row,parent_plane),Nat.add(shift,column),parent_plane)) : {_ == True{} : Bool}
       remainder_small,
       RowMajor.mul_le(1n+row,ci,parent_plane,Order.strict_follow(row,ci,row_inside))) :
     {Nat.is_lt(source,Nat.mul(ci,parent_plane)) == True{} : Bool}}
   +source_small = Order.transitive(source,Nat.mul(ci,parent_plane),cap,Bounds.strict_le(source,Nat.mul(ci,parent_plane),source_inside),
-    Order.transitive(Nat.mul(ci,parent_plane),Nat.mul(ci,area),cap,WindowProblem.multiply_left_le(ci,parent_plane,area,RowMajor.mul_le(parent_count,height,image_width,parent_le)),
+    Order.transitive(Nat.mul(ci,parent_plane),Nat.mul(ci,area),cap,DivisionOrder.multiply_left_le(ci,parent_plane,area,RowMajor.mul_le(parent_count,height,image_width,parent_le)),
       input_bound))
   +channels_back = Equal.sym(Nat,U32.to_nat(channels),ci,channels_exact)
   +count_back = Equal.sym(Nat,U32.to_nat(count_word),plane,count_exact)
@@ -304,7 +303,7 @@ def copy_read_with(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {C
     window_small,
     U32Division.nat_lt_native(U32.from_nat(index),Tree.capacity(F32,fresh),
       %Equal.sym(Nat,U32.to_nat(U32.from_nat(index)),index,index_exact) : {Nat.is_lt(_,U32.to_nat(Tree.capacity(F32,fresh))) == True{} : Bool}
-      Samples.lt_le(index,window_total,U32.to_nat(Tree.capacity(F32,fresh)),inside,capacity_room)),
+      Bounds.nat_trans(index,window_total,U32.to_nat(Tree.capacity(F32,fresh)),inside,capacity_room)),
     row,column,{==},
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(index)),index,index_exact) : {_ == Nat.add(Nat.mul(row,U32.to_nat(count_word)),column) : Nat}
     %count_back : {index == Nat.add(Nat.mul(row,_),column) : Nat}
@@ -328,7 +327,7 @@ def copy_read_with(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {C
       {Nat.add(Nat.mul(row,area),_) == WindowBandValues.source(band,index) : Nat}
     %RowMajor.distrib(parent_start,Nat.sub(start,parent_start),image_width) :
       {Nat.add(Nat.mul(row,area),Nat.add(_,column)) == WindowBandValues.source(band,index) : Nat}
-    %Equal.sym(Nat,Nat.add(parent_start,Nat.sub(start,parent_start)),start,Positions.add_sub(parent_start,start,after)) :
+    %Equal.sym(Nat,Nat.add(parent_start,Nat.sub(start,parent_start)),start,Order.restore_shift(parent_start,start,after)) :
       {Nat.add(Nat.mul(row,area),Nat.add(Nat.mul(_,image_width),column)) == WindowBandValues.source(band,index) : Nat}
     {==} : {WindowBandValues.source(parent_band,source) == WindowBandValues.source(band,index) : Nat}}
   +planes_fresh = Writes.pure(F32,WindowCopy.writes(U32.to_nat(channels),0,count_word,stride_word,shift_word,count_word,parent),fresh)
@@ -358,11 +357,11 @@ def copy_read(+context: CopyContext,+index: Nat,+inside: {Nat.is_lt(index,copy_l
   +ci_positive = valid_condition(problem,valid,10n)
   +input_bound = input_room(limits,problem,Padded.scalar(limits,problem,Support.fast(limits,problem,supported)),valid)
   +positive = {%Equal.sym(Nat,U32.to_nat(total),window_total,total_value) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Support.positive_mul(ci,plane,ci_positive,Support.positive_mul(U32.to_nat(rows),Guards.width(problem),rows_positive,width_positive)) :
+    Order.product_positive(ci,plane,ci_positive,Order.product_positive(U32.to_nat(rows),Guards.width(problem),rows_positive,width_positive)) :
     {Nat.is_lt(0n,U32.to_nat(total)) == True{} : Bool}}
   +bound = {%Equal.sym(Nat,U32.to_nat(total),window_total,total_value) : {Nat.is_le(_,cap) == True{} : Bool}
     Order.transitive(window_total,Nat.mul(ci,Nat.mul(Guards.height(problem),Guards.width(problem))),cap,
-      WindowProblem.multiply_left_le(ci,plane,Nat.mul(Guards.height(problem),Guards.width(problem)),
+      DivisionOrder.multiply_left_le(ci,plane,Nat.mul(Guards.height(problem),Guards.width(problem)),
         RowMajor.mul_le(U32.to_nat(rows),Guards.height(problem),Guards.width(problem),rows_le)),input_bound) :
     {Nat.is_le(U32.to_nat(total),cap) == True{} : Bool}}
   copy_read_with(limits,problem,valid,supported,parent,parent_first,parent_rows,first,rows,channels,width,channels_exact,width_exact,
@@ -406,11 +405,11 @@ def copied_room(+context: CopyContext) -> {Nat.is_le(copy_limit(context),U32.to_
   +total = total_word(channels,rows,width)
   +input_bound = input_room(limits,problem,Padded.scalar(limits,problem,Support.fast(limits,problem,supported)),valid)
   +positive = {%Equal.sym(Nat,U32.to_nat(total),window_total,total_value) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Support.positive_mul(ci,plane,valid_condition(problem,valid,10n),Support.positive_mul(U32.to_nat(rows),Guards.width(problem),rows_positive,valid_condition(problem,valid,7n))) :
+    Order.product_positive(ci,plane,valid_condition(problem,valid,10n),Order.product_positive(U32.to_nat(rows),Guards.width(problem),rows_positive,valid_condition(problem,valid,7n))) :
     {Nat.is_lt(0n,U32.to_nat(total)) == True{} : Bool}}
   +bound = {%Equal.sym(Nat,U32.to_nat(total),window_total,total_value) : {Nat.is_le(_,cap) == True{} : Bool}
     Order.transitive(window_total,Nat.mul(ci,Nat.mul(Guards.height(problem),Guards.width(problem))),cap,
-      WindowProblem.multiply_left_le(ci,plane,Nat.mul(Guards.height(problem),Guards.width(problem)),
+      DivisionOrder.multiply_left_le(ci,plane,Nat.mul(Guards.height(problem),Guards.width(problem)),
         RowMajor.mul_le(U32.to_nat(rows),Guards.height(problem),Guards.width(problem),rows_le)),input_bound) :
     {Nat.is_le(U32.to_nat(total),cap) == True{} : Bool}}
   copied_room_with(problem,channels,rows,width,parent_first,parent_rows,first,parent,total_value,positive,

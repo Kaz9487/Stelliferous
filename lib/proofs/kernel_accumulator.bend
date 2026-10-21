@@ -45,3 +45,52 @@ def row_update(+index: Row,+accumulators: Rows.Rows<Tile.Tile8>,+input: Tile.Til
     case R1{} Rows.Rows{a,b,c,d} Rows.Rows{u,v,w,x}: {==}
     case R2{} Rows.Rows{a,b,c,d} Rows.Rows{u,v,w,x}: {==}
     case R3{} Rows.Rows{a,b,c,d} Rows.Rows{u,v,w,x}: {==}
+
+def row_filled(~Element: Data,index: Row,+value: Element) -> {row(~Element,index,Rows.filled(~Element,value)) == value : Element}:
+  match index:
+    case R0{}: {==}
+    case R1{}: {==}
+    case R2{}: {==}
+    case R3{}: {==}
+
+def row_of(index: Nat) -> Row:
+  match index:
+    case 0n: R0{}
+    case 1n+a:
+      match a:
+        case 0n: R1{}
+        case 1n+b:
+          match b:
+            case 0n: R2{}
+            case 1n+c: R3{}
+
+def select_row(~Element: Data,index: Nat,values: Rows.Rows<Element>) -> Element:
+  match index:
+    case 0n: Rows.first(~Element,values)
+    case 1n+a:
+      match a:
+        case 0n: Rows.second(~Element,values)
+        case 1n+b:
+          match b:
+            case 0n: Rows.third(~Element,values)
+            case 1n+c: Rows.fourth(~Element,values)
+
+def selection_matches(~Element: Data,+index: Nat,+values: Rows.Rows<Element>) ->
+  {select_row(~Element,index,values) == row(~Element,row_of(index),values) : Element}:
+  match index:
+    case 0n:
+      Rows.Rows{a,b,c,d} = values
+      {==}
+    case 1n+ +a:
+      match a:
+        case 0n:
+          Rows.Rows{a,b,c,d} = values
+          {==}
+        case 1n+ +b:
+          match b:
+            case 0n:
+              Rows.Rows{a,b,c,d} = values
+              {==}
+            case 1n+ +c:
+              Rows.Rows{a,b,c,d} = values
+              {==}

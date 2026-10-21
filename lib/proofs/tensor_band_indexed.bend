@@ -17,8 +17,6 @@ import ./encoded_coordinates.bend as Encoded
 import ./machine_limit_bounds.bend as Limits
 import ./nat_division.bend as Division
 import ./nat_to_u32_bounds.bend as Bounds
-import ./ordered_ranges.bend as Ranges
-import ./sequence_membership.bend as Members
 import ./storage_allocation_refinement.bend as AllocationLaws
 import ./storage_certificate.bend as Certificate
 import ./storage_copy_refinement.bend as StorageCopyLaws
@@ -37,7 +35,6 @@ import ./word_subtraction.bend as Subtraction
 import ../storage_allocation.bend as Allocation
 import ../storage_buffer.bend as Storage
 import ../tensor_operations.bend as Operations
-import ../traversal_partition.bend as Partition
 
 # The actual band indexed leaf uses the global NCHW index and the shared
 # ordered writer. Allocation and certificates are erased only in observation.
@@ -66,10 +63,6 @@ def local_offset(+first: Nat,+offset: Nat) -> {(U32.from_nat(Nat.add(first,offse
   %Order.commutative(offset,first) : {(U32.from_nat(_) - U32.from_nat(first) : U32) == U32.from_nat(offset) : U32}
   Subtraction.encoded_subtract_add(offset,first)
 
-def plane_within(+first: Nat,+plane: Nat,+limit: Nat,room: {Nat.is_le(Nat.add(first,plane),limit) == True{} : Bool}) -> {Nat.is_le(plane,limit) == True{} : Bool}:
-  Order.transitive(plane,Nat.add(first,plane),limit,
-    %Order.commutative(plane,first) : {Nat.is_le(plane,_) == True{} : Bool} Order.le_add(plane,first),room)
-
 def decoded(+limits: Machine.Limits,+total: U32,+plane: U32,+block: Nat,+offset: Nat,
   +inside: {Nat.is_lt(offset,U32.to_nat(plane)) == True{} : Bool},
   +room: {Nat.is_le(Nat.add(Nat.mul(block,U32.to_nat(plane)),U32.to_nat(plane)),U32.to_nat(total)) == True{} : Bool},
@@ -80,7 +73,7 @@ def decoded(+limits: Machine.Limits,+total: U32,+plane: U32,+block: Nat,+offset:
   +exact = Bounds.roundtrip(Nat.add(Nat.mul(block,U32.to_nat(plane)),offset),Machine.half_word(limits),Limits.half_word_fits(limits),
     Bounds.strict_le(Nat.add(Nat.mul(block,U32.to_nat(plane)),offset),U32.to_nat(Machine.half_word(limits)),Bounds.nat_trans(Nat.add(Nat.mul(block,U32.to_nat(plane)),offset),U32.to_nat(Machine.capacity(limits)),U32.to_nat(Machine.half_word(limits)),below,
       Bounds.as_nat_le(Machine.capacity(limits),Machine.half_word(limits),Limits.capacity_within_half(limits)))))
-  +divisor = Limits.double_bound(limits,U32.to_nat(plane),Order.transitive(U32.to_nat(plane),U32.to_nat(total),U32.to_nat(Machine.capacity(limits)),plane_within(Nat.mul(block,U32.to_nat(plane)),U32.to_nat(plane),U32.to_nat(total),room),within))
+  +divisor = Limits.double_bound(limits,U32.to_nat(plane),Order.transitive(U32.to_nat(plane),U32.to_nat(total),U32.to_nat(Machine.capacity(limits)),Order.drop_left_le(Nat.mul(block,U32.to_nat(plane)),U32.to_nat(plane),U32.to_nat(total),room),within))
   +pair = Division.unique(U32.to_nat(U32.from_nat(Nat.add(Nat.mul(block,U32.to_nat(plane)),offset))),U32.to_nat(plane),block,offset,exact,positive,inside)
   Decoded{
     Encoded.encoding((U32.from_nat(Nat.add(Nat.mul(block,U32.to_nat(plane)),offset)) / plane : U32),block,
@@ -193,11 +186,11 @@ def band(~Element: Data,~operation: U32 -> Element -> Element,+context: Bands.Fi
   Equal.cong(Buffer.Content<Element>,Model.Content<Element>,buffer => Model.RowBand{buffer,first,rows},
     Buffer.contents(~Element,Bands.indexed_leaf(~Element,~operation,geometry,first,rows,fill,Buffer.pack(~Element,input))),leaf_model(~Element,~operation,geometry,first,rows,fill,Buffer.content(~Element,input)),leaf(~Element,~operation,geometry,first,rows,fill,input))
 
-# The indexed operation on the plan of its own bands, in either mode.
+# The indexed operation on the plan of its own bands, run in parallel or not.
 def apply(~Element: Data,~operation: U32 -> Element -> Element,+parallel: Bool,+geometry: Bands.Geometry,+fill: Element,+bands: Model.Model<Element>) ->
   {Model.contents(~Element,Bands.apply_indexed(~Element,~operation,Model.layout(~Element,bands),parallel,geometry,fill,Model.pack(~Element,bands))) == model(~Element,~operation,geometry,fill,bands) : Model.Content<Element>}:
   Each.mapped(~Element,~Bands.Filled<Element>,~Bands.indexed_band(~Element,~operation),~band_model(~Element,~operation),~band(~Element,~operation),
-    bands,parallel && Bands.same_image(geometry,Model.layout(~Element,bands)),parallel,geometry,Bands.Filled{geometry,fill})
+    bands,parallel,Bands.Filled{geometry,fill})
 
 def scheduled(~Element: Data,~operation: U32 -> Element -> Element,+operations: F32,+geometry: Bands.Geometry,+workers: U32,+fill: Element,+bands: Model.Model<Element>) ->
   {Model.contents(~Element,BandSchedule.indexed(~Element,~operation,geometry,workers,operations,fill,Model.pack(~Element,bands))) == model(~Element,~operation,geometry,fill,bands) : Model.Content<Element>}:
@@ -261,35 +254,31 @@ def allocated_cell(~Element: Data,~Logical: Data,~operation: U32 -> Element -> E
     facts,ready,count_equal,{==},room,channel_inside,row_inside,column_inside,cell)
 
 # What one leaf supplies to every cell of its output.
-type LeafCells<-Element: Data,-Logical: Data,-original: Logical -> U32 -> Element> is Data:
-  LeafCells{logical: Logical,geometry: Bands.Geometry,first: U32,rows: U32,fill: Element,input: Buffer.Model<Element>,limits: Machine.Limits,capacity: U32,
-    domain: BandGather.Domain<geometry,limits,capacity>,metadata: BandShape.Leaf(geometry,first,rows,Buffer.length(~Element,input)),ready: Buffer.Sized<Element,input>,
-    count: BandShape.Count<geometry,rows,Buffer.length(~Element,input)>,
-    values: BandValues.Leaf(~Element,~Logical,~original,logical,geometry,first,rows,Buffer.tree(~Element,input),Buffer.length(~Element,input))}
+type CellScope<-Element: Data,-Logical: Data,-original: Logical -> U32 -> Element> is Data:
+  CellScope{logical: Logical,geometry: Bands.Geometry,first: U32,rows: U32,fill: Element,input: Buffer.Model<Element>,limits: Machine.Limits,capacity: U32,domain: BandGather.Domain<geometry,limits,capacity>,metadata: BandShape.Leaf(geometry,first,rows,Buffer.length(~Element,input)),ready: Buffer.Sized<Element,input>,count: BandShape.Count<geometry,rows,Buffer.length(~Element,input)>,values: BandValues.Leaf(~Element,~Logical,~original,logical,geometry,first,rows,Buffer.tree(~Element,input),Buffer.length(~Element,input))}
 
-def cells_geometry(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,evidence: LeafCells<Element,Logical,original>) -> Bands.Geometry:
-  LeafCells{logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,count,values} = evidence
-  geometry
+def cell_channels(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Logical,original>) -> Nat:
+  CellScope{logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,count,values} = scope
+  BandValues.channels(geometry)
 
-def cells_rows(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,evidence: LeafCells<Element,Logical,original>) -> U32:
-  LeafCells{logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,count,values} = evidence
-  rows
+def cell_rows(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Logical,original>) -> Nat:
+  CellScope{logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,count,values} = scope
+  U32.to_nat(rows)
 
-def Cell(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Element,~original: Logical -> U32 -> Element,+evidence: LeafCells<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
-  LeafCells{logical,+geometry,+first,+rows,+fill,+input,limits,capacity,domain,metadata,ready,count,values} = evidence
+def cell_width(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Logical,original>) -> Nat:
+  CellScope{logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,count,values} = scope
+  BandValues.width(geometry)
+
+def Cell(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Element,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
+  CellScope{logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,count,values} = scope
   BandValues.At(~Element,~Logical,~value(~Element,~Logical,~operation,~original),logical,geometry,first,rows,
     Buffer.content_tree(~Element,leaf_model(~Element,~operation,geometry,first,rows,fill,Buffer.content(~Element,input))),Buffer.content_length(~Element,leaf_model(~Element,~operation,geometry,first,rows,fill,Buffer.content(~Element,input))),channel,row,column)
 
-def leaf_cell(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Element,~original: Logical -> U32 -> Element,+evidence: LeafCells<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat,
-  channel_inside: {Nat.is_lt(channel,BandValues.channels(cells_geometry(~Element,~Logical,~original,evidence))) == True{} : Bool},
-  row_inside: {Nat.is_lt(row,U32.to_nat(cells_rows(~Element,~Logical,~original,evidence))) == True{} : Bool},
-  column_inside: {Nat.is_lt(column,BandValues.width(cells_geometry(~Element,~Logical,~original,evidence))) == True{} : Bool}) ->
-  Cell(~Element,~Logical,~operation,~original,evidence,channel,row,column):
-  LeafCells{+logical,+geometry,+first,+rows,+fill,+input,+limits,+capacity,domain,metadata,ready,count,values} = evidence
+def leaf_cell(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Element,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Logical,original>,+channel: Nat,+row: Nat,+column: Nat,
+  +channel_inside: {Nat.is_lt(channel,cell_channels(~Element,~Logical,~original,scope)) == True{} : Bool},+row_inside: {Nat.is_lt(row,cell_rows(~Element,~Logical,~original,scope)) == True{} : Bool},+column_inside: {Nat.is_lt(column,cell_width(~Element,~Logical,~original,scope)) == True{} : Bool}) ->
+  Cell(~Element,~Logical,~operation,~original,scope,channel,row,column):
+  CellScope{+logical,+geometry,+first,+rows,+fill,+input,+limits,+capacity,+domain,+metadata,+ready,+count,+values} = scope
   BandShape.Count{exact,allocatable} = count
-  +channel_inside = channel_inside
-  +row_inside = row_inside
-  +column_inside = column_inside
   allocated_cell(~Element,~Logical,~operation,~original,logical,geometry,first,rows,fill,input,limits,capacity,channel,row,column,
     BandGather.from_metadata(~Element,geometry,limits,first,rows,input,capacity,domain,metadata,Order.le_lt_trans(0n,row,U32.to_nat(rows),Order.zero_le(row),row_inside),ready),
     BandCount.bounded_model(~Element,Bands.local_count(geometry,rows),fill,allocatable),exact,channel_inside,row_inside,column_inside,
@@ -302,8 +291,7 @@ def leaf_values(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Elem
   values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.RowBand{Buffer.content(~Element,input),first,rows})) ->
   BandValues.Values(~Element,~Logical,~value(~Element,~Logical,~operation,~original),logical,geometry,Model.RowBand{leaf_model(~Element,~operation,geometry,first,rows,fill,Buffer.content(~Element,input)),first,rows}):
   Buffer.Model{+tree,+length,+certificate} = input
-  BandValues.cells(~LeafCells<Element,Logical,original>,~Cell(~Element,~Logical,~operation,~original),~cells_geometry(~Element,~Logical,~original),~cells_rows(~Element,~Logical,~original),~leaf_cell(~Element,~Logical,~operation,~original),
-    LeafCells{logical,geometry,first,rows,fill,Buffer.Model{tree,length,certificate},limits,capacity,domain,metadata,ready,facts,values})
+  BandValues.table(~CellScope<Element,Logical,original>,~Cell(~Element,~Logical,~operation,~original),~cell_channels(~Element,~Logical,~original),~cell_rows(~Element,~Logical,~original),~cell_width(~Element,~Logical,~original),~leaf_cell(~Element,~Logical,~operation,~original),CellScope{logical,geometry,first,rows,fill,Buffer.Model{tree,length,certificate},limits,capacity,domain,metadata,ready,facts,values})
 
 def leaf_ready(~Element: Data,~operation: U32 -> Element -> Element,+geometry: Bands.Geometry,+first: U32,+rows: U32,+fill: Element,input: Buffer.Model<Element>,
   facts: BandShape.Count<geometry,rows,Buffer.length(~Element,input)>) -> Buffer.ContentReady<Element,leaf_model(~Element,~operation,geometry,first,rows,fill,Buffer.content(~Element,input))>:
@@ -320,63 +308,97 @@ def leaf_shape(~Element: Data,~operation: U32 -> Element -> Element,+geometry: B
   BandShape.Count{exact,allocatable} = facts
   %Equal.sym(Nat,U32.to_nat(Bands.local_count(geometry,rows)),length,exact) : BandShape.Leaf(geometry,first,rows,_) metadata
 
+# What the rule of one band needs for its values.
+type ValuesScope<-Element: Data,-Logical: Data> is Data:
+  ValuesScope{logical: Logical,geometry: Bands.Geometry,limits: Machine.Limits,capacity: U32,fill: Element,domain: BandGather.Domain<geometry,limits,capacity>,
+    width_positive: {BandShape.width_positive(geometry) == True{} : Bool}}
+
+def values_filled(~Element: Data,~Logical: Data,+scope: ValuesScope<Element,Logical>) -> Bands.Filled<Element>:
+  ValuesScope{logical,geometry,limits,capacity,fill,domain,width_positive} = scope
+  Bands.Filled{geometry,fill}
+
+def values_fields(~Element: Data,~Logical: Data,+scope: ValuesScope<Element,Logical>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  ValuesScope{logical,geometry,limits,capacity,fill,domain,width_positive} = scope
+  BandShape.band_fields(~Element,geometry)
+
+def values_before(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: ValuesScope<Element,Logical>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  ValuesScope{logical,geometry,limits,capacity,fill,domain,width_positive} = scope
+  BandValues.band_values(~Element,~Logical,~original,logical,geometry)
+
+def values_after(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Element,~original: Logical -> U32 -> Element,+scope: ValuesScope<Element,Logical>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  ValuesScope{logical,geometry,limits,capacity,fill,domain,width_positive} = scope
+  BandValues.band_values(~Element,~Logical,~value(~Element,~Logical,~operation,~original),logical,geometry)
+
+def band_values(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Element,~original: Logical -> U32 -> Element,+scope: ValuesScope<Element,Logical>,+first: U32,+rows: U32,+input: Buffer.Model<Element>,+ready: Buffer.Sized<Element,input>,
+  +metadata: values_fields(~Element,~Logical,scope,first,rows,Buffer.content(~Element,input)),+values: values_before(~Element,~Logical,~original,scope,first,rows,Buffer.content(~Element,input))) ->
+  Model.ContentAll(~Element,~values_after(~Element,~Logical,~operation,~original,scope),band_model(~Element,~operation,values_filled(~Element,~Logical,scope),first,rows,input)):
+  ValuesScope{+logical,+geometry,+limits,+capacity,+fill,+domain,+width_positive} = scope
+  Buffer.Model{+tree,+length,+certificate} = input
+  leaf_values(~Element,~Logical,~operation,~original,logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,
+    BandShape.count(~Element,geometry,first,rows,input,width_positive,metadata,ready),values)
+
 def modeled_values(~Element: Data,~Logical: Data,~operation: U32 -> Element -> Element,~original: Logical -> U32 -> Element,
   +logical: Logical,+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+fill: Element,bands: Model.Model<Element>,+domain: BandGather.Domain<geometry,limits,capacity>,
   +width_positive: {BandShape.width_positive(geometry) == True{} : Bool},
   metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,bands)),ready: Model.Ready(~Element,bands),values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,bands))) ->
   BandValues.Values(~Element,~Logical,~value(~Element,~Logical,~operation,~original),logical,geometry,model(~Element,~operation,geometry,fill,bands)):
-  match bands:
-    case Model.Leaf{+input,+first,+rows}:
-      Buffer.Model{+tree,+length,+certificate} = input
-      +metadata = metadata
-      +ready = ready
-      leaf_values(~Element,~Logical,~operation,~original,logical,geometry,first,rows,fill,input,limits,capacity,domain,metadata,ready,
-        BandShape.count(~Element,geometry,first,rows,input,width_positive,metadata,ready),values)
-    case Model.Fork{+left,+right}:
-      Shape.Both{left_metadata,right_metadata} = metadata
-      Shape.Both{left_ready,right_ready} = ready
-      Shape.Both{left_values,right_values} = values
-      Shape.Both{modeled_values(~Element,~Logical,~operation,~original,logical,geometry,limits,capacity,fill,left,domain,width_positive,left_metadata,left_ready,left_values),
-        modeled_values(~Element,~Logical,~operation,~original,logical,geometry,limits,capacity,fill,right,domain,width_positive,right_metadata,right_ready,right_values)}
+  Each.map_ready_two(~Element,~Bands.Filled<Element>,~band_model(~Element,~operation),~ValuesScope<Element,Logical>,~values_filled(~Element,~Logical),
+    ~values_fields(~Element,~Logical),~values_before(~Element,~Logical,~original),~values_after(~Element,~Logical,~operation,~original),
+    ~band_values(~Element,~Logical,~operation,~original),ValuesScope{logical,geometry,limits,capacity,fill,domain,width_positive},bands,ready,metadata,values)
 
-def modeled_fields(~Element: Data,~operation: U32 -> Element -> Element,+geometry: Bands.Geometry,+fill: Element,bands: Model.Model<Element>,+width_positive: {BandShape.width_positive(geometry) == True{} : Bool},
+type FieldsScope<-Element: Data> is Data:
+  FieldsScope{geometry: Bands.Geometry,fill: Element,width_positive: {BandShape.width_positive(geometry) == True{} : Bool}}
+
+def fields_filled(~Element: Data,+scope: FieldsScope<Element>) -> Bands.Filled<Element>:
+  FieldsScope{geometry,fill,width_positive} = scope
+  Bands.Filled{geometry,fill}
+
+def fields_band(~Element: Data,+scope: FieldsScope<Element>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  FieldsScope{geometry,fill,width_positive} = scope
+  BandShape.band_fields(~Element,geometry)
+
+def band_shape(~Element: Data,~operation: U32 -> Element -> Element,+scope: FieldsScope<Element>,+first: U32,+rows: U32,+input: Buffer.Model<Element>,+ready: Buffer.Sized<Element,input>,
+  +metadata: fields_band(~Element,scope,first,rows,Buffer.content(~Element,input))) ->
+  Model.ContentAll(~Element,~fields_band(~Element,scope),band_model(~Element,~operation,fields_filled(~Element,scope),first,rows,input)):
+  FieldsScope{+geometry,+fill,+width_positive} = scope
+  Buffer.Model{+tree,+length,+certificate} = input
+  leaf_shape(~Element,~operation,geometry,first,rows,fill,input,BandShape.count(~Element,geometry,first,rows,input,width_positive,metadata,ready),metadata)
+
+def band_ready(~Element: Data,~operation: U32 -> Element -> Element,+scope: FieldsScope<Element>,+first: U32,+rows: U32,+input: Buffer.Model<Element>,+ready: Buffer.Sized<Element,input>,
+  +metadata: fields_band(~Element,scope,first,rows,Buffer.content(~Element,input))) ->
+  Model.ContentAll(~Element,~Model.ready_band(~Element),band_model(~Element,~operation,fields_filled(~Element,scope),first,rows,input)):
+  FieldsScope{+geometry,+fill,+width_positive} = scope
+  Buffer.Model{+tree,+length,+certificate} = input
+  leaf_ready(~Element,~operation,geometry,first,rows,fill,input,BandShape.count(~Element,geometry,first,rows,input,width_positive,metadata,ready))
+
+def modeled_shape(~Element: Data,~operation: U32 -> Element -> Element,+geometry: Bands.Geometry,+fill: Element,bands: Model.Model<Element>,+width_positive: {BandShape.width_positive(geometry) == True{} : Bool},
   metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,bands)),ready: Model.Ready(~Element,bands)) ->
-  Shape.Both<BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,bands)),Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,bands))>:
-  match bands:
-    case Model.Leaf{+input,+first,+rows}:
-      Buffer.Model{+tree,+length,+certificate} = input
-      +metadata = metadata
-      +count = BandShape.count(~Element,geometry,first,rows,input,width_positive,metadata,ready)
-      Shape.Both{leaf_shape(~Element,~operation,geometry,first,rows,fill,input,count,metadata),leaf_ready(~Element,~operation,geometry,first,rows,fill,input,count)}
-    case Model.Fork{+left,+right}:
-      Shape.Both{left_metadata,right_metadata} = metadata
-      Shape.Both{left_ready,right_ready} = ready
-      +left_fields = modeled_fields(~Element,~operation,geometry,fill,left,width_positive,left_metadata,left_ready)
-      +right_fields = modeled_fields(~Element,~operation,geometry,fill,right,width_positive,right_metadata,right_ready)
-      Shape.Both{
-        Shape.Both{Shape.first(BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,left)),Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,left)),left_fields),
-          Shape.first(BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,right)),Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,right)),right_fields)},
-        Shape.Both{Shape.second(BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,left)),Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,left)),left_fields),
-          Shape.second(BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,right)),Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,right)),right_fields)}}
+  BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,bands)):
+  Each.map_ready_one(~Element,~Bands.Filled<Element>,~band_model(~Element,~operation),~FieldsScope<Element>,~fields_filled(~Element),~fields_band(~Element),~fields_band(~Element),
+    ~band_shape(~Element,~operation),FieldsScope{geometry,fill,width_positive},bands,ready,metadata)
+
+def modeled_ready(~Element: Data,~operation: U32 -> Element -> Element,+geometry: Bands.Geometry,+fill: Element,bands: Model.Model<Element>,+width_positive: {BandShape.width_positive(geometry) == True{} : Bool},
+  metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,bands)),ready: Model.Ready(~Element,bands)) ->
+  Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,bands)):
+  Each.map_ready_one(~Element,~Bands.Filled<Element>,~band_model(~Element,~operation),~FieldsScope<Element>,~fields_filled(~Element),~fields_band(~Element),
+    ~Model.always(~Element,~FieldsScope<Element>,~Model.ready_band(~Element)),~band_ready(~Element,~operation),FieldsScope{geometry,fill,width_positive},bands,ready,metadata)
+
+def band_layout(~Element: Data,~operation: U32 -> Element -> Element,+context: Bands.Filled<Element>,+first: U32,+rows: U32,+input: Buffer.Model<Element>) ->
+  {Model.content_layout(~Element,band_model(~Element,~operation,context,first,rows,input)) == Bands.Rows{first,rows} : Bands.Plan}:
+  Bands.Filled{geometry,fill} = context
+  Buffer.Model{tree,length,certificate} = input
+  {==}
 
 def modeled_layout(~Element: Data,~operation: U32 -> Element -> Element,+geometry: Bands.Geometry,+fill: Element,bands: Model.Model<Element>) ->
   {Model.content_layout(~Element,model(~Element,~operation,geometry,fill,bands)) == Model.layout(~Element,bands) : Bands.Plan}:
-  match bands:
-    case Model.Leaf{Buffer.Model{tree,length,certificate},first,rows}: {==}
-    case Model.Fork{+left,+right}:
-      %modeled_layout(~Element,~operation,geometry,fill,left) :
-        {Bands.Split{Model.content_layout(~Element,model(~Element,~operation,geometry,fill,left)),Model.content_layout(~Element,model(~Element,~operation,geometry,fill,right))} == Bands.Split{_,Model.layout(~Element,right)} : Bands.Plan}
-      %modeled_layout(~Element,~operation,geometry,fill,right) :
-        {Bands.Split{Model.content_layout(~Element,model(~Element,~operation,geometry,fill,left)),Model.content_layout(~Element,model(~Element,~operation,geometry,fill,right))} == Bands.Split{Model.content_layout(~Element,model(~Element,~operation,geometry,fill,left)),_} : Bands.Plan}
-      {==}
+  Each.mapped_layout(~Element,~Bands.Filled<Element>,~band_model(~Element,~operation),~band_layout(~Element,~operation),Bands.Filled{geometry,fill},bands)
 
-def modeled_well_formed(~Element: Data,~operation: U32 -> Element -> Element,+geometry: Bands.Geometry,+fill: Element,+bands: Model.Model<Element>,width_positive: {BandShape.width_positive(geometry) == True{} : Bool},
+def modeled_well_formed(~Element: Data,~operation: U32 -> Element -> Element,+geometry: Bands.Geometry,+fill: Element,+bands: Model.Model<Element>,+width_positive: {BandShape.width_positive(geometry) == True{} : Bool},
   evidence: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>) -> BandShape.WellFormed<Element,geometry,model(~Element,~operation,geometry,fill,bands)>:
-  BandShape.WellFormed{metadata,ready,coverage} = evidence
-  +fields = modeled_fields(~Element,~operation,geometry,fill,bands,width_positive,metadata,Model.ready(~Element,bands,ready))
+  BandShape.WellFormed{+metadata,+ready,coverage} = evidence
   BandShape.WellFormed{
-    Shape.first(BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,bands)),Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,bands)),fields),
-    Shape.second(BandShape.Contents(~Element,geometry,model(~Element,~operation,geometry,fill,bands)),Model.ContentReady(~Element,model(~Element,~operation,geometry,fill,bands)),fields),
+    modeled_shape(~Element,~operation,geometry,fill,bands,width_positive,metadata,Model.ready(~Element,bands,ready)),
+    modeled_ready(~Element,~operation,geometry,fill,bands,width_positive,metadata,Model.ready(~Element,bands,ready)),
     %Equal.sym(Bands.Plan,Model.content_layout(~Element,model(~Element,~operation,geometry,fill,bands)),Model.layout(~Element,bands),modeled_layout(~Element,~operation,geometry,fill,bands)) : BandPlan.Coverage(_,0n,Inspection.total_rows(geometry))
     %Equal.sym(Bands.Plan,Model.layout(~Element,bands),Model.content_layout(~Element,Model.content(~Element,bands)),Model.layout_matches_content(~Element,bands)) : BandPlan.Coverage(_,0n,Inspection.total_rows(geometry)) coverage}
 

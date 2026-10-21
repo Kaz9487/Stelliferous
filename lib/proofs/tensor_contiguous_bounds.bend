@@ -13,16 +13,7 @@ import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
 import ./storage_shape.bend as Shape
-
-def nonzero_positive(+value: Nat,nonzero: {Nat.is_eq(value,0n) == False{} : Bool}) -> {Nat.is_lt(0n,value) == True{} : Bool}:
-  match value:
-    case 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(Equal.sym(Bool,True{},False{},nonzero)))
-    case 1n+rest: {==}
-
-def extent_positive(+extent: U32,nonzero: {U32.is_zero(extent) == False{} : Bool}) -> {Nat.is_lt(0n,U32.to_nat(extent)) == True{} : Bool}:
-  nonzero_positive(U32.to_nat(extent),{
-    %Comparison.eq(extent,0) : {_ == False{} : Bool}
-    nonzero : {Nat.is_eq(U32.to_nat(extent),0n) == False{} : Bool}})
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
 def stride_guard(+extent: U32,+stride: U32,+count: U32,
   valid: {U32.is_le(extent,1) || U32.is_eq(stride,count) == True{} : Bool}) ->
@@ -104,7 +95,7 @@ def contiguous(+axes: List<&2,Views.Axis>,nonempty: {Shapes.has_zero(Views.axis_
     case Views.Axis{+extent,+stride} <> +tail:
       +nonempty = nonempty
       axis(Views.contiguous_size(tail),extent,stride,ShapeLaws.elements(Views.axis_extents(tail)),ViewBounds.last_span(tail),
-        extent_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)),
+        Arithmetic.word_nonzero_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)),
         contiguous(tail,Boolean.or_false_right(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)))
 
 def accepted_span(+result: Maybe<&2,U32>,+product: Nat,+span: Nat,

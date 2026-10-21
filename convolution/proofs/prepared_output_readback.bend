@@ -22,7 +22,7 @@ import ./concrete_support_guard.bend as Support
 import ./supported_padded_coordinates.bend as Padded
 import ./prepared_packing_samples.bend as Prepared
 import ./packing_storage_refinement.bend as PackingStorage
-import ./tile_partition_bounds.bend as TilePartitionBounds
+import ../../lib/proofs/kernel_partition_bounds.bend as TilePartitionBounds
 import ./tile_partition_coverage.bend as TilePartitionCoverage
 import ./tile_layout.bend as TileLayout
 import ./reduction_coordinate_bounds.bend as Coordinates

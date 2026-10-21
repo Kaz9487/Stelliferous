@@ -17,3 +17,8 @@ def run(+call: Packing.Call,input: Storage.Buffer<F32>,output: Storage.Buffer<Ti
   Storage.Buffer{input,input_length,input_certificate} = input
   Storage.Buffer{output,output_length,output_certificate} = output
   buffers(input_length,output_length,Packing.run(call,input,output),PackingCertificate.certificates(call,input,output,input_certificate,output_certificate))
+
+def run_window(+window: Packing.Stencil,+count: Nat,+start: U32,input: Storage.Buffer<F32>,output: Storage.Buffer<Tile.Tile8>) -> Storage.Buffer<F32> & Storage.Buffer<Tile.Tile8>:
+  Storage.Buffer{input,input_length,input_certificate} = input
+  Storage.Buffer{output,output_length,output_certificate} = output
+  buffers(input_length,output_length,Packing.pack_window(window,count,start,input,output),PackingCertificate.window_certificates(window,count,start,input,output,input_certificate,output_certificate))

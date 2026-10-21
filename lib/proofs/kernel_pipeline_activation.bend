@@ -1,11 +1,10 @@
 # Shared array/tree semantics and readback of the final activation pass.
 import Base
+import ../tensor_access.bend as Access
 import ../machine_limits.bend as Machine
 import ./machine_limit_bounds.bend as Limits
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./tensor_allocation_depth.bend as Depth
-import ./word_power_of_two.bend as Power
-import ./nat_order.bend as Order
 import ../storage_buffer.bend as Storage
 import ../storage_allocation.bend as Allocation
 import ../tensor.bend as Tensors
@@ -19,6 +18,7 @@ import ./storage_shape.bend as Shape
 import ./tensor_band_map.bend as BandMap
 import ./traversal_map_readback.bend as MapReadback
 import ./traversal_lanes_certificate.bend as LanesCertificate
+import ./math_gelu_lanes_refinement.bend as GeluLaws
 
 def storage(~Element: Data,buffer: Storage.Buffer<Element>) -> Array<Element>:
   Storage.Buffer{storage,length,certificate} = buffer
@@ -39,7 +39,7 @@ def activation_array(~custom: F32 -> F32,activation: Activations.Activation,+cou
     case Activations.Tanh{}: Traversal.map_in_place(~F32,~Unit,~Pipeline.activated_value(~Activations.tanh_value),U32.to_nat(count),0,Unit{},values)
     case Activations.HardSigmoid{}: Traversal.map_in_place(~F32,~Unit,~Pipeline.activated_value(~Activations.hard_sigmoid_value),U32.to_nat(count),0,Unit{},values)
     case Activations.HardSwish{}: Traversal.map_in_place(~F32,~Unit,~Pipeline.activated_value(~Activations.hard_swish_value),U32.to_nat(count),0,Unit{},values)
-    case Activations.GELUTanh{}: Traversal.map_in_place(~F32,~Unit,~Pipeline.activated_value(~Activations.gelu_tanh_value),U32.to_nat(count),0,Unit{},values)
+    case Activations.GELUTanh{}: Traversal.map_in_place(~F32,~Unit,~Access.apply_element(~F32,~Activations.gelu_tanh_value),U32.to_nat(count),0,Unit{},values)
     case Activations.Custom{operations}: Traversal.map_in_place(~F32,~Unit,~Pipeline.activated_value(~custom),U32.to_nat(count),0,Unit{},values)
 
 def activated(~custom: F32 -> F32,+activation: Activations.Activation,+count: U32,buffer: Storage.Buffer<F32>) ->
@@ -58,7 +58,7 @@ def activated(~custom: F32 -> F32,+activation: Activations.Activation,+count: U3
     case Activations.HardSigmoid{} Storage.Buffer{values,length,certificate}: {==}
     case Activations.HardSwish{} Storage.Buffer{values,length,certificate}: {==}
     case Activations.GELUTanh{} Storage.Buffer{values,length,Certificate.Certificate{depth,equation}}:
-      LanesCertificate.certified(~Unit,~Pipeline.activated_value(~Activations.gelu_tanh_value),U32.to_nat(count),0,Unit{},values,depth,equation)
+      GeluLaws.certified(U32.to_nat(count),0,values,depth,equation)
     case Activations.Custom{operations} Storage.Buffer{values,length,certificate}: {==}
 
 def activation_tree(~custom: F32 -> F32,activation: Activations.Activation,+count: U32,values: Tree.Tree<F32>) -> Tree.Tree<F32>:
@@ -72,7 +72,7 @@ def activation_tree(~custom: F32 -> F32,activation: Activations.Activation,+coun
     case Activations.Tanh{}: BandMap.refinement_values(~F32,~Unit,~Pipeline.activated_value(~Activations.tanh_value),U32.to_nat(count),Unit{},values)
     case Activations.HardSigmoid{}: BandMap.refinement_values(~F32,~Unit,~Pipeline.activated_value(~Activations.hard_sigmoid_value),U32.to_nat(count),Unit{},values)
     case Activations.HardSwish{}: BandMap.refinement_values(~F32,~Unit,~Pipeline.activated_value(~Activations.hard_swish_value),U32.to_nat(count),Unit{},values)
-    case Activations.GELUTanh{}: BandMap.refinement_values(~F32,~Unit,~Pipeline.activated_value(~Activations.gelu_tanh_value),U32.to_nat(count),Unit{},values)
+    case Activations.GELUTanh{}: BandMap.refinement_values(~F32,~Unit,~Access.apply_element(~F32,~Activations.gelu_tanh_value),U32.to_nat(count),Unit{},values)
     case Activations.Custom{operations}: BandMap.refinement_values(~F32,~Unit,~Pipeline.activated_value(~custom),U32.to_nat(count),Unit{},values)
 
 def activation_model(~custom: F32 -> F32,+activation: Activations.Activation,+count: U32,+values: Tree.Tree<F32>) ->
@@ -87,7 +87,7 @@ def activation_model(~custom: F32 -> F32,+activation: Activations.Activation,+co
     case Activations.Tanh{}: BandMap.raw(~F32,~Unit,~Pipeline.activated_value(~Activations.tanh_value),U32.to_nat(count),Unit{},values)
     case Activations.HardSigmoid{}: BandMap.raw(~F32,~Unit,~Pipeline.activated_value(~Activations.hard_sigmoid_value),U32.to_nat(count),Unit{},values)
     case Activations.HardSwish{}: BandMap.raw(~F32,~Unit,~Pipeline.activated_value(~Activations.hard_swish_value),U32.to_nat(count),Unit{},values)
-    case Activations.GELUTanh{}: BandMap.raw(~F32,~Unit,~Pipeline.activated_value(~Activations.gelu_tanh_value),U32.to_nat(count),Unit{},values)
+    case Activations.GELUTanh{}: BandMap.raw(~F32,~Unit,~Access.apply_element(~F32,~Activations.gelu_tanh_value),U32.to_nat(count),Unit{},values)
     case Activations.Custom{operations}: BandMap.raw(~F32,~Unit,~Pipeline.activated_value(~custom),U32.to_nat(count),Unit{},values)
 
 def activation_value(~custom: F32 -> F32,activation: Activations.Activation,value: F32) -> F32:
@@ -129,7 +129,7 @@ def activated_cases(~custom: F32 -> F32,+activation: Activations.Activation,+cou
     case Activations.HardSwish{}:
       MapReadback.inside(~F32,~Unit,~Pipeline.activated_value(~Activations.hard_swish_value),U32.to_nat(count),0n,index,Unit{},values,depth,U32.shln(1,depth),capacity_equal,balanced,depth_ok,capacity_ok,room,inside)
     case Activations.GELUTanh{}:
-      MapReadback.inside(~F32,~Unit,~Pipeline.activated_value(~Activations.gelu_tanh_value),U32.to_nat(count),0n,index,Unit{},values,depth,U32.shln(1,depth),capacity_equal,balanced,depth_ok,capacity_ok,room,inside)
+      MapReadback.inside(~F32,~Unit,~Access.apply_element(~F32,~Activations.gelu_tanh_value),U32.to_nat(count),0n,index,Unit{},values,depth,U32.shln(1,depth),capacity_equal,balanced,depth_ok,capacity_ok,room,inside)
     case Activations.Custom{operations}:
       MapReadback.inside(~F32,~Unit,~Pipeline.activated_value(~custom),U32.to_nat(count),0n,index,Unit{},values,depth,U32.shln(1,depth),capacity_equal,balanced,depth_ok,capacity_ok,room,inside)
 
@@ -148,5 +148,3 @@ def ready_depth(+count: U32,ready: Depth.Sized<count>) -> {Nat.is_le(Tensors.dep
   Depth.Sized{depth_ok,room} = ready
   depth_ok
 
-def power_fits(+depth: Nat,+depth_ok: {Nat.is_le(depth,30n) == True{} : Bool}) -> {U32.is_le(U32.shln(1,depth),2147483648) == True{} : Bool}:
-  Power.native_power_bound(depth,Order.transitive(depth,30n,31n,depth_ok,{==}))

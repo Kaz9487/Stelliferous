@@ -43,13 +43,6 @@ def word_equal(+left: U32,+right: U32,+same: {U32.is_eq(left,right) == True{} : 
     %Comparison.eq(left,right) : {_ == True{} : Bool}
     same)
 
-def vertical_bound(+limits: Machine.Limits,+problem: ConvSpec.Problem,
-  +support: Guards.Supported<problem,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
-  {Nat.is_le(Nat.add(Nat.mul(ConvSpec.out_height(problem),Guards.stride(problem)),Guards.kernel(problem)),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}:
-  Guards.Supported{ci_bound,co_bound,height_bound,width_bound,kernel_bound,stride_bound,padding_bound,input_bound,weight_bound,
-    output_bound,+vertical,horizontal} = support
-  vertical
-
 # Every row coordinate of the padded image stays below the coordinate limit.
 def padded_rows_bound(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSpec.valid(problem) == True{} : Bool},
   +support: Guards.Supported<problem,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
@@ -62,17 +55,12 @@ def padded_rows_bound(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid:
   +whole = Nat.add(height,Nat.mul(2n,padding))
   +reach = Nat.sub(whole,kernel)
   +restored = {%Order.commutative(kernel,reach) : {_ == whole : Nat}
-    Positions.add_sub(kernel,whole,kernel_fits) : {Nat.add(reach,kernel) == whole : Nat}}
+    Order.restore_shift(kernel,whole,kernel_fits) : {Nat.add(reach,kernel) == whole : Nat}}
   Order.transitive(whole,Nat.add(Nat.mul(1n+Nat.div(reach,stride),stride),kernel),U32.to_nat(Machine.coordinate(limits)),
     %restored : {Nat.is_le(_,Nat.add(Nat.mul(1n+Nat.div(reach,stride),stride),kernel)) == True{} : Bool}
     Order.add_le(reach,Nat.mul(1n+Nat.div(reach,stride),stride),kernel,
       Bounds.strict_le(reach,Nat.mul(1n+Nat.div(reach,stride),stride),DivisionOrder.next_above(reach,stride,stride_positive))),
-    vertical_bound(limits,problem,support))
-
-def out_width_positive(+problem: ConvSpec.Problem) -> {Nat.is_lt(0n,ConvSpec.out_width(problem)) == True{} : Bool}:
-  ConvSpec.Problem{shape,input,weights,bias} = problem
-  ConvSpec.Shape{ci,co,height,width,kernel,stride,padding} = shape
-  {==}
+    SupportedCoordinateBounds.row_envelope(limits,problem,support))
 
 def conditions(+parent_first: U32,+parent_rows: U32,+height: U32,+kernel: U32,+stride: U32,+padding: U32,+output_width: U32,+offset: U32,+span: U32,
   +first: U32,+rows: U32) -> List<&2,Bool>:
@@ -102,10 +90,9 @@ def top_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSp
   +first_le: {Nat.is_le(U32.to_nat(first),Guards.height(problem)) == True{} : Bool},
   +zero_or_below: Either<&2,&2,{U32.is_zero(first) == True{} : Bool},
     {U32.is_le((first + U32.from_nat(Guards.pad(problem)) : U32),(offset / U32.from_nat(ConvSpec.out_width(problem)) * U32.from_nat(Guards.stride(problem)) : U32)) == True{} : Bool}>) ->
-  Either<&2,&2,{U32.to_nat(first) == 0n : Nat},
-    {Nat.is_le(Nat.add(U32.to_nat(first),Guards.pad(problem)),Nat.mul(Nat.div(U32.to_nat(offset),ConvSpec.out_width(problem)),Guards.stride(problem))) == True{} : Bool}>:
+  Positions.Top<problem,U32.to_nat(first),U32.to_nat(offset),U32.to_nat(span)>:
   match zero_or_below:
-    case Inl{+zero}: Inl{word_zero(first,zero)}
+    case Inl{+zero}: Positions.Start{word_zero(first,zero)}
     case Inr{+below}:
       +facts = Guards.valid(problem,valid)
       +fast = Support.fast(limits,problem,supported)
@@ -127,7 +114,7 @@ def top_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSp
       +first_room = Order.transitive(Nat.add(U32.to_nat(first),padding),Nat.add(height,Nat.mul(2n,padding)),U32.to_nat(coordinate),
         Order.transitive(Nat.add(U32.to_nat(first),padding),Nat.add(height,padding),Nat.add(height,Nat.mul(2n,padding)),Order.add_le(U32.to_nat(first),height,padding,first_le),
           %Equal.sym(Bool,Nat.is_le(Nat.add(height,padding),Nat.add(height,Nat.mul(2n,padding))),Nat.is_le(padding,Nat.mul(2n,padding)),
-            Samples.le_offset(height,padding,Nat.mul(2n,padding))) : {_ == True{} : Bool}
+            Order.le_offset(height,padding,Nat.mul(2n,padding))) : {_ == True{} : Bool}
           Order.le_add(padding,Nat.mul(1n,padding))),rows_bound)
       +first_exact = {%pad_exact : {U32.to_nat((first + padding_word : U32)) == Nat.add(U32.to_nat(first),_) : Nat}
         Arithmetic.add(first,padding_word,coordinate,Limits.coordinate_fits(limits),
@@ -136,8 +123,8 @@ def top_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSp
       +grid = {%Positions.aligned_padded(problem,width_blocks,width) :
           {Nat.is_le(Nat.add(start,U32.to_nat(span)),_) == True{} : Bool}
         range : {Nat.is_le(Nat.add(start,U32.to_nat(span)),Nat.mul(out_height,out_width)) == True{} : Bool}}
-      +row_le = {%Positions.exact_quotient(out_height,out_width,out_width_positive(problem)) : {Nat.is_le(Nat.div(start,out_width),_) == True{} : Bool}
-        DivisionOrder.quotient_le(start,Nat.mul(out_height,out_width),out_width,out_width_positive(problem),
+      +row_le = {%Division.exact_quotient(out_height,out_width,Coordinates.width_positive(problem)) : {Nat.is_le(Nat.div(start,out_width),_) == True{} : Bool}
+        DivisionOrder.quotient_le(start,Nat.mul(out_height,out_width),out_width,Coordinates.width_positive(problem),
           Order.transitive(start,Nat.add(start,U32.to_nat(span)),Nat.mul(out_height,out_width),Order.le_add(start,U32.to_nat(span)),grid)) :
         {Nat.is_le(Nat.div(start,out_width),out_height) == True{} : Bool}}
       +quotient_word = (offset / width_word : U32)
@@ -149,20 +136,20 @@ def top_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSp
               U32Shift.double(Machine.capacity(limits),Limits.capacity_below_half(limits))) : {Nat.is_le(Nat.double(out_width),_) == True{} : Bool}
             Order.double_le(out_width,U32.to_nat(Machine.capacity(limits)),Coordinates.width_bound(limits,problem,facts,support)),
             %Equal.sym(Nat,U32.to_nat(width_word),out_width,width_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-            out_width_positive(problem)),
+            Coordinates.width_positive(problem)),
           %Equal.sym(Nat,U32.to_nat(width_word),out_width,width_exact) : {Nat.div(start,_) == Nat.div(start,out_width) : Nat}
           {==}) : {U32.to_nat(quotient_word) == Nat.div(start,out_width) : Nat}}
       +top_room = Order.transitive(Nat.mul(Nat.div(start,out_width),stride),Nat.mul(out_height,stride),U32.to_nat(coordinate),
         RowMajor.mul_le(Nat.div(start,out_width),out_height,stride,row_le),
         Order.transitive(Nat.mul(out_height,stride),Nat.add(Nat.mul(out_height,stride),Guards.kernel(problem)),U32.to_nat(coordinate),
-          Order.le_add(Nat.mul(out_height,stride),Guards.kernel(problem)),vertical_bound(limits,problem,support)))
+          Order.le_add(Nat.mul(out_height,stride),Guards.kernel(problem)),SupportedCoordinateBounds.row_envelope(limits,problem,support)))
       +top_exact = {%stride_exact : {U32.to_nat((quotient_word * stride_word : U32)) == Nat.mul(Nat.div(start,out_width),_) : Nat}
         %quotient_exact : {U32.to_nat((quotient_word * stride_word : U32)) == Nat.mul(_,U32.to_nat(stride_word)) : Nat}
         Arithmetic.multiply(quotient_word,stride_word,coordinate,Limits.coordinate_fits(limits),
           %Equal.sym(Nat,U32.to_nat(quotient_word),Nat.div(start,out_width),quotient_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(stride_word)),U32.to_nat(coordinate)) == True{} : Bool}
           %Equal.sym(Nat,U32.to_nat(stride_word),stride,stride_exact) : {Nat.is_le(Nat.mul(Nat.div(start,out_width),_),U32.to_nat(coordinate)) == True{} : Bool}
           top_room) : {U32.to_nat((quotient_word * stride_word : U32)) == Nat.mul(Nat.div(start,out_width),stride) : Nat}}
-      Inr{%first_exact : {Nat.is_le(_,Nat.mul(Nat.div(start,out_width),stride)) == True{} : Bool}
+      Positions.Within{%first_exact : {Nat.is_le(_,Nat.mul(Nat.div(start,out_width),stride)) == True{} : Bool}
         %top_exact : {Nat.is_le(U32.to_nat((first + padding_word : U32)),_) == True{} : Bool}
         Bounds.as_nat_le((first + padding_word : U32),(quotient_word * stride_word : U32),below)}
 
@@ -222,13 +209,13 @@ def bottom_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Con
       +kernel_exact = SupportedCoordinateBounds.kernel_exact(limits,problem,support)
       +pad_exact = SupportedCoordinateBounds.pad_exact(limits,problem,support)
       +rows_bound = padded_rows_bound(limits,problem,valid,support)
-      +vertical = vertical_bound(limits,problem,support)
+      +vertical = SupportedCoordinateBounds.row_envelope(limits,problem,support)
       +grid = {%Positions.aligned_padded(problem,width_blocks,width) : {Nat.is_le(Nat.add(start,count),_) == True{} : Bool}
         range : {Nat.is_le(Nat.add(start,count),Nat.mul(out_height,out_width)) == True{} : Bool}}
       +whole_room = Order.transitive(Nat.add(start,count),Support.padded(problem),cap,range,Padded.padded_bound(limits,problem,facts,fast))
       +sum_word = (offset + span : U32)
       +sum_exact = Arithmetic.add(offset,span,capacity,Limits.capacity_fits(limits),whole_room)
-      +whole_positive = Samples.lt_le(0n,count,Nat.add(start,count),span_positive,Samples.le_after(start,count))
+      +whole_positive = Bounds.nat_trans(0n,count,Nat.add(start,count),span_positive,Samples.le_after(start,count))
       +last = Nat.sub(Nat.add(start,count),1n)
       +last_word = (sum_word - 1 : U32)
       +last_exact = {%sum_exact : {U32.to_nat(last_word) == Nat.sub(_,1n) : Nat}
@@ -241,7 +228,7 @@ def bottom_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Con
       +last_inside = {%Order.positive_has_last(Nat.add(start,count),whole_positive) : {Nat.is_lt(last,_) == True{} : Bool}
         Order.lt_succ(last,last,Order.reflexive(last)) : {Nat.is_lt(last,Nat.add(start,count)) == True{} : Bool}}
       +row = Nat.div(last,out_width)
-      +row_below = Positions.quotient_lt(last,out_height,out_width,out_width_positive(problem),Samples.lt_le(last,Nat.add(start,count),Nat.mul(out_height,out_width),last_inside,grid))
+      +row_below = DivisionOrder.quotient_below(last,out_height,out_width,Coordinates.width_positive(problem),Bounds.nat_trans(last,Nat.add(start,count),Nat.mul(out_height,out_width),last_inside,grid))
       +quotient_word = (last_word / width_word : U32)
       +quotient_exact = {Equal.trans(Nat,U32.to_nat(quotient_word),Nat.div(U32.to_nat(last_word),U32.to_nat(width_word)),row,
           U32Division.divide(last_word,width_word,Machine.half_word(limits),Limits.half_word_fits(limits),
@@ -251,7 +238,7 @@ def bottom_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Con
               {Nat.is_le(Nat.double(out_width),_) == True{} : Bool}
             Order.double_le(out_width,cap,Coordinates.width_bound(limits,problem,facts,support)),
             %Equal.sym(Nat,U32.to_nat(width_word),out_width,width_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-            out_width_positive(problem)),
+            Coordinates.width_positive(problem)),
           %Equal.sym(Nat,U32.to_nat(width_word),out_width,width_exact) : {Nat.div(U32.to_nat(last_word),_) == row : Nat}
           %Equal.sym(Nat,U32.to_nat(last_word),last,last_exact) : {Nat.div(_,out_width) == row : Nat}
           {==}) : {U32.to_nat(quotient_word) == row : Nat}}
@@ -281,7 +268,7 @@ def bottom_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Con
       +end_room = Order.transitive(Nat.add(end,padding),Nat.add(height,Nat.mul(2n,padding)),U32.to_nat(coordinate),
         Order.transitive(Nat.add(end,padding),Nat.add(height,padding),Nat.add(height,Nat.mul(2n,padding)),Order.add_le(end,height,padding,fits),
           %Equal.sym(Bool,Nat.is_le(Nat.add(height,padding),Nat.add(height,Nat.mul(2n,padding))),Nat.is_le(padding,Nat.mul(2n,padding)),
-            Samples.le_offset(height,padding,Nat.mul(2n,padding))) : {_ == True{} : Bool}
+            Order.le_offset(height,padding,Nat.mul(2n,padding))) : {_ == True{} : Bool}
           Order.le_add(padding,Nat.mul(1n,padding))),rows_bound)
       +limit_word = (end_word + padding_word : U32)
       +limit_exact = {%pad_exact : {U32.to_nat(limit_word) == Nat.add(end,_) : Nat}
@@ -347,9 +334,9 @@ def copy_facts(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvS
       Order.transitive(Nat.sub(parent_end,start),parent_end,cap,Order.sub_le(parent_end,start),Order.transitive(parent_end,height,cap,parent_fits,height_bound))) :
     {U32.to_nat(rest_word) == Nat.sub(parent_end,start) : Nat}}
   +rows_le = {%rest_exact : {Nat.is_le(count,_) == True{} : Bool} Bounds.as_nat_le(rows,rest_word,c4) : {Nat.is_le(count,Nat.sub(parent_end,start)) == True{} : Bool}}
-  +within = {%Positions.add_sub(start,parent_end,first_le_end) : {Nat.is_le(Nat.add(start,count),_) == True{} : Bool}
+  +within = {%Order.restore_shift(start,parent_end,first_le_end) : {Nat.is_le(Nat.add(start,count),_) == True{} : Bool}
     %Equal.sym(Bool,Nat.is_le(Nat.add(start,count),Nat.add(start,Nat.sub(parent_end,start))),Nat.is_le(count,Nat.sub(parent_end,start)),
-      Samples.le_offset(start,count,Nat.sub(parent_end,start))) : {_ == True{} : Bool}
+      Order.le_offset(start,count,Nat.sub(parent_end,start))) : {_ == True{} : Bool}
     rows_le : {Nat.is_le(Nat.add(start,count),parent_end) == True{} : Bool}}
   +fits_height = Order.transitive(Nat.add(start,count),parent_end,height,within,parent_fits)
   +first_le = Order.transitive(start,Nat.add(start,count),height,Order.le_add(start,count),fits_height)

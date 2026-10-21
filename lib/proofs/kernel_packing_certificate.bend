@@ -7,6 +7,25 @@ import ./storage_certificate.bend as Certificate
 import ./traversal_witness.bend as TraversalWitness
 import ./traversal_certificate.bend as TraversalCertificate
 
+type WindowCall is Data:
+  WindowCall{window: Packing.Stencil,count: Nat,start: U32}
+
+def window_operation(call: WindowCall,input: Array<F32>,output: Array<Tile.Tile8>) -> Array<F32> & Array<Tile.Tile8>:
+  WindowCall{window,count,start} = call
+  Packing.pack_window(window,count,start,input,output)
+
+def window_preserves(+depth: Nat,call: WindowCall,-input: Array<F32>,-output: Array<Tile.Tile8>,input_certificate: Certificate.Certificate<F32,input>,
+  equation: {output == Tree.pack(Tile.Tile8,Certificate.normalized(Tile.Tile8,depth,Tree.reflect(Tile.Tile8,output))) : Array<Tile.Tile8>}) ->
+  TraversalWitness.ResultEvidence<Array<F32>,Tile.Tile8,input,depth,window_operation(call,input,output)>:
+  WindowCall{window,count,start} = call
+  PackingWitness.pack_window(depth,window,count,start,input,output,Certificate.witness(F32,input,input_certificate),Certificate.witness_at(Tile.Tile8,depth,output,equation))
+
+def window_certificates(window: Packing.Stencil,count: Nat,start: U32,-input: Array<F32>,-output: Array<Tile.Tile8>,input_certificate: Certificate.Certificate<F32,input>,output_certificate: Certificate.Certificate<Tile.Tile8,output>) ->
+  TraversalCertificate.Certificates<Array<F32>,Tile.Tile8,Certificate.family(~F32),Packing.pack_window(window,count,start,input,output)>:
+  Certificate.Certificate{+depth,+equation} = input_certificate
+  TraversalCertificate.operation(~Array<F32>,~Tile.Tile8,~WindowCall,~Certificate.family(~F32),~window_operation,~window_preserves,
+    WindowCall{window,count,start},input,output,Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},output_certificate)
+
 def preserves(+depth: Nat,call: Packing.Call,-input: Array<F32>,-output: Array<Tile.Tile8>,input_certificate: Certificate.Certificate<F32,input>,
   equation: {output == Tree.pack(Tile.Tile8,Certificate.normalized(Tile.Tile8,depth,Tree.reflect(Tile.Tile8,output))) : Array<Tile.Tile8>}) ->
   TraversalWitness.ResultEvidence<Array<F32>,Tile.Tile8,input,depth,Packing.run(call,input,output)>:

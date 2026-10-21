@@ -9,7 +9,6 @@ import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./nat_interval.bend as Interval
 import ./natural_addition.bend as Addition
-import ./strided_range_bounds.bend as Strided
 
 type Span<-first: U32,-rows: U32,-begin: U32,-end: U32> is Data:
   Span{lower: {Nat.is_le(U32.to_nat(first),U32.to_nat(begin)) == True{} : Bool},
@@ -40,7 +39,7 @@ def rows_positive(+first: U32,+rows: U32,+begin: U32,+end: U32,positive: {Nat.is
   Bounds.nat_trans(0n,U32.to_nat((end - begin : U32)),U32.to_nat(rows),
     %Equal.sym(Nat,U32.to_nat((end - begin : U32)),Nat.sub(U32.to_nat(end),U32.to_nat(begin)),count_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
     Order.positive_difference(U32.to_nat(end),U32.to_nat(begin),positive),
-    Strided.count_in_stride(U32.to_nat((begin - first : U32)),U32.to_nat((end - begin : U32)),U32.to_nat(rows),fits))
+    Order.drop_left_le(U32.to_nat((begin - first : U32)),U32.to_nat((end - begin : U32)),U32.to_nat(rows),fits))
 
 def row_inside(+first: U32,+rows: U32,+begin: U32,+end: U32,+row: Nat,span: Span<first,rows,begin,end>,
   inside: {Nat.is_lt(row,U32.to_nat((end - begin : U32))) == True{} : Bool}) ->

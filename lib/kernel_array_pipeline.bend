@@ -1,5 +1,5 @@
-# Raw-owner adapter for the internal Array executor and its unconditional root.
-# Public tensors use the certified adapter of the very same partition schedule.
+# The Array executor of the array API and of the unconditional root. Its parts
+# run through the plan recursion that bands use.
 import Base
 import ./kernel_pipeline.bend as Pipeline
 import ./kernel_gemm.bend as Gemm
@@ -10,6 +10,7 @@ import ./kernel_tile.bend as Tile
 import ./storage_allocation.bend as Allocation
 import ./tensor.bend as Tensors
 import ./traversal_partition.bend as Partition
+import ./tensor_band.bend as Bands
 import ./kernel_window.bend as KernelWindow
 
 def allocated(+rows: U32,+span: U32) -> Array<F32>:
@@ -17,7 +18,7 @@ def allocated(+rows: U32,+span: U32) -> Array<F32>:
 
 def computed(+rows: U32,+span: U32,inner: U32,weights: Array<Tile.Tile8>,bias: Array<F32>,packed: Array<F32> & Array<Tile.Tile8>) -> Array<F32>:
   (input,tiles) = packed
-  Gemm.run(rows,tiles,weights,bias,allocated(rows,span),span,inner)
+  Gemm.run(~True{},rows,tiles,weights,bias,allocated(rows,span),span,inner)
 
 # Rows [first, first + rows) of every channel of the image, stored contiguously.
 type InputWindow is Type:
@@ -64,9 +65,38 @@ def leaf(work: Pipeline.Work,offset: U32,span: U32,window: InputWindow,weights: 
     Packing.run(Packing.Call{U32.to_nat(count),KernelWindow.start(offset,s,ow,first),height,w,k,s,p,ow,inner},input,
       Allocation.array(~Tile.Tile8,Tensors.depth_for(count),Tile.filled(0.0)))),offset,span,rows}
 
+# What one part owns: the input rows it reads, its weights and its bias.
+type Owners is Type:
+  Owners{window: InputWindow,weights: Array<Tile.Tile8>,bias: Array<F32>}
+
+def divided(windows: InputWindow & InputWindow,weights: Array<Tile.Tile8> & Array<Tile.Tile8>,bias: Array<F32> & Array<F32>) -> Bands.Division<Owners>:
+  (left_window,right_window) = windows
+  (left_weights,right_weights) = weights
+  (left_bias,right_bias) = bias
+  Bands.Divided{Owners{left_window,left_weights,left_bias},Owners{right_window,right_weights,right_bias}}
+
+# The left half reads the positions of its plan; each half owns its weights and bias.
+def divide(work: Pipeline.Work,left: Bands.Plan,right: Bands.Plan,owners: Owners) -> Bands.Division<Owners>:
+  Owners{window,weights,bias} = owners
+  +offset = Bands.first(left)
+  divided(split(work,offset,(Bands.first(right) - offset : U32),window),Array.clone(Tile.Tile8,weights),Array.clone(F32,bias))
+
+def part(work: Pipeline.Work,offset: U32,span: U32,owners: Owners) -> Partition.Tree<&1,Array<F32>,U32>:
+  Owners{window,weights,bias} = owners
+  leaf(work,offset,span,window,weights,bias)
+
+# A split always divides the owners; kept whole, they would compute the whole
+# plan as one part.
+def whole(work: Pipeline.Work,layout: Bands.Plan,owners: Owners) -> Partition.Tree<&1,Array<F32>,U32>:
+  +layout = layout
+  part(work,Bands.first(layout),(Bands.last(layout) - Bands.first(layout) : U32),owners)
+
+# Positions [offset, offset + span) halved depth times at whole blocks of eight.
 def partition(depth: Nat,work: Pipeline.Work,offset: U32,span: U32,input: InputWindow,weights: Array<Tile.Tile8>,bias: Array<F32>) -> Partition.Tree<&1,Array<F32>,U32>:
-  Partition.run(~InputWindow,~Array<Tile.Tile8>,~Array<F32>,~Array<F32>,~Pipeline.Work,
-    ~split,~Array.clone(Tile.Tile8),~Array.clone(F32),~leaf,depth,work,offset,span,input,weights,bias)
+  +offset = offset
+  +span = span
+  Bands.each_part(~Owners,~Array<F32>,~U32,~Pipeline.Work,~Unit,~Bands.always,~divide,~part,~whole,
+    Bands.unit_plan(depth,8,offset,span),True{},Unit{},work,Owners{input,weights,bias})
 
 def finish_leaf(identity: Bool,input: Array<F32>,+rows: U32,offset: U32,span: U32,+positions: U32) -> Array<F32>:
   match identity:
@@ -78,7 +108,7 @@ def finish(partitions: Partition.Tree<&1,Array<F32>,U32>,+rows: U32,+positions: 
     case Partition.Leaf{input,+offset,+span,channels}:
       finish_leaf(U32.is_zero(offset) && U32.is_eq(span,positions),input,channels,offset,span,positions)
     case Partition.Fork{left,right}:
-      Partition.gather(~Array<F32>,~(rows => offset => positions => span => input => output => Gather.gather_block(rows,offset,positions,span,input,output)),Partition.Fork{left,right},allocated(rows,positions),positions)
+      Partition.gather(~&1,~Array<F32>,~(rows => offset => positions => span => input => output => Gather.gather_block(rows,offset,positions,span,input,output)),Partition.Fork{left,right},allocated(rows,positions),positions)
 
 def run(depth: U32,work: Pipeline.Work,input: Array<F32>,weights: Array<F32>,bias: Array<F32>) -> Array<F32>:
   Pipeline.Work{+rows,+h,w,k,s,p,ow,+positions,+inner} = work

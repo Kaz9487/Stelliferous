@@ -1,50 +1,15 @@
-# Laws of NumPy broadcasting for extents of the same rank. A stretched view
-# has exactly the target extents, and extents that Shapes.broadcast_same_rank
-# accepts can be stretched from both operands. Rank alignment (with_rank) only
-# adds leading axes of extent 1 and is not restated here.
+# Laws of NumPy broadcasting for extents of the same rank: extents that
+# Shapes.broadcast_same_rank accepts can be stretched from both operands.
+# Rank alignment (with_rank) only adds leading axes of extent 1 and is not
+# restated here.
 import Base
 import ../tensor_shape.bend as Shapes
 import ../tensor_view.bend as Views
 import ./storage_shape.bend as Shape
-import ./storage_address_bounds.bend as Address
 import ./encoded_coordinates.bend as Encoded
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
 # The extents of a stretched view.
-
-def Extents(axes: Maybe<&2,List<&2,Views.Axis>>,target: List<&2,U32>) -> Type:
-  match axes:
-    case Some{axes}: {Views.axis_extents(axes) == target : List<&2,U32>}
-    case None{}: Unit
-
-def prepended_extents(+same: Bool,+single: Bool,+size: U32,+stride: U32,+extent: U32,+tail: Maybe<&2,List<&2,Views.Axis>>,+rest: List<&2,U32>,
-  same_value: {U32.is_eq(size,extent) == same : Bool},tail_extents: Extents(tail,rest)) ->
-  Extents(Views.stretched_prepend(Views.stretched_axis(same,single,size,stride,extent),tail),extent <> rest):
-  match same single tail:
-    case True{} single Some{+axes}:
-      %Equal.sym(U32,size,extent,Address.equal_words(size,extent,same_value)) : {_ <> Views.axis_extents(axes) == extent <> rest : List<&2,U32>}
-      %Equal.sym(List<&2,U32>,Views.axis_extents(axes),rest,tail_extents) : {extent <> _ == extent <> rest : List<&2,U32>}
-      {==}
-    case True{} single None{}: Unit{}
-    case False{} True{} Some{+axes}:
-      %Equal.sym(List<&2,U32>,Views.axis_extents(axes),rest,tail_extents) : {extent <> _ == extent <> rest : List<&2,U32>}
-      {==}
-    case False{} True{} None{}: Unit{}
-    case False{} False{} tail: Unit{}
-
-def stretch_extents(+axes: List<&2,Views.Axis>,+target: List<&2,U32>) -> Extents(Views.stretch_axes(axes,target),target):
-  match axes target:
-    case Nil{} Nil{}: {==}
-    case Nil{} Con{extent,rest}: Unit{}
-    case Con{axis,tail} Nil{}: Unit{}
-    case Con{Views.Axis{+size,+stride},+tail} Con{+extent,+rest}:
-      prepended_extents(U32.is_eq(size,extent),U32.is_eq(size,1),size,stride,extent,Views.stretch_axes(tail,rest),rest,{==},stretch_extents(tail,rest))
-
-# The premise form: a stretch that succeeded.
-def stretched_extents(+axes: List<&2,Views.Axis>,+target: List<&2,U32>,+result: List<&2,Views.Axis>,
-  stretched: {Views.stretch_axes(axes,target) == Some{result} : Maybe<&2,List<&2,Views.Axis>>}) ->
-  {Views.axis_extents(result) == target : List<&2,U32>}:
-  %stretched : Extents(_,target)
-  stretch_extents(axes,target)
 
 # Compatible extents can be stretched from both operands.
 
@@ -78,7 +43,7 @@ def right_stretches(+same: Bool,+left_one: Bool,+right_one: Bool,+back: Bool,+le
   Stretches(Shapes.broadcast_extent(same,left_one,right_one,left,right),right,stride):
   match same left_one right_one back:
     case True{} left_one right_one back:
-      %Address.equal_words(left,right,same_value) :
+      %Arithmetic.equal_of_is_eq(left,right,same_value) :
         {Maybe.is_some(&2,Views.Axis,Views.stretched_axis(U32.is_eq(_,left),U32.is_eq(_,1),_,stride,left)) == True{} : Bool}
       %Equal.sym(Bool,U32.is_eq(left,left),True{},Encoded.equal_words(left,left,{==})) :
         {Maybe.is_some(&2,Views.Axis,Views.stretched_axis(_,U32.is_eq(left,1),left,stride,left)) == True{} : Bool}

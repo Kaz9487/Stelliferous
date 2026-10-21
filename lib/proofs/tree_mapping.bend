@@ -21,16 +21,6 @@ def map_preserves_balance(~Element: Data,~Result: Data,~Context: Data,~observe: 
       Shape.Both{map_preserves_balance(~Element,~Result,~Context,~observe,context,rest,left,left_balanced),
         map_preserves_balance(~Element,~Result,~Context,~observe,context,rest,right,right_balanced)}
 
-def map_fresh(~Element: Data,~Result: Data,~Context: Data,~observe: Context -> Element -> Result,
-  +context: Context,+depth: Nat,+value: Element) ->
-  {map(~Element,~Result,~Context,~observe,context,Tree.fresh(Element,depth,value)) == Tree.fresh(Result,depth,observe(context,value)) : Tree.Tree<Result>}:
-  match depth:
-    case 0n: {==}
-    case 1n+ +rest:
-      %map_fresh(~Element,~Result,~Context,~observe,context,rest,value) :
-        {Tree.Node{map(~Element,~Result,~Context,~observe,context,Tree.fresh(Element,rest,value)),map(~Element,~Result,~Context,~observe,context,Tree.fresh(Element,rest,value))} == Tree.Node{_,_} : Tree.Tree<Result>}
-      {==}
-
 def map_preserves_capacity(~Element: Data,~Result: Data,~Context: Data,~observe: Context -> Element -> Result,
   +context: Context,+tree: Tree.Tree<Element>) ->
   {Tree.capacity(Result,map(~Element,~Result,~Context,~observe,context,tree)) == Tree.capacity(Element,tree) : U32}:

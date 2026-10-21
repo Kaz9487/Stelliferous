@@ -3,6 +3,7 @@
 # assertion that the leaves happen to form a contiguous partition.
 import Base
 import ../tensor_band.bend as Bands
+import ../traversal_partition.bend as Partition
 import ./tensor_band_model.bend as Model
 import ./storage_buffer_model.bend as Buffer
 import ./storage_certificate.bend as Certificate
@@ -11,13 +12,11 @@ import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./boolean_logic.bend as Boolean
-import ./tensor_shape_refinement.bend as ShapeLaws
 import ./nat_to_u32_bounds.bend as Bounds
 import ./u32_division.bend as U32Division
 import ./nat_division_order.bend as DivisionOrder
 import ./tensor_view_bounds.bend as ViewBounds
 import ./u32_comparison.bend as Comparison
-import ./tensor_band_coordinates.bend as BandCoordinates
 
 def valid(inspection: Bands.Inspection) -> Bool:
   Bands.Inspection{valid,first,end,leaves} = inspection
@@ -35,21 +34,20 @@ def leaf(~Element: Data,geometry: Bands.Geometry,buffer: Buffer.Model<Element>,f
   Buffer.Model{tree,length,Certificate.Certificate{depth,equation}} = buffer
   Bands.leaf_inspection(geometry,length,depth,first,rows)
 
+def band(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,buffer: Buffer.Model<Element>) -> Bands.Inspection:
+  leaf(~Element,geometry,buffer,first,rows)
+
 def model(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element>) -> Bands.Inspection:
-  match bands:
-    case Model.Leaf{buffer,first,rows}: leaf(~Element,geometry,buffer,first,rows)
-    case Model.Fork{left,right}: Bands.join_inspection(model(~Element,geometry,left),model(~Element,geometry,right))
+  Model.reduce(~Element,~Bands.Inspection,~Bands.Geometry,~band(~Element),~Bands.join_inspection,geometry,bands)
+
+def inspect_band(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+buffer: Buffer.Model<Element>) ->
+  {Bands.inspect_band(~Element,geometry,first,rows,Buffer.pack(~Element,buffer)) == (Partition.Leaf{Buffer.pack(~Element,buffer),first,rows,Unit{}},band(~Element,geometry,first,rows,buffer)) : Bands.Bands(~Element) & Bands.Inspection}:
+  Buffer.Model{tree,length,Certificate.Certificate{depth,equation}} = buffer
+  {==}
 
 def inspect(~Element: Data,+geometry: Bands.Geometry,+bands: Model.Model<Element>) ->
   {Bands.inspect(~Element,geometry,Model.pack(~Element,bands)) == (Model.pack(~Element,bands),model(~Element,geometry,bands)) : Bands.Bands(~Element) & Bands.Inspection}:
-  match bands:
-    case Model.Leaf{Buffer.Model{tree,length,Certificate.Certificate{depth,equation}},first,rows}: {==}
-    case Model.Fork{+left,+right}:
-      %Equal.sym(Bands.Bands(~Element) & Bands.Inspection,Bands.inspect(~Element,geometry,Model.pack(~Element,left)),(Model.pack(~Element,left),model(~Element,geometry,left)),inspect(~Element,geometry,left)) :
-        {Bands.inspected_pair(~Element,_,Bands.inspect(~Element,geometry,Model.pack(~Element,right))) == (Model.pack(~Element,bands),model(~Element,geometry,bands)) : Bands.Bands(~Element) & Bands.Inspection}
-      %Equal.sym(Bands.Bands(~Element) & Bands.Inspection,Bands.inspect(~Element,geometry,Model.pack(~Element,right)),(Model.pack(~Element,right),model(~Element,geometry,right)),inspect(~Element,geometry,right)) :
-        {Bands.inspected_pair(~Element,(Model.pack(~Element,left),model(~Element,geometry,left)),_) == (Model.pack(~Element,bands),model(~Element,geometry,bands)) : Bands.Bands(~Element) & Bands.Inspection}
-      {==}
+  Model.reduced(~Element,~Bands.Inspection,~Bands.Geometry,~Bands.inspect_band(~Element),~Bands.join_inspection,~band(~Element),~inspect_band(~Element),geometry,bands)
 
 type Coverage<-plan: Bands.Plan,-inspection: Bands.Inspection> is Data:
   Coverage{rows: Nat,coverage: BandPlan.Coverage(plan,U32.to_nat(first(inspection)),rows),
@@ -138,7 +136,7 @@ def joined_coverage(+left_plan: Bands.Plan,+right_plan: Bands.Plan,+left: Bands.
   Coverage{+left_rows,left_coverage,+left_end} = left_coverage
   Coverage{+right_rows,right_coverage,+right_end} = right_coverage
   +joined = Equal.trans(Nat,U32.to_nat(rf),U32.to_nat(le),Nat.add(U32.to_nat(lf),left_rows),
-    Equal.cong(U32,Nat,U32.to_nat,rf,le,Equal.sym(U32,le,rf,ShapeLaws.native_equal(le,rf,adjacent))),left_end)
+    Equal.cong(U32,Nat,U32.to_nat,rf,le,Equal.sym(U32,le,rf,Arithmetic.equal_of_is_eq(le,rf,adjacent))),left_end)
   Coverage{Nat.add(left_rows,right_rows),BandPlan.ForkCoverage{left_rows,right_rows,{==},left_coverage,
     %joined : BandPlan.Coverage(right_plan,_,right_rows) right_coverage},
     Equal.trans(Nat,U32.to_nat(re),Nat.add(U32.to_nat(rf),right_rows),Nat.add(U32.to_nat(lf),Nat.add(left_rows,right_rows)),right_end,
@@ -176,7 +174,7 @@ def coverage(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element
 def complete(+plan: Bands.Plan,+inspection: Bands.Inspection,+total: Nat,covered: Coverage<plan,inspection>,
   starts_zero: {U32.is_zero(first(inspection)) == True{} : Bool},ends_total: {Nat.is_eq(U32.to_nat(end(inspection)),total) == True{} : Bool}) -> BandPlan.Coverage(plan,0n,total):
   Coverage{+rows,covered,end_exact} = covered
-  +zero = Equal.cong(U32,Nat,U32.to_nat,first(inspection),0,ShapeLaws.native_equal(first(inspection),0,starts_zero))
+  +zero = Equal.cong(U32,Nat,U32.to_nat,first(inspection),0,Arithmetic.equal_of_is_eq(first(inspection),0,starts_zero))
   +rows_equal = Equal.trans(Nat,rows,Nat.add(U32.to_nat(first(inspection)),rows),total,
     Equal.cong(Nat,Nat,value => Nat.add(value,rows),0n,U32.to_nat(first(inspection)),Equal.sym(Nat,U32.to_nat(first(inspection)),0n,zero)),
     Equal.trans(Nat,Nat.add(U32.to_nat(first(inspection)),rows),U32.to_nat(end(inspection)),total,
@@ -198,3 +196,10 @@ def checked(~Element: Data,+geometry: Bands.Geometry,+bands: Model.Model<Element
   +prefix = Boolean.left((valid(inspection) && starts : Bool),ends,accepted)
   complete(Model.layout(~Element,bands),inspection,total_rows(geometry),coverage(~Element,geometry,bands,capacity,capacity_ok,total_room,Boolean.left(valid(inspection),starts,prefix)),
     Boolean.right(valid(inspection),starts,prefix),Boolean.right((valid(inspection) && starts : Bool),ends,accepted))
+
+# The coverage test of the runtime, stated through the inspection fields.
+def covered(+geometry: Bands.Geometry,+inspection: Bands.Inspection,accepted: {Bands.covers(geometry,inspection) == True{} : Bool}) ->
+  {valid(inspection) && U32.is_zero(first(inspection)) && Nat.is_eq(U32.to_nat(end(inspection)),total_rows(geometry)) == True{} : Bool}:
+  Bands.Geometry{batch,channels,height,width} = geometry
+  Bands.Inspection{ok,start,stop,leaves} = inspection
+  accepted

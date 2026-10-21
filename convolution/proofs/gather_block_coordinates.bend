@@ -14,6 +14,7 @@ import ./supported_padded_coordinates.bend as Padded
 import ./packed_output_bounds.bend as Output
 import ./gather_copy_coordinates.bend as GatherCopyCoordinates
 import ./gather_output_index.bend as GatherOutputIndex
+import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 
 def source(row: U32,span: U32,column: U32) -> U32:
   (row * span + column : U32)
@@ -31,7 +32,7 @@ def source_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+span: U32,+
   supported: Support.FastSupported<limits,problem>,span_bound: {Nat.is_le(U32.to_nat(span),Support.padded(problem)) == True{} : Bool},
   in_row: {Nat.is_lt(U32.to_nat(row),Guards.output_channel_count(problem)) == True{} : Bool},in_column: {Nat.is_lt(U32.to_nat(column),U32.to_nat(span)) == True{} : Bool}) ->
   {U32.to_nat(source(row,span,column)) == Nat.add(Nat.mul(U32.to_nat(row),U32.to_nat(span)),U32.to_nat(column)) : Nat}:
-  GatherOutputIndex.madd_words(row,span,column,Machine.capacity(limits),Limits.capacity_fits(limits),
+  Arithmetic.multiply_add_exact(row,span,column,Machine.capacity(limits),Limits.capacity_fits(limits),
     Output.index_bound(limits,problem,span,U32.to_nat(row),U32.to_nat(column),supported,span_bound,in_row,in_column))
 
 def source_inside(+limits: Machine.Limits,+problem: ConvSpec.Problem,+span: U32,+row: U32,+column: U32,

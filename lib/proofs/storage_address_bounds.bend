@@ -71,16 +71,6 @@ def below_one_value(+index: U32,bound: {U32.is_lt(index,1) == True{} : Bool}) ->
   %Equal.sym(Word(32n),word,Word.zero(32n),WordEncoding.below_one_zero(31n,word,bound)) : {0n == Word.to_nat(32n,_) : Nat}
   {==}
 
-def equal_values(+left: U32,+right: U32,equation: {U32.to_nat(left) == U32.to_nat(right) : Nat}) -> {left == right : U32}:
-  %Arithmetic.native_roundtrip(left) : {_ == right : U32}
-  %Arithmetic.native_roundtrip(right) : {U32.from_nat(U32.to_nat(left)) == _ : U32}
-  Equal.cong(Nat,U32,U32.from_nat,U32.to_nat(left),U32.to_nat(right),equation)
-
-def equal_words(+left: U32,+right: U32,equation: {U32.is_eq(left,right) == True{} : Bool}) -> {left == right : U32}:
-  equal_values(left,right,Order.equal_of_is_eq(U32.to_nat(left),U32.to_nat(right),
-    %Comparison.eq(left,right) : {_ == True{} : Bool}
-    equation))
-
 def unequal_words(+left: U32,+right: U32,different: {U32.is_eq(left,right) == False{} : Bool},equal: {left == right : U32}) -> Empty:
   WordEncoding.false_true(Equal.trans(Bool,False{},U32.is_eq(left,right),True{},Equal.sym(Bool,U32.is_eq(left,right),False{},different),
     %equal : {U32.is_eq(left,_) == True{} : Bool}
@@ -96,7 +86,7 @@ def subtract_compared(+left: U32,+right: U32,+offset: U32,equal: Bool,
         Equal.trans(U32,left,((left - offset : U32) + offset : U32),right,
           Equal.sym(U32,((left - offset : U32) + offset : U32),left,Subtraction.add_subtract(left,offset)),
           Equal.trans(U32,((left - offset : U32) + offset : U32),((right - offset : U32) + offset : U32),right,
-            Equal.cong(U32,U32,value => (value + offset : U32),(left - offset : U32),(right - offset : U32),equal_words((left - offset : U32),(right - offset : U32),compared)),
+            Equal.cong(U32,U32,value => (value + offset : U32),(left - offset : U32),(right - offset : U32),Arithmetic.equal_of_is_eq((left - offset : U32),(right - offset : U32),compared)),
             Subtraction.add_subtract(right,offset)))))
 
 def subtract_distinct(+left: U32,+right: U32,+offset: U32,different: {U32.is_eq(left,right) == False{} : Bool}) ->

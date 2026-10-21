@@ -5,7 +5,6 @@ import ./nat_to_u32_bounds.bend as Bounds
 import ./u32_full_range.bend as FullRange
 import ./u32_comparison.bend as Comparison
 import ./natural_addition.bend as Addition
-import ./word_arithmetic.bend as WordArithmetic
 import ./storage_shape.bend as Shape
 
 law Schedule:
@@ -39,10 +38,6 @@ def position_after(count: Nat,position: U32) -> U32:
     case 0n: position
     case 1n+remaining: position_after(remaining,(position + 1 : U32))
 
-def increment_encoded(+position: Nat) -> {(U32.from_nat(position) + 1 : U32) == U32.from_nat(1n+position) : U32}:
-  %Addition.successor_width(position) : {(U32.from_nat(position) + 1 : U32) == U32.from_nat(_) : U32}
-  WordArithmetic.native_add(position,1n)
-
 def positions(+count: Nat,+position: Nat) ->
   {position_after(count,U32.from_nat(position)) == U32.from_nat(Nat.add(position,count)) : U32}:
   match count:
@@ -50,7 +45,7 @@ def positions(+count: Nat,+position: Nat) ->
       %Equal.sym(Nat,Nat.add(position,0n),position,Addition.zero_right(position)) : {U32.from_nat(position) == U32.from_nat(_) : U32}
       {==}
     case 1n+ +remaining:
-      %Equal.sym(U32,(U32.from_nat(position) + 1 : U32),U32.from_nat(1n+position),increment_encoded(position)) :
+      %Equal.sym(U32,(U32.from_nat(position) + 1 : U32),U32.from_nat(1n+position),Bounds.increment_encoded(position)) :
         {position_after(remaining,_) == U32.from_nat(Nat.add(position,1n+remaining)) : U32}
       %Equal.sym(Nat,Nat.add(position,1n+remaining),1n+Nat.add(position,remaining),Addition.successor_right(position,remaining)) :
         {position_after(remaining,U32.from_nat(1n+position)) == U32.from_nat(_) : U32}

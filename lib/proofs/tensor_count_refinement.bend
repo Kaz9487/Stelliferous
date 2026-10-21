@@ -31,3 +31,7 @@ def allocatable(+result: Maybe<&2,U32>,+expected: Nat,+count: U32,exact: ShapeLa
 def count_of(+extents: List<&2,U32>,+count: U32,
   accepted: {Tensors.count_of(extents) == Some{count} : Maybe<&2,U32>}) -> Count<ShapeLaws.elements(extents),count>:
   allocatable(Shapes.numel(Shapes.Shape{extents}),ShapeLaws.elements(extents),count,ShapeLaws.numel(extents),accepted)
+
+def count_exact(+expected: Nat,+count: U32,evidence: Count<expected,count>) -> {expected == U32.to_nat(count) : Nat}:
+  Count{exact,bounded} = evidence
+  exact

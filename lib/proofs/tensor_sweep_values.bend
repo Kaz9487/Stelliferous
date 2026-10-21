@@ -9,7 +9,6 @@ import Base
 import ../tensor_access.bend as Access
 import ../tensor_operations.bend as Operations
 import ../tensor_shape.bend as Shapes
-import ../storage_buffer.bend as Storage
 import ../machine_limits.bend as Machine
 import ../default_machine_limits.bend as Default
 import ./storage_buffer_model.bend as Buffer
@@ -17,8 +16,8 @@ import ./storage_tree_model.bend as Tree
 import ./storage_refinement.bend as StorageLaws
 import ./storage_certificate.bend as Certificate
 import ./storage_shape.bend as Shape
-import ./tensor_dense_contract.bend as Dense
-import ./tensor_dense_normal.bend as DenseNormal
+import ./tensor_contract.bend as Contract
+import ./tensor_storage_count.bend as StorageCount
 import ./tensor_gather_values.bend as GatherValues
 import ./tensor_copy_values.bend as CopyValues
 import ./tensor_sweep_refinement.bend as SweepLaws
@@ -35,12 +34,12 @@ import ./nat_order.bend as Order
 import ./nat_division_order.bend as DivisionOrder
 import ./natural_addition.bend as Addition
 import ./row_major_index.bend as RowMajor
-import ./tensor_band_coordinates.bend as BandCoordinates
 import ./machine_limit_bounds.bend as Limits
 import ./boolean_logic.bend as Boolean
 import ./word_encoding.bend as WordEncoding
 import ./sequence_membership.bend as Members
 import ./ordered_ranges.bend as Ranges
+import ./binary_radix.bend as Radix
 
 def product_exact(+left: U32,+right: U32,+a: Nat,+b: Nat,+capacity: U32,capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
   +left_exact: {U32.to_nat(left) == a : Nat},+right_exact: {U32.to_nat(right) == b : Nat},
@@ -184,6 +183,15 @@ def value(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~op
   Access.Sweep{extent,step,kernel,stride,padding,out_extent,origin} = sweep
   Fold.values(~Logical,~Element,~Element,~Access.Line<Element>,~logical_line(~Element,~Logical,~original),~operation,U32.to_nat(kernel),0,logical,Access.line_at(~Element,sweep,pad,position),pad)
 
+# Two samples with the same validity: a valid pair reads equal values, an
+# invalid pair is the same pad.
+def moved(~Element: Data,~Near: Data,~near_value: Near -> U32 -> Element,~Far: Data,~far_value: Far -> U32 -> Element,+near: Near,+far: Far,+pad: Element,
+  valid: Bool,+near_index: U32,+far_index: U32,read: Boolean.When(valid,{near_value(near,near_index) == far_value(far,far_index) : Element})) ->
+  {logical_when(~Element,~Near,~near_value,pad,valid,near,near_index) == logical_when(~Element,~Far,~far_value,pad,valid,far,far_index) : Element}:
+  match valid:
+    case False{}: {==}
+    case True{}: read
+
 def tap_valid(~Element: Data,line: Access.Line<Element>,position: U32) -> Bool:
   Access.Line{base,first,extent,step,padding,pad} = line
   U32.is_lt((first + position - padding : U32),extent)
@@ -217,18 +225,18 @@ def tap_located(~Element: Data,+sweep: Access.Sweep,+pad: Element,+outer: Nat,+p
 # A valid sample inside the input holds the logical value of its address;
 # an invalid sample is the same pad on both sides.
 def sample(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+input: Tree.Tree<Element>,+length: Nat,+pad: Element,valid: Bool,+index: U32,
-  values: Dense.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
+  values: Contract.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
   inside: Boolean.When(valid,{Nat.is_lt(U32.to_nat(index),length) == True{} : Bool})) ->
   {SweepLaws.sample_when(~Element,pad,valid,input,index) == logical_when(~Element,~Logical,~original,pad,valid,logical,index) : Element}:
   match valid:
     case False{}: {==}
     case True{}:
       %Arithmetic.native_roundtrip(index) : {Tree.read(Element,input,_) == original(logical,_) : Element}
-      Dense.read(~Element,~Logical,~original,logical,Buffer.Content{input,length},U32.to_nat(index),values,inside)
+      Contract.read(~Element,~Logical,~original,logical,Buffer.Content{input,length},U32.to_nat(index),values,inside)
 
 def line_sample(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+input: Tree.Tree<Element>,+length: Nat,
   +sweep: Access.Sweep,+pad: Element,+outer: Nat,+position: U32,+tap: U32,+limits: Machine.Limits,
-  values: Dense.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
+  values: Contract.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
   guards: Guards<sweep,outer,length,limits>,inside: {Nat.is_lt(U32.to_nat(position),output_cells(sweep,outer)) == True{} : Bool}) ->
   {SweepLaws.sample_line(~Element,input,Access.line_at(~Element,sweep,pad,position),tap) == logical_line(~Element,~Logical,~original,logical,Access.line_at(~Element,sweep,pad,position),tap) : Element}:
   Access.Sweep{+extent,+step,+kernel,+stride,+padding,+out_extent,+origin} = sweep
@@ -239,7 +247,7 @@ def line_sample(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Eleme
 
 def taps(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,remaining: Nat,+tap: U32,
   +logical: Logical,+input: Tree.Tree<Element>,+length: Nat,+sweep: Access.Sweep,+pad: Element,+outer: Nat,+position: U32,+limits: Machine.Limits,+initial: Element,
-  +values: Dense.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
+  +values: Contract.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
   +guards: Guards<sweep,outer,length,limits>,+inside: {Nat.is_lt(U32.to_nat(position),output_cells(sweep,outer)) == True{} : Bool}) ->
   {SweepLaws.line_values(~Element,~operation,remaining,tap,input,Access.line_at(~Element,sweep,pad,position),initial) ==
     Fold.values(~Logical,~Element,~Element,~Access.Line<Element>,~logical_line(~Element,~Logical,~original),~operation,remaining,tap,logical,Access.line_at(~Element,sweep,pad,position),initial) : Element}:
@@ -258,7 +266,7 @@ def taps(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~ope
 # every output inside the written count.
 def swept(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
   +logical: Logical,+input: Tree.Tree<Element>,+length: Nat,+sweep: Access.Sweep,+pad: Element,+outer: Nat,+position: U32,+limits: Machine.Limits,
-  +values: Dense.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
+  +values: Contract.Values(~Element,~Logical,~original,logical,Buffer.Content{input,length}),
   +guards: Guards<sweep,outer,length,limits>,+inside: {Nat.is_lt(U32.to_nat(position),output_cells(sweep,outer)) == True{} : Bool}) ->
   {SweepLaws.sample_swept(~Element,~operation,input,Access.SweepContext{sweep,pad},position) ==
     value(~Element,~Logical,~original,~operation,Swept{logical,sweep,pad},position) : Element}:
@@ -280,10 +288,10 @@ def model(~Element: Data,~operation: Element -> Element -> Element,count: Nat,co
 # The run stores the fold of the logical input at every position it writes.
 def cell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
   +logical: Logical,+sweep: Access.Sweep,+pad: Element,+outer: Nat,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+limits: Machine.Limits,+position: Nat,
-  ready: Buffer.Sized<Element,output>,values: Dense.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
+  ready: Buffer.Sized<Element,output>,values: Contract.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
   +cells: {output_cells(sweep,outer) == Buffer.length(~Element,output) : Nat},
   +selected: {Nat.is_lt(position,Buffer.length(~Element,output)) == True{} : Bool}) ->
-  Dense.At(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output)),position):
+  Contract.At(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output)),position):
   Buffer.Model{+input_tree,+input_length,input_certificate} = input
   Buffer.Model{+output_tree,+length,+certificate} = output
   Buffer.Sized{+depth_ok,room} = ready
@@ -309,10 +317,10 @@ def cell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~ope
 
 def cells_range(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
   remaining: Nat,+position: Nat,+logical: Logical,+sweep: Access.Sweep,+pad: Element,+outer: Nat,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+limits: Machine.Limits,
-  +ready: Buffer.Sized<Element,output>,+values: Dense.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
+  +ready: Buffer.Sized<Element,output>,+values: Contract.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
   +cells: {output_cells(sweep,outer) == Buffer.length(~Element,output) : Nat},
   +room: {Nat.is_le(Nat.add(position,remaining),Buffer.length(~Element,output)) == True{} : Bool}) ->
-  Members.All(Nat,{index => Dense.At(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(remaining,position)):
+  Members.All(Nat,{index => Contract.At(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(remaining,position)):
   match remaining:
     case 0n: Unit{}
     case 1n+ +rest:
@@ -330,12 +338,12 @@ def model_length(~Element: Data,~operation: Element -> Element -> Element,+count
 
 def model_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
   +logical: Logical,+sweep: Access.Sweep,+pad: Element,+outer: Nat,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+limits: Machine.Limits,
-  +ready: Buffer.Sized<Element,output>,+values: Dense.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
+  +ready: Buffer.Sized<Element,output>,+values: Contract.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
   +cells: {output_cells(sweep,outer) == Buffer.length(~Element,output) : Nat}) ->
-  Dense.Values(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output))):
+  Contract.Values(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output))):
   %Equal.sym(Nat,Buffer.content_length(~Element,model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output))),Buffer.length(~Element,output),
     model_length(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},input,output)) :
-    Members.All(Nat,{index => Dense.At(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(_,0n))
+    Members.All(Nat,{index => Contract.At(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(_,0n))
   cells_range(~Element,~Logical,~original,~operation,Buffer.length(~Element,output),0n,logical,sweep,pad,outer,input,output,limits,ready,values,guards,cells,Order.reflexive(Buffer.length(~Element,output)))
 
 def model_ready(~Element: Data,~operation: Element -> Element -> Element,+count: Nat,+context: Access.SweepContext<Element>,input: Buffer.Content<Element>,output: Buffer.Content<Element>,
@@ -349,12 +357,12 @@ def model_ready(~Element: Data,~operation: Element -> Element -> Element,+count:
 # for its shape, with the fold of the logical input at every index.
 def model_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
   +logical: Logical,+sweep: Access.Sweep,+pad: Element,+outer: Nat,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+shape: List<&2,U32>,+limits: Machine.Limits,
-  +ready: Buffer.Sized<Element,output>,+values: Dense.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
+  +ready: Buffer.Sized<Element,output>,+values: Contract.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,outer,Buffer.length(~Element,input),limits>,
   +cells: {output_cells(sweep,outer) == Buffer.length(~Element,output) : Nat},
   length_exact: {Buffer.length(~Element,output) == ShapeLaws.elements(shape) : Nat}) ->
   GatherValues.Facts(~Element,~Swept<Element,Logical>,~value(~Element,~Logical,~original,~operation),Swept{logical,sweep,pad},shape,model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output))):
   Shape.Both{
-    Dense.WellFormed{
+    Contract.WellFormed{
       Equal.trans(Nat,Buffer.content_length(~Element,model(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output))),Buffer.length(~Element,output),ShapeLaws.elements(shape),
         model_length(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},input,output),length_exact),
       model_ready(~Element,~operation,Buffer.length(~Element,output),Access.SweepContext{sweep,pad},Buffer.content(~Element,input),Buffer.content(~Element,output),
@@ -365,14 +373,14 @@ def model_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Eleme
 def two(+first: U32,+second: U32,+count: U32,
   accepted: {Shapes.product([first,second],Some{1}) == Some{count} : Maybe<&2,U32>}) ->
   {Nat.mul(U32.to_nat(first),U32.to_nat(second)) == U32.to_nat(count) : Nat}:
-  %ShapeLaws.times_one(U32.to_nat(second)) : {Nat.mul(U32.to_nat(first),_) == U32.to_nat(count) : Nat}
+  %Order.times_one(U32.to_nat(second)) : {Nat.mul(U32.to_nat(first),_) == U32.to_nat(count) : Nat}
   %accepted : ShapeLaws.Count(_,ShapeLaws.elements([first,second]))
   ShapeLaws.nonempty_count([first,second])
 
 def three(+planes: U32,+height: U32,+width: U32,+count: U32,
   accepted: {Shapes.product([planes,height,width],Some{1}) == Some{count} : Maybe<&2,U32>}) ->
   {Nat.mul(U32.to_nat(planes),Nat.mul(U32.to_nat(height),U32.to_nat(width))) == U32.to_nat(count) : Nat}:
-  %ShapeLaws.times_one(U32.to_nat(width)) : {Nat.mul(U32.to_nat(planes),Nat.mul(U32.to_nat(height),_)) == U32.to_nat(count) : Nat}
+  %Order.times_one(U32.to_nat(width)) : {Nat.mul(U32.to_nat(planes),Nat.mul(U32.to_nat(height),_)) == U32.to_nat(count) : Nat}
   %accepted : ShapeLaws.Count(_,ShapeLaws.elements([planes,height,width]))
   ShapeLaws.nonempty_count([planes,height,width])
 
@@ -422,10 +430,10 @@ def guards_accepted(~Element: Data,+sweep: Access.Sweep,+outer: U32,+input: Buff
   Guards{
     Order.transitive(input_cells(sweep,U32.to_nat(outer)),Buffer.length(~Element,input),limit,within,
       %Buffer.content_length_of(~Element,input) : {Nat.is_le(_,limit) == True{} : Bool}
-      DenseNormal.content_room(~Element,Buffer.content(~Element,input),Machine.capacity(limits),default_capacity(limits,actual),Buffer.content_ready(~Element,input,input_ready))),
+      StorageCount.content_room(~Element,Buffer.content(~Element,input),Machine.capacity(limits),default_capacity(limits,actual),Buffer.content_ready(~Element,input,input_ready))),
     %Equal.sym(Nat,output_cells(sweep,U32.to_nat(outer)),Buffer.length(~Element,output),cells) : {Nat.is_le(_,limit) == True{} : Bool}
     %Buffer.content_length_of(~Element,output) : {Nat.is_le(_,limit) == True{} : Bool}
-    DenseNormal.content_room(~Element,Buffer.content(~Element,output),Machine.capacity(limits),default_capacity(limits,actual),Buffer.content_ready(~Element,output,ready)),
+    StorageCount.content_room(~Element,Buffer.content(~Element,output),Machine.capacity(limits),default_capacity(limits,actual),Buffer.content_ready(~Element,output,ready)),
     within}
 
 def modeled_content(~Element: Data,+input_length: Nat,+output_length: Nat,+result: AccessLaws.ModelResult<Tree.Tree<Element>,Element>) ->
@@ -438,7 +446,7 @@ def modeled_content(~Element: Data,+input_length: Nat,+output_length: Nat,+resul
 # The accepted branch of the checked model is the model of the whole output.
 def accepted_model(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
   +logical: Logical,+pad: Element,+sweep: Access.Sweep,+outer: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+shape: List<&2,U32>,+limits: Machine.Limits,+written: U32,
-  +ready: Buffer.Sized<Element,output>,+values: Dense.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,U32.to_nat(outer),Buffer.length(~Element,input),limits>,
+  +ready: Buffer.Sized<Element,output>,+values: Contract.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),+guards: Guards<sweep,U32.to_nat(outer),Buffer.length(~Element,input),limits>,
   +cells: {output_cells(sweep,U32.to_nat(outer)) == Buffer.length(~Element,output) : Nat},
   length_exact: {Buffer.length(~Element,output) == ShapeLaws.elements(shape) : Nat},
   written_all: {U32.to_nat(written) == Buffer.length(~Element,output) : Nat}) ->
@@ -462,7 +470,7 @@ def accepted_model(~Element: Data,~Logical: Data,~original: Logical -> U32 -> El
 
 def selected(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,valid: Bool,written: Maybe<&2,U32>,
   +logical: Logical,+pad: Element,+sweep: Access.Sweep,+outer: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+shape: List<&2,U32>,+limits: Machine.Limits,
-  +actual: {limits == Default.limits() : Machine.Limits},+input_ready: Buffer.Sized<Element,input>,+ready: Buffer.Sized<Element,output>,+values: Dense.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),
+  +actual: {limits == Default.limits() : Machine.Limits},+input_ready: Buffer.Sized<Element,input>,+ready: Buffer.Sized<Element,output>,+values: Contract.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),
   +cells: {output_cells(sweep,U32.to_nat(outer)) == Buffer.length(~Element,output) : Nat},
   +length_exact: {Buffer.length(~Element,output) == ShapeLaws.elements(shape) : Nat},
   +valid_exact: {guard(~Element,sweep,outer,input,output) == valid : Bool},
@@ -485,7 +493,7 @@ def selected(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,
 # the only premise about the call; its guards are read from the call itself.
 def modeled_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
   +logical: Logical,+pad: Element,+sweep: Access.Sweep,+outer: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+shape: List<&2,U32>,+limits: Machine.Limits,
-  +actual: {limits == Default.limits() : Machine.Limits},+input_ready: Buffer.Sized<Element,input>,+ready: Buffer.Sized<Element,output>,+values: Dense.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),
+  +actual: {limits == Default.limits() : Machine.Limits},+input_ready: Buffer.Sized<Element,input>,+ready: Buffer.Sized<Element,output>,+values: Contract.Values(~Element,~Logical,~original,logical,Buffer.content(~Element,input)),
   +cells: {output_cells(sweep,U32.to_nat(outer)) == Buffer.length(~Element,output) : Nat},
   +length_exact: {Buffer.length(~Element,output) == ShapeLaws.elements(shape) : Nat},
   accepted: {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.sweep(~Element,~operation,pad,Buffer.pack(~Element,input),sweep,outer,Buffer.pack(~Element,output)))) == True{} : Bool}) ->
@@ -527,20 +535,20 @@ def decoded(+position: U32,+step: U32,+out_extent: U32,+block: Nat,+along: Nat,+
   +line_exact = Equal.trans(Nat,U32.to_nat(whole),Nat.div(p,s),line,
     U32Division.divide(position,step,half,half_ok,Limits.double_bound(limits,s,step_room),step_positive),
     %Equal.sym(Nat,p,Nat.add(Nat.mul(line,s),offset),exact) : {Nat.div(_,s) == line : Nat}
-    BandCoordinates.quotient(line,offset,s,step_positive,offset_inside))
+    Radix.quotient(line,offset,s,step_positive,offset_inside))
   Decoded{
     Equal.trans(Nat,U32.to_nat((whole / out_extent : U32)),Nat.div(U32.to_nat(whole),oe),block,
       U32Division.divide(whole,out_extent,half,half_ok,Limits.double_bound(limits,oe,out_room),out_positive),
       %Equal.sym(Nat,U32.to_nat(whole),line,line_exact) : {Nat.div(_,oe) == block : Nat}
-      BandCoordinates.quotient(block,along,oe,out_positive,along_inside)),
+      Radix.quotient(block,along,oe,out_positive,along_inside)),
     Equal.trans(Nat,U32.to_nat((whole % out_extent : U32)),Nat.mod(U32.to_nat(whole),oe),along,
       U32Division.modulo(whole,out_extent,half,half_ok,Limits.double_bound(limits,oe,out_room),out_positive),
       %Equal.sym(Nat,U32.to_nat(whole),line,line_exact) : {Nat.mod(_,oe) == along : Nat}
-      BandCoordinates.remainder(block,along,oe,out_positive,along_inside)),
+      Radix.remainder(block,along,oe,out_positive,along_inside)),
     Equal.trans(Nat,U32.to_nat((position % step : U32)),Nat.mod(p,s),offset,
       U32Division.modulo(position,step,half,half_ok,Limits.double_bound(limits,s,step_room),step_positive),
       %Equal.sym(Nat,p,Nat.add(Nat.mul(line,s),offset),exact) : {Nat.mod(_,s) == offset : Nat}
-      BandCoordinates.remainder(line,offset,s,step_positive,offset_inside))}
+      Radix.remainder(line,offset,s,step_positive,offset_inside))}
 
 # The address of a sample whose block, step offset and coordinate are known:
 # computed in native words, it is the row-major index of that cell.
@@ -578,38 +586,3 @@ def address_exact(+plane: U32,+extent: U32,+step: U32,+offset: U32,+coordinate: 
   +taps_exact = product_exact(coordinate,step,c,s,capacity,capacity_ok,{==},{==},taps_room)
   Equal.trans(Nat,U32.to_nat((plane * extent * step + offset + coordinate * step : U32)),Nat.add(Nat.add(cells,r),taps),address,
     sum_exact((plane * extent * step + offset : U32),(coordinate * step : U32),Nat.add(cells,r),taps,capacity,capacity_ok,base_exact,taps_exact,sum_room),reordered)
-
-# Two lines whose samples agree tap by tap fold to the same value: the line
-# of a stored leaf against the line of the logical input it holds.
-def TapFacts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+input: Tree.Tree<Element>,+local: Access.Line<Element>,+global: Access.Line<Element>,remaining: Nat,+tap: U32) -> Data:
-  match remaining:
-    case 0n: Unit
-    case 1n+rest:
-      Shape.Both<{SweepLaws.sample_line(~Element,input,local,tap) == logical_line(~Element,~Logical,~original,logical,global,tap) : Element},
-        TapFacts(~Element,~Logical,~original,logical,input,local,global,rest,(tap + 1 : U32))>
-
-def taps_match(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,remaining: Nat,+tap: U32,
-  +logical: Logical,+input: Tree.Tree<Element>,+local: Access.Line<Element>,+global: Access.Line<Element>,+initial: Element,
-  facts: TapFacts(~Element,~Logical,~original,logical,input,local,global,remaining,tap)) ->
-  {SweepLaws.line_values(~Element,~operation,remaining,tap,input,local,initial) == Fold.values(~Logical,~Element,~Element,~Access.Line<Element>,~logical_line(~Element,~Logical,~original),~operation,remaining,tap,logical,global,initial) : Element}:
-  match remaining:
-    case 0n: {==}
-    case 1n+ +rest:
-      Shape.Both{head,tail} = facts
-      %Equal.sym(Element,SweepLaws.sample_line(~Element,input,local,tap),logical_line(~Element,~Logical,~original,logical,global,tap),head) :
-        {SweepLaws.line_values(~Element,~operation,rest,(tap + 1 : U32),input,local,operation(initial,_)) == Fold.values(~Logical,~Element,~Element,~Access.Line<Element>,~logical_line(~Element,~Logical,~original),~operation,1n+rest,tap,logical,global,initial) : Element}
-      taps_match(~Element,~Logical,~original,~operation,rest,(tap + 1 : U32),logical,input,local,global,operation(initial,logical_line(~Element,~Logical,~original,logical,global,tap)),tail)
-
-# The unchecked sweep of two owners is the pair of its model: the callers
-# that establish the bounds themselves (a band leaf) start from here.
-def swept_packed(~Element: Data,~operation: Element -> Element -> Element,+count: Nat,+context: Access.SweepContext<Element>,
-  +input: Buffer.Model<Element>,+output: Buffer.Model<Element>) ->
-  {OperationsLaws.observe_pair(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input),Buffer.pack(~Element,output))) ==
-    OperationsLaws.modeled_pair(~Element,Buffer.length(~Element,input),Buffer.length(~Element,output),
-      SweepLaws.sweep_model(~Element,~operation,count,context,Buffer.tree(~Element,input),Buffer.tree(~Element,output))) : OperationsLaws.PairOwners(Element)}:
-  Buffer.Model{+input,+input_length,+input_certificate} = input
-  Buffer.Model{+output,+output_length,+output_certificate} = output
-  OperationsLaws.pair_finished(~Element,input_length,output_length,
-    Access.sweep_run(~Element,~operation,count,context,Tree.pack(Element,input),Tree.pack(Element,output)),
-    AccessCertificate.sweep(~Element,~operation,count,context,Tree.pack(Element,input),Tree.pack(Element,output),input_certificate,output_certificate),
-    SweepLaws.sweep_model(~Element,~operation,count,context,input,output),SweepLaws.sweep(~Element,~operation,count,context,input,output))

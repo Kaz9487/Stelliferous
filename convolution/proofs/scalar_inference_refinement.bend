@@ -5,7 +5,6 @@ import ./scalar_output_coordinates.bend as OutputCoordinates
 import ../../lib/proofs/array_allocation_bounds.bend as ArrayAllocation
 import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/row_major_index.bend as RowMajor
-import ../../lib/proofs/traversal_output_refinement.bend as OutputLaws
 import ../shape.bend as ConvShape
 # Complete scalar backend: actual allocation, loops, stores and readback.
 import Base
@@ -55,8 +54,8 @@ def output_allocation(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid:
   +exact = Lengths.output_length(limits,problem,valid,supported)
   ArrayAllocation.allocated(native_count(problem),Machine.capacity(limits),Limits.capacity_fits(limits),Limits.capacity_allocatable(limits),
     %Equal.sym(Nat,U32.to_nat(native_count(problem)),count,exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Support.positive_mul(outputs,Nat.mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem)),outputs_positive,
-      Support.positive_mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem),{==},{==})),
+    Order.product_positive(outputs,Nat.mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem)),outputs_positive,
+      Order.product_positive(ConvSpec.out_height(problem),ConvSpec.out_width(problem),{==},{==})),
     %Equal.sym(Nat,U32.to_nat(native_count(problem)),count,exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     Padded.scalar_output_bound(limits,problem,supported))
 

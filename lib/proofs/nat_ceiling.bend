@@ -1,6 +1,7 @@
 # Ceiling division is the least multiple covering a value. This contract is
 # independent of window geometry and of any machine-word representation.
 import Base
+import ./boolean_logic.bend as Logic
 import ./word_encoding.bend as WordEncoding
 import ./nat_order.bend as Order
 import ./nat_division_order.bend as DivisionOrder
@@ -103,3 +104,31 @@ def previous_below(+value: Nat,+divisor: Nat,+nonempty: {Nat.is_lt(0n,value) == 
       %Equal.sym(Nat,ceiling(1n+rest,divisor),1n+Nat.div(rest,divisor),successor_formula(rest,divisor,positive)) : {Nat.is_lt(Nat.mul(Nat.sub(_,1n),divisor),1n+rest) == True{} : Bool}
       %Equal.sym(Nat,Nat.sub(Nat.div(rest,divisor),0n),Nat.div(rest,divisor),Order.subtract_zero(Nat.div(rest,divisor))) : {Nat.is_lt(Nat.mul(_,divisor),1n+rest) == True{} : Bool}
       Order.lt_succ(Nat.mul(Nat.div(rest,divisor),divisor),rest,DivisionOrder.product_below(rest,divisor,positive))
+
+# The native cold planner uses value + (divisor - 1), including value zero.
+def shifted_formula(+value: Nat,+divisor: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) ->
+  {Nat.div(Nat.add(value,Nat.sub(divisor,1n)),divisor) == ceiling(value,divisor) : Nat}:
+  match value divisor:
+    case 0n 0n: Empty.absurd({Nat.div(0n,0n) == ceiling(0n,0n) : Nat},WordEncoding.false_true(positive))
+    case 1n+previous 0n: Empty.absurd({Nat.div(Nat.add(1n+previous,0n),0n) == ceiling(1n+previous,0n) : Nat},WordEncoding.false_true(positive))
+    case 0n 1n+ +rest:
+      %Equal.sym(Nat,Nat.sub(rest,0n),rest,Order.subtract_zero(rest)) : {Nat.div(_,1n+rest) == 0n : Nat}
+      Equal.cong(Nat & Nat,Nat,pair => Pair.fst(Nat,Nat,pair),Nat.divmod(rest,1n+rest),(0n,rest),Division.small(rest,1n+rest,Order.lt_succ(rest,rest,Order.reflexive(rest))))
+    case 1n+ +previous 1n+ +rest:
+      %Equal.sym(Nat,Nat.sub(rest,0n),rest,Order.subtract_zero(rest)) : {Nat.div(1n+Nat.add(previous,_),1n+rest) == ceiling(1n+previous,1n+rest) : Nat}
+      %Addition.successor_right(previous,rest) : {Nat.div(_,1n+rest) == ceiling(1n+previous,1n+rest) : Nat}
+      %Order.subtract_zero(Nat.add(previous,1n+rest)) : {Nat.div(_,1n+rest) == ceiling(1n+previous,1n+rest) : Nat}
+      added_formula(1n+previous,1n+rest,{==},{==})
+
+# These comparisons characterize the least covering multiple.
+def lower_comparison(+value: Nat,+divisor: Nat,+position: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) ->
+  {Nat.is_le(ceiling(value,divisor),position) == Nat.is_le(value,Nat.mul(position,divisor)) : Bool}:
+  Logic.equivalent(Nat.is_le(ceiling(value,divisor),position),Nat.is_le(value,Nat.mul(position,divisor)),
+    below => Order.transitive(value,Nat.mul(ceiling(value,divisor),divisor),Nat.mul(position,divisor),covers(value,divisor,positive),RowMajor.mul_le(ceiling(value,divisor),position,divisor,below)),
+    covered => minimal(value,divisor,position,positive,covered))
+
+def upper_comparison(+value: Nat,+divisor: Nat,+position: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) ->
+  {Nat.is_lt(position,ceiling(value,divisor)) == Nat.is_lt(Nat.mul(position,divisor),value) : Bool}:
+  %Equal.sym(Bool,Nat.is_lt(Nat.mul(position,divisor),value),Bool.not(Nat.is_le(value,Nat.mul(position,divisor))),Order.strict_complement(Nat.mul(position,divisor),value)) : {Nat.is_lt(position,ceiling(value,divisor)) == _ : Bool}
+  %lower_comparison(value,divisor,position,positive) : {Nat.is_lt(position,ceiling(value,divisor)) == Bool.not(_) : Bool}
+  Order.strict_complement(position,ceiling(value,divisor))

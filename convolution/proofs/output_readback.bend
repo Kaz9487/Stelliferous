@@ -12,7 +12,7 @@ import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/natural_addition.bend as Addition
 import ./execution_storage.bend as ExecutionStorage
-import ./dense_array_initialization.bend as DenseArrayInitialization
+import ./array_fill_readback.bend as ArrayFill
 import ../../lib/proofs/nat_interval.bend as Interval
 import ./storage_capacity.bend as StorageCapacity
 
@@ -95,7 +95,7 @@ def direct_at_target(+query: DirectQuery,+output: Tree.Tree<F32>,+frame: DirectF
   %Equal.sym(Tree.Tree<F32>,direct_step(U32.from_nat(index),query,output),Tree.write(F32,output,U32.from_nat(index),value),
     ExecutionStorage.direct_job_writes_index(shape,U32.from_nat(index),source,output)) :
     {Tree.read(F32,_,U32.from_nat(index)) == value : F32}
-  DenseArrayInitialization.read_filled_range([value],U32.from_nat(index),output,depth,U32.from_nat(index),0n,frame,depth_bound,
+  ArrayFill.read_filled_range([value],U32.from_nat(index),output,depth,U32.from_nat(index),0n,frame,depth_bound,
     Equal.sym(Nat,Nat.add(U32.to_nat(U32.from_nat(index)),0n),U32.to_nat(U32.from_nat(index)),Addition.zero_right(U32.to_nat(U32.from_nat(index)))),
     direct_write_room(query,output,index,frame,inside),{==})
 
@@ -109,7 +109,7 @@ def direct_later_preserves(+query: DirectQuery,+index: Nat,+output: Tree.Tree<F3
   %Equal.sym(Tree.Tree<F32>,direct_step(U32.from_nat(index),query,output),Tree.write(F32,output,U32.from_nat(index),value),
     ExecutionStorage.direct_job_writes_index(shape,U32.from_nat(index),source,output)) :
     {Tree.read(F32,_,U32.from_nat(target)) == Tree.read(F32,output,U32.from_nat(target)) : F32}
-  DenseArrayInitialization.read_filled_outside([value],U32.from_nat(index),output,depth,U32.from_nat(target),frame,depth_bound,direct_write_room(query,output,index,frame,inside),
+  ArrayFill.read_filled_outside([value],U32.from_nat(index),output,depth,U32.from_nat(target),frame,depth_bound,direct_write_room(query,output,index,frame,inside),
     Bounds.native_bound(target,Tree.capacity(F32,output),target_exact,
       Bounds.nat_trans(target,count,U32.to_nat(Tree.capacity(F32,output)),target_inside,direct_capacity_room(query,output,frame))),
     Interval.Before{

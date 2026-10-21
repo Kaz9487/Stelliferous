@@ -12,35 +12,6 @@ import ./storage_shape.bend as Shape
 import ./boolean_logic.bend as Boolean
 import ./natural_addition.bend as Addition
 
-def less_zero_false(+value: Nat) -> {Nat.is_lt(value,0n) == False{} : Bool}:
-  match value:
-    case 0n: {==}
-    case 1n+rest: {==}
-
-def less_successor(+offset: Nat,+last: Nat,inside: {Nat.is_lt(offset,1n+last) == True{} : Bool}) ->
-  {Nat.is_le(offset,last) == True{} : Bool}:
-  match offset last:
-    case 0n last: Order.zero_le(last)
-    case 1n+ +offset 0n: Empty.absurd({Nat.is_le(1n+offset,0n) == True{} : Bool},WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(offset,0n),True{},Equal.sym(Bool,Nat.is_lt(offset,0n),False{},less_zero_false(offset)),inside)))
-    case 1n+offset 1n+last: less_successor(offset,last,inside)
-
-def before_last(+offset: Nat,+length: Nat,inside: {Nat.is_lt(offset,length) == True{} : Bool}) ->
-  {Nat.is_le(offset,Nat.sub(length,1n)) == True{} : Bool}:
-  match length:
-    case 0n:
-      Empty.absurd({Nat.is_le(offset,0n) == True{} : Bool},WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(offset,0n),True{},Equal.sym(Bool,Nat.is_lt(offset,0n),False{},less_zero_false(offset)),inside)))
-    case 1n+ +last:
-      %Equal.sym(Nat,Nat.sub(last,0n),last,Order.subtract_zero(last)) : {Nat.is_le(offset,_) == True{} : Bool}
-      less_successor(offset,last,inside)
-
-def positive_one(+length: Nat,positive: {Nat.is_lt(0n,length) == True{} : Bool}) -> {Nat.is_le(1n,length) == True{} : Bool}:
-  Order.strict_follow(0n,length,positive)
-
-def last_below(+length: Nat,positive: {Nat.is_lt(0n,length) == True{} : Bool}) ->
-  {Nat.is_lt(Nat.sub(length,1n),length) == True{} : Bool}:
-  %Order.positive_has_last(length,positive) : {Nat.is_lt(Nat.sub(length,1n),_) == True{} : Bool}
-  Order.lt_succ(Nat.sub(length,1n),Nat.sub(length,1n),Order.reflexive(Nat.sub(length,1n)))
-
 def sum_within(+offset: Nat,+increment: Nat,+last: Nat,
   offset_inside: {Nat.is_le(offset,last) == True{} : Bool},
   room: {Nat.is_le(increment,Nat.sub(last,offset)) == True{} : Bool}) ->
@@ -52,11 +23,11 @@ def sum_within(+offset: Nat,+increment: Nat,+last: Nat,
 def room_exact(+offset: U32,+length: U32,+inside: {Nat.is_lt(U32.to_nat(offset),U32.to_nat(length)) == True{} : Bool}) ->
   {U32.to_nat((length - 1 - offset : U32)) == Nat.sub(Nat.sub(U32.to_nat(length),1n),U32.to_nat(offset)) : Nat}:
   +positive = Order.le_lt_trans(0n,U32.to_nat(offset),U32.to_nat(length),Order.zero_le(U32.to_nat(offset)),inside)
-  +last_exact = FullRange.subtract(length,1,length,positive_one(U32.to_nat(length),positive),Order.sub_le(U32.to_nat(length),1n))
+  +last_exact = FullRange.subtract(length,1,length,Order.positive_one(U32.to_nat(length),positive),Order.sub_le(U32.to_nat(length),1n))
   %last_exact : {U32.to_nat((length - 1 - offset : U32)) == Nat.sub(_,U32.to_nat(offset)) : Nat}
   FullRange.subtract((length - 1 : U32),offset,(length - 1 : U32),{
     %Equal.sym(Nat,U32.to_nat((length - 1 : U32)),Nat.sub(U32.to_nat(length),1n),last_exact) : {Nat.is_le(U32.to_nat(offset),_) == True{} : Bool}
-    before_last(U32.to_nat(offset),U32.to_nat(length),inside) : {Nat.is_le(U32.to_nat(offset),U32.to_nat((length - 1 : U32))) == True{} : Bool}},Order.sub_le(U32.to_nat((length - 1 : U32)),U32.to_nat(offset)))
+    Order.before_last(U32.to_nat(offset),U32.to_nat(length),inside) : {Nat.is_le(U32.to_nat(offset),U32.to_nat((length - 1 : U32))) == True{} : Bool}},Order.sub_le(U32.to_nat((length - 1 : U32)),U32.to_nat(offset)))
 
 def addition_inside(+offset: U32,+increment: U32,+length: U32,
   inside: {U32.is_lt(offset,length) == True{} : Bool},
@@ -64,10 +35,10 @@ def addition_inside(+offset: U32,+increment: U32,+length: U32,
   {Nat.is_lt(Nat.add(U32.to_nat(offset),U32.to_nat(increment)),U32.to_nat(length)) == True{} : Bool}:
   +inside_nat = Bounds.as_nat_lt(offset,length,inside)
   Order.le_lt_trans(Nat.add(U32.to_nat(offset),U32.to_nat(increment)),Nat.sub(U32.to_nat(length),1n),U32.to_nat(length),
-    sum_within(U32.to_nat(offset),U32.to_nat(increment),Nat.sub(U32.to_nat(length),1n),before_last(U32.to_nat(offset),U32.to_nat(length),inside_nat),{
+    sum_within(U32.to_nat(offset),U32.to_nat(increment),Nat.sub(U32.to_nat(length),1n),Order.before_last(U32.to_nat(offset),U32.to_nat(length),inside_nat),{
       %room_exact(offset,length,inside_nat) : {Nat.is_le(U32.to_nat(increment),_) == True{} : Bool}
       Bounds.as_nat_le(increment,(length - 1 - offset : U32),room) : {Nat.is_le(U32.to_nat(increment),Nat.sub(Nat.sub(U32.to_nat(length),1n),U32.to_nat(offset))) == True{} : Bool}}),
-    last_below(U32.to_nat(length),Order.le_lt_trans(0n,U32.to_nat(offset),U32.to_nat(length),Order.zero_le(U32.to_nat(offset)),inside_nat)))
+    Order.last_below(U32.to_nat(length),Order.le_lt_trans(0n,U32.to_nat(offset),U32.to_nat(length),Order.zero_le(U32.to_nat(offset)),inside_nat)))
 
 law Address:
   for result: Maybe<&2,U32>
@@ -99,17 +70,6 @@ def product_address(+product: Maybe<&2,U32>,+offset: U32,+coordinate: U32,+strid
       %Equal.sym(Nat,Nat.mul(U32.to_nat(coordinate),U32.to_nat(stride)),U32.to_nat(increment),Checked.multiply_sound(coordinate,stride,increment,computed)) :
         Address(Views.advance_product(Some{increment},offset,(length - 1 - offset : U32)),Nat.add(U32.to_nat(offset),_),length)
       selected_address(U32.is_le(increment,(length - 1 - offset : U32)),offset,increment,length,inside,{==})
-
-def selected_advance(+valid: Bool,+offset: U32,+coordinate: U32,+stride: U32,+length: U32,
-  guard: {U32.is_lt(offset,length) == valid : Bool}) ->
-  Address(Views.advance_inside(valid,offset,coordinate,stride,length),Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(coordinate),U32.to_nat(stride))),length):
-  match valid:
-    case False{}: Unit{}
-    case True{}: product_address(Shapes.checked_multiply(coordinate,stride),offset,coordinate,stride,length,guard,{==})
-
-def advance(+offset: U32,+coordinate: U32,+stride: U32,+length: U32) ->
-  Address(Views.advance(offset,coordinate,stride,length),Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(coordinate),U32.to_nat(stride))),length):
-  selected_advance(U32.is_lt(offset,length),offset,coordinate,stride,length,{==})
 
 law Exact:
   for result: Maybe<&2,U32>

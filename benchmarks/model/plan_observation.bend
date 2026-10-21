@@ -7,8 +7,6 @@ import ../../lib/tensor_band_pool.bend as BandPool
 import ../../lib/tensor_band_concat.bend as BandConcat
 import ../../lib/tensor_shape.bend as Shapes
 import ../../lib/tensor_layout.bend as Layout
-import ../../lib/tensor_operations.bend as Operations
-import ../../lib/tensor_view.bend as Views
 import ../../lib/tensor_window.bend as Window
 import ../../lib/tensor_access.bend as Access
 import ../../lib/tensor_band_schedule.bend as BandSchedule
@@ -25,8 +23,8 @@ import ../../lib/default_machine_limits.bend as Default
 type Receipt is Data:
   Receipt{layout: Maybe<&2,Bands.Plan>,route: String,depth: U32,parallel: Bool,estimate: Maybe<&2,F32>,repartition: Maybe<&2,F32>,gather: Bool}
 
-def dense() -> Receipt:
-  Receipt{None{},"dense",0,False{},None{},None{},False{}}
+def unplanned() -> Receipt:
+  Receipt{None{},"unplanned",0,False{},None{},None{},False{}}
 
 def layout(receipt: Receipt) -> Maybe<&2,Bands.Plan>:
   Receipt{layout,route,depth,parallel,estimate,repartition,gather} = receipt
@@ -43,45 +41,21 @@ def output_plan(plan: Bands.Plan,+window: BandWindow.Geometry) -> Bands.Plan:
 
 def selected_initial(+window: BandWindow.Geometry,selection: BandPlanning.Plan) -> Receipt:
   BandWindow.Geometry{Bands.Geometry{+images,channels,+height,width},k,s,p,oh,ow} = window
-  BandPlanning.Plan{depth,parallel,time} = selection
-  match depth:
-    case 0: Receipt{None{},"dense_initial",0,False{},Some{time},Some{0.0},False{}}
-    case +depth:
-      Receipt{Some{output_plan(Bands.image_plan(U32.to_nat(images),0,U32.to_nat(depth),height),window)},"band_initial",depth,parallel,Some{time},Some{0.0},False{}}
+  BandPlanning.Plan{+depth,parallel,time} = selection
+  Receipt{Some{output_plan(Bands.image_plan(U32.to_nat(images),0,U32.to_nat(depth),height),window)},"band_initial",depth,parallel,Some{time},Some{0.0},False{}}
 
 def selected_existing(+window: BandWindow.Geometry,selection: BandPlanning.LayoutPlan) -> Receipt:
   BandPlanning.LayoutPlan{+plan,parallel,time,repartition} = selection
   Receipt{Some{output_plan(plan,window)},"band_retained_or_repartitioned",0,parallel,Some{time},Some{repartition},False{}}
 
-def dense_selected(+images: U32,gather: Bool,selection: KernelPlanning.Plan) -> Receipt:
-  KernelPlanning.Plan{packed,+depth,workspace,time} = selection
-  Receipt{None{},"dense_convolution",depth,U32.is_lt(0,depth),Bool.pick(Maybe<&2,F32>,U32.is_eq(images,1),Some{time},None{}),None{},gather}
-
-def dense_convolution(+geometry: TensorConvolution.Geometry,+work: KernelPlanning.Work,workers: U32,gather: Bool) -> Receipt:
-  TensorConvolution.Geometry{images,batched,dimensions} = geometry
-  dense_selected(images,gather,KernelPlanning.select(work,workers,None{},DefaultCost.configuration()))
-
-def existing_allowed(allowed: Bool,+geometry: TensorConvolution.Geometry,+work: KernelPlanning.Work,+window: BandWindow.Geometry,+workers: U32,plan: Bands.Plan) -> Receipt:
-  match allowed:
-    case True{}: selected_existing(window,BandPlanning.replan(plan,work,window,workers,DefaultCost.configuration()))
-    case False{}: dense_convolution(geometry,work,workers,True{})
-
-def initial_allowed(allowed: Bool,+geometry: TensorConvolution.Geometry,+work: KernelPlanning.Work,+window: BandWindow.Geometry,+workers: U32) -> Receipt:
-  match allowed:
-    case True{}: selected_initial(window,BandPlanning.select(work,window,workers,DefaultCost.configuration()))
-    case False{}: dense_convolution(geometry,work,workers,False{})
-
-def convolution_layout(previous: Maybe<&2,Bands.Plan>,+workers: U32,+geometry: TensorConvolution.Geometry,+work: KernelPlanning.Work,+window: BandWindow.Geometry) -> Receipt:
+def convolution_layout(previous: Maybe<&2,Bands.Plan>,+workers: U32,+work: KernelPlanning.Work,+window: BandWindow.Geometry) -> Receipt:
   match previous:
-    case Some{plan}: existing_allowed(TensorConvolution.uses_band_windows(geometry),geometry,work,window,workers,plan)
-    case None{}:
-      match workers:
-        case 1: dense_convolution(geometry,work,1,False{})
-        case +workers: initial_allowed(TensorConvolution.uses_band_windows(geometry),geometry,work,window,workers)
+    case Some{plan}: selected_existing(window,BandPlanning.replan(plan,work,window,workers,DefaultCost.configuration()))
+    case None{}: selected_initial(window,BandPlanning.select(work,window,workers,DefaultCost.configuration()))
 
 def convolution(+geometry: TensorConvolution.Geometry,+activation: Activations.Activation,+workers: U32,+bias_count: U32,previous: Receipt) -> Receipt:
   +context = TensorConvolution.band_context(geometry,True{},activation)
-  convolution_layout(layout(previous),workers,geometry,TensorConvolution.band_work(context,U32.shln(1,Storage.depth_for(bias_count))),TensorConvolution.context_window(context))
+  convolution_layout(layout(previous),workers,TensorConvolution.band_work(context,U32.shln(1,Storage.depth_for(bias_count))),TensorConvolution.context_window(context))
 
 def convolution_valid(valid: Bool,+geometry: TensorConvolution.Geometry,activation: Activations.Activation,workers: U32,bias_count: U32,previous: Receipt) -> Receipt:
   match valid:
@@ -100,53 +74,59 @@ def checked_convolution(input_shape: List<&2,U32>,weight_shape: List<&2,U32>,bia
   weight_count: U32,bias_count: U32,activation: Activations.Activation,workers: U32,previous: Receipt) -> Receipt:
   convolution_geometry(TensorConvolution.geometry(TensorConvolution.input_shape(input_shape),weight_shape,bias_shape,stride,padding),weight_count,bias_count,activation,workers,previous)
 
-def combined_plan(+geometry: Bands.Geometry,+workers: U32,left: Maybe<&2,Bands.Plan>,right: Maybe<&2,Bands.Plan>) -> Receipt:
-  match left right:
-    case None{} None{}: dense()
-    case Some{+plan} None{}: Receipt{Some{plan},"binary_align_dense",0,BandSchedule.parallel(geometry,workers,12.0,1.0,plan),None{},None{},False{}}
-    case None{} Some{+plan}: Receipt{Some{plan},"binary_align_dense",0,BandSchedule.parallel(geometry,workers,12.0,1.0,plan),None{},None{},False{}}
-    case Some{left} Some{right}:
-      +plan = BandSchedule.alignment(geometry,left,right)
-      Receipt{Some{plan},"binary_align",0,BandSchedule.parallel(geometry,workers,12.0,1.0,plan),None{},None{},False{}}
+# What an operand offers: its plan when its bands split the rows of its
+# image, its storage as one band otherwise.
+def whole_target(geometry: Bands.Geometry) -> BandSchedule.Target:
+  Bands.Geometry{batch,channels,height,width} = geometry
+  BandSchedule.Target{Bands.Geometry{1,1,1,(batch * channels * height * width : U32)},Bands.Rows{0,1},False{}}
 
-def combined(geometry: Bands.Geometry,workers: U32,left: Receipt,right: Receipt) -> Receipt:
-  combined_plan(geometry,workers,layout(left),layout(right))
-
-# The public compatible pass compares every input plan before its Bool branch.
-# These Data receipts observe the existing comparator, without tensor owners.
-type ConcatLayout is Data:
-  ConcatLayout{selected: Maybe<&2,Bands.Plan>,compatible: Bool,gather: Bool}
-
-def single_concat_layout(layout: Maybe<&2,Bands.Plan>) -> ConcatLayout:
+def operand_target(+geometry: Bands.Geometry,layout: Maybe<&2,Bands.Plan>) -> BandSchedule.Target:
   match layout:
-    case Some{plan}: ConcatLayout{Some{plan},True{},True{}}
-    case None{}: ConcatLayout{None{},False{},False{}}
+    case Some{+plan}: BandSchedule.Target{geometry,plan,BandSchedule.splits(plan)}
+    case None{}: whole_target(geometry)
 
-def cons_concat_layout(+first: Maybe<&2,Bands.Plan>,rest: ConcatLayout) -> ConcatLayout:
-  ConcatLayout{+selected,compatible,gather} = rest
-  ConcatLayout{BandConcat.first_plan(first,selected),compatible && BandConcat.compatible_plans(first,selected),
-    gather || Maybe.is_some(&2,Bands.Plan,first)}
+def combined_image(image: Bool,+workers: U32,+geometry: Bands.Geometry,+plan: Bands.Plan) -> Receipt:
+  match image:
+    case True{}: Receipt{Some{plan},"binary",0,BandSchedule.parallel(geometry,workers,12.0,1.0,plan),None{},None{},False{}}
+    case False{}: Receipt{None{},"binary_whole",0,False{},None{},None{},False{}}
 
-def concat_layout(layouts: List<&2,Maybe<&2,Bands.Plan>>) -> ConcatLayout:
-  match layouts:
-    case []: ConcatLayout{None{},False{},False{}}
-    case [first]: single_concat_layout(first)
-    case first <> rest: cons_concat_layout(first,concat_layout(rest))
+def combined_target(+geometry: Bands.Geometry,+workers: U32,target: BandSchedule.Target) -> Receipt:
+  BandSchedule.Target{+met,+plan,split} = target
+  combined_image(Bands.same_geometry(met,geometry),workers,geometry,plan)
 
-def concat_selected(valid: Bool,geometry: Maybe<&2,Bands.Geometry>,count: Maybe<&2,U32>,discovered: ConcatLayout) -> Receipt:
-  match valid geometry count discovered:
-    case True{} Some{geometry} Some{count} ConcatLayout{Some{plan},compatible,gather}:
-      Receipt{Some{plan},"channel_concat",0,False{},None{},None{},False{}}
-    case valid geometry count ConcatLayout{selected,compatible,gather}:
-      Receipt{None{},"dense_concat",0,False{},None{},None{},gather}
+# The operands meet as the public combine meets them.
+def combined(+geometry: Bands.Geometry,workers: U32,left: Receipt,right: Receipt) -> Receipt:
+  combined_target(geometry,workers,BandSchedule.meet(operand_target(geometry,layout(left)),operand_target(geometry,layout(right))))
 
-def concat_discovered(+shape: List<&2,U32>,axis: U32,discovered: ConcatLayout) -> Receipt:
-  ConcatLayout{selected,+compatible,gather} = discovered
-  concat_selected(compatible && Bool.not(Shapes.has_zero(shape)),BandConcat.geometry(shape,axis),Tensors.count_of(shape),
-    ConcatLayout{selected,compatible,gather})
+# The parts of a concat offer as the public concat offers them. A part with
+# a plan is in the geometry of the joining.
+def offered(+geometry: Bands.Geometry,layout: Maybe<&2,Bands.Plan>) -> BandSchedule.Target:
+  match layout:
+    case Some{plan}: BandConcat.part_target(True{},geometry,plan)
+    case None{}: BandConcat.part_target(False{},geometry,Bands.Rows{0,0})
 
-def concatenated(shape: List<&2,U32>,axis: U32,layouts: List<&2,Maybe<&2,Bands.Plan>>) -> Receipt:
-  concat_discovered(shape,axis,concat_layout(layouts))
+def concat_target(+shape: List<&2,U32>,+axis: U32,layout: Maybe<&2,Bands.Plan>) -> BandSchedule.Target:
+  +joining = BandConcat.joining(shape,axis)
+  offered(BandConcat.geometry(joining,BandConcat.extent(joining,shape)),layout)
+
+def concat_last(+shape: List<&2,U32>,+axis: U32,part: Receipt) -> BandSchedule.Target:
+  concat_target(shape,axis,layout(part))
+
+def concat_cons(+shape: List<&2,U32>,+axis: U32,part: Receipt,rest: BandSchedule.Target) -> BandSchedule.Target:
+  BandSchedule.meet(concat_target(shape,axis,layout(part)),rest)
+
+def concat_band(target: BandSchedule.Target) -> Receipt:
+  BandSchedule.Target{met,plan,split} = target
+  Receipt{Some{plan},"concat",0,False{},None{},None{},False{}}
+
+def concat_selected(empty: Bool,count: Maybe<&2,U32>,target: BandSchedule.Target) -> Receipt:
+  match empty count:
+    case False{} Some{count}: concat_band(target)
+    case False{} None{}: Receipt{None{},"invalid_concat",0,False{},None{},None{},False{}}
+    case True{} count: Receipt{None{},"empty_concat",0,False{},None{},None{},False{}}
+
+def concatenated(+shape: List<&2,U32>,axis: U32,target: BandSchedule.Target) -> Receipt:
+  concat_selected(Shapes.has_zero(shape),Tensors.count_of(shape),target)
 
 def append_plan(+geometry: Bands.Geometry,+workers: U32,input: Maybe<&2,Bands.Plan>,target: Maybe<&2,Bands.Plan>) -> Bool:
   match input target:
@@ -156,31 +136,39 @@ def append_plan(+geometry: Bands.Geometry,+workers: U32,input: Maybe<&2,Bands.Pl
 def append_parallel(geometry: Bands.Geometry,workers: U32,input: Receipt,target: Receipt) -> Bool:
   append_plan(geometry,workers,layout(input),layout(target))
 
+# The plan a per-plane operation runs in: the input's own, or its planes as
+# one band. A batch of one image keeps the image geometry; other batches run
+# in a geometry the receipts do not describe.
+def image_band(geometry: Bands.Geometry) -> Maybe<&2,Bands.Plan>:
+  Bands.Geometry{batch,channels,+height,width} = geometry
+  Bool.pick(Maybe<&2,Bands.Plan>,U32.is_eq(batch,1),Some{Bands.Rows{0,height}},None{})
+
+def plane_plan(+geometry: Bands.Geometry,layout: Maybe<&2,Bands.Plan>) -> Maybe<&2,Bands.Plan>:
+  match layout:
+    case Some{plan}: Some{plan}
+    case None{}: image_band(geometry)
+
+def pool_receipt(+window: BandWindow.Geometry,workers: U32,plan: Maybe<&2,Bands.Plan>) -> Receipt:
+  match plan:
+    case None{}: Receipt{None{},"plane_pool",0,False{},None{},None{},False{}}
+    case Some{+plan}: Receipt{Some{output_plan(plan,window)},"band_pool",0,BandPool.parallel(window,workers,BandPool.plan_size(plan,window)),None{},None{},False{}}
+
 def pooled(+window: BandWindow.Geometry,workers: U32,previous: Receipt) -> Receipt:
   Receipt{plan,route,depth,parallel,estimate,repartition,gather} = previous
-  match plan:
-    case None{}: dense()
-    case Some{+plan}: Receipt{Some{output_plan(plan,window)},"band_pool",0,BandPool.parallel(window,workers,BandPool.plan_size(plan,window)),None{},None{},False{}}
+  pool_receipt(window,workers,plane_plan(BandWindow.input_geometry(window),plan))
 
 def pool_dimensions(pool: Access.Pool,+geometry: Bands.Geometry,workers: U32,previous: Receipt) -> Receipt:
   Access.Pool{height,width,kernel,stride,padding,oh,ow} = pool
   pooled(BandWindow.Geometry{geometry,kernel,stride,padding,oh,ow},workers,previous)
 
-def dense_fallback(route: String,previous: Receipt) -> Receipt:
-  Receipt{plan,old_route,depth,parallel,estimate,repartition,gather} = previous
-  Receipt{None{},route,0,False{},None{},None{},Maybe.is_some(&2,Bands.Plan,plan)}
-
-def pool_selected(valid: Bool,planes: Maybe<&2,U32>,count: Maybe<&2,U32>,pool: Access.Pool,geometry: Bands.Geometry,workers: U32,previous: Receipt) -> Receipt:
-  match valid planes count:
-    case True{} Some{planes} Some{count}: pool_dimensions(pool,geometry,workers,previous)
-    case valid planes count: dense_fallback("dense_pool",previous)
+def pool_selected(valid: Bool,empty: Bool,pool: Access.Pool,geometry: Bands.Geometry,workers: U32,previous: Receipt) -> Receipt:
+  match valid empty:
+    case True{} False{}: pool_dimensions(pool,geometry,workers,previous)
+    case True{} True{}: Receipt{None{},"empty_pool",0,False{},None{},None{},False{}}
+    case False{} empty: Receipt{None{},"invalid_pool",0,False{},None{},None{},False{}}
 
 def pool_public_geometry(+shape: List<&2,U32>,+geometry: Bands.Geometry,+pool: Access.Pool,workers: U32,previous: Receipt) -> Receipt:
-  Access.Pool{+height,+width,+kernel,+stride,+padding,+oh,+ow} = pool
-  +pool = {Access.Pool{height,width,kernel,stride,padding,oh,ow} : Access.Pool}
-  +out_shape = List.append(&2,U32,List.take(&2,U32,shape,Nat.sub(List.length(&2,U32,shape),2n)),[oh,ow])
-  pool_selected(Window.band_shape(shape,geometry) && Operations.pool_geometry(pool) && U32.is_lt(0,height) &&
-    U32.is_lt(0,width) && Bool.not(Shapes.has_zero(out_shape)),Tensors.count_of(Window.middle_shape(shape,pool)),Tensors.count_of(out_shape),pool,geometry,workers,previous)
+  pool_selected(Window.valid(shape,pool) && Maybe.is_some(&2,U32,Layout.planes(shape)),Shapes.has_zero(Window.output_shape(shape,pool)),pool,geometry,workers,previous)
 
 def pooled_public(+shape: List<&2,U32>,geometry: Bands.Geometry,kernel: U32,stride: U32,padding: U32,workers: U32,previous: Receipt) -> Receipt:
   pool_public_geometry(shape,geometry,Window.geometry(shape,kernel,stride,padding),workers,previous)
@@ -190,28 +178,30 @@ def scaled_plan(plan: Bands.Plan,+scale: U32) -> Bands.Plan:
     case Bands.Rows{first,count}: Bands.Rows{(first * scale : U32),(count * scale : U32)}
     case Bands.Split{left,right}: Bands.Split{scaled_plan(left,scale),scaled_plan(right,scale)}
 
-def upsampled(+geometry: Bands.Geometry,+workers: U32,+scale: U32,previous: Receipt) -> Receipt:
-  Receipt{plan,route,depth,parallel,estimate,repartition,gather} = previous
+def upsample_receipt(+geometry: Bands.Geometry,+workers: U32,+scale: U32,plan: Maybe<&2,Bands.Plan>) -> Receipt:
   match plan:
-    case None{}: dense()
+    case None{}: Receipt{None{},"plane_upsample",0,False{},None{},None{},False{}}
     case Some{+plan}: Receipt{Some{scaled_plan(plan,scale)},"band_upsample",0,BandSchedule.parallel(geometry,workers,(U32.to_f32(scale) * U32.to_f32(scale) * 12.0 : F32),0.0,plan),None{},None{},False{}}
 
-def upsample_selected(valid: Bool,geometry: Bands.Geometry,workers: U32,scale: U32,previous: Receipt) -> Receipt:
-  match valid:
-    case True{}: upsampled(geometry,workers,scale,previous)
-    case False{}: dense_fallback("dense_upsample",previous)
+def upsampled(+geometry: Bands.Geometry,+workers: U32,+scale: U32,previous: Receipt) -> Receipt:
+  Receipt{plan,route,depth,parallel,estimate,repartition,gather} = previous
+  upsample_receipt(geometry,workers,scale,plane_plan(geometry,plan))
+
+def upsample_selected(valid: Bool,empty: Bool,geometry: Bands.Geometry,workers: U32,scale: U32,previous: Receipt) -> Receipt:
+  match valid empty:
+    case True{} False{}: upsampled(geometry,workers,scale,previous)
+    case True{} True{}: Receipt{None{},"empty_upsample",0,False{},None{},None{},False{}}
+    case False{} empty: Receipt{None{},"invalid_upsample",0,False{},None{},None{},False{}}
 
 def upsample_public(+shape: List<&2,U32>,geometry: Bands.Geometry,workers: U32,+scale: U32,previous: Receipt) -> Receipt:
-  Bands.Geometry{batch,channels,+height,+width} = geometry
-  upsample_selected(Bool.not(U32.is_zero(scale)) && Views.has_count(Shapes.checked_multiply(height,scale)) &&
-    Views.has_count(Shapes.checked_multiply(width,scale)) && Views.has_count(Tensors.count_of(Layout.scaled_extents(shape,scale))) &&
-    Bool.not(Shapes.has_zero(Layout.scaled_extents(shape,scale))),Bands.Geometry{batch,channels,height,width},workers,scale,previous)
+  upsample_selected(Layout.upsample_valid(shape,scale) && Maybe.is_some(&2,U32,Layout.planes(shape)),Shapes.has_zero(Layout.scaled_extents(shape,scale)),
+    geometry,workers,scale,previous)
 
 # The indexed decode keeps the logits' bands; the reshape after it gathers.
 def decoded(geometry: Bands.Geometry,workers: U32,operations: F32,previous: Receipt) -> Receipt:
   Receipt{plan,route,depth,parallel,estimate,repartition,gather} = previous
   match plan:
-    case None{}: Receipt{None{},"dense_decode",0,False{},None{},None{},False{}}
+    case None{}: Receipt{None{},"unplanned_decode",0,False{},None{},None{},False{}}
     case Some{plan}: Receipt{None{},"band_decode",0,BandSchedule.parallel(geometry,workers,12.0,operations,plan),None{},None{},True{}}
 
 def emit_plan(plan: Bands.Plan) -> IO(Unit):
@@ -250,7 +240,7 @@ def emit(index: U32,receipt: Receipt) -> IO(Unit):
     IO.write(route)
     IO.write("\",\"output_layout\":")
     emit_layout(plan)
-    IO.write(",\"initial_or_dense_depth\":")
+    IO.write(",\"initial_depth\":")
     IO.write(Nat.show(U32.to_nat(depth)))
     IO.write(",\"parallel\":")
     IO.write(Bool.pick(String,parallel,"true","false"))

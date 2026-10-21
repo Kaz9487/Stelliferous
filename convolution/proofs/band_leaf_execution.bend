@@ -1,9 +1,8 @@
 # The convolution band leaf: its execution, numeric guards and readback.
 import Base
-import ./blocked_pipeline_model.bend as Blocked
+import ../../lib/proofs/kernel_pipeline_model.bend as Blocked
 import ../../lib/proofs/kernel_pipeline_activation.bend as ActivationProofs
 import ../../lib/proofs/tensor_band_window.bend as TensorBandWindow
-import ../../lib/kernel_gather.bend as Gather
 import ../../lib/kernel_pipeline.bend as Pipeline
 import ../../lib/kernel_tile.bend as Tile
 import ../../lib/math_activation.bend as Activations
@@ -12,9 +11,7 @@ import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/tensor.bend as Tensors
 import ./band_window_contents.bend as WindowContents
-import ../../lib/kernel_gather_buffer.bend as GatherBuffer
 import ../../lib/kernel_spatial_packing.bend as Packing
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 import ../../lib/proofs/storage_buffer_model.bend as Buffer
@@ -23,23 +20,7 @@ import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/tensor_band_window.bend as BandWindow
 
-# The outer partition finish and shared blocked leaf on certified buffers.
-def finish_array(identity: Bool,values: Array<F32>,+rows: U32,+offset: U32,+span: U32,+positions: U32) -> Array<F32>:
-  match identity:
-    case True{}: values
-    case False{}: Gather.gather_block(rows,offset,positions,span,values,Array.new(F32,Tensors.depth_for((rows * positions : U32)),0.0))
-
-def execution_finished(+identity: Bool,input: Storage.Buffer<F32>,+rows: U32,+offset: U32,+span: U32,+positions: U32) ->
-  {ActivationProofs.storage(~F32,Pipeline.finish_leaf(identity,input,rows,offset,span,positions)) == finish_array(identity,ActivationProofs.storage(~F32,input),rows,offset,span,positions) : Array<F32>}:
-  match identity input:
-    case True{} Storage.Buffer{values,length,certificate}: {==}
-    case False{} Storage.Buffer{values,length,certificate}:
-      %Equal.sym(Storage.Buffer<F32>,Tensors.buffer(~F32,0.0,(rows * positions : U32)),Storage.allocate(~F32,Tensors.depth_for((rows * positions : U32)),0.0,U32.to_nat((rows * positions : U32))),ActivationProofs.allocated(~F32,0.0,(rows * positions : U32))) :
-        {ActivationProofs.storage(~F32,GatherBuffer.run(rows,offset,positions,span,Storage.Buffer{values,length,certificate},_)) ==
-          finish_array(False{},values,rows,offset,span,positions) : Array<F32>}
-      {==}
-
-# Tree models of the same steps.
+# Tree models of the band leaf steps.
 def work(+rows: U32,+inner: U32,+positions: U32,call: Packing.Call) -> Pipeline.Work:
   Packing.Call{count,start,height,width,kernel,stride,padding,output_width,call_inner} = call
   Pipeline.Work{rows,height,width,kernel,stride,padding,output_width,positions,inner}

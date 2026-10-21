@@ -1,10 +1,10 @@
 # Exact conversions over the complete U32 range. Tensor stride-zero extents may
 # exceed the physical array capacity, so storage-capacity bounds are insufficient.
 import Base
+import ./nat_order.bend as Order
 import ./u32_successor.bend as U32Successor
 import ./nat_to_u32_bounds.bend as Bounds
 import ./word_encoding.bend as WordEncoding
-import ./u32_comparison.bend as Comparison
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./word_multiplication.bend as Multiplication
 
@@ -94,3 +94,21 @@ def multiply(+left: U32,+right: U32,+capacity: U32,
   %Equal.sym(U32,U32.mul(left,right),U32.from_nat(Nat.mul(U32.to_nat(left),U32.to_nat(right))),Multiplication.native_multiply(left,right)) :
     {U32.to_nat(_) == Nat.mul(U32.to_nat(left),U32.to_nat(right)) : Nat}
   roundtrip(Nat.mul(U32.to_nat(left),U32.to_nat(right)),capacity,inside)
+
+# Subtracting a common interval origin preserves its strict upper bound.
+def interval_inside(+low: U32,+high: U32,+position: U32,
+  +lower: {U32.is_le(low,position) == True{} : Bool},+upper: {U32.is_lt(position,high) == True{} : Bool}) ->
+  {Nat.is_lt(U32.to_nat((position - low : U32)),U32.to_nat((high - low : U32))) == True{} : Bool}:
+  +ln = U32.to_nat(low)
+  +hn = U32.to_nat(high)
+  +pn = U32.to_nat(position)
+  +ordered = Bounds.as_nat_le(low,position,lower)
+  +before = Bounds.as_nat_lt(position,high,upper)
+  +low_high = Order.le_lt_trans(ln,pn,hn,ordered,before)
+  +local = Nat.sub(pn,ln)
+  +relative_exact = subtract(position,low,position,ordered,Order.sub_le(pn,ln))
+  +range_exact = subtract(high,low,high,Bounds.strict_le(ln,hn,low_high),Order.sub_le(hn,ln))
+  %Equal.sym(Nat,U32.to_nat((position - low : U32)),local,relative_exact) : {Nat.is_lt(_,U32.to_nat((high - low : U32))) == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat((high - low : U32)),Nat.sub(hn,ln),range_exact) : {Nat.is_lt(local,_) == True{} : Bool}
+  %Equal.sym(Bool,Nat.is_lt(local,Nat.sub(hn,ln)),Nat.is_lt(Nat.add(ln,local),hn),Order.subtraction_lt(hn,ln,local)) : {_ == True{} : Bool}
+  %Equal.sym(Nat,Nat.add(ln,local),pn,Order.restore_shift(ln,pn,ordered)) : {Nat.is_lt(_,hn) == True{} : Bool} before

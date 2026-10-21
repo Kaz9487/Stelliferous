@@ -2,7 +2,6 @@
 import Base
 import ./u32_comparison.bend as Comparison
 import ./nat_extrema.bend as Extrema
-import ./bounded_u32_arithmetic.bend as Arithmetic
 
 
 def selected(choice: Bool,+left: U32,+right: U32) ->
@@ -48,11 +47,28 @@ def pick_maximum(left: U32,right: U32) -> {Bool.pick(U32,U32.is_lt(left,right),r
   U32{right_word} = right
   {==}
 
-def minimum_when_ordered(+left: U32,+right: U32,ordered: {Nat.is_le(U32.to_nat(left),U32.to_nat(right)) == True{} : Bool}) -> {U32.min(left,right) == left : U32}:
-  Equal.trans(U32,U32.min(left,right),U32.from_nat(U32.to_nat(left)),left,
-    Equal.trans(U32,U32.min(left,right),U32.from_nat(U32.to_nat(U32.min(left,right))),U32.from_nat(U32.to_nat(left)),
-      Equal.sym(U32,U32.from_nat(U32.to_nat(U32.min(left,right))),U32.min(left,right),Arithmetic.native_roundtrip(U32.min(left,right))),
-      Equal.cong(Nat,U32,U32.from_nat,U32.to_nat(U32.min(left,right)),U32.to_nat(left),
-        Equal.trans(Nat,U32.to_nat(U32.min(left,right)),Nat.min(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(left),
-          minimum(left,right),Extrema.minimum_when_ordered(U32.to_nat(left),U32.to_nat(right),ordered)))),
-    Arithmetic.native_roundtrip(left))
+def minimum_left(+left: U32,+right: U32) -> {U32.is_le(U32.min(left,right),left) == True{} : Bool}:
+  %Equal.sym(Bool,U32.is_le(U32.min(left,right),left),Nat.is_le(U32.to_nat(U32.min(left,right)),U32.to_nat(left)),Comparison.le(U32.min(left,right),left)) : {_ == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.min(left,right)),Nat.min(U32.to_nat(left),U32.to_nat(right)),minimum(left,right)) : {Nat.is_le(_,U32.to_nat(left)) == True{} : Bool}
+  Extrema.minimum_left(U32.to_nat(left),U32.to_nat(right))
+
+def minimum_right(+left: U32,+right: U32) -> {U32.is_le(U32.min(left,right),right) == True{} : Bool}:
+  %Equal.sym(Bool,U32.is_le(U32.min(left,right),right),Nat.is_le(U32.to_nat(U32.min(left,right)),U32.to_nat(right)),Comparison.le(U32.min(left,right),right)) : {_ == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.min(left,right)),Nat.min(U32.to_nat(left),U32.to_nat(right)),minimum(left,right)) : {Nat.is_le(_,U32.to_nat(right)) == True{} : Bool}
+  Extrema.minimum_right(U32.to_nat(left),U32.to_nat(right))
+
+def maximum_left(+left: U32,+right: U32) -> {U32.is_le(left,U32.max(left,right)) == True{} : Bool}:
+  %Equal.sym(Bool,U32.is_le(left,U32.max(left,right)),Nat.is_le(U32.to_nat(left),U32.to_nat(U32.max(left,right))),Comparison.le(left,U32.max(left,right))) : {_ == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.max(left,right)),Nat.max(U32.to_nat(left),U32.to_nat(right)),maximum(left,right)) : {Nat.is_le(U32.to_nat(left),_) == True{} : Bool}
+  Extrema.maximum_left(U32.to_nat(left),U32.to_nat(right))
+
+def maximum_right(+left: U32,+right: U32) -> {U32.is_le(right,U32.max(left,right)) == True{} : Bool}:
+  %Equal.sym(Bool,U32.is_le(right,U32.max(left,right)),Nat.is_le(U32.to_nat(right),U32.to_nat(U32.max(left,right))),Comparison.le(right,U32.max(left,right))) : {_ == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.max(left,right)),Nat.max(U32.to_nat(left),U32.to_nat(right)),maximum(left,right)) : {Nat.is_le(U32.to_nat(right),_) == True{} : Bool}
+  Extrema.maximum_right(U32.to_nat(left),U32.to_nat(right))
+
+def maximum_upper(+left: U32,+right: U32,+upper: U32,lu: {U32.is_le(left,upper) == True{} : Bool},ru: {U32.is_le(right,upper) == True{} : Bool}) ->
+  {U32.is_le(U32.max(left,right),upper) == True{} : Bool}:
+  %Equal.sym(Bool,U32.is_le(U32.max(left,right),upper),Nat.is_le(U32.to_nat(U32.max(left,right)),U32.to_nat(upper)),Comparison.le(U32.max(left,right),upper)) : {_ == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.max(left,right)),Nat.max(U32.to_nat(left),U32.to_nat(right)),maximum(left,right)) : {Nat.is_le(_,U32.to_nat(upper)) == True{} : Bool}
+  Extrema.maximum_upper(U32.to_nat(left),U32.to_nat(right),U32.to_nat(upper),%Comparison.le(left,upper) : {_ == True{} : Bool} lu,%Comparison.le(right,upper) : {_ == True{} : Bool} ru)

@@ -113,24 +113,37 @@ def input_geometry(geometry: Geometry) -> Bands.Geometry:
 # The full core tree is threaded through the preparation pass without cloning.
 # Each allocation is a requested neighbour range, never a core-sized window.
 # The resulting halo tree follows the same layout, ready to pair with cores.
+# What the halo of one band needs.
+type Padded<-Element: Data> is Data:
+  Padded{geometry: Geometry,fill: Element}
+
+def halo_band(~Element: Data,context: Padded<Element>,first: U32,count: U32,bands: Bands.Bands(~Element)) -> Bands.Bands(~Element) & Halos(~Element):
+  Padded{+geometry,fill} = context
+  +first = first
+  +count = count
+  halo(~Element,input_geometry(geometry),fill,first,count,window(geometry,first,count),bands)
+
 def prepare(~Element: Data,+geometry: Geometry,+fill: Element,layout: Bands.Plan,bands: Bands.Bands(~Element)) -> Bands.Bands(~Element) & Halos(~Element):
-  match layout:
-    case Bands.Rows{+first,+count}: halo(~Element,input_geometry(geometry),fill,first,count,window(geometry,first,count),bands)
-    case Bands.Split{left,right}:
-      Storage.bind_pair(~Bands.Bands(~Element),~Halos(~Element),~(Bands.Bands(~Element) & Halos(~Element)),
-        prepare(~Element,geometry,fill,left,bands),bands => left =>
-          Storage.bind_pair(~Bands.Bands(~Element),~Halos(~Element),~(Bands.Bands(~Element) & Halos(~Element)),
-            prepare(~Element,geometry,fill,right,bands),bands => right => (bands,Partition.Fork{left,right})))
+  Bands.build(~Halo<Element>,~Bands.Bands(~Element),~Padded<Element>,~halo_band(~Element),layout,Padded{geometry,fill},bands)
 
-def window_band(~Element: Data,~Context: Data,~leaf: Context -> U32 -> U32 -> Storage.Buffer<Element> -> Halo<Element> -> Bands.Bands(~Element),
-  context: Context,first: U32,rows: U32,input: Storage.Buffer<Element>,halo: Halo<Element>,resource: Unit) -> Bands.Bands(~Element):
-  leaf(context,first,rows,input,halo)
+# A core with its halo goes through the leaf; a core without one is not
+# transformed.
+def window_band(~Element: Data,~Context: Data,~leaf: Context -> U32 -> U32 -> Storage.Buffer<Element> -> Halo<Element> -> Bands.Transformed(~Element),
+  context: Context,first: U32,rows: U32,pair: Bands.Paired<Storage.Buffer<Element>,Halo<Element>>,resource: Unit) -> Bands.Transformed(~Element):
+  match pair:
+    case Bands.Both{input,halo}: leaf(context,first,rows,input,halo)
+    case Bands.Only{input,own_first,own_rows}: Partition.Leaf{Bands.Checked{input,False{}},own_first,own_rows,Unit{}}
 
-# Every core leaf with its halo, through the shared band recursion. Trees of
-# another shape keep the cores.
-def apply(~Element: Data,~Context: Data,~leaf: Context -> U32 -> U32 -> Storage.Buffer<Element> -> Halo<Element> -> Bands.Bands(~Element),
-  layout: Bands.Plan,mode: Bool,enabled: Bool,geometry: Bands.Geometry,context: Context,bands: Bands.Bands(~Element),halos: Halos(~Element)) -> Bands.Bands(~Element):
-  Bands.each(~Bands.Paired<Storage.Buffer<Element>,Halo<Element>>,~Storage.Buffer<Element>,~Unit,~Context,~Bands.unshared,
-    ~Bands.paired(~Storage.Buffer<Element>,~Halo<Element>,~Unit,~Context,~window_band(~Element,~Context,~leaf)),
-    ~Bands.left_of(~Storage.Buffer<Element>,~Halo<Element>),
-    layout,mode,enabled,geometry,context,Bands.zip(~Storage.Buffer<Element>,~Halo<Element>,bands,halos),Unit{})
+def unwindowed(~Element: Data,tree: Partition.Tree<&1,Bands.Paired<Storage.Buffer<Element>,Halo<Element>>,Unit>) -> Bands.Transformed(~Element):
+  Bands.untransformed(~Element,Bands.left_of(~Storage.Buffer<Element>,~Halo<Element>,tree))
+
+# Every core leaf with its halo through its own checked call, in the shared
+# band recursion. The bands come back beside whether every call was usable;
+# trees of another shape are not transformed.
+def apply(~Element: Data,~Context: Data,~leaf: Context -> U32 -> U32 -> Storage.Buffer<Element> -> Halo<Element> -> Bands.Transformed(~Element),
+  layout: Bands.Plan,enabled: Bool,context: Context,bands: Bands.Bands(~Element),halos: Halos(~Element)) ->
+  Bands.Bands(~Element) & Bool:
+  Bands.reduce(~Bands.Checked<Element>,~Storage.Buffer<Element>,~Bool,~Unit,~Bands.checked_band(~Element),~Bool.and,Unit{},
+    Bands.each(~Bands.Paired<Storage.Buffer<Element>,Halo<Element>>,~Bands.Checked<Element>,~Unit,~Context,~Bands.unshared,
+      ~window_band(~Element,~Context,~leaf),~unwindowed(~Element),
+      layout,enabled,context,Bands.zip(~Storage.Buffer<Element>,~Halo<Element>,bands,halos),Unit{}))

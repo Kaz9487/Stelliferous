@@ -1,8 +1,6 @@
 # Lengths and concatenation of the canonical NCHW output sequence.
 import Base
 import ../specification.bend as ConvSpec
-import ../../lib/ordered_matrix.bend as OrderedMatrix
-import ./sequence_congruence.bend as Sequences
 import ../ordered_reference.bend as OrderedReference
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/natural_addition.bend as Addition

@@ -4,6 +4,7 @@ import ./binary_division.bend as BinaryDivision
 import ./u32_comparison.bend as Comparison
 import ./nat_to_u32_bounds.bend as Bounds
 import ./nat_order.bend as Order
+import ./nat_division.bend as Division
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./u32_shift.bend as U32Shift
 import ./word_encoding.bend as WordEncoding
@@ -169,3 +170,8 @@ def modulo(+a: U32,+b: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True
       U32.to_nat(b),positive)) : {U32.to_nat(U32.mod.fin(U32.divmod.go(32n,w,b))) == _ : Nat}
   %go(32n,w,b,cap,cap_ok,divisor_bound,positive) : {U32.to_nat(U32.mod.fin(U32.divmod.go(32n,w,b))) == BinaryDivision.remainder(_) : Nat}
   remainder_decode(U32.divmod.go(32n,w,b))
+
+def divided_by_one(+value: U32) -> {U32.to_nat((value / 1 : U32)) == U32.to_nat(value) : Nat}:
+  Equal.trans(Nat,U32.to_nat((value / 1 : U32)),Nat.div(U32.to_nat(value),1n),U32.to_nat(value),divide(value,1,2,{==},{==},{==}),
+    %Order.times_one(U32.to_nat(value)) : {Nat.div(_,1n) == U32.to_nat(value) : Nat}
+    Division.exact_quotient(U32.to_nat(value),1n,{==}))

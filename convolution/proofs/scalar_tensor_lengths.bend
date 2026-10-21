@@ -5,7 +5,6 @@ import ../../lib/machine_limits.bend as Machine
 import ./convolution_guard_facts.bend as Guards
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./native_sample_refinement.bend as NativeSampleRefinement
-import ./native_weight_refinement.bend as NativeWeightRefinement
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../../lib/proofs/row_major_index.bend as RowMajor
@@ -13,7 +12,6 @@ import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ./supported_padded_coordinates.bend as Padded
 import ../../lib/proofs/nat_order.bend as Order
-import ../../lib/proofs/word_arithmetic.bend as WordArithmetic
 
 def input_shape(+limits: Machine.Limits,+problem: ConvSpec.Problem,valid: Guards.Valid<problem>,
   supported: Guards.Supported<problem,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
@@ -41,7 +39,7 @@ def bias_length(+limits: Machine.Limits,+problem: ConvSpec.Problem,valid: Guards
   supported: Guards.Supported<problem,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
   {U32.to_nat(U32.from_nat(Guards.output_channel_count(problem))) == ConvSpec.length(Guards.bias(problem)) : Nat}:
   Guards.Valid{h0,h1,h2,h3,h4,h5,h6,h7,h8,h9,h10} = valid
-  %Equal.sym(Nat,ConvSpec.length(Guards.bias(problem)),Guards.output_channel_count(problem),Guards.reflect(ConvSpec.length(Guards.bias(problem)),Guards.output_channel_count(problem),h10)) :
+  %Equal.sym(Nat,ConvSpec.length(Guards.bias(problem)),Guards.output_channel_count(problem),Order.equal_of_is_eq(ConvSpec.length(Guards.bias(problem)),Guards.output_channel_count(problem),h10)) :
     {U32.to_nat(U32.from_nat(Guards.output_channel_count(problem))) == _ : Nat}
   SupportedCoordinateBounds.co_exact(limits,problem,supported)
 

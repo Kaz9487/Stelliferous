@@ -4,6 +4,7 @@
 # that advance by one per entry. The nested loops are proved once for any
 # lanes of an entry whose rule says they are the tabulation entry.
 import Base
+import ../../lib/proofs/kernel_spatial_packing_samples.bend as SpatialSamples
 import ../specification.bend as ConvSpec
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/traversal_loop.bend as Loop
@@ -12,16 +13,14 @@ import ../../lib/kernel_tile.bend as Tile
 import ../../lib/proofs/natural_addition.bend as Addition
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
-import ../../lib/proofs/traversal_write_bounds.bend as WriteBounds
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./convolution_guard_facts.bend as Guards
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./packing_tabulation.bend as PackingTabulation
-import ./packing_loop_refinement.bend as LoopLaws
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LoopLaws
 import ./packing_tile_equality.bend as Tiles
 import ./packing_entries.bend as Entries
 import ./packing_storage_refinement.bend as PackingStorage
-import ./concrete_support_guard.bend as Support
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
@@ -30,6 +29,8 @@ import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/word_arithmetic.bend as WordArithmetic
 import ../../lib/proofs/binary_radix.bend as Radix
 import ./supported_padded_coordinates.bend as Padded
+import ../../lib/proofs/nat_division.bend as Division
+import ../../lib/proofs/encoded_coordinates.bend as Encoding
 
 # k after n steps of one.
 def advance(n: Nat,k: Nat) -> Nat:
@@ -41,7 +42,7 @@ def end_encoded(+n: Nat,+index: Nat) -> {PackingTabulation.end(n,U32.from_nat(in
   match n:
     case 0n: {==}
     case 1n+ +rest:
-      %Equal.sym(U32,(U32.from_nat(index) + 1 : U32),U32.from_nat(1n+index),WriteBounds.increment_encoded(index)) :
+      %Equal.sym(U32,(U32.from_nat(index) + 1 : U32),U32.from_nat(1n+index),Bounds.increment_encoded(index)) :
         {PackingTabulation.end(rest,_) == U32.from_nat(advance(rest,1n+index)) : U32}
       end_encoded(rest,1n+index)
 
@@ -54,8 +55,48 @@ def filled(+p: ConvSpec.Problem,n: Nat,+i: U32,+start: U32,+x: Tree.Tree<F32>,y:
     Entries.native_output_width(p),Coordinates.native_inner(p))
 
 def state(+p: ConvSpec.Problem,x: Tree.Tree<F32>,y: Tree.Tree<Tile.Tile8>,i: U32,c: U32,kr: U32,kc: U32,+position: U32) -> LoopLaws.RowTiles():
-  Packing.RowTile{x,y,i,c,kr,kc,(position / Entries.native_output_width(p) : U32),(position % Entries.native_output_width(p) : U32),Entries.native_output_width(p),
-    Entries.native_height(p),Entries.native_width(p),Entries.native_stride(p),Entries.native_padding(p),Guards.kernel(p)}
+  Packing.RowTile{x,y,i,c,kr,kc,(position / Entries.native_output_width(p) : U32),(position % Entries.native_output_width(p) : U32),Packing.square(Entries.native_height(p),Entries.native_width(p),U32.from_nat(Guards.kernel(p)),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.kernel(p),Guards.kernel(p)}
+
+def column_value(~lanes: LoopLaws.Lanes(),+p: ConvSpec.Problem,x: Tree.Tree<F32>,c: U32,+kr: U32,+kc: U32,+position: U32) -> Tile.Tile8:
+  lanes(x,((position / Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kr - Entries.native_padding(p) : U32),
+    ((position % Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kc - Entries.native_padding(p) : U32),
+    (c * Entries.native_height(p) * Entries.native_width(p) : U32),Entries.native_height(p),Entries.native_width(p),Entries.native_stride(p),
+    (((position / Entries.native_output_width(p) : U32) + 1) * Entries.native_stride(p) + kr - Entries.native_padding(p) : U32),
+    (position % Entries.native_output_width(p) : U32),Entries.native_output_width(p),kc,Entries.native_padding(p))
+
+def column_coordinates(~lanes: LoopLaws.Lanes(),+p: ConvSpec.Problem,+x: Tree.Tree<F32>,+c: U32,+kr: U32,+kc: U32,+position: U32) ->
+  {lanes(x,((position / Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kr - Entries.native_padding(p) : U32),((position % Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kc + (0 - Entries.native_padding(p) : U32) : U32),(0 + c * Entries.native_height(p) * Entries.native_width(p) : U32),Entries.native_height(p),Entries.native_width(p),Entries.native_stride(p),(((position / Entries.native_output_width(p) : U32) + 1) * Entries.native_stride(p) + kr + (0 - Entries.native_padding(p) : U32) : U32),(position % Entries.native_output_width(p) : U32),Entries.native_output_width(p),kc,(0 - (0 - Entries.native_padding(p) : U32) : U32)) == column_value(~lanes,p,x,c,kr,kc,position) : Tile.Tile8}:
+  +h = Entries.native_height(p)
+  +w = Entries.native_width(p)
+  +stride = Entries.native_stride(p)
+  +pad = Entries.native_padding(p)
+  +ow = Entries.native_output_width(p)
+  +offset = (position % ow : U32)
+  +row = ((position / ow : U32) * stride + kr - pad : U32)
+  +column = (offset * stride + kc : U32)
+  +channel = (c * h * w : U32)
+  +next = (((position / ow : U32) + 1) * stride + kr : U32)
+  +a = lanes(x,row,(column + (0 - pad : U32) : U32),(0 + channel : U32),h,w,stride,(next + (0 - pad : U32) : U32),offset,ow,kc,(0 - (0 - pad : U32) : U32))
+  +b = lanes(x,row,(column - pad : U32),(0 + channel : U32),h,w,stride,(next + (0 - pad : U32) : U32),offset,ow,kc,(0 - (0 - pad : U32) : U32))
+  +base_changed = lanes(x,row,(column - pad : U32),channel,h,w,stride,(next + (0 - pad : U32) : U32),offset,ow,kc,(0 - (0 - pad : U32) : U32))
+  +d = lanes(x,row,(column - pad : U32),channel,h,w,stride,(next - pad : U32),offset,ow,kc,(0 - (0 - pad : U32) : U32))
+  +e = column_value(~lanes,p,x,c,kr,kc,position)
+  Equal.trans(Tile.Tile8,a,b,e,
+    Equal.cong(U32,Tile.Tile8,value => lanes(x,row,value,(0 + channel : U32),h,w,stride,(next + (0 - pad : U32) : U32),offset,ow,kc,(0 - (0 - pad : U32) : U32)),(column + (0 - pad : U32) : U32),(column - pad : U32),Arithmetic.add_zero_subtract(column,pad)),
+    Equal.trans(Tile.Tile8,b,base_changed,e,
+      Equal.cong(U32,Tile.Tile8,value => lanes(x,row,(column - pad : U32),value,h,w,stride,(next + (0 - pad : U32) : U32),offset,ow,kc,(0 - (0 - pad : U32) : U32)),(0 + channel : U32),channel,Arithmetic.add_zero_left(channel)),
+      Equal.trans(Tile.Tile8,base_changed,d,e,
+        Equal.cong(U32,Tile.Tile8,value => lanes(x,row,(column - pad : U32),channel,h,w,stride,value,offset,ow,kc,(0 - (0 - pad : U32) : U32)),(next + (0 - pad : U32) : U32),(next - pad : U32),Arithmetic.add_zero_subtract(next,pad)),
+        Equal.cong(U32,Tile.Tile8,value => lanes(x,row,(column - pad : U32),channel,h,w,stride,(next - pad : U32),offset,ow,kc,value),(0 - (0 - pad : U32) : U32),pad,Arithmetic.negate_twice(pad)))))
+
+def column_square(~lanes: LoopLaws.Lanes(),+p: ConvSpec.Problem,+x: Tree.Tree<F32>,+y: Tree.Tree<Tile.Tile8>,+i: U32,+c: U32,+kr: U32,+kc: U32,+position: U32) ->
+  {LoopLaws.column_step(~lanes,state(p,x,y,i,c,kr,kc,position)) == state(p,x,Tree.write(Tile.Tile8,y,i,column_value(~lanes,p,x,c,kr,kc,position)),(i + 1 : U32),c,kr,(kc + 1 : U32),position) : LoopLaws.RowTiles()}:
+  %Equal.sym(U32,((position / Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kr + (0 - Entries.native_padding(p) : U32) : U32),((position / Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kr - Entries.native_padding(p) : U32),Arithmetic.add_zero_subtract(((position / Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kr : U32),Entries.native_padding(p))) :
+    {Packing.RowTile{x,Tree.write(Tile.Tile8,y,i,lanes(x,_,((position % Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kc + (0 - Entries.native_padding(p) : U32) : U32),(0 + c * Entries.native_height(p) * Entries.native_width(p) : U32),Entries.native_height(p),Entries.native_width(p),Entries.native_stride(p),(((position / Entries.native_output_width(p) : U32) + 1) * Entries.native_stride(p) + kr + (0 - Entries.native_padding(p) : U32) : U32),(position % Entries.native_output_width(p) : U32),Entries.native_output_width(p),kc,(0 - (0 - Entries.native_padding(p) : U32) : U32))),(i + 1 : U32),c,kr,(kc + 1 : U32),(position / Entries.native_output_width(p) : U32),(position % Entries.native_output_width(p) : U32),Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.kernel(p),Guards.kernel(p)} == state(p,x,Tree.write(Tile.Tile8,y,i,column_value(~lanes,p,x,c,kr,kc,position)),(i + 1 : U32),c,kr,(kc + 1 : U32),position) : LoopLaws.RowTiles()}
+  Equal.cong(Tile.Tile8,LoopLaws.RowTiles(),value => state(p,x,Tree.write(Tile.Tile8,y,i,value),(i + 1 : U32),c,kr,(kc + 1 : U32),position),
+    lanes(x,((position / Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kr - Entries.native_padding(p) : U32),((position % Entries.native_output_width(p) : U32) * Entries.native_stride(p) + kc + (0 - Entries.native_padding(p) : U32) : U32),(0 + c * Entries.native_height(p) * Entries.native_width(p) : U32),Entries.native_height(p),Entries.native_width(p),Entries.native_stride(p),(((position / Entries.native_output_width(p) : U32) + 1) * Entries.native_stride(p) + kr + (0 - Entries.native_padding(p) : U32) : U32),(position % Entries.native_output_width(p) : U32),Entries.native_output_width(p),kc,(0 - (0 - Entries.native_padding(p) : U32) : U32)),
+    column_value(~lanes,p,x,c,kr,kc,position),
+    column_coordinates(~lanes,p,x,c,kr,kc,position))
 
 # The output columns the eight positions of a tile may reach: those of its output row, or of two rows.
 def one_row(width: Nat) -> Nat:
@@ -179,6 +220,8 @@ def columns(lanes,span,rule,limits,p,tiles,g,start,position,x,facts,n,c,kr,kc,qn
       +entry = PackingTabulation.entry(U32.from_nat(index),start,x,Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),
         Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p))
       +next = Tree.write(Tile.Tile8,y,U32.from_nat(index),entry)
+      %Equal.sym(LoopLaws.RowTiles(),LoopLaws.column_step(~lanes,state(p,x,y,U32.from_nat(index),U32.from_nat(c),U32.from_nat(kr),U32.from_nat(kc),position)),state(p,x,Tree.write(Tile.Tile8,y,U32.from_nat(index),column_value(~lanes,p,x,U32.from_nat(c),U32.from_nat(kr),U32.from_nat(kc),position)),(U32.from_nat(index) + 1 : U32),U32.from_nat(c),U32.from_nat(kr),(U32.from_nat(kc) + 1 : U32),position),column_square(~lanes,p,x,y,U32.from_nat(index),U32.from_nat(c),U32.from_nat(kr),U32.from_nat(kc),position)) :
+        {Loop.run(~LoopLaws.RowTiles(),~LoopLaws.column_step(~lanes),rest,_) == state(p,x,filled(p,1n+rest,U32.from_nat(index),start,x,y),U32.from_nat(advance(rest,1n+index)),U32.from_nat(c),U32.from_nat(kr),U32.from_nat(advance(rest,1n+kc)),position) : LoopLaws.RowTiles()}
       %Equal.sym(Tile.Tile8,lanes(x,((position / Entries.native_output_width(p) : U32) * Entries.native_stride(p) + U32.from_nat(kr) - Entries.native_padding(p) : U32),((position % Entries.native_output_width(p) : U32) * Entries.native_stride(p) + U32.from_nat(kc) - Entries.native_padding(p) : U32),
       (U32.from_nat(c) * Entries.native_height(p) * Entries.native_width(p) : U32),Entries.native_height(p),Entries.native_width(p),Entries.native_stride(p),
       (((position / Entries.native_output_width(p) : U32) + 1) * Entries.native_stride(p) + U32.from_nat(kr) - Entries.native_padding(p) : U32),(position % Entries.native_output_width(p) : U32),Entries.native_output_width(p),U32.from_nat(kc),Entries.native_padding(p)),entry,
@@ -187,10 +230,10 @@ def columns(lanes,span,rule,limits,p,tiles,g,start,position,x,facts,n,c,kr,kc,qn
             U32.from_nat(c),U32.from_nat(kr),(U32.from_nat(kc) + 1 : U32),position)) ==
           state(p,x,filled(p,rest,(U32.from_nat(index) + 1 : U32),start,x,next),U32.from_nat(advance(rest,1n+index)),U32.from_nat(c),U32.from_nat(kr),
             U32.from_nat(advance(rest,1n+kc)),position) : LoopLaws.RowTiles()}
-      %Equal.sym(U32,(U32.from_nat(index) + 1 : U32),U32.from_nat(1n+index),WriteBounds.increment_encoded(index)) :
+      %Equal.sym(U32,(U32.from_nat(index) + 1 : U32),U32.from_nat(1n+index),Bounds.increment_encoded(index)) :
         {Loop.run(~LoopLaws.RowTiles(),~LoopLaws.column_step(~lanes),rest,state(p,x,next,_,U32.from_nat(c),U32.from_nat(kr),(U32.from_nat(kc) + 1 : U32),position)) ==
           state(p,x,filled(p,rest,_,start,x,next),U32.from_nat(advance(rest,1n+index)),U32.from_nat(c),U32.from_nat(kr),U32.from_nat(advance(rest,1n+kc)),position) : LoopLaws.RowTiles()}
-      %Equal.sym(U32,(U32.from_nat(kc) + 1 : U32),U32.from_nat(1n+kc),WriteBounds.increment_encoded(kc)) :
+      %Equal.sym(U32,(U32.from_nat(kc) + 1 : U32),U32.from_nat(1n+kc),Bounds.increment_encoded(kc)) :
         {Loop.run(~LoopLaws.RowTiles(),~LoopLaws.column_step(~lanes),rest,state(p,x,next,U32.from_nat(1n+index),U32.from_nat(c),U32.from_nat(kr),_,position)) ==
           state(p,x,filled(p,rest,U32.from_nat(1n+index),start,x,next),U32.from_nat(advance(rest,1n+index)),U32.from_nat(c),U32.from_nat(kr),
             U32.from_nat(advance(rest,1n+kc)),position) : LoopLaws.RowTiles()}
@@ -290,7 +333,7 @@ def kernel_rows(lanes,span,rule,limits,p,tiles,g,start,position,x,facts,n,c,kr,q
           state(p,x,next,U32.from_nat(advance(k,index)),U32.from_nat(c),U32.from_nat(kr),U32.from_nat(advance(k,0n)),position),
           columns(~lanes,~span,~rule,limits,p,tiles,g,start,position,x,facts,k,c,kr,0n,qn,index,y,reduction,indexed,c_inside,Order.room_index(kr,rest,k,room),Order.reflexive(k))) :
         {Loop.run(~LoopLaws.RowTiles(),~LoopLaws.kernel_row_step(~lanes),rest,LoopLaws.next_kernel_row(_)) == after : LoopLaws.RowTiles()}
-      %Equal.sym(U32,(U32.from_nat(kr) + 1 : U32),U32.from_nat(1n+kr),WriteBounds.increment_encoded(kr)) :
+      %Equal.sym(U32,(U32.from_nat(kr) + 1 : U32),U32.from_nat(1n+kr),Bounds.increment_encoded(kr)) :
         {Loop.run(~LoopLaws.RowTiles(),~LoopLaws.kernel_row_step(~lanes),rest,state(p,x,next,U32.from_nat(advance(k,index)),U32.from_nat(c),_,0,position)) == after : LoopLaws.RowTiles()}
       %Equal.sym(Tree.Tree<Tile.Tile8>,filled(p,Nat.add(k,m),U32.from_nat(index),start,x,y),filled(p,m,U32.from_nat(advance(k,index)),start,x,next),
           grouped(p,k,m,index,start,x,y)) :
@@ -340,7 +383,7 @@ def channels(lanes,span,rule,limits,p,tiles,g,start,position,x,facts,n,c,qn,inde
           kernel_rows(~lanes,~span,~rule,limits,p,tiles,g,start,position,x,facts,k,c,0n,qn,index,y,reduction,indexed,Order.room_index(c,rest,Guards.input_channel_count(p),room),
             Order.reflexive(k))) :
         {Loop.run(~LoopLaws.RowTiles(),~LoopLaws.channel_step(~lanes),rest,LoopLaws.next_channel(_)) == after : LoopLaws.RowTiles()}
-      %Equal.sym(U32,(U32.from_nat(c) + 1 : U32),U32.from_nat(1n+c),WriteBounds.increment_encoded(c)) :
+      %Equal.sym(U32,(U32.from_nat(c) + 1 : U32),U32.from_nat(1n+c),Bounds.increment_encoded(c)) :
         {Loop.run(~LoopLaws.RowTiles(),~LoopLaws.channel_step(~lanes),rest,state(p,x,next,U32.from_nat(advance(square,index)),_,0,0,position)) == after : LoopLaws.RowTiles()}
       %Equal.sym(Tree.Tree<Tile.Tile8>,filled(p,Nat.add(square,m),U32.from_nat(index),start,x,y),filled(p,m,U32.from_nat(advance(square,index)),start,x,next),
           grouped(p,square,m,index,start,x,y)) :
@@ -353,8 +396,7 @@ def channels(lanes,span,rule,limits,p,tiles,g,start,position,x,facts,n,c,qn,inde
         advance_shift(square,Nat.mul(g,Coordinates.inner(p)),index,qn,indexed),Order.advance_room(c,rest,Guards.input_channel_count(p),room))
 
 def crossing_state(+p: ConvSpec.Problem,x: Tree.Tree<F32>,y: Tree.Tree<Tile.Tile8>,i: U32,q: U32,position: U32) -> LoopLaws.Crossings():
-  Packing.Crossing{x,y,i,q,position,Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),
-    Entries.native_output_width(p)}
+  Packing.Crossing{x,y,i,q,position,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p))}
 
 def crossing_at(+limits: Machine.Limits,+p: ConvSpec.Problem,+tiles: Nat,+g: Nat,+qn: Nat,+index: Nat,+start: U32,+position: U32,+x: Tree.Tree<F32>,
   +valid: Guards.Valid<p>,+support: Entries.Supported(limits,p),
@@ -402,23 +444,24 @@ def crossings(limits,p,tiles,g,start,position,x,valid,support,total,g_inside,pos
         Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p))
       +next = Tree.write(Tile.Tile8,y,U32.from_nat(index),entry)
       +after = crossing_state(p,x,filled(p,rest,U32.from_nat(1n+index),start,x,next),U32.from_nat(advance(rest,1n+index)),U32.from_nat(advance(rest,1n+qn)),position)
+      %Equal.sym(Tile.Tile8,SpatialSamples.window_vector(x,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),position,U32.from_nat(qn)),PackingTabulation.vector(x,position,U32.from_nat(qn),Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p)),PackingTabulation.square_vector(x,position,U32.from_nat(qn),Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p))) :
+        {Loop.run(~LoopLaws.Crossings(),~LoopLaws.crossing_step,rest,crossing_state(p,x,Tree.write(Tile.Tile8,y,U32.from_nat(index),_),(U32.from_nat(index) + 1 : U32),(U32.from_nat(qn) + 1 : U32),position)) == crossing_state(p,x,filled(p,rest,(U32.from_nat(index) + 1 : U32),start,x,next),U32.from_nat(advance(rest,1n+index)),U32.from_nat(advance(rest,1n+qn)),position) : LoopLaws.Crossings()}
       %Equal.sym(Tile.Tile8,PackingTabulation.vector(x,position,U32.from_nat(qn),Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),
           Entries.native_padding(p),Entries.native_output_width(p)),entry,
         crossing_at(limits,p,tiles,g,qn,index,start,position,x,valid,support,total,g_inside,Order.room_index(qn,rest,Coordinates.inner(p),room),position_exact,indexed)) :
         {Loop.run(~LoopLaws.Crossings(),~LoopLaws.crossing_step,rest,crossing_state(p,x,Tree.write(Tile.Tile8,y,U32.from_nat(index),_),(U32.from_nat(index) + 1 : U32),
             (U32.from_nat(qn) + 1 : U32),position)) ==
           crossing_state(p,x,filled(p,rest,(U32.from_nat(index) + 1 : U32),start,x,next),U32.from_nat(advance(rest,1n+index)),U32.from_nat(advance(rest,1n+qn)),position) : LoopLaws.Crossings()}
-      %Equal.sym(U32,(U32.from_nat(index) + 1 : U32),U32.from_nat(1n+index),WriteBounds.increment_encoded(index)) :
+      %Equal.sym(U32,(U32.from_nat(index) + 1 : U32),U32.from_nat(1n+index),Bounds.increment_encoded(index)) :
         {Loop.run(~LoopLaws.Crossings(),~LoopLaws.crossing_step,rest,crossing_state(p,x,next,_,(U32.from_nat(qn) + 1 : U32),position)) ==
           crossing_state(p,x,filled(p,rest,_,start,x,next),U32.from_nat(advance(rest,1n+index)),U32.from_nat(advance(rest,1n+qn)),position) : LoopLaws.Crossings()}
-      %Equal.sym(U32,(U32.from_nat(qn) + 1 : U32),U32.from_nat(1n+qn),WriteBounds.increment_encoded(qn)) :
+      %Equal.sym(U32,(U32.from_nat(qn) + 1 : U32),U32.from_nat(1n+qn),Bounds.increment_encoded(qn)) :
         {Loop.run(~LoopLaws.Crossings(),~LoopLaws.crossing_step,rest,crossing_state(p,x,next,U32.from_nat(1n+index),_,position)) == after : LoopLaws.Crossings()}
       crossings(limits,p,tiles,g,start,position,x,valid,support,total,g_inside,position_exact,rest,1n+qn,1n+index,next,
         shift(Nat.mul(g,Coordinates.inner(p)),index,qn,indexed),Order.advance_room(qn,rest,Coordinates.inner(p),room))
 
 def tiled(+p: ConvSpec.Problem,x: Tree.Tree<F32>,y: Tree.Tree<Tile.Tile8>,i: U32,position: U32) -> LoopLaws.Tiled():
-  Packing.Tiles{x,y,i,position,Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),
-    Entries.native_output_width(p),Guards.input_channel_count(p),Guards.kernel(p),Coordinates.inner(p)}
+  Packing.Tiles{x,y,i,position,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),Coordinates.inner(p)}
 
 def room_ahead(+pn: Nat,+m: Nat,+cap: Nat,room: {Nat.is_le(Nat.add(pn,Nat.add(8n,m)),cap) == True{} : Bool}) -> {Nat.is_le(Nat.add(Nat.add(pn,8n),m),cap) == True{} : Bool}:
   %Equal.sym(Nat,Nat.add(Nat.add(pn,8n),m),Nat.add(pn,Nat.add(8n,m)),Addition.associative(pn,8n,m)) : {Nat.is_le(_,cap) == True{} : Bool}
@@ -434,7 +477,7 @@ def tile_room(+limits: Machine.Limits,+p: ConvSpec.Problem,+position: U32,+valid
   +pn = U32.to_nat(position)
   +capacity = U32.to_nat(Machine.capacity(limits))
   %Equal.sym(Nat,Nat.add(pn,8n),1n+Nat.add(pn,7n),Addition.successor_right(pn,7n)) : {Nat.is_le(_,U32.to_nat(Machine.half_word(limits))) == True{} : Bool}
-  Padded.add_seven_bound(limits,1n+pn,Order.strict_follow(pn,capacity,Bounds.nat_trans(pn,grid(p),capacity,below,Padded.spatial_bound_facts(limits,p,valid,support))))
+  Encoding.add_seven_bound(limits,1n+pn,Order.strict_follow(pn,capacity,Bounds.nat_trans(pn,grid(p),capacity,below,Padded.spatial_bound_facts(limits,p,valid,support))))
 
 def shifted_room(+pn: Nat,+limit: Nat,first: {Nat.is_le(Nat.add(pn,8n),Nat.add(limit,7n)) == True{} : Bool}) -> {Nat.is_le(Nat.add(7n,1n+pn),Nat.add(7n,limit)) == True{} : Bool}:
   %Order.commutative(limit,7n) : {Nat.is_le(Nat.add(8n,pn),_) == True{} : Bool}
@@ -455,11 +498,8 @@ def tile_filled(+limits: Machine.Limits,+p: ConvSpec.Problem,+tiles: Nat,+g: Nat
   +indexed: {index == Entries.entry_index(p,g,0n) : Nat},
   +decided: {U32.is_le((position % Entries.native_output_width(p) + 8 : U32),Entries.native_output_width(p)) == within : Bool},
   +spans: {U32.is_le((position % Entries.native_output_width(p) + 8 : U32),(Entries.native_output_width(p) + Entries.native_output_width(p) : U32)) == wraps : Bool}) ->
-  {LoopLaws.tile(within,wraps,x,y,U32.from_nat(index),position,Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),
-      Entries.native_padding(p),Entries.native_output_width(p),Guards.input_channel_count(p),Guards.kernel(p),Coordinates.inner(p)) ==
-    Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),
-      Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),
-      Guards.input_channel_count(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}:
+  {LoopLaws.tile(within,wraps,x,y,U32.from_nat(index),position,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),Coordinates.inner(p)) ==
+    Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}:
   match within wraps:
     case True{} wraps:
       %Equal.sym(LoopLaws.RowTiles(),Loop.run(~LoopLaws.RowTiles(),~LoopLaws.channel_step(~LoopLaws.row_lanes),Guards.input_channel_count(p),state(p,x,y,U32.from_nat(index),U32.from_nat(0n),0,0,position)),
@@ -468,10 +508,8 @@ def tile_filled(+limits: Machine.Limits,+p: ConvSpec.Problem,+tiles: Nat,+g: Nat
           channels(~LoopLaws.row_lanes,~one_row,~column_entry,limits,p,tiles,g,start,position,x,
             TileFacts{valid,support,total,g_inside,position_exact,Entries.within_columns(limits,p,position,valid,support,decided),tile_room(limits,p,position,valid,support,below)},
             Guards.input_channel_count(p),0n,0n,index,y,{==},indexed,Order.reflexive(Guards.input_channel_count(p)))) :
-        {LoopLaws.after_row_tile(position,Entries.native_kernel(p),Guards.input_channel_count(p),Coordinates.inner(p),_) ==
-          Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),
-            Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),
-            Guards.input_channel_count(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}
+        {LoopLaws.after_row_tile(position,Guards.input_channel_count(p),Coordinates.inner(p),_) ==
+          Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}
       {==}
     case False{} True{}:
       %Equal.sym(LoopLaws.RowTiles(),Loop.run(~LoopLaws.RowTiles(),~LoopLaws.channel_step(~LoopLaws.wrap_lanes),Guards.input_channel_count(p),state(p,x,y,U32.from_nat(index),U32.from_nat(0n),0,0,position)),
@@ -480,20 +518,16 @@ def tile_filled(+limits: Machine.Limits,+p: ConvSpec.Problem,+tiles: Nat,+g: Nat
           channels(~LoopLaws.wrap_lanes,~two_rows,~wrap_column_entry,limits,p,tiles,g,start,position,x,
             TileFacts{valid,support,total,g_inside,position_exact,Entries.wraps_columns(limits,p,position,valid,support,spans),tile_room(limits,p,position,valid,support,below)},
             Guards.input_channel_count(p),0n,0n,index,y,{==},indexed,Order.reflexive(Guards.input_channel_count(p)))) :
-        {LoopLaws.after_row_tile(position,Entries.native_kernel(p),Guards.input_channel_count(p),Coordinates.inner(p),_) ==
-          Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),
-            Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),
-            Guards.input_channel_count(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}
+        {LoopLaws.after_row_tile(position,Guards.input_channel_count(p),Coordinates.inner(p),_) ==
+          Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}
       {==}
     case False{} False{}:
       %Equal.sym(LoopLaws.Crossings(),Loop.run(~LoopLaws.Crossings(),~LoopLaws.crossing_step,Coordinates.inner(p),crossing_state(p,x,y,U32.from_nat(index),U32.from_nat(0n),position)),
           crossing_state(p,x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),
             U32.from_nat(advance(Coordinates.inner(p),0n)),position),
           crossings(limits,p,tiles,g,start,position,x,valid,support,total,g_inside,position_exact,Coordinates.inner(p),0n,index,y,indexed,Order.reflexive(Coordinates.inner(p)))) :
-        {LoopLaws.after_crossing(Guards.input_channel_count(p),Guards.kernel(p),Coordinates.inner(p),_) ==
-          Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),
-            Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),
-            Guards.input_channel_count(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}
+        {LoopLaws.after_crossing(Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),Coordinates.inner(p),_) ==
+          Packing.Tiles{x,filled(p,Coordinates.inner(p),U32.from_nat(index),start,x,y),U32.from_nat(advance(Coordinates.inner(p),index)),(position + 8 : U32),Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),Coordinates.inner(p)} : LoopLaws.Tiled()}
       {==}
 
 def rebound(+a: Nat,+b: Nat,+cap: Nat,e: {a == b : Nat},h: {Nat.is_le(a,cap) == True{} : Bool}) -> {Nat.is_le(b,cap) == True{} : Bool}:
@@ -546,8 +580,8 @@ law tiles_fill:
   for +located: {pn == Nat.add(U32.to_nat(start),Nat.mul(g,8n)) : Nat}
   for +inside: {Nat.is_le(Nat.add(g,n),tiles) == True{} : Bool}
   for +room: {Nat.is_le(Nat.add(pn,Nat.mul(n,8n)),Nat.add(grid(p),7n)) == True{} : Bool}
-  {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,n,tiled(p,x,y,U32.from_nat(index),U32.from_nat(pn)))) ==
-    PackingStorage.Packed{x,filled(p,Nat.mul(n,Coordinates.inner(p)),U32.from_nat(index),start,x,y)} : PackingStorage.Packed}
+  {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,n,tiled(p,x,y,U32.from_nat(index),U32.from_nat(pn)))) ==
+    LoopLaws.Packed{x,filled(p,Nat.mul(n,Coordinates.inner(p)),U32.from_nat(index),start,x,y)} : LoopLaws.Packed}
 def tiles_fill(limits,p,tiles,start,x,valid,support,total,n,g,pn,index,y,indexed,located,inside,room):
   match n:
     case 0n: {==}
@@ -561,21 +595,18 @@ def tiles_fill(limits,p,tiles,start,x,valid,support,total,n,g,pn,index,y,indexed
       +bound = Bounds.strict_le(pn,cap,Bounds.nat_trans(pn,grid(p),cap,below,Padded.spatial_bound_facts(limits,p,valid,support)))
       +below_word = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(pn)),pn,Bounds.roundtrip(pn,Machine.capacity(limits),Limits.capacity_fits(limits),bound)) : {Nat.is_lt(_,grid(p)) == True{} : Bool}
         below : {Nat.is_lt(U32.to_nat(position),grid(p)) == True{} : Bool}}
-      +result = {PackingStorage.Packed{x,filled(p,Nat.add(inner,Nat.mul(rest,inner)),U32.from_nat(index),start,x,y)} : PackingStorage.Packed}
-      %Equal.sym(LoopLaws.Tiled(),LoopLaws.tile(U32.is_le((position % Entries.native_output_width(p) + 8 : U32),Entries.native_output_width(p)),U32.is_le((position % Entries.native_output_width(p) + 8 : U32),(Entries.native_output_width(p) + Entries.native_output_width(p) : U32)),
-          x,y,U32.from_nat(index),position,
-          Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),
-          Guards.input_channel_count(p),Guards.kernel(p),inner),
+      +result = {LoopLaws.Packed{x,filled(p,Nat.add(inner,Nat.mul(rest,inner)),U32.from_nat(index),start,x,y)} : LoopLaws.Packed}
+      %Equal.sym(LoopLaws.Tiled(),LoopLaws.tile(U32.is_le((position % Entries.native_output_width(p) + 8 : U32),Entries.native_output_width(p)),U32.is_le((position % Entries.native_output_width(p) + 8 : U32),(Entries.native_output_width(p) + Entries.native_output_width(p) : U32)),x,y,U32.from_nat(index),position,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),Guards.kernel(p),Guards.kernel(p),inner),
           tiled(p,x,next,U32.from_nat(advance(inner,index)),(position + 8 : U32)),
           tile_filled(limits,p,tiles,g,index,start,position,x,y,U32.is_le((position % Entries.native_output_width(p) + 8 : U32),Entries.native_output_width(p)),U32.is_le((position % Entries.native_output_width(p) + 8 : U32),(Entries.native_output_width(p) + Entries.native_output_width(p) : U32)),
             valid,support,total,Order.room_index(g,rest,tiles,inside),group_position(limits,start,g,pn,located,bound),below_word,indexed,{==},{==})) :
-        {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,rest,_)) == result : PackingStorage.Packed}
+        {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,rest,_)) == result : LoopLaws.Packed}
       %Equal.sym(U32,(position + U32.from_nat(8n) : U32),U32.from_nat(Nat.add(pn,8n)),WordArithmetic.native_add(pn,8n)) :
-        {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,rest,tiled(p,x,next,U32.from_nat(advance(inner,index)),_))) == result : PackingStorage.Packed}
+        {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,rest,tiled(p,x,next,U32.from_nat(advance(inner,index)),_))) == result : LoopLaws.Packed}
       %Equal.sym(Tree.Tree<Tile.Tile8>,filled(p,Nat.add(inner,Nat.mul(rest,inner)),U32.from_nat(index),start,x,y),
           filled(p,Nat.mul(rest,inner),U32.from_nat(advance(inner,index)),start,x,next),grouped(p,inner,Nat.mul(rest,inner),index,start,x,y)) :
-        {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,rest,tiled(p,x,next,U32.from_nat(advance(inner,index)),U32.from_nat(Nat.add(pn,8n))))) ==
-          PackingStorage.Packed{x,_} : PackingStorage.Packed}
+        {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,rest,tiled(p,x,next,U32.from_nat(advance(inner,index)),U32.from_nat(Nat.add(pn,8n))))) ==
+          LoopLaws.Packed{x,_} : LoopLaws.Packed}
       tiles_fill(limits,p,tiles,start,x,valid,support,total,rest,1n+g,Nat.add(pn,8n),advance(inner,index),next,group_carry(inner,g,index,indexed),
         next_located(U32.to_nat(start),Nat.mul(g,8n),pn,located),Order.advance_room(g,rest,tiles,inside),room_ahead(pn,m,Nat.add(grid(p),7n),room))
 
@@ -583,17 +614,13 @@ def channels_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.V
   {U32.to_nat((Coordinates.native_inner(p) / (Entries.native_kernel(p) * Entries.native_kernel(p)) : U32)) == Guards.input_channel_count(p) : Nat}:
   +kernel = Guards.kernel(p)
   +positive = Coordinates.kernel_positive(p,valid)
-  +square_positive = Support.positive_mul(kernel,kernel,positive,positive)
+  +square_positive = Order.product_positive(kernel,kernel,positive,positive)
   Radix.quotient_word(Coordinates.native_inner(p),(Entries.native_kernel(p) * Entries.native_kernel(p) : U32),Guards.input_channel_count(p),0n,Nat.mul(kernel,kernel),
     Machine.half_word(limits),Limits.half_word_fits(limits),
     Equal.trans(Nat,U32.to_nat(Coordinates.native_inner(p)),Coordinates.inner(p),Nat.add(Coordinates.inner(p),0n),Coordinates.inner_exact(limits,p,valid,support),
       Equal.sym(Nat,Nat.add(Coordinates.inner(p),0n),Coordinates.inner(p),Addition.zero_right(Coordinates.inner(p)))),
     Coordinates.square_exact(limits,p,valid,support),square_positive,square_positive,
     Limits.double_bound(limits,Nat.mul(kernel,kernel),Coordinates.square_bound(limits,p,valid,support)))
-
-def tile_count(+tiles: Nat,+inner: Nat,+positive: {Nat.is_lt(0n,inner) == True{} : Bool}) -> {Nat.div(Nat.mul(tiles,inner),inner) == tiles : Nat}:
-  %Addition.zero_right(Nat.mul(tiles,inner)) : {Nat.div(_,inner) == tiles : Nat}
-  Radix.quotient(tiles,0n,inner,positive,positive)
 
 # The packer of tiles * inner entries stores the flat tabulation of its entries.
 law packing_contents:
@@ -609,25 +636,21 @@ law packing_contents:
   for +range: {Nat.is_le(Nat.add(U32.to_nat(start),Nat.mul(tiles,8n)),Nat.add(grid(p),7n)) == True{} : Bool}
   {PackingStorage.packing(Nat.mul(tiles,Coordinates.inner(p)),start,x,y,Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),
       Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)) ==
-    PackingStorage.Packed{x,filled(p,Nat.mul(tiles,Coordinates.inner(p)),0,start,x,y)} : PackingStorage.Packed}
+    LoopLaws.Packed{x,filled(p,Nat.mul(tiles,Coordinates.inner(p)),0,start,x,y)} : LoopLaws.Packed}
 def packing_contents(limits,p,tiles,start,x,y,valid,support,total,range):
   +count = Nat.mul(tiles,Coordinates.inner(p))
-  +result = {PackingStorage.Packed{x,filled(p,count,0,start,x,y)} : PackingStorage.Packed}
+  +result = {LoopLaws.Packed{x,filled(p,count,0,start,x,y)} : LoopLaws.Packed}
   %Equal.sym(Nat,U32.to_nat(Coordinates.native_inner(p)),Coordinates.inner(p),Coordinates.inner_exact(limits,p,valid,support)) :
-    {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,_),Packing.Tiles{x,y,0,start,Entries.native_height(p),Entries.native_width(p),
-        Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),
-        U32.to_nat((Coordinates.native_inner(p) / (Entries.native_kernel(p) * Entries.native_kernel(p)) : U32)),U32.to_nat(Entries.native_kernel(p)),_})) == result : PackingStorage.Packed}
+    {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,_),Packing.Tiles{x,y,0,start,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),U32.to_nat((Coordinates.native_inner(p) / (Entries.native_kernel(p) * Entries.native_kernel(p)) : U32)),U32.to_nat(Entries.native_kernel(p)),U32.to_nat(Entries.native_kernel(p)),_})) == result : LoopLaws.Packed}
   %Equal.sym(Nat,U32.to_nat((Coordinates.native_inner(p) / (Entries.native_kernel(p) * Entries.native_kernel(p)) : U32)),Guards.input_channel_count(p),
       channels_exact(limits,p,valid,support)) :
-    {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,Coordinates.inner(p)),Packing.Tiles{x,y,0,start,Entries.native_height(p),Entries.native_width(p),
-        Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),_,U32.to_nat(Entries.native_kernel(p)),Coordinates.inner(p)})) ==
-      result : PackingStorage.Packed}
+    {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,Coordinates.inner(p)),Packing.Tiles{x,y,0,start,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),_,U32.to_nat(Entries.native_kernel(p)),U32.to_nat(Entries.native_kernel(p)),Coordinates.inner(p)})) ==
+      result : LoopLaws.Packed}
   %Equal.sym(Nat,U32.to_nat(Entries.native_kernel(p)),Guards.kernel(p),SupportedCoordinateBounds.kernel_exact(limits,p,support)) :
-    {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,Coordinates.inner(p)),Packing.Tiles{x,y,0,start,Entries.native_height(p),Entries.native_width(p),
-        Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Guards.input_channel_count(p),_,Coordinates.inner(p)})) ==
-      result : PackingStorage.Packed}
-  %Equal.sym(Nat,Nat.div(count,Coordinates.inner(p)),tiles,tile_count(tiles,Coordinates.inner(p),Coordinates.inner_positive(p,valid))) :
-    {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,_,tiled(p,x,y,0,start))) == result : PackingStorage.Packed}
-  %Arithmetic.native_roundtrip(start) : {PackingStorage.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,tiled(p,x,y,0,_))) == result : PackingStorage.Packed}
+    {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,Coordinates.inner(p)),Packing.Tiles{x,y,0,start,Packing.square(Entries.native_height(p),Entries.native_width(p),Entries.native_kernel(p),Entries.native_stride(p),Entries.native_padding(p),Entries.native_output_width(p),Coordinates.native_inner(p)),Guards.input_channel_count(p),_,_,Coordinates.inner(p)})) ==
+      result : LoopLaws.Packed}
+  %Equal.sym(Nat,Nat.div(count,Coordinates.inner(p)),tiles,Division.exact_quotient(tiles,Coordinates.inner(p),Coordinates.inner_positive(p,valid))) :
+    {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,_,tiled(p,x,y,0,start))) == result : LoopLaws.Packed}
+  %Arithmetic.native_roundtrip(start) : {LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,tiled(p,x,y,0,_))) == result : LoopLaws.Packed}
   tiles_fill(limits,p,tiles,start,x,valid,support,total,tiles,0n,U32.to_nat(start),0n,y,{==},
     Equal.sym(Nat,Nat.add(U32.to_nat(start),0n),U32.to_nat(start),Addition.zero_right(U32.to_nat(start))),Order.reflexive(tiles),range)

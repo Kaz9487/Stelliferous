@@ -184,7 +184,7 @@ judgments = {
         'run_readback_matches_matrix',
     ): 'Actual packed Array execution to the frozen ordered matrix values for any caller storage satisfying the common contents/capacity contract; includes weight reorder, input row windows (copied bands over aligned rows, the caller input otherwise), packing, arbitrary split depth, four-row GEMM jobs at eight positions and gather.',
     (
-        'convolution/proofs/conditional_write_coverage.bend',
+        'lib/proofs/write_program_readback.bend',
         'MatchingWritesHaveValue',
     ): 'A premise family, not a proof that actual writes are correct. Multiple matching writes of the same value are allowed.',
     (
@@ -207,10 +207,6 @@ judgments = {
         'convolution/proofs/microkernel_leaf_readback.bend',
         'leaf_every_position',
     ): 'Every in-range output of an actual pack plus four-row GEMM leaf at eight positions reads back the frozen matrix value plus bias. Takes a LeafCertificate premise (discharged by the gather proofs from actual prepare), rebuilds the certificate for its own allocated pack buffer, and uses complete coverage for full and partial channel blocks.',
-    (
-        'convolution/proofs/packing_lane_reads.bend',
-        'prepared_pixel_matches_direct_read',
-    ): 'Actual computed pixel-block geometry, for every Nat index and U32 dimension, gives the same native Array read and padding mask as the direct pixel function. No premise assumes a cache field is correct; no restriction to eight lanes. This is not the whole convolution root.',
     (
         'convolution/proofs/array_api_validation.bend',
         'validation_matches_spec',

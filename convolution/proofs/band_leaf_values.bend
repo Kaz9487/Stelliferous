@@ -39,21 +39,18 @@ import ./output_values.bend as Values
 import ./window_band_values.bend as WindowBandValues
 import ./window_positions.bend as Positions
 import ./window_problem.bend as WindowProblem
-import ../../lib/kernel_packing_buffer.bend as PackingBuffer
 import ../../lib/kernel_pipeline.bend as Pipeline
 import ../../lib/kernel_shape.bend as KernelShape
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 import ../../lib/proofs/nat_extrema.bend as Extrema
 import ../../lib/proofs/natural_addition.bend as Addition
-import ../../lib/proofs/ordered_ranges.bend as Ranges
-import ../../lib/proofs/sequence_membership.bend as Members
-import ../../lib/proofs/storage_certificate.bend as Certificate
-import ../../lib/proofs/tensor_band_coordinates.bend as BandCoordinates
 import ../../lib/proofs/tensor_band_shape_refinement.bend as BandShape
 import ../../lib/proofs/u32_comparison.bend as Comparison
-import ../../lib/proofs/word_encoding.bend as WordEncoding
 import ../../lib/storage_buffer.bend as Storage
-import ../../lib/tensor.bend as Tensors
+import ../../lib/proofs/nat_ceiling.bend as Ceiling
+import ../../lib/proofs/tensor_band_from_whole.bend as FromWhole
+import ../../lib/proofs/tensor_band_plan.bend as BandPlan
+import ./band_padding_window.bend as Padding
 
 # The band leaf as the runtime builds it: its reduction length, packing call
 # and weight/bias trees are the window problem's, so each real output
@@ -184,7 +181,7 @@ def leaf_tree(~custom: F32 -> F32,+activation: Activations.Activation,+ci: Nat,+
     U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(output_width),tree,U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),rows,
     weight_tree,bias_tree)
 
-# One cell of an active leaf is the dense output element of its pixel.
+# One cell of an active leaf is the row-major output element of its pixel.
 def active_cell(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,+image: Nat,
   +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
   +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,image)) == True{} : Bool},
@@ -279,17 +276,16 @@ def active_cell(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> 
     valued : {Tree.read(F32,runtime,U32.from_nat(BandValues.position(geometry,output_rows,channel,row,line))) == BandConvolutionValues.value_at(~custom,~Logical,~original,logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat(address)) : F32}}
   Shape.Both{inside,read}
 
-# The decoded window of an active leaf satisfies runtime_value's window facts.
+# The window of an active leaf, with a cover of its outputs, satisfies
+# runtime_value's window facts.
 def leaf_window(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,
   +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,+image: Nat,
-  +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,image)) == True{} : Bool},
-  +padding_small: {Nat.is_lt(padding,kernel) == True{} : Bool},
   +output_first: Nat,+output_end: Nat,+ordered: {Nat.is_lt(output_first,output_end) == True{} : Bool},
   +bounded: {Nat.is_le(output_end,ConvSpec.axis_size(height,kernel,stride,padding)) == True{} : Bool},
   +offset: U32,+offset_exact: {U32.to_nat(offset) == Nat.mul(output_first,ConvSpec.axis_size(width,kernel,stride,padding)) : Nat},
   +positions: U32,+positions_exact: {U32.to_nat(positions) == Nat.mul(Nat.sub(output_end,output_first),ConvSpec.axis_size(width,kernel,stride,padding)) : Nat},
-  +local: U32,+local_exact: {U32.to_nat(local) == WindowContents.window_first(height,output_first,stride,padding) : Nat},
-  +rows: U32,+rows_exact: {U32.to_nat(rows) == Nat.sub(WindowContents.window_end(height,output_end,stride,kernel,padding),WindowContents.window_first(height,output_first,stride,padding)) : Nat},
+  +local: U32,+rows: U32,
+  +covered: Positions.Cover<BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,image),U32.to_nat(local),U32.to_nat(rows),U32.to_nat(offset),U32.to_nat(positions)>,
   +images: U32,+channels_word: U32,+height_word: U32,+width_word: U32,
   +channels_exact: {U32.to_nat(channels_word) == ci : Nat},+height_exact: {U32.to_nat(height_word) == height : Nat},+width_exact: {U32.to_nat(width_word) == width : Nat},
   +first: U32,+window_first_exact: {U32.to_nat(first) == Nat.add(Nat.mul(image,U32.to_nat(height_word)),U32.to_nat(local)) : Nat},
@@ -301,15 +297,6 @@ def leaf_window(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logica
   +problem = BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,image)
   +oh = ConvSpec.axis_size(height,kernel,stride,padding)
   +ow = ConvSpec.axis_size(width,kernel,stride,padding)
-  +start = WindowContents.window_first(height,output_first,stride,padding)
-  +count = Nat.sub(WindowContents.window_end(height,output_end,stride,kernel,padding),start)
-  +covered = {
-    %Equal.sym(Nat,U32.to_nat(local),start,local_exact) : Positions.Cover<problem,_,U32.to_nat(rows),U32.to_nat(offset),U32.to_nat(positions)>
-    %Equal.sym(Nat,U32.to_nat(rows),count,rows_exact) : Positions.Cover<problem,start,_,U32.to_nat(offset),U32.to_nat(positions)>
-    %Equal.sym(Nat,U32.to_nat(offset),Nat.mul(output_first,ow),offset_exact) : Positions.Cover<problem,start,count,_,U32.to_nat(positions)>
-    %Equal.sym(Nat,U32.to_nat(positions),Nat.mul(Nat.sub(output_end,output_first),ow),positions_exact) : Positions.Cover<problem,start,count,Nat.mul(output_first,ow),_>
-    WindowContents.cover(problem,valid,padding_small,output_first,output_end,ordered,bounded) :
-    Positions.Cover<problem,U32.to_nat(local),U32.to_nat(rows),U32.to_nat(offset),U32.to_nat(positions)>}
   +grid = {
     %Equal.sym(Nat,U32.to_nat(offset),Nat.mul(output_first,ow),offset_exact) : {Nat.is_le(Nat.add(_,U32.to_nat(positions)),Nat.mul(oh,ow)) == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(positions),Nat.mul(Nat.sub(output_end,output_first),ow),positions_exact) : {Nat.is_le(Nat.add(Nat.mul(output_first,ow),_),Nat.mul(oh,ow)) == True{} : Bool}
@@ -373,7 +360,7 @@ def active_leaf_cell(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U3
   ActiveCells{+logical,+activation,+limits,+ci,+co,+height,+width,+kernel,+stride,+padding,+weights,+bias,+image,+weight_evidence,+bias_evidence,+valid,+supported,+weight_tree,+weight_exact,+bias_tree,+bias_exact,+offset,+offset_rows,+positions,+tree,+first,+rows,+window,+images,+outputs,+output_height,+output_width,+output_first,+output_rows,+capacity,+output,+positions_exact} = evidence
   active_cell(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,image,weight_evidence,bias_evidence,valid,supported,weight_tree,weight_exact,bias_tree,bias_exact,offset,offset_rows,positions,tree,first,rows,window,images,outputs,output_height,output_width,output_first,output_rows,capacity,output,positions_exact,channel,row,column,channel_inside,row_inside,column_inside)
 
-# Every cell of an active leaf is the dense output element of its pixel.
+# Every cell of an active leaf is the row-major output element of its pixel.
 def leaf_all(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,+image: Nat,
   +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
   +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,image)) == True{} : Bool},
@@ -395,11 +382,6 @@ def leaf_all(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32
   BandValues.cells(~ActiveCells<Logical,original>,~ActiveCell(~custom,~Logical,~original),~active_geometry(~Logical,~original),~active_rows(~Logical,~original),~active_leaf_cell(~custom,~Logical,~original),
     ActiveCells{logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,image,weight_evidence,bias_evidence,valid,supported,weight_tree,weight_exact,bias_tree,bias_exact,offset,offset_rows,positions,tree,first,rows,window,images,outputs,output_height,output_width,output_first,output_rows,capacity,output,positions_exact})
 
-# One active band leaf, as the runtime computes it, holds the dense output
-# rows of its image: the window arithmetic decodes to the covered rows, the
-# assembled window holds the problem's band, and every element of the leaf
-# is the dense convolution value at its output index.
-# Natural dimensions survive the runtime's U32 conversion.
 # The row arithmetic of BandWindow.window for one band, named once. Every name
 # unfolds to the term the runtime computes.
 def output_rows_word(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat) -> U32:
@@ -465,8 +447,39 @@ def band_positions(+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: 
 def input_geometry(+images: U32,+ci: Nat,+height: Nat,+width: Nat) -> Bands.Geometry:
   Bands.Geometry{images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width)}
 
-def assembled_window(+images: U32,+ci: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+first: U32,+rows: U32,+core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>) -> Storage.Buffer<F32>:
-  BandWindow.assemble(~F32,0.0,input_geometry(images,ci,height,width),needed_rows(height,kernel,stride,padding,first,rows),BandWindow.Rows{first,rows},halo_above_rows(height,kernel,stride,padding,first,rows),halo_below_rows(height,kernel,stride,padding,first,rows),Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below))
+def assembled_window(+images: U32,+ci: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+first: U32,+rows: U32,+window: BandWindow.Rows,
+  +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>) -> Storage.Buffer<F32>:
+  BandWindow.assemble(~F32,0.0,input_geometry(images,ci,height,width),window,BandWindow.Rows{first,rows},halo_above_rows(height,kernel,stride,padding,first,rows),halo_below_rows(height,kernel,stride,padding,first,rows),Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below))
+
+# The row a leaf packs when its window holds none: the stride position of its
+# first output, as BandPipeline.core_row computes it.
+def padding_first(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+first: U32) -> U32:
+  (image_start(height,first) + (output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * U32.from_nat(stride) : U32)
+
+# The one-row window such a leaf packs, with empty halos.
+def padding_window(+images: U32,+ci: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+first: U32,+rows: U32,
+  core: Buffer.Model<F32>,above: Buffer.Model<F32>,below: Buffer.Model<F32>) -> Storage.Buffer<F32>:
+  BandWindow.assemble(~F32,0.0,input_geometry(images,ci,height,width),BandWindow.Rows{padding_first(height,kernel,stride,padding,first),1},BandWindow.Rows{first,rows},
+    BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{below_first_row(height,kernel,stride,padding,first,rows),0},Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below))
+
+def output_offset(+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+first: U32) -> U32:
+  ((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32)
+
+def leaf_geometry(+images: U32,+ci: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat) -> BandWindow.Geometry:
+  BandWindow.Geometry{input_geometry(images,ci,height,width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)}
+
+# The output buffer of a leaf once BandPipeline.windowed chooses its source rows.
+def packed_leaf(~custom: F32 -> F32,+activation: Activations.Activation,+images: U32,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,
+  +first: U32,+rows: U32,window: BandWindow.Rows,+core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,+weight_model: Buffer.Model<Tile.Tile8>,+bias_model: Buffer.Model<F32>) -> Storage.Buffer<F32>:
+  BandPipeline.packed_window(~custom,activation,leaf_geometry(images,ci,height,width,kernel,stride,padding),U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),first,rows,
+    output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows),window,halo_above_rows(height,kernel,stride,padding,first,rows),halo_below_rows(height,kernel,stride,padding,first,rows),
+    Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below),Buffer.pack(~Tile.Tile8,weight_model),Buffer.pack(~F32,bias_model))
+
+def LeafValues(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,
+  +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,+images: U32,+first: U32,+rows: U32,leaf: Storage.Buffer<F32>) -> Data:
+  BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},
+    Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},
+    Model.RowBand{Buffer.contents(~F32,leaf),output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows)})
 
 type Words<-ci: Nat,-co: Nat,-height: Nat,-width: Nat,-kernel: Nat,-stride: Nat,-padding: Nat> is Data:
   Words{channels_word: {U32.to_nat(U32.from_nat(ci)) == ci : Nat},outputs_word: {U32.to_nat(U32.from_nat(co)) == co : Nat},
@@ -519,7 +532,7 @@ def model_metadata(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Log
     case Buffer.Model{+tree,+length,certificate}: range_metadata(~Logical,~original,logical,geometry,first,count,tree,length,values)
 
 # The window arithmetic of an active leaf, decoded to natural numbers.
-type Decoded<-ci: Nat,-co: Nat,-height: Nat,-width: Nat,-kernel: Nat,-stride: Nat,-padding: Nat,-first: U32,-rows: U32> is Data:
+type Decoded<-limits: Machine.Limits,-ci: Nat,-co: Nat,-height: Nat,-width: Nat,-kernel: Nat,-stride: Nat,-padding: Nat,-first: U32,-rows: U32> is Data:
   Decoded{ordered: {Nat.is_lt(U32.to_nat(band_output_first(height,kernel,stride,padding,first)),U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows))) == True{} : Bool},
     bounded: {Nat.is_le(U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows)),ConvSpec.axis_size(height,kernel,stride,padding)) == True{} : Bool},
     offset_exact: {U32.to_nat(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32)) == Nat.mul(U32.to_nat(band_output_first(height,kernel,stride,padding,first)),ConvSpec.axis_size(width,kernel,stride,padding)) : Nat},
@@ -530,15 +543,98 @@ type Decoded<-ci: Nat,-co: Nat,-height: Nat,-width: Nat,-kernel: Nat,-stride: Na
     output_first_exact: {U32.to_nat(output_first_row(height,kernel,stride,padding,first)) == Nat.add(Nat.mul(U32.to_nat((first / U32.from_nat(height) : U32)),U32.to_nat(output_rows_word(height,kernel,stride,padding))),U32.to_nat(band_output_first(height,kernel,stride,padding,first))) : Nat},
     window_first_exact: {U32.to_nat(window_first_row(height,kernel,stride,padding,first)) == Nat.add(Nat.mul(U32.to_nat((first / U32.from_nat(height) : U32)),U32.to_nat(U32.from_nat(height))),U32.to_nat((window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32))) : Nat},
     window_fits: {Nat.is_le(Nat.add(U32.to_nat((window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),U32.to_nat(BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)))),U32.to_nat(U32.from_nat(height))) == True{} : Bool},
-    count_exact: {U32.to_nat((U32.from_nat(co) * band_positions(height,width,kernel,stride,padding,first,rows) : U32)) == Nat.mul(co,U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows))) : Nat}}
+    count_exact: {U32.to_nat((U32.from_nat(co) * band_positions(height,width,kernel,stride,padding,first,rows) : U32)) == Nat.mul(co,U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows))) : Nat},
+    first_ceiling: {U32.to_nat(band_output_first(height,kernel,stride,padding,first)) == Ceiling.ceiling(U32.to_nat(core_start(height,first)),stride) : Nat},
+    core_first_inside: {Nat.is_le(U32.to_nat(core_start(height,first)),height) == True{} : Bool},
+    ending: Padding.Ending<U32.to_nat(core_stop(height,first,rows)),height,stride,U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows)),ConvSpec.axis_size(height,kernel,stride,padding)>,
+    start_room: {Nat.is_le(Nat.add(U32.to_nat((first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32)),U32.to_nat(band_output_first(height,kernel,stride,padding,first))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    image_base_exact: {U32.to_nat(image_start(height,first)) == Nat.mul(U32.to_nat((first / U32.from_nat(height) : U32)),U32.to_nat(U32.from_nat(height))) : Nat}}
 
-def active_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
-  +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,
-  +images: U32,+capacity: U32,+domain: BandGather.Domain<input_geometry(images,ci,height,width),limits,capacity>,+first: U32,+rows: U32,
-  core_geometry: TensorBandWindow.CoreGeometry<images,U32.from_nat(height),first,rows,Machine.capacity(limits)>,
+def halo_sources(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+first: U32,+rows: U32,+core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>) -> Model.Model<F32>:
+  TensorBandWindow.sources(~F32,above,window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(above_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),
+    core,first,rows,below,below_first_row(height,kernel,stride,padding,first,rows),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),below_first_row(height,kernel,stride,padding,first,rows)))
+
+# An active leaf on any window that covers its outputs holds the row-major output
+# rows of its image: the assembled window holds the problem's band, and every
+# element of the leaf is the row-major convolution value at its output index.
+def window_leaf_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
+  +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,+images: U32,+first: U32,+rows: U32,
   +channels_word: {U32.to_nat(U32.from_nat(ci)) == ci : Nat},+outputs_word: {U32.to_nat(U32.from_nat(co)) == co : Nat},+height_word: {U32.to_nat(U32.from_nat(height)) == height : Nat},+width_word: {U32.to_nat(U32.from_nat(width)) == width : Nat},+output_height_word: {U32.to_nat(output_rows_word(height,kernel,stride,padding)) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat},+output_width_word: {U32.to_nat(output_columns_word(width,kernel,stride,padding)) == ConvSpec.axis_size(width,kernel,stride,padding) : Nat},
   +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},
-  +padding_small: {Nat.is_lt(padding,kernel) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
+  +weight_model: Buffer.Model<Tile.Tile8>,
+  +weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == WeightsLaws.run(U32.from_nat(co),Coordinates.native_inner(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))),
+    StorageLaws.sequence_storage(F32,ConvSpec.length(weights),weights,weight_evidence)) : Tree.Tree<Tile.Tile8>},
+  +bias_model: Buffer.Model<F32>,+bias_exact: {Buffer.tree(~F32,bias_model) == StorageLaws.sequence_storage(F32,ConvSpec.length(bias),bias,bias_evidence) : Tree.Tree<F32>},
+  +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,
+  +image_inside: {Nat.is_lt(U32.to_nat((first / U32.from_nat(height) : U32)),U32.to_nat(images)) == True{} : Bool},
+  decoded_window: Decoded<limits,ci,co,height,width,kernel,stride,padding,first,rows>,
+  +window_first: U32,+window_rows: U32,
+  +window_first_exact: {U32.to_nat(window_first) == Nat.add(Nat.mul(U32.to_nat((first / U32.from_nat(height) : U32)),U32.to_nat(U32.from_nat(height))),U32.to_nat((window_first - image_start(height,first) : U32))) : Nat},
+  +window_fits: {Nat.is_le(Nat.add(U32.to_nat((window_first - image_start(height,first) : U32)),U32.to_nat(window_rows)),U32.to_nat(U32.from_nat(height))) == True{} : Bool},
+  +covered: Positions.Cover<BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32))),
+    U32.to_nat((window_first - image_start(height,first) : U32)),U32.to_nat(window_rows),U32.to_nat(output_offset(height,width,kernel,stride,padding,first)),U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows))>,
+  +window_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),BandWindow.Rows{window_first,window_rows},
+    Buffer.contents(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,BandWindow.Rows{window_first,window_rows},core,above,below))),
+  +output_total_room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(output_rows_word(height,kernel,stride,padding)),U32.to_nat(output_columns_word(width,kernel,stride,padding))))),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}) ->
+  LeafValues(~custom,~Logical,~original,logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias,images,first,rows,
+    packed_leaf(~custom,activation,images,ci,co,height,width,kernel,stride,padding,first,rows,BandWindow.Rows{window_first,window_rows},core,above,below,weight_model,bias_model)):
+  Decoded{+ordered,+output_bounded,+offset_exact,+positions_exact,+output_rows_exact,held_local,held_rows,+output_first_exact,held_first,held_fits,+count_exact,first_ceiling,core_first_inside,ending,start_room,image_base_exact} = decoded_window
+  +image = U32.to_nat((first / U32.from_nat(height) : U32))
+  +output_first = U32.to_nat(band_output_first(height,kernel,stride,padding,first))
+  +output_end = U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows))
+  +half = Machine.half_word(limits)
+  +half_ok = Limits.half_word_fits(limits)
+  +geometry = input_geometry(images,ci,height,width)
+  +window = {BandWindow.Rows{window_first,window_rows} : BandWindow.Rows}
+  +local = (window_first - image_start(height,first) : U32)
+  +window_tree = Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,window,core,above,below)))
+  +window_length = LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,window,core,above,below))
+  +window_split = {%LeafExecution.contents_parts(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,window,core,above,below)) : BandHalo.RangeValues(~F32,~Logical,~original,logical,geometry,window,_)
+    window_values : BandHalo.RangeValues(~F32,~Logical,~original,logical,geometry,window,Buffer.Content{window_tree,window_length})}
+  +window_ready = range_ready(~Logical,~original,logical,geometry,window_first,window_rows,window_tree,window_length,window_split)
+  +window_metadata = range_metadata(~Logical,~original,logical,geometry,window_first,window_rows,window_tree,window_length,window_split)
+  +window_leaf = range_leaf(~Logical,~original,logical,geometry,window_first,window_rows,window_tree,window_length,window_split)
+  +length_exact = fields_length(images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),window_first,window_rows,window_length,window_metadata)
+  +tree_room = ready_room(~F32,Buffer.Content{window_tree,window_length},window_ready)
+  +offset = output_offset(height,width,kernel,stride,padding,first)
+  +positions = band_positions(height,width,kernel,stride,padding,first,rows)
+  +leaf = leaf_window(~Logical,~original,logical,limits,ci,co,height,width,kernel,stride,padding,weights,bias,image,output_first,output_end,ordered,output_bounded,
+    offset,offset_exact,positions,positions_exact,local,window_rows,covered,images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),
+    channels_word,height_word,width_word,window_first,window_first_exact,window_fits,window_tree,window_length,length_exact,window_leaf,tree_room)
+  +output_row_fits = {
+    %Equal.sym(Nat,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),Nat.sub(output_end,output_first),output_rows_exact) : {Nat.is_le(Nat.add(output_first,_),U32.to_nat(output_rows_word(height,kernel,stride,padding))) == True{} : Bool}
+    %Equal.sym(Nat,Nat.add(output_first,Nat.sub(output_end,output_first)),output_end,Order.restore_shift(output_first,output_end,Bounds.strict_le(output_first,output_end,ordered))) : {Nat.is_le(_,U32.to_nat(output_rows_word(height,kernel,stride,padding))) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(output_rows_word(height,kernel,stride,padding)),ConvSpec.axis_size(height,kernel,stride,padding),output_height_word) : {Nat.is_le(output_end,_) == True{} : Bool}
+    output_bounded : {Nat.is_le(Nat.add(output_first,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows))),U32.to_nat(output_rows_word(height,kernel,stride,padding))) == True{} : Bool}}
+  +output = {OutputFacts{outputs_word,output_height_word,output_width_word,output_first_exact,image_inside,output_row_fits,half_ok,output_total_room} :
+    OutputFacts<images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows),half,image,output_first,co,ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding)>}
+  +positions_rows = Equal.trans(Nat,U32.to_nat(positions),Nat.mul(Nat.sub(output_end,output_first),ConvSpec.axis_size(width,kernel,stride,padding)),Nat.mul(U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),ConvSpec.axis_size(width,kernel,stride,padding)),positions_exact,
+    Equal.cong(Nat,Nat,value => Nat.mul(value,ConvSpec.axis_size(width,kernel,stride,padding)),Nat.sub(output_end,output_first),U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),
+      Equal.sym(Nat,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),Nat.sub(output_end,output_first),output_rows_exact)))
+  +all = leaf_all(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,image,weight_evidence,bias_evidence,valid,supported,
+    Buffer.tree(~Tile.Tile8,weight_model),weight_exact,Buffer.tree(~F32,bias_model),bias_exact,offset,output_first,positions,window_tree,local,window_rows,leaf,
+    images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows),half,output,positions_rows)
+  +inner = U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))
+  +call = {Packing.Call{U32.to_nat((((positions + 7) / 8 * 8 : U32) / 8 * inner : U32)),KernelWindow.start(offset,U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),local),
+    window_rows,U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),inner} : Packing.Call}
+  +output_geometry = {Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)} : Bands.Geometry}
+  +computed = LeafExecution.leaf_tree(~custom,activation,U32.from_nat(co),inner,positions,call,window_tree,Buffer.tree(~Tile.Tile8,weight_model),Buffer.tree(~F32,bias_model))
+  %Equal.sym(Buffer.Content<F32>,Buffer.contents(~F32,Pipeline.blocked(~custom,activation,LeafExecution.work(U32.from_nat(co),inner,positions,call),LeafExecution.pack_start(call),assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,window,core,above,below),Buffer.pack(~Tile.Tile8,weight_model),Buffer.pack(~F32,bias_model))),
+      Buffer.Content{computed,U32.to_nat((U32.from_nat(co) * positions : U32))},LeafExecution.leaf_contents_buffer(~custom,activation,U32.from_nat(co),inner,positions,call,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,window,core,above,below),weight_model,bias_model)) :
+    BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},output_geometry,
+      Model.RowBand{_,output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows)})
+  %Equal.sym(Nat,U32.to_nat((U32.from_nat(co) * positions : U32)),Nat.mul(co,U32.to_nat(positions)),count_exact) :
+    BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},output_geometry,
+      Model.RowBand{Buffer.Content{computed,_},output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows)})
+  all
+
+# An active leaf whose window holds a row packs that window.
+def held_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
+  +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,
+  +images: U32,+capacity: U32,+domain: BandGather.Domain<input_geometry(images,ci,height,width),limits,capacity>,+first: U32,+rows: U32,
+  +channels_word: {U32.to_nat(U32.from_nat(ci)) == ci : Nat},+outputs_word: {U32.to_nat(U32.from_nat(co)) == co : Nat},+height_word: {U32.to_nat(U32.from_nat(height)) == height : Nat},+width_word: {U32.to_nat(U32.from_nat(width)) == width : Nat},+output_height_word: {U32.to_nat(output_rows_word(height,kernel,stride,padding)) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat},+output_width_word: {U32.to_nat(output_columns_word(width,kernel,stride,padding)) == ConvSpec.axis_size(width,kernel,stride,padding) : Nat},
+  +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},
   +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
   +weight_model: Buffer.Model<Tile.Tile8>,
   +weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == WeightsLaws.run(U32.from_nat(co),Coordinates.native_inner(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))),
@@ -548,57 +644,292 @@ def active_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -
   +above_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_above_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,above)),
   +core_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),BandWindow.Rows{first,rows},Buffer.content(~F32,core)),
   +below_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_below_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,below)),
-  +guard: {U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)) == True{} : Bool},decoded_window: Decoded<ci,co,height,width,kernel,stride,padding,first,rows>,
+  core_geometry: TensorBandWindow.CoreGeometry<images,U32.from_nat(height),first,rows,Machine.capacity(limits)>,
+  decoded_window: Decoded<limits,ci,co,height,width,kernel,stride,padding,first,rows>,
+  +guard: {U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)) == True{} : Bool},
+  +within: BandPlan.Within(Model.layout(~F32,halo_sources(height,kernel,stride,padding,first,rows,core,above,below)),0n,U32.to_nat(Machine.capacity(limits))),
+  +held: {U32.is_zero(BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first))) == False{} : Bool},
+  +output_total_room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(output_rows_word(height,kernel,stride,padding)),U32.to_nat(output_columns_word(width,kernel,stride,padding))))),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}) ->
+  LeafValues(~custom,~Logical,~original,logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias,images,first,rows,
+    packed_leaf(~custom,activation,images,ci,co,height,width,kernel,stride,padding,first,rows,needed_rows(height,kernel,stride,padding,first,rows),core,above,below,weight_model,bias_model)):
+  TensorBandWindow.CoreGeometry{+image_inside,+core_inside,+first_exact,+core_exact,+endpoint_room} = core_geometry
+  Decoded{+ordered,+output_bounded,+offset_exact,+positions_exact,+output_rows_exact,+local_exact,+rows_exact,+output_first_exact,+window_first_exact,+window_fits,+count_exact,+first_ceiling,+core_first_inside,+ending,+start_room,+image_base_exact} = decoded_window
+  +image = U32.to_nat((first / U32.from_nat(height) : U32))
+  +output_first = U32.to_nat(band_output_first(height,kernel,stride,padding,first))
+  +output_end = U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows))
+  +half = Machine.half_word(limits)
+  +geometry = input_geometry(images,ci,height,width)
+  +read_first = window_first_row(height,kernel,stride,padding,first)
+  +read_rows = BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),read_first)
+  +raw = TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows))
+  +locations = {%guard : TensorBandWindow.Sourced(~F32,geometry,BandWindow.nonempty(_,raw),above,core,below,first,rows)
+    TensorBandWindow.window_sources(~F32,images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),first,rows,above,core,below,limits,TensorBandWindow.CoreGeometry{image_inside,core_inside,first_exact,core_exact,endpoint_room}) :
+    TensorBandWindow.Sourced(~F32,geometry,BandWindow.nonempty(True{},raw),above,core,below,first,rows)}
+  +target = {%guard : TensorBandWindow.WindowFacts(geometry,BandWindow.nonempty(_,raw),capacity,half)
+    TensorBandWindow.window_fits(images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),first,rows,limits,capacity,domain,TensorBandWindow.CoreGeometry{image_inside,core_inside,first_exact,core_exact,endpoint_room}) :
+    TensorBandWindow.WindowFacts(geometry,BandWindow.nonempty(True{},raw),capacity,half)}
+  +window_values = TensorBandWindow.assembly_window(~F32,~Logical,~original,logical,geometry,0.0,read_first,read_rows,
+    above,read_first,BandWindow.subtract_clipped(above_end_row(height,kernel,stride,padding,first,rows),read_first),core,first,rows,
+    below,below_first_row(height,kernel,stride,padding,first,rows),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),below_first_row(height,kernel,stride,padding,first,rows)),
+    limits,capacity,domain,above_values,core_values,below_values,within,locations,target)
+  +start = WindowContents.window_first(height,output_first,stride,padding)
+  +finish = WindowContents.window_end(height,output_end,stride,kernel,padding)
+  +count = Nat.sub(finish,start)
+  +before = Order.difference_positive(start,finish,%rows_exact : {Nat.is_lt(0n,_) == True{} : Bool} Arithmetic.word_nonzero_positive(read_rows,held))
+  +problem = BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,image)
+  +ow = ConvSpec.axis_size(width,kernel,stride,padding)
+  +local = (read_first - image_start(height,first) : U32)
+  +offset = output_offset(height,width,kernel,stride,padding,first)
+  +positions = band_positions(height,width,kernel,stride,padding,first,rows)
+  +covered = {
+    %Equal.sym(Nat,U32.to_nat(local),start,local_exact) : Positions.Cover<problem,_,U32.to_nat(read_rows),U32.to_nat(offset),U32.to_nat(positions)>
+    %Equal.sym(Nat,U32.to_nat(read_rows),count,rows_exact) : Positions.Cover<problem,start,_,U32.to_nat(offset),U32.to_nat(positions)>
+    %Equal.sym(Nat,U32.to_nat(offset),Nat.mul(output_first,ow),offset_exact) : Positions.Cover<problem,start,count,_,U32.to_nat(positions)>
+    %Equal.sym(Nat,U32.to_nat(positions),Nat.mul(Nat.sub(output_end,output_first),ow),positions_exact) : Positions.Cover<problem,start,count,Nat.mul(output_first,ow),_>
+    WindowContents.cover(problem,valid,output_first,output_end,ordered,output_bounded,before) :
+    Positions.Cover<problem,U32.to_nat(local),U32.to_nat(read_rows),U32.to_nat(offset),U32.to_nat(positions)>}
+  window_leaf_values(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,images,first,rows,
+    channels_word,outputs_word,height_word,width_word,output_height_word,output_width_word,valid,supported,weight_evidence,bias_evidence,weight_model,weight_exact,bias_model,bias_exact,core,above,below,
+    image_inside,Decoded{ordered,output_bounded,offset_exact,positions_exact,output_rows_exact,local_exact,rows_exact,output_first_exact,window_first_exact,window_fits,count_exact,first_ceiling,core_first_inside,ending,start_room,image_base_exact},
+    read_first,read_rows,window_first_exact,window_fits,covered,window_values,output_total_room)
+
+# An active leaf whose window holds no row packs the one core row at the
+# stride position of its first output: every read of its outputs lies in the
+# padding above the image.
+def padding_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
+  +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,
+  +images: U32,+capacity: U32,+domain: BandGather.Domain<input_geometry(images,ci,height,width),limits,capacity>,+first: U32,+rows: U32,
+  +channels_word: {U32.to_nat(U32.from_nat(ci)) == ci : Nat},+outputs_word: {U32.to_nat(U32.from_nat(co)) == co : Nat},+height_word: {U32.to_nat(U32.from_nat(height)) == height : Nat},+width_word: {U32.to_nat(U32.from_nat(width)) == width : Nat},+output_height_word: {U32.to_nat(output_rows_word(height,kernel,stride,padding)) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat},+output_width_word: {U32.to_nat(output_columns_word(width,kernel,stride,padding)) == ConvSpec.axis_size(width,kernel,stride,padding) : Nat},
+  +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
+  +weight_model: Buffer.Model<Tile.Tile8>,
+  +weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == WeightsLaws.run(U32.from_nat(co),Coordinates.native_inner(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))),
+    StorageLaws.sequence_storage(F32,ConvSpec.length(weights),weights,weight_evidence)) : Tree.Tree<Tile.Tile8>},
+  +bias_model: Buffer.Model<F32>,+bias_exact: {Buffer.tree(~F32,bias_model) == StorageLaws.sequence_storage(F32,ConvSpec.length(bias),bias,bias_evidence) : Tree.Tree<F32>},
+  +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,
+  +above_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_above_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,above)),
+  +core_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),BandWindow.Rows{first,rows},Buffer.content(~F32,core)),
+  +below_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_below_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,below)),
+  core_geometry: TensorBandWindow.CoreGeometry<images,U32.from_nat(height),first,rows,Machine.capacity(limits)>,
+  decoded_window: Decoded<limits,ci,co,height,width,kernel,stride,padding,first,rows>,
+  +stride_word: {U32.to_nat(U32.from_nat(stride)) == stride : Nat},
+  facts: Guards.Valid<BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))>,
+  +within: BandPlan.Within(Model.layout(~F32,halo_sources(height,kernel,stride,padding,first,rows,core,above,below)),0n,U32.to_nat(Machine.capacity(limits))),
+  +empty_window: {U32.is_zero(BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first))) == True{} : Bool},
+  +output_total_room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(output_rows_word(height,kernel,stride,padding)),U32.to_nat(output_columns_word(width,kernel,stride,padding))))),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}) ->
+  LeafValues(~custom,~Logical,~original,logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias,images,first,rows,
+    packed_leaf(~custom,activation,images,ci,co,height,width,kernel,stride,padding,first,rows,BandWindow.Rows{padding_first(height,kernel,stride,padding,first),1},core,above,below,weight_model,bias_model)):
+  TensorBandWindow.CoreGeometry{+image_inside,+core_inside,+first_exact,+core_exact,+endpoint_room} = core_geometry
+  Decoded{+ordered,+output_bounded,+offset_exact,+positions_exact,+output_rows_exact,+local_exact,+rows_exact,+output_first_exact,+window_first_exact,+window_fits,+count_exact,+first_ceiling,+core_first_inside,+ending,+start_room,+image_base_exact} = decoded_window
+  Guards.Valid{channels_positive,outputs_positive,+height_positive,width_positive,+kernel_positive,+stride_positive,+kernel_fits,kernel_width,input_length,weight_length,bias_length} = facts
+  +image = U32.to_nat((first / U32.from_nat(height) : U32))
+  +output_first = U32.to_nat(band_output_first(height,kernel,stride,padding,first))
+  +output_end = U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows))
+  +core_first = U32.to_nat(core_start(height,first))
+  +core_end = U32.to_nat(core_stop(height,first,rows))
+  +read_rows = BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first))
+  # The window holds no row, so the outputs read only the top padding.
+  +start = WindowContents.window_first(height,output_first,stride,padding)
+  +finish = WindowContents.window_end(height,output_end,stride,kernel,padding)
+  +difference_zero = Equal.trans(Nat,Nat.sub(finish,start),U32.to_nat(read_rows),0n,Equal.sym(Nat,U32.to_nat(read_rows),Nat.sub(finish,start),rows_exact),
+    Equal.cong(U32,Nat,U32.to_nat,read_rows,0,Arithmetic.equal_of_is_eq(read_rows,0,empty_window)))
+  +empty = {%Addition.zero_right(start) : {Nat.is_le(finish,_) == True{} : Bool}
+    %Order.subtraction_le(finish,start,0n) : {_ == True{} : Bool}
+    %Equal.sym(Nat,Nat.sub(finish,start),0n,difference_zero) : {Nat.is_le(_,0n) == True{} : Bool}
+    {==} : {Nat.is_le(finish,start) == True{} : Bool}}
+  +reads = Padding.padding_reads(height,kernel,stride,padding,core_first,output_first,output_end,stride_positive,kernel_positive,height_positive,kernel_fits,
+    first_ceiling,core_first_inside,ordered,output_bounded,empty)
+  # The packed row lies in the core.
+  +row = Nat.mul(output_first,stride)
+  +row_inside = Padding.padding_row(height,kernel,stride,padding,core_end,output_first,output_end,stride_positive,kernel_positive,height_positive,kernel_fits,ordered,reads,ending)
+  +row_after = {%Equal.sym(Nat,output_first,Ceiling.ceiling(core_first,stride),first_ceiling) : {Nat.is_le(core_first,Nat.mul(_,stride)) == True{} : Bool}
+    Ceiling.covers(core_first,stride,stride_positive) : {Nat.is_le(core_first,row) == True{} : Bool}}
+  +height_n = U32.to_nat(U32.from_nat(height))
+  +row_below = Bounds.nat_trans(row,core_end,height_n,row_inside,core_inside)
+  +row_fits_word = {%Order.commutative(1n,row) : {Nat.is_le(_,height_n) == True{} : Bool}
+    Order.strict_follow(row,height_n,row_below) : {Nat.is_le(Nat.add(row,1n),height_n) == True{} : Bool}}
+  +row_fits = {%Order.commutative(1n,row) : {Nat.is_le(_,height) == True{} : Bool}
+    Order.strict_follow(row,height,%height_word : {Nat.is_lt(row,_) == True{} : Bool} row_below) : {Nat.is_le(Nat.add(row,1n),height) == True{} : Bool}}
+  +problem = BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,image)
+  +ow = ConvSpec.axis_size(width,kernel,stride,padding)
+  +cover = Padding.padding_cover(problem,output_first,output_end,ordered,row_fits,reads)
+  # The packed row in machine words.
+  +capacity_word = Machine.capacity(limits)
+  +capacity_n = U32.to_nat(capacity_word)
+  +base = (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32)
+  +shift = ((output_first_row(height,kernel,stride,padding,first) - base : U32) * U32.from_nat(stride) : U32)
+  +image_first = U32.to_nat(image_start(height,first))
+  +height_room = Order.transitive(height_n,Nat.add(image_first,height_n),capacity_n,Samples.le_after(image_first,height_n),endpoint_room)
+  +row_room = Order.transitive(row,height_n,capacity_n,Bounds.strict_le(row,height_n,row_below),height_room)
+  +shift_exact = {%stride_word : {U32.to_nat(shift) == Nat.mul(output_first,_) : Nat}
+    LeafExecution.scaled_prefix(base,band_output_first(height,kernel,stride,padding,first),U32.from_nat(stride),capacity_word,Limits.capacity_fits(limits),start_room,
+      %Equal.sym(Nat,U32.to_nat(U32.from_nat(stride)),stride,stride_word) : {Nat.is_le(Nat.mul(output_first,_),capacity_n) == True{} : Bool} row_room) :
+    {U32.to_nat(shift) == row : Nat}}
+  +shift_room = {%Equal.sym(Nat,U32.to_nat(shift),row,shift_exact) : {Nat.is_le(Nat.add(image_first,_),capacity_n) == True{} : Bool}
+    Order.transitive(Nat.add(image_first,row),Nat.add(image_first,height_n),capacity_n,Order.offset_le(image_first,row,height_n,Bounds.strict_le(row,height_n,row_below)),endpoint_room) :
+    {Nat.is_le(Nat.add(image_first,U32.to_nat(shift)),capacity_n) == True{} : Bool}}
+  +window_first = padding_first(height,kernel,stride,padding,first)
+  +window_n = U32.to_nat(window_first)
+  +local = (window_first - image_start(height,first) : U32)
+  +packed_local_exact = Equal.trans(Nat,U32.to_nat(local),U32.to_nat(shift),row,
+    LeafExecution.prefix_removed(image_start(height,first),shift,capacity_word,Limits.capacity_fits(limits),shift_room),shift_exact)
+  +first_shift = Equal.trans(Nat,window_n,Nat.add(image_first,U32.to_nat(shift)),Nat.add(image_first,row),
+    LeafExecution.sum_exact(image_start(height,first),shift,capacity_word,Limits.capacity_fits(limits),shift_room),
+    Equal.cong(Nat,Nat,value => Nat.add(image_first,value),U32.to_nat(shift),row,shift_exact))
+  +first_image = Equal.trans(Nat,window_n,Nat.add(image_first,row),Nat.add(Nat.mul(image,height_n),row),first_shift,
+    Equal.cong(Nat,Nat,value => Nat.add(value,row),image_first,Nat.mul(image,height_n),image_base_exact))
+  +packed_first_exact = Equal.trans(Nat,window_n,Nat.add(Nat.mul(image,height_n),row),Nat.add(Nat.mul(image,height_n),U32.to_nat(local)),first_image,
+    Equal.cong(Nat,Nat,value => Nat.add(Nat.mul(image,height_n),value),row,U32.to_nat(local),Equal.sym(Nat,U32.to_nat(local),row,packed_local_exact)))
+  +packed_fits = {%Equal.sym(Nat,U32.to_nat(local),row,packed_local_exact) : {Nat.is_le(Nat.add(_,1n),height_n) == True{} : Bool}
+    row_fits_word : {Nat.is_le(Nat.add(U32.to_nat(local),1n),height_n) == True{} : Bool}}
+  +offset = output_offset(height,width,kernel,stride,padding,first)
+  +positions = band_positions(height,width,kernel,stride,padding,first,rows)
+  +covered = {
+    %Equal.sym(Nat,U32.to_nat(local),row,packed_local_exact) : Positions.Cover<problem,_,1n,U32.to_nat(offset),U32.to_nat(positions)>
+    %Equal.sym(Nat,U32.to_nat(offset),Nat.mul(output_first,ow),offset_exact) : Positions.Cover<problem,row,1n,_,U32.to_nat(positions)>
+    %Equal.sym(Nat,U32.to_nat(positions),Nat.mul(Nat.sub(output_end,output_first),ow),positions_exact) : Positions.Cover<problem,row,1n,Nat.mul(output_first,ow),_>
+    cover : Positions.Cover<problem,U32.to_nat(local),1n,U32.to_nat(offset),U32.to_nat(positions)>}
+  # The packed row is read from the core.
+  +first_n = U32.to_nat(first)
+  +rows_n = U32.to_nat(rows)
+  +lower = {%Equal.sym(Nat,Nat.add(window_n,0n),window_n,Addition.zero_right(window_n)) : {Nat.is_le(first_n,_) == True{} : Bool}
+    %Equal.sym(Nat,window_n,Nat.add(image_first,row),first_shift) : {Nat.is_le(first_n,_) == True{} : Bool}
+    %Equal.sym(Nat,first_n,Nat.add(image_first,core_first),first_exact) : {Nat.is_le(_,Nat.add(image_first,row)) == True{} : Bool}
+    Order.offset_le(image_first,core_first,row,row_after) : {Nat.is_le(first_n,Nat.add(window_n,0n)) == True{} : Bool}}
+  +upper = {%Equal.sym(Nat,Nat.add(window_n,0n),window_n,Addition.zero_right(window_n)) : {Nat.is_lt(_,Nat.add(first_n,rows_n)) == True{} : Bool}
+    %Equal.sym(Nat,window_n,Nat.add(image_first,row),first_shift) : {Nat.is_lt(_,Nat.add(first_n,rows_n)) == True{} : Bool}
+    %Equal.sym(Nat,first_n,Nat.add(image_first,core_first),first_exact) : {Nat.is_lt(Nat.add(image_first,row),Nat.add(_,rows_n)) == True{} : Bool}
+    %Equal.sym(Nat,Nat.add(Nat.add(image_first,core_first),rows_n),Nat.add(image_first,Nat.add(core_first,rows_n)),Addition.associative(image_first,core_first,rows_n)) :
+      {Nat.is_lt(Nat.add(image_first,row),_) == True{} : Bool}
+    Order.offset_lt(image_first,row,Nat.add(core_first,rows_n),%core_exact : {Nat.is_lt(row,_) == True{} : Bool} row_inside) :
+    {Nat.is_lt(Nat.add(window_n,0n),Nat.add(first_n,rows_n)) == True{} : Bool}}
+  +image_rows = Nat.mul(image,height_n)
+  +span_bounds = {BandPlan.LeafWithin{
+      %Equal.sym(Nat,window_n,Nat.add(image_rows,row),first_image) : {Nat.is_le(image_rows,_) == True{} : Bool}
+      Order.le_add(image_rows,row),
+      %Equal.sym(Nat,window_n,Nat.add(image_rows,row),first_image) : {Nat.is_le(Nat.add(_,1n),Nat.add(image_rows,height_n)) == True{} : Bool}
+      %Equal.sym(Nat,Nat.add(Nat.add(image_rows,row),1n),Nat.add(image_rows,Nat.add(row,1n)),Addition.associative(image_rows,row,1n)) :
+        {Nat.is_le(_,Nat.add(image_rows,height_n)) == True{} : Bool}
+      Order.offset_le(image_rows,Nat.add(row,1n),height_n,row_fits_word)} :
+    BandPlan.LeafWithin<window_first,1,image_rows,Nat.add(image_rows,height_n)>}
+  +window_values = TensorBandWindow.assembly_window(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),0.0,window_first,1,
+    above,window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(above_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),core,first,rows,
+    below,below_first_row(height,kernel,stride,padding,first,rows),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),below_first_row(height,kernel,stride,padding,first,rows)),
+    limits,capacity,domain,above_values,core_values,below_values,within,
+    Shape.Both{Inr{Inl{TensorBandWindow.located_in(first,rows,Nat.add(window_n,0n),first_n,Nat.add(first_n,rows_n),{==},
+      Equal.sym(Nat,Nat.sub(Nat.add(first_n,rows_n),first_n),rows_n,Order.subtract_shift(first_n,rows_n)),lower,upper)}},Unit{}},
+    FromWhole.bounds_leaf(images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),limits,window_first,1,capacity,BandPlan.ImageSpan{image,image_inside,span_bounds},
+      BandPlan.LeafWithin{Order.zero_le(window_n),BandPlan.total_rows(window_first,1,image,U32.to_nat(images),height_n,image_inside,span_bounds)},domain))
+  window_leaf_values(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,images,first,rows,
+    channels_word,outputs_word,height_word,width_word,output_height_word,output_width_word,valid,supported,weight_evidence,bias_evidence,weight_model,weight_exact,bias_model,bias_exact,core,above,below,
+    image_inside,Decoded{ordered,output_bounded,offset_exact,positions_exact,output_rows_exact,local_exact,rows_exact,output_first_exact,window_first_exact,window_fits,count_exact,first_ceiling,core_first_inside,ending,start_room,image_base_exact},
+    window_first,1,packed_first_exact,packed_fits,covered,window_values,output_total_room)
+
+def active_when(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,empty: Bool,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
+  +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,
+  +images: U32,+capacity: U32,+domain: BandGather.Domain<input_geometry(images,ci,height,width),limits,capacity>,+first: U32,+rows: U32,
+  +channels_word: {U32.to_nat(U32.from_nat(ci)) == ci : Nat},+outputs_word: {U32.to_nat(U32.from_nat(co)) == co : Nat},+height_word: {U32.to_nat(U32.from_nat(height)) == height : Nat},+width_word: {U32.to_nat(U32.from_nat(width)) == width : Nat},+output_height_word: {U32.to_nat(output_rows_word(height,kernel,stride,padding)) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat},+output_width_word: {U32.to_nat(output_columns_word(width,kernel,stride,padding)) == ConvSpec.axis_size(width,kernel,stride,padding) : Nat},
+  +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
+  +weight_model: Buffer.Model<Tile.Tile8>,
+  +weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == WeightsLaws.run(U32.from_nat(co),Coordinates.native_inner(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))),
+    StorageLaws.sequence_storage(F32,ConvSpec.length(weights),weights,weight_evidence)) : Tree.Tree<Tile.Tile8>},
+  +bias_model: Buffer.Model<F32>,+bias_exact: {Buffer.tree(~F32,bias_model) == StorageLaws.sequence_storage(F32,ConvSpec.length(bias),bias,bias_evidence) : Tree.Tree<F32>},
+  +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,
+  +above_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_above_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,above)),
+  +core_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),BandWindow.Rows{first,rows},Buffer.content(~F32,core)),
+  +below_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_below_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,below)),
+  core_geometry: TensorBandWindow.CoreGeometry<images,U32.from_nat(height),first,rows,Machine.capacity(limits)>,
+  decoded_window: Decoded<limits,ci,co,height,width,kernel,stride,padding,first,rows>,
+  +guard: {U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)) == True{} : Bool},
+  +within: BandPlan.Within(Model.layout(~F32,halo_sources(height,kernel,stride,padding,first,rows,core,above,below)),0n,U32.to_nat(Machine.capacity(limits))),
+  +stride_word: {U32.to_nat(U32.from_nat(stride)) == stride : Nat},
+  +emptiness: {U32.is_zero(BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first))) == empty : Bool},
+  +output_total_room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(output_rows_word(height,kernel,stride,padding)),U32.to_nat(output_columns_word(width,kernel,stride,padding))))),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}) ->
+  LeafValues(~custom,~Logical,~original,logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias,images,first,rows,
+    packed_leaf(~custom,activation,images,ci,co,height,width,kernel,stride,padding,first,rows,
+      BandPipeline.source_rows(empty,leaf_geometry(images,ci,height,width,kernel,stride,padding),first,output_first_row(height,kernel,stride,padding,first),needed_rows(height,kernel,stride,padding,first,rows)),
+      core,above,below,weight_model,bias_model)):
+  match empty:
+    case False{}:
+      held_values(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,images,capacity,domain,first,rows,
+        channels_word,outputs_word,height_word,width_word,output_height_word,output_width_word,valid,supported,weight_evidence,bias_evidence,weight_model,weight_exact,bias_model,bias_exact,
+        core,above,below,above_values,core_values,below_values,core_geometry,decoded_window,guard,within,emptiness,output_total_room)
+    case True{}:
+      padding_values(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,images,capacity,domain,first,rows,
+        channels_word,outputs_word,height_word,width_word,output_height_word,output_width_word,valid,supported,weight_evidence,bias_evidence,weight_model,weight_exact,bias_model,bias_exact,
+        core,above,below,above_values,core_values,below_values,core_geometry,decoded_window,stride_word,
+        Guards.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32))),valid),
+        within,emptiness,output_total_room)
+
+# One active band leaf, as the runtime computes it, holds the row-major output
+# rows of its image, whether its window holds a row or not.
+def active_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
+  +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,
+  +images: U32,+capacity: U32,+domain: BandGather.Domain<input_geometry(images,ci,height,width),limits,capacity>,+first: U32,+rows: U32,
+  core_geometry: TensorBandWindow.CoreGeometry<images,U32.from_nat(height),first,rows,Machine.capacity(limits)>,
+  +channels_word: {U32.to_nat(U32.from_nat(ci)) == ci : Nat},+outputs_word: {U32.to_nat(U32.from_nat(co)) == co : Nat},+height_word: {U32.to_nat(U32.from_nat(height)) == height : Nat},+width_word: {U32.to_nat(U32.from_nat(width)) == width : Nat},+output_height_word: {U32.to_nat(output_rows_word(height,kernel,stride,padding)) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat},+output_width_word: {U32.to_nat(output_columns_word(width,kernel,stride,padding)) == ConvSpec.axis_size(width,kernel,stride,padding) : Nat},
+  +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
+  +weight_model: Buffer.Model<Tile.Tile8>,
+  +weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == WeightsLaws.run(U32.from_nat(co),Coordinates.native_inner(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))),
+    StorageLaws.sequence_storage(F32,ConvSpec.length(weights),weights,weight_evidence)) : Tree.Tree<Tile.Tile8>},
+  +bias_model: Buffer.Model<F32>,+bias_exact: {Buffer.tree(~F32,bias_model) == StorageLaws.sequence_storage(F32,ConvSpec.length(bias),bias,bias_evidence) : Tree.Tree<F32>},
+  +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,
+  +above_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_above_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,above)),
+  +core_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),BandWindow.Rows{first,rows},Buffer.content(~F32,core)),
+  +below_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),halo_below_rows(height,kernel,stride,padding,first,rows),Buffer.content(~F32,below)),
+  +guard: {U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)) == True{} : Bool},decoded_window: Decoded<limits,ci,co,height,width,kernel,stride,padding,first,rows>,
+  +stride_word: {U32.to_nat(U32.from_nat(stride)) == stride : Nat},
   +output_total_room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(output_rows_word(height,kernel,stride,padding)),U32.to_nat(output_columns_word(width,kernel,stride,padding))))),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}) ->
   BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},
     Model.contents(~F32,BandPipeline.windowed(~custom,activation,BandWindow.Geometry{input_geometry(images,ci,height,width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),first,rows,TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows)),
       Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below),Buffer.pack(~Tile.Tile8,weight_model),Buffer.pack(~F32,bias_model)))):
-  match core_geometry decoded_window:
-    case TensorBandWindow.CoreGeometry{+image_inside,+core_inside,+first_exact,+core_exact,+endpoint_room} Decoded{+ordered,+output_bounded,+offset_exact,+positions_exact,+output_rows_exact,+local_exact,+rows_exact,+output_first_exact,+window_first_exact,+window_fits,+count_exact}:
-    +image = U32.to_nat((first / U32.from_nat(height) : U32))
-    +output_first = U32.to_nat(band_output_first(height,kernel,stride,padding,first))
-    +output_end = U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows))
-    +half = Machine.half_word(limits)
-    +half_ok = Limits.half_word_fits(limits)
-    +locations = {%guard : TensorBandWindow.Sourced(~F32,input_geometry(images,ci,height,width),BandWindow.nonempty(_,TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows))),above,core,below,first,rows)
-      TensorBandWindow.window_sources(~F32,images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),first,rows,above,core,below,limits,TensorBandWindow.CoreGeometry{image_inside,core_inside,first_exact,core_exact,endpoint_room}) :
-      TensorBandWindow.Sourced(~F32,input_geometry(images,ci,height,width),BandWindow.nonempty(True{},TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows))),above,core,below,first,rows)}
-    +target = {%guard : TensorBandWindow.WindowFacts(input_geometry(images,ci,height,width),BandWindow.nonempty(_,TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows))),capacity,half)
-      TensorBandWindow.window_fits(images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),first,rows,limits,capacity,domain,TensorBandWindow.CoreGeometry{image_inside,core_inside,first_exact,core_exact,endpoint_room}) :
-      TensorBandWindow.WindowFacts(input_geometry(images,ci,height,width),BandWindow.nonempty(True{},TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows))),capacity,half)}
-    +within = TensorBandWindow.sources_within(~F32,images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),limits,capacity,domain,above,window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(above_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),core,first,rows,below,below_first_row(height,kernel,stride,padding,first,rows),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),below_first_row(height,kernel,stride,padding,first,rows)),
-      model_metadata(~Logical,~original,logical,input_geometry(images,ci,height,width),window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(above_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),above,above_values),model_metadata(~Logical,~original,logical,input_geometry(images,ci,height,width),first,rows,core,core_values),model_metadata(~Logical,~original,logical,input_geometry(images,ci,height,width),below_first_row(height,kernel,stride,padding,first,rows),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),below_first_row(height,kernel,stride,padding,first,rows)),below,below_values))
-    +window_values = TensorBandWindow.assembly_window(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),0.0,window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),above,window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(above_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),core,first,rows,below,below_first_row(height,kernel,stride,padding,first,rows),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),below_first_row(height,kernel,stride,padding,first,rows)),
-      limits,capacity,domain,above_values,core_values,below_values,within,locations,target)
-    +window_split = {%LeafExecution.contents_parts(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below)) : BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),needed_rows(height,kernel,stride,padding,first,rows),_)
-      window_values : BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),needed_rows(height,kernel,stride,padding,first,rows),Buffer.Content{Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))})}
-    +window_ready = range_ready(~Logical,~original,logical,input_geometry(images,ci,height,width),window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below)),window_split)
-    +window_metadata = range_metadata(~Logical,~original,logical,input_geometry(images,ci,height,width),window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below)),window_split)
-    +window_leaf = range_leaf(~Logical,~original,logical,input_geometry(images,ci,height,width),window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below)),window_split)
-    +length_exact = fields_length(images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),window_first_row(height,kernel,stride,padding,first),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below)),window_metadata)
-    +tree_room = ready_room(~F32,Buffer.Content{Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))},window_ready)
-    +window = leaf_window(~Logical,~original,logical,limits,ci,co,height,width,kernel,stride,padding,weights,bias,image,valid,padding_small,output_first,output_end,ordered,output_bounded,
-      ((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),offset_exact,band_positions(height,width,kernel,stride,padding,first,rows),positions_exact,(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32),local_exact,BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),rows_exact,images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),
-      channels_word,height_word,width_word,window_first_row(height,kernel,stride,padding,first),window_first_exact,window_fits,Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),LeafExecution.buffer_length(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below)),length_exact,window_leaf,tree_room)
-    +output_row_fits = {
-      %Equal.sym(Nat,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),Nat.sub(output_end,output_first),output_rows_exact) : {Nat.is_le(Nat.add(output_first,_),U32.to_nat(output_rows_word(height,kernel,stride,padding))) == True{} : Bool}
-      %Equal.sym(Nat,Nat.add(output_first,Nat.sub(output_end,output_first)),output_end,Order.restore_shift(output_first,output_end,Bounds.strict_le(output_first,output_end,ordered))) : {Nat.is_le(_,U32.to_nat(output_rows_word(height,kernel,stride,padding))) == True{} : Bool}
-      %Equal.sym(Nat,U32.to_nat(output_rows_word(height,kernel,stride,padding)),ConvSpec.axis_size(height,kernel,stride,padding),output_height_word) : {Nat.is_le(output_end,_) == True{} : Bool}
-      output_bounded : {Nat.is_le(Nat.add(output_first,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows))),U32.to_nat(output_rows_word(height,kernel,stride,padding))) == True{} : Bool}}
-    +output = {OutputFacts{outputs_word,output_height_word,output_width_word,output_first_exact,image_inside,output_row_fits,half_ok,output_total_room} :
-      OutputFacts<images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows),half,image,output_first,co,ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding)>}
-    +positions_rows = Equal.trans(Nat,U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows)),Nat.mul(Nat.sub(output_end,output_first),ConvSpec.axis_size(width,kernel,stride,padding)),Nat.mul(U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),ConvSpec.axis_size(width,kernel,stride,padding)),positions_exact,
-      Equal.cong(Nat,Nat,value => Nat.mul(value,ConvSpec.axis_size(width,kernel,stride,padding)),Nat.sub(output_end,output_first),U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),
-        Equal.sym(Nat,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),Nat.sub(output_end,output_first),output_rows_exact)))
-    +all = leaf_all(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,image,weight_evidence,bias_evidence,valid,supported,
-      Buffer.tree(~Tile.Tile8,weight_model),weight_exact,Buffer.tree(~F32,bias_model),bias_exact,((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),output_first,band_positions(height,width,kernel,stride,padding,first,rows),Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),window,
-      images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding),output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows),half,output,positions_rows)
-    %Equal.sym(Buffer.Content<F32>,Buffer.contents(~F32,Pipeline.blocked(~custom,activation,LeafExecution.work(U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))}),LeafExecution.pack_start(Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))}),assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below),Buffer.pack(~Tile.Tile8,weight_model),Buffer.pack(~F32,bias_model))),Buffer.Content{LeafExecution.leaf_tree(~custom,activation,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))},Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),Buffer.tree(~Tile.Tile8,weight_model),Buffer.tree(~F32,bias_model)),U32.to_nat((U32.from_nat(co) * band_positions(height,width,kernel,stride,padding,first,rows) : U32))},
-      LeafExecution.leaf_contents_buffer(~custom,activation,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))},assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below),weight_model,bias_model)) :
-      BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},Model.RowBand{_,output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows)})
-    %Equal.sym(Nat,U32.to_nat((U32.from_nat(co) * band_positions(height,width,kernel,stride,padding,first,rows) : U32)),Nat.mul(co,U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows))),count_exact) :
-      BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},Model.RowBand{Buffer.Content{LeafExecution.leaf_tree(~custom,activation,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),window_first_row(height,kernel,stride,padding,first)),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))},Tree.reflect(F32,ActivationProofs.storage(~F32,assembled_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),Buffer.tree(~Tile.Tile8,weight_model),Buffer.tree(~F32,bias_model)),_},output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows)})
-    all
+  +geometry = input_geometry(images,ci,height,width)
+  +read_first = window_first_row(height,kernel,stride,padding,first)
+  +above_rows = BandWindow.subtract_clipped(above_end_row(height,kernel,stride,padding,first,rows),read_first)
+  +below_first = below_first_row(height,kernel,stride,padding,first,rows)
+  +below_rows = BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),below_first)
+  +within = TensorBandWindow.sources_within(~F32,images,U32.from_nat(ci),U32.from_nat(height),U32.from_nat(width),limits,capacity,domain,above,read_first,above_rows,core,first,rows,below,below_first,below_rows,
+    model_metadata(~Logical,~original,logical,geometry,read_first,above_rows,above,above_values),model_metadata(~Logical,~original,logical,geometry,first,rows,core,core_values),
+    model_metadata(~Logical,~original,logical,geometry,below_first,below_rows,below,below_values))
+  active_when(~custom,~Logical,~original,U32.is_zero(BandWindow.subtract_clipped(window_end_row(height,kernel,stride,padding,first,rows),read_first)),logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,images,capacity,domain,first,rows,
+    channels_word,outputs_word,height_word,width_word,output_height_word,output_width_word,valid,supported,weight_evidence,bias_evidence,weight_model,weight_exact,bias_model,bias_exact,
+    core,above,below,above_values,core_values,below_values,core_geometry,decoded_window,guard,within,stride_word,{==},output_total_room)
+
+# The end of a core's output rows, decoded from the runtime boundary.
+def ending_when(last: Bool,+limits: Machine.Limits,+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+first: U32,+rows: U32,
+  +height_word: {U32.to_nat(U32.from_nat(height)) == height : Nat},+stride_word: {U32.to_nat(U32.from_nat(stride)) == stride : Nat},
+  +output_height_word: {U32.to_nat(output_rows_word(height,kernel,stride,padding)) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat},
+  +stride_room: {Nat.is_le(Nat.double(U32.to_nat(U32.from_nat(stride))),U32.to_nat(WindowLeaf.capacity(limits))) == True{} : Bool},
+  +stride_positive: {Nat.is_lt(0n,U32.to_nat(U32.from_nat(stride))) == True{} : Bool},
+  +end_room: {Nat.is_le(U32.to_nat(core_stop(height,first,rows)),U32.to_nat(WindowLeaf.capacity(limits))) == True{} : Bool},
+  +guard: {U32.is_eq(core_stop(height,first,rows),U32.from_nat(height)) == last : Bool}) ->
+  Padding.Ending<U32.to_nat(core_stop(height,first,rows)),height,stride,U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows)),ConvSpec.axis_size(height,kernel,stride,padding)>:
+  match last:
+    case True{}:
+      +stop = core_stop(height,first,rows)
+      +whole = Equal.trans(Nat,U32.to_nat(stop),U32.to_nat(U32.from_nat(height)),height,
+        Equal.cong(U32,Nat,U32.to_nat,stop,U32.from_nat(height),Arithmetic.equal_of_is_eq(stop,U32.from_nat(height),guard)),height_word)
+      +full = {%Equal.sym(Bool,U32.is_eq(stop,U32.from_nat(height)),True{},guard) :
+          {U32.to_nat(Bool.pick(U32,_,output_rows_word(height,kernel,stride,padding),U32.min(output_rows_word(height,kernel,stride,padding),BandWindow.ceiling(stop,U32.from_nat(stride))))) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat}
+        output_height_word : {U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows)) == ConvSpec.axis_size(height,kernel,stride,padding) : Nat}}
+      Padding.Last{whole,full}
+    case False{}:
+      +stop = core_stop(height,first,rows)
+      +divisor = U32.to_nat(U32.from_nat(stride))
+      +bound = TensorBandWindow.boundaries_decoded(output_rows_word(height,kernel,stride,padding),stop,U32.from_nat(stride),WindowLeaf.capacity(limits),WindowLeaf.capacity(limits),
+        WindowLeaf.capacity_fits(limits),WindowLeaf.capacity_fits(limits),stride_room,stride_positive,end_room)
+      +ceiling = {%Equal.sym(Bool,U32.is_eq(stop,U32.from_nat(height)),False{},guard) :
+          {Nat.is_le(U32.to_nat(Bool.pick(U32,_,output_rows_word(height,kernel,stride,padding),U32.min(output_rows_word(height,kernel,stride,padding),BandWindow.ceiling(stop,U32.from_nat(stride))))),
+            Ceiling.ceiling(U32.to_nat(stop),stride)) == True{} : Bool}
+        %stride_word : {Nat.is_le(U32.to_nat(TensorBandWindow.boundary(output_rows_word(height,kernel,stride,padding),stop,U32.from_nat(stride))),Ceiling.ceiling(U32.to_nat(stop),_)) == True{} : Bool}
+        %Equal.sym(Nat,U32.to_nat(TensorBandWindow.boundary(output_rows_word(height,kernel,stride,padding),stop,U32.from_nat(stride))),
+          Nat.min(U32.to_nat(output_rows_word(height,kernel,stride,padding)),Ceiling.ceiling(U32.to_nat(stop),divisor)),bound) :
+          {Nat.is_le(_,Ceiling.ceiling(U32.to_nat(stop),divisor)) == True{} : Bool}
+        Extrema.minimum_right(U32.to_nat(output_rows_word(height,kernel,stride,padding)),Ceiling.ceiling(U32.to_nat(stop),divisor)) :
+        {Nat.is_le(U32.to_nat(band_output_end(height,kernel,stride,padding,first,rows)),Ceiling.ceiling(U32.to_nat(stop),stride)) == True{} : Bool}}
+      Padding.Inner{ceiling}
 
 # The window arithmetic of an active leaf, decoded from the input geometry.
 def decode(+limits: Machine.Limits,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+images: U32,+capacity: U32,+domain: BandGather.Domain<input_geometry(images,ci,height,width),limits,capacity>,+first: U32,+rows: U32,
@@ -606,7 +937,7 @@ def decode(+limits: Machine.Limits,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+k
   +stride_room: {Nat.is_le(Nat.double(stride),U32.to_nat(WindowLeaf.capacity(limits))) == True{} : Bool},+coordinate_room: {Nat.is_le(Nat.add(Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),stride),kernel),U32.to_nat(WindowLeaf.capacity(limits))) == True{} : Bool},+height_room: {Nat.is_le(height,U32.to_nat(WindowLeaf.capacity(limits))) == True{} : Bool},+padding_room: {Nat.is_le(padding,U32.to_nat(WindowLeaf.capacity(limits))) == True{} : Bool},+output_room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(co,Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding)))),
       U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
   +outputs_positive: {Nat.is_lt(0n,co) == True{} : Bool},+stride_positive: {Nat.is_lt(0n,stride) == True{} : Bool},
-  +guard: {U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)) == True{} : Bool}) -> Decoded<ci,co,height,width,kernel,stride,padding,first,rows>:
+  +guard: {U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)) == True{} : Bool}) -> Decoded<limits,ci,co,height,width,kernel,stride,padding,first,rows>:
   match core_geometry:
     case TensorBandWindow.CoreGeometry{+image_inside,+core_inside,+first_exact,+core_exact,+endpoint_room}:
       +cap = Machine.capacity(limits)
@@ -631,15 +962,15 @@ def decode(+limits: Machine.Limits,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+k
       +height_positive = {{==} : {Nat.is_lt(0n,oh) == True{} : Bool}}
       +plane = Nat.mul(oh,ow)
       +volume = Nat.mul(co,plane)
-      +volume_room = Order.transitive(volume,Nat.mul(images_n,volume),capn,Padded.product_has_right(images_n,volume,images_positive),output_room)
-      +plane_volume = Padded.product_has_right(co,plane,outputs_positive)
+      +volume_room = Order.transitive(volume,Nat.mul(images_n,volume),capn,DivisionOrder.le_multiple(images_n,volume,images_positive),output_room)
+      +plane_volume = DivisionOrder.le_multiple(co,plane,outputs_positive)
       +plane_room = Order.transitive(plane,volume,capn,plane_volume,volume_room)
       +height_plane = RowMajor.product_covers(oh,ow,width_positive)
       +end_room = Order.transitive(oe,oh,capn,bounded,Order.transitive(oh,plane,capn,height_plane,plane_room))
       +first_room = Order.transitive(of,oe,capn,Bounds.strict_le(of,oe,ordered),end_room)
       +rows_room = Order.transitive(Nat.mul(1n+image,oh),Nat.mul(images_n,oh),capn,RowMajor.mul_le(1n+image,images_n,oh,Order.strict_follow(image,images_n,image_inside)),
         Order.transitive(Nat.mul(images_n,oh),Nat.mul(images_n,volume),capn,
-          WindowContents.multiply_left_le(images_n,oh,volume,Order.transitive(oh,plane,volume,height_plane,plane_volume)),output_room))
+          DivisionOrder.multiply_left_le(images_n,oh,volume,Order.transitive(oh,plane,volume,height_plane,plane_volume)),output_room))
       +base_room = Order.transitive(Nat.mul(image,oh),Nat.mul(1n+image,oh),capn,Samples.le_after(oh,Nat.mul(image,oh)),rows_room)
       +base_exact = {%output_height_word : {U32.to_nat((first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32)) == Nat.mul(image,_) : Nat}
         Arithmetic.multiply((first / U32.from_nat(height) : U32),output_rows_word(height,kernel,stride,padding),cap,ok,
@@ -741,10 +1072,31 @@ def decode(+limits: Machine.Limits,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+k
           %Equal.sym(Nat,U32.to_nat(U32.from_nat(co)),co,outputs_word) : {Nat.is_le(Nat.mul(_,U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows))),capn) == True{} : Bool}
           %Equal.sym(Nat,U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows)),Nat.mul(Nat.sub(oe,of),ow),positions_exact) : {Nat.is_le(Nat.mul(co,_),capn) == True{} : Bool}
           Order.transitive(Nat.mul(co,Nat.mul(Nat.sub(oe,of),ow)),volume,capn,
-            WindowContents.multiply_left_le(co,Nat.mul(Nat.sub(oe,of),ow),plane,RowMajor.mul_le(Nat.sub(oe,of),oh,ow,Order.transitive(Nat.sub(oe,of),oe,oh,Order.sub_le(oe,of),bounded))),volume_room)),
+            DivisionOrder.multiply_left_le(co,Nat.mul(Nat.sub(oe,of),ow),plane,RowMajor.mul_le(Nat.sub(oe,of),oh,ow,Order.transitive(Nat.sub(oe,of),oe,oh,Order.sub_le(oe,of),bounded))),volume_room)),
         Equal.cong(Nat,Nat,value => Nat.mul(value,U32.to_nat(band_positions(height,width,kernel,stride,padding,first,rows))),U32.to_nat(U32.from_nat(co)),co,outputs_word))
+      # The core rows and the boundaries of their output rows.
+      +core_first = U32.to_nat(core_start(height,first))
+      +core_end = U32.to_nat(core_stop(height,first,rows))
+      +height_n = U32.to_nat(U32.from_nat(height))
+      +output_height_n = U32.to_nat(output_rows_word(height,kernel,stride,padding))
+      +core_room = {%core_exact : {Nat.is_le(_,height_n) == True{} : Bool}
+        core_inside : {Nat.is_le(Nat.add(core_first,U32.to_nat(rows)),height_n) == True{} : Bool}}
+      +core_first_room = Order.transitive(core_first,Nat.add(core_first,U32.to_nat(rows)),height_n,Order.le_add(core_first,U32.to_nat(rows)),core_room)
+      +first_bound = TensorBandWindow.boundaries_decoded(output_rows_word(height,kernel,stride,padding),core_start(height,first),U32.from_nat(stride),wcap,wcap,wok,wok,
+        stride_word_room,stride_word_positive,Order.transitive(core_first,height_n,wcapn,core_first_room,height_word_room))
+      +stride_ceiling = Ceiling.ceiling(core_first,U32.to_nat(U32.from_nat(stride)))
+      +first_below = {%Equal.sym(Nat,output_height_n,oh,output_height_word) : {Nat.is_lt(of,_) == True{} : Bool}
+        Bounds.nat_trans(of,oe,oh,ordered,bounded) : {Nat.is_lt(of,output_height_n) == True{} : Bool}}
+      +first_ceiling = Equal.trans(Nat,of,Nat.min(output_height_n,stride_ceiling),Ceiling.ceiling(core_first,stride),first_bound,
+        Equal.trans(Nat,Nat.min(output_height_n,stride_ceiling),stride_ceiling,Ceiling.ceiling(core_first,stride),
+          Padding.minimum_below_left(output_height_n,stride_ceiling,%first_bound : {Nat.is_lt(_,output_height_n) == True{} : Bool} first_below),
+          Equal.cong(Nat,Nat,divisor => Ceiling.ceiling(core_first,divisor),U32.to_nat(U32.from_nat(stride)),stride,stride_word)))
+      +ending = ending_when(U32.is_eq(core_stop(height,first,rows),U32.from_nat(height)),limits,height,kernel,stride,padding,first,rows,height_word,stride_word,output_height_word,
+        stride_word_room,stride_word_positive,Order.transitive(core_end,height_n,wcapn,core_inside,height_word_room),{==})
       Decoded{ordered,bounded,offset_exact,positions_exact,output_rows_exact,Equal.trans(Nat,U32.to_nat((window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),U32.to_nat(band_needed_first(height,kernel,stride,padding,first)),start,local_start,start_exact),
-        rows_exact,output_first_exact,window_first_exact,window_fits,count_exact}
+        rows_exact,output_first_exact,window_first_exact,window_fits,count_exact,first_ceiling,
+        {%height_word : {Nat.is_le(core_first,_) == True{} : Bool} core_first_room : {Nat.is_le(core_first,height) == True{} : Bool}},
+        ending,start_room,input_base}
 
 def half_room(+limits: Machine.Limits,+value: Nat,+room: {Nat.is_le(value,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) -> {Nat.is_le(value,U32.to_nat(Machine.half_word(limits))) == True{} : Bool}:
   Order.transitive(value,U32.to_nat(Machine.capacity(limits)),U32.to_nat(Machine.half_word(limits)),room,Bounds.as_nat_le(Machine.capacity(limits),Machine.half_word(limits),Limits.capacity_within_half(limits)))
@@ -756,9 +1108,9 @@ def output_plane_room(+limits: Machine.Limits,+images: U32,+co: Nat,+height: Nat
   {Nat.is_le(Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
   +plane = Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding))
   +volume = Nat.mul(co,plane)
-  Order.transitive(plane,volume,U32.to_nat(Machine.capacity(limits)),Padded.product_has_right(co,plane,outputs_positive),
+  Order.transitive(plane,volume,U32.to_nat(Machine.capacity(limits)),DivisionOrder.le_multiple(co,plane,outputs_positive),
     Order.transitive(volume,Nat.mul(U32.to_nat(images),volume),U32.to_nat(Machine.capacity(limits)),
-      Padded.product_has_right(U32.to_nat(images),volume,Order.le_lt_trans(0n,image,U32.to_nat(images),Order.zero_le(image),image_inside)),output_room))
+      DivisionOrder.le_multiple(U32.to_nat(images),volume,Order.le_lt_trans(0n,image,U32.to_nat(images),Order.zero_le(image),image_inside)),output_room))
 
 def output_total_room(+limits: Machine.Limits,+images: U32,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,
   +output_room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(co,Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
@@ -769,13 +1121,6 @@ def output_total_room(+limits: Machine.Limits,+images: U32,+co: Nat,+height: Nat
   %Equal.sym(Nat,U32.to_nat(output_rows_word(height,kernel,stride,padding)),ConvSpec.axis_size(height,kernel,stride,padding),output_height_word) : {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(co,Nat.mul(_,U32.to_nat(output_columns_word(width,kernel,stride,padding))))),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}
   %Equal.sym(Nat,U32.to_nat(output_columns_word(width,kernel,stride,padding)),ConvSpec.axis_size(width,kernel,stride,padding),output_width_word) : {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(co,Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),_))),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}
   half_room(limits,Nat.mul(U32.to_nat(images),Nat.mul(co,Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding)))),output_room)
-
-def not_less(+left: Nat,+right: Nat,+outside: {Nat.is_lt(left,right) == False{} : Bool}) -> {Nat.is_le(right,left) == True{} : Bool}:
-  match left right:
-    case 0n 0n: {==}
-    case 0n 1n+right: Empty.absurd({Nat.is_le(1n+right,0n) == True{} : Bool},WordEncoding.false_true(Equal.sym(Bool,True{},False{},outside)))
-    case 1n+left 0n: {==}
-    case 1n+ +left 1n+ +right: not_less(left,right,outside)
 
 # A leaf whose core produces no output rows has no cells.
 def inactive_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
@@ -791,17 +1136,24 @@ def inactive_values(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32
   +outside = Equal.trans(Bool,Nat.is_lt(of,oe),U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)),False{},
     Equal.sym(Bool,U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)),Nat.is_lt(of,oe),Comparison.lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows))),guard)
   +rows_zero = Equal.trans(Nat,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),Nat.sub(oe,of),0n,TensorBandWindow.subtract_clipped(band_output_end(height,kernel,stride,padding,first,rows),band_output_first(height,kernel,stride,padding,first),cap,ok,end_room,first_room),
-    WindowContents.sub_below(oe,of,not_less(of,oe,outside)))
+    Order.subtract_below(oe,of,Order.not_less(of,oe,outside)))
   +empty = {
     %Equal.sym(Nat,U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),0n,rows_zero) : {Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(_,U32.to_nat(output_columns_word(width,kernel,stride,padding)))) == 0n : Nat}
     RowMajor.multiply_zero_right(U32.to_nat(U32.from_nat(co))) : {Nat.mul(U32.to_nat(U32.from_nat(co)),Nat.mul(U32.to_nat(band_output_count(height,kernel,stride,padding,first,rows)),U32.to_nat(output_columns_word(width,kernel,stride,padding)))) == 0n : Nat}}
-  %Equal.sym(Buffer.Content<F32>,Buffer.contents(~F32,Pipeline.blocked(~custom,activation,LeafExecution.work(U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),0,U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))}),LeafExecution.pack_start(Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),0,U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))}),BandWindow.assemble(~F32,0.0,input_geometry(images,ci,height,width),BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{first,rows},BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{below_first_row(height,kernel,stride,padding,first,rows),0},Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below)),Buffer.pack(~Tile.Tile8,weight_model),Buffer.pack(~F32,bias_model))),Buffer.Content{LeafExecution.leaf_tree(~custom,activation,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),0,U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))},Tree.reflect(F32,ActivationProofs.storage(~F32,BandWindow.assemble(~F32,0.0,input_geometry(images,ci,height,width),BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{first,rows},BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{below_first_row(height,kernel,stride,padding,first,rows),0},Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below)))),Buffer.tree(~Tile.Tile8,weight_model),Buffer.tree(~F32,bias_model)),U32.to_nat((U32.from_nat(co) * band_positions(height,width,kernel,stride,padding,first,rows) : U32))},
-    LeafExecution.leaf_contents_buffer(~custom,activation,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),0,U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))},BandWindow.assemble(~F32,0.0,input_geometry(images,ci,height,width),BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{first,rows},BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{below_first_row(height,kernel,stride,padding,first,rows),0},Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below)),weight_model,bias_model)) :
-    BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},Model.RowBand{_,output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows)})
-  BandValues.empty_leaf(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},
-    output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows),
-    LeafExecution.leaf_tree(~custom,activation,U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),band_positions(height,width,kernel,stride,padding,first,rows),Packing.Call{U32.to_nat((((band_positions(height,width,kernel,stride,padding,first,rows) + 7) / 8 * 8 : U32) / 8 * U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))) : U32)),KernelWindow.start(((output_first_row(height,kernel,stride,padding,first) - (first / U32.from_nat(height) * output_rows_word(height,kernel,stride,padding) : U32) : U32) * output_columns_word(width,kernel,stride,padding) : U32),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first_row(height,kernel,stride,padding,first) - image_start(height,first) : U32)),0,U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))},Tree.reflect(F32,ActivationProofs.storage(~F32,BandWindow.assemble(~F32,0.0,input_geometry(images,ci,height,width),BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{first,rows},BandWindow.Rows{window_first_row(height,kernel,stride,padding,first),0},BandWindow.Rows{below_first_row(height,kernel,stride,padding,first,rows),0},Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below)))),Buffer.tree(~Tile.Tile8,weight_model),Buffer.tree(~F32,bias_model)),
-    U32.to_nat((U32.from_nat(co) * band_positions(height,width,kernel,stride,padding,first,rows) : U32)),empty)
+  +inner = U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel)))
+  +positions = band_positions(height,width,kernel,stride,padding,first,rows)
+  +window_first = padding_first(height,kernel,stride,padding,first)
+  +call = {Packing.Call{U32.to_nat((((positions + 7) / 8 * 8 : U32) / 8 * inner : U32)),
+    KernelWindow.start(output_offset(height,width,kernel,stride,padding,first),U32.from_nat(stride),output_columns_word(width,kernel,stride,padding),(window_first - image_start(height,first) : U32)),
+    1,U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_columns_word(width,kernel,stride,padding),inner} : Packing.Call}
+  +computed = LeafExecution.leaf_tree(~custom,activation,U32.from_nat(co),inner,positions,call,Tree.reflect(F32,ActivationProofs.storage(~F32,padding_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below))),Buffer.tree(~Tile.Tile8,weight_model),Buffer.tree(~F32,bias_model))
+  +output_geometry = {Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)} : Bands.Geometry}
+  %Equal.sym(Buffer.Content<F32>,Buffer.contents(~F32,Pipeline.blocked(~custom,activation,LeafExecution.work(U32.from_nat(co),inner,positions,call),LeafExecution.pack_start(call),padding_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below),Buffer.pack(~Tile.Tile8,weight_model),Buffer.pack(~F32,bias_model))),
+      Buffer.Content{computed,U32.to_nat((U32.from_nat(co) * positions : U32))},LeafExecution.leaf_contents_buffer(~custom,activation,U32.from_nat(co),inner,positions,call,padding_window(images,ci,height,width,kernel,stride,padding,first,rows,core,above,below),weight_model,bias_model)) :
+    BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},output_geometry,
+      Model.RowBand{_,output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows)})
+  BandValues.empty_leaf(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},output_geometry,
+    output_first_row(height,kernel,stride,padding,first),band_output_count(height,kernel,stride,padding,first,rows),computed,U32.to_nat((U32.from_nat(co) * positions : U32)),empty)
 
 def core_image(+images: U32,+height: U32,+first: U32,+rows: U32,+capacity: U32,+core_geometry: TensorBandWindow.CoreGeometry<images,height,first,rows,capacity>) ->
   {Nat.is_lt(U32.to_nat((first / height : U32)),U32.to_nat(images)) == True{} : Bool}:
@@ -810,19 +1162,19 @@ def core_image(+images: U32,+height: U32,+first: U32,+rows: U32,+capacity: U32,+
 
 def halo_above(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+geometry: Bands.Geometry,+output: BandWindow.Rows,+above_rows: BandWindow.Rows,+below_rows: BandWindow.Rows,
   +read: BandWindow.Rows,+first: U32,+rows: U32,+above: Buffer.Content<F32>,+below: Buffer.Content<F32>,
-  +values: BandHalo.TreeValues(~F32,~Logical,~original,logical,geometry,BandHalo.Leaf{above,below,BandWindow.RowWindow{output,above_rows,below_rows,read},first,rows})) ->
+  +values: BandHalo.TreeValues(~F32,~Logical,~original,logical,geometry,Model.Piece{BandHalo.Seen{above,below,BandWindow.RowWindow{output,above_rows,below_rows,read}},first,rows})) ->
   BandHalo.RangeValues(~F32,~Logical,~original,logical,geometry,above_rows,above):
   Shape.Both{upper,lower} = values
   upper
 
 def halo_below(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+geometry: Bands.Geometry,+output: BandWindow.Rows,+above_rows: BandWindow.Rows,+below_rows: BandWindow.Rows,
   +read: BandWindow.Rows,+first: U32,+rows: U32,+above: Buffer.Content<F32>,+below: Buffer.Content<F32>,
-  +values: BandHalo.TreeValues(~F32,~Logical,~original,logical,geometry,BandHalo.Leaf{above,below,BandWindow.RowWindow{output,above_rows,below_rows,read},first,rows})) ->
+  +values: BandHalo.TreeValues(~F32,~Logical,~original,logical,geometry,Model.Piece{BandHalo.Seen{above,below,BandWindow.RowWindow{output,above_rows,below_rows,read}},first,rows})) ->
   BandHalo.RangeValues(~F32,~Logical,~original,logical,geometry,below_rows,below):
   Shape.Both{upper,lower} = values
   lower
 
-# Every leaf the runtime builds holds its dense output rows, whether its core
+# Every leaf the runtime builds holds its row-major output rows, whether its core
 # produces output rows or not.
 def leaf_when(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,active: Bool,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,
   +ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weights: List<&2,F32>,+bias: List<&2,F32>,
@@ -833,7 +1185,6 @@ def leaf_when(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F3
       U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
   +outputs_positive: {Nat.is_lt(0n,co) == True{} : Bool},+stride_positive: {Nat.is_lt(0n,stride) == True{} : Bool},
   +valid: {ConvSpec.valid(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))) == True{} : Bool},
-  +padding_small: {Nat.is_lt(padding,kernel) == True{} : Bool},
   +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
   +weight_model: Buffer.Model<Tile.Tile8>,
   +weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == WeightsLaws.run(U32.from_nat(co),Coordinates.native_inner(BandConvolutionValues.problem(~Logical,~original,logical,ci,co,height,width,kernel,stride,padding,weights,bias,U32.to_nat((first / U32.from_nat(height) : U32)))),
@@ -842,21 +1193,19 @@ def leaf_when(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F3
   +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,
   +core_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),BandWindow.Rows{first,rows},Buffer.content(~F32,core)),
   +halo_values: BandHalo.TreeValues(~F32,~Logical,~original,logical,input_geometry(images,ci,height,width),
-    BandHalo.Leaf{Buffer.content(~F32,above),Buffer.content(~F32,below),BandWindow.nonempty(active,TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows))),first,rows}),
+    Model.Piece{BandHalo.Seen{Buffer.content(~F32,above),Buffer.content(~F32,below),BandWindow.nonempty(active,TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows)))},first,rows}),
   +guard: {U32.is_lt(band_output_first(height,kernel,stride,padding,first),band_output_end(height,kernel,stride,padding,first,rows)) == active : Bool}) ->
   BandValues.Values(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),BandConvolutionValues.Context{logical,activation,ci,co,height,width,kernel,stride,padding,weights,bias},Bands.Geometry{images,U32.from_nat(co),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},Model.contents(~F32,BandPipeline.windowed(~custom,activation,BandWindow.Geometry{input_geometry(images,ci,height,width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),output_rows_word(height,kernel,stride,padding),output_columns_word(width,kernel,stride,padding)},U32.from_nat(co),U32.from_nat(Nat.mul(ci,Nat.mul(kernel,kernel))),first,rows,BandWindow.nonempty(active,TensorBandWindow.raw_window(U32.from_nat(height),(first / U32.from_nat(height) : U32),core_start(height,first),core_stop(height,first,rows),band_needed_first(height,kernel,stride,padding,first),band_needed_end(height,kernel,stride,padding,first,rows),output_band_rows(height,kernel,stride,padding,first,rows))),Buffer.pack(~F32,core),Buffer.pack(~F32,above),Buffer.pack(~F32,below),Buffer.pack(~Tile.Tile8,weight_model),Buffer.pack(~F32,bias_model)))):
   match active:
     case True{}:
-      +image = U32.to_nat((first / U32.from_nat(height) : U32))
-      +image_inside = core_image(images,U32.from_nat(height),first,rows,Machine.capacity(limits),core_geometry)
       active_values(~custom,~Logical,~original,logical,activation,limits,ci,co,height,width,kernel,stride,padding,weights,bias,images,capacity,domain,first,rows,core_geometry,
-        channels_word,outputs_word,height_word,width_word,output_height_word,output_width_word,valid,supported,padding_small,weight_evidence,bias_evidence,weight_model,weight_exact,bias_model,bias_exact,core,above,below,
+        channels_word,outputs_word,height_word,width_word,output_height_word,output_width_word,valid,supported,weight_evidence,bias_evidence,weight_model,weight_exact,bias_model,bias_exact,core,above,below,
         halo_above(~Logical,~original,logical,input_geometry(images,ci,height,width),output_band_rows(height,kernel,stride,padding,first,rows),halo_above_rows(height,kernel,stride,padding,first,rows),halo_below_rows(height,kernel,stride,padding,first,rows),
           needed_rows(height,kernel,stride,padding,first,rows),first,rows,Buffer.content(~F32,above),Buffer.content(~F32,below),halo_values),
         core_values,
         halo_below(~Logical,~original,logical,input_geometry(images,ci,height,width),output_band_rows(height,kernel,stride,padding,first,rows),halo_above_rows(height,kernel,stride,padding,first,rows),halo_below_rows(height,kernel,stride,padding,first,rows),
           needed_rows(height,kernel,stride,padding,first,rows),first,rows,Buffer.content(~F32,above),Buffer.content(~F32,below),halo_values),
-        guard,decode(limits,ci,co,height,width,kernel,stride,padding,images,capacity,domain,first,rows,core_geometry,outputs_word,height_word,kernel_word,stride_word,padding_word,output_height_word,output_width_word,stride_room,coordinate_room,height_room,padding_room,output_room,outputs_positive,stride_positive,guard),
+        guard,decode(limits,ci,co,height,width,kernel,stride,padding,images,capacity,domain,first,rows,core_geometry,outputs_word,height_word,kernel_word,stride_word,padding_word,output_height_word,output_width_word,stride_room,coordinate_room,height_room,padding_room,output_room,outputs_positive,stride_positive,guard),stride_word,
         output_total_room(limits,images,co,height,width,kernel,stride,padding,output_room,outputs_word,output_height_word,output_width_word))
     case False{}:
       +image = U32.to_nat((first / U32.from_nat(height) : U32))
@@ -877,15 +1226,15 @@ def right_factor_room(+left: Nat,+right: Nat,+capacity: U32,positive: {Nat.is_lt
     %RowMajor.multiply_commutative(right,left) : {Nat.is_le(right,_) == True{} : Bool}
     RowMajor.product_covers(right,left,positive),room)
 
-def output_height_room(+limits: Machine.Limits,+images: U32,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,
-  images_positive: {Nat.is_lt(0n,U32.to_nat(images)) == True{} : Bool},outputs_positive: {Nat.is_lt(0n,co) == True{} : Bool},
-  room: {Nat.is_le(Nat.mul(U32.to_nat(images),Nat.mul(co,Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
+# One image's output plane bounds the output height, whatever the batch.
+def output_height_room(+limits: Machine.Limits,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,
+  outputs_positive: {Nat.is_lt(0n,co) == True{} : Bool},
+  plane: {Nat.is_le(Nat.mul(co,Nat.mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
   {Nat.is_le(ConvSpec.axis_size(height,kernel,stride,padding),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
   +oh = ConvSpec.axis_size(height,kernel,stride,padding)
   +ow = ConvSpec.axis_size(width,kernel,stride,padding)
   Order.transitive(oh,Nat.mul(oh,ow),U32.to_nat(Machine.capacity(limits)),RowMajor.product_covers(oh,ow,{==}),
-    right_factor_room(co,Nat.mul(oh,ow),Machine.capacity(limits),outputs_positive,
-      right_factor_room(U32.to_nat(images),Nat.mul(co,Nat.mul(oh,ow)),Machine.capacity(limits),images_positive,room)))
+    right_factor_room(co,Nat.mul(oh,ow),Machine.capacity(limits),outputs_positive,plane))
 
 def geometry(+images: U32,dimensions: KernelShape.Dimensions) -> BandWindow.Geometry:
   KernelShape.Dimensions{ci,co,+height,+width,+kernel,+stride,+padding} = dimensions
@@ -899,6 +1248,10 @@ def output_height(dimensions: KernelShape.Dimensions) -> Nat:
 def output_channels(dimensions: KernelShape.Dimensions) -> Nat:
   KernelShape.Dimensions{ci,co,height,width,kernel,stride,padding} = dimensions
   co
+
+def output_plane(dimensions: KernelShape.Dimensions) -> Nat:
+  KernelShape.Dimensions{ci,co,height,width,+kernel,+stride,+padding} = dimensions
+  Nat.mul(co,Nat.mul(KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding)))
 
 def output_elements(+images: U32,dimensions: KernelShape.Dimensions) -> Nat:
   KernelShape.Dimensions{ci,co,height,width,+kernel,+stride,+padding} = dimensions
@@ -958,12 +1311,12 @@ def inactive(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32
 
 def inactive_checked(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,+images: U32,+dimensions: KernelShape.Dimensions,
   +weights: List<&2,F32>,+bias: List<&2,F32>,+first: U32,+rows: U32,+core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,+weight_model: Buffer.Model<Tile.Tile8>,+bias_model: Buffer.Model<F32>,
-  images_positive: {Nat.is_lt(0n,U32.to_nat(images)) == True{} : Bool},outputs_positive: {Nat.is_lt(0n,output_channels(dimensions)) == True{} : Bool},
-  +output_room: {Nat.is_le(output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},guard: {active(dimensions,first,rows) == False{} : Bool}) ->
+  outputs_positive: {Nat.is_lt(0n,output_channels(dimensions)) == True{} : Bool},
+  plane: {Nat.is_le(output_plane(dimensions),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},guard: {active(dimensions,first,rows) == False{} : Bool}) ->
   WindowValues(~custom,~Logical,~original,logical,activation,images,dimensions,weights,bias,first,rows,BandWindow.window(geometry(images,dimensions),first,rows),core,above,below,weight_model,bias_model):
   KernelShape.Dimensions{+ci,+co,+height,+width,+kernel,+stride,+padding} = dimensions
   +dimensions = {KernelShape.Dimensions{ci,co,height,width,kernel,stride,padding} : KernelShape.Dimensions}
-  +height_room = output_height_room(limits,images,co,height,width,kernel,stride,padding,images_positive,outputs_positive,output_room)
+  +height_room = output_height_room(limits,co,height,width,kernel,stride,padding,outputs_positive,plane)
   +height_word = Bounds.roundtrip(output_height(dimensions),Machine.capacity(limits),Limits.capacity_fits(limits),height_room)
   inactive(~custom,~Logical,~original,logical,activation,limits,images,dimensions,weights,bias,first,rows,core,above,below,weight_model,bias_model,
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(output_height(dimensions))),output_height(dimensions),height_word) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}

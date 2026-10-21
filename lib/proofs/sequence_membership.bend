@@ -5,11 +5,23 @@ import ./ordered_ranges.bend as Ranges
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
 import ./storage_shape.bend as Shape
+import ./nat_order.bend as Order
 
 def All(-Element: Data,-Property: Element -> Data,items: List<&2,Element>) -> Data:
   match items:
     case Nil{}: Unit
     case item <> rest: Shape.Both<Property(item),All(Element,Property,rest)>
+
+# Construct finite range evidence from a bounded pointwise rule.
+def range_all(~Context: Data,~Property: @+context: Context -> @+index: Nat -> Data,~size: Context -> Nat,
+  ~cell: @+context: Context -> @+index: Nat -> @+inside: {Nat.is_lt(index,size(context)) == True{} : Bool} -> Property(context,index),
+  remaining: Nat,+position: Nat,+context: Context,+room: {Nat.is_le(Nat.add(position,remaining),size(context)) == True{} : Bool}) ->
+  All(Nat,{index => Property(context,index) : Nat -> Data},Ranges.range(remaining,position)):
+  match remaining:
+    case 0n: Unit{}
+    case 1n+ +rest:
+      Shape.Both{cell(context,position,Order.room_index(position,rest,size(context),room)),
+        range_all(~Context,~Property,~size,~cell,rest,1n+position,context,Order.advance_room(position,rest,size(context),room))}
 
 def all_concatenated(-Element: Data,-Property: Element -> Data,+left: List<&2,Element>,+right: List<&2,Element>,
   left_proof: All(Element,Property,left),right_proof: All(Element,Property,right)) -> All(Element,Property,OrderedMatrix.cat(Element,left,right)):

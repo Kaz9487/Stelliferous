@@ -8,6 +8,9 @@ The frozen specification of convolution and the engine the root theorem is about
 |---|---|
 | [specification.bend](specification.bend), [specification_law.bend](specification_law.bend) | Frozen. The problem (shape, input, weights, bias), which problems are valid, and the outcome |
 | [matrix_specification.bend](matrix_specification.bend) | Frozen. The meaning: each output is an ordered dot product of a weight row and an input patch, on the axes `(input channel, kernel row, kernel column)` |
+| [input_gradient_specification.bend](input_gradient_specification.bend) | The gradient of the input of a convolution of any stride: for each input element, the products of the congruent taps over `(output channel increasing, kernel row decreasing, kernel column decreasing)` added from +0.0, then +0.0 |
+| [parameter_gradient_specification.bend](parameter_gradient_specification.bend) | The gradient of each weight and bias of a convolution, in its fixed FP32 order |
+| [parameter_gradient_ready.bend](proofs/parameter_gradient_ready.bend) | A Ready result of `Gradient.weight` or `Gradient.bias` holds the specified value of the operands' value readers at every index |
 | [reference.bend](reference.bend), [ordered_reference.bend](ordered_reference.bend) | A direct evaluation of the specification |
 | [shape.bend](shape.bend) | Machine dimensions shared by the native strategies |
 | [scalar_kernel.bend](scalar_kernel.bend) | Direct strategy: one output at a time, no workspace |
@@ -23,7 +26,7 @@ The frozen specification of convolution and the engine the root theorem is about
 
 Both use the same accumulation order and are proved equal to the matrix specification for every split depth.
 
-`automatic(worker_limit, workspace_budget)` chooses with the cost model in [design](../docs/design.md#planning). `None{}` sets no workspace limit; `Some{0n}` selects Direct. Workspace counts packed tiles, temporary leaf outputs and what each split clones.
+`automatic(worker_limit, workspace_budget)` chooses with the cost model in [design](../docs/design.md#planning). `None{}` sets no workspace limit, and `Some{0n}` selects Direct. Workspace counts packed tiles, temporary leaf outputs and what each split clones.
 
 ## Names in the specification
 

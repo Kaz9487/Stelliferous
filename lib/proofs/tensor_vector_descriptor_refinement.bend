@@ -4,12 +4,12 @@ import Base
 import ../tensor_view.bend as Views
 import ../tensor_shape.bend as Shapes
 import ./tensor_vector_view_refinement.bend as Vector
-import ./tensor_shape_refinement.bend as ShapeLaws
 import ./boolean_logic.bend as Boolean
 import ./checked_word_unit_products.bend as UnitProducts
 import ./tensor_band_combine_leaf.bend as BandCombineLeaf
 import ./tensor_band_shape_refinement.bend as BandShape
 import ../tensor_band.bend as Bands
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
 def product_single(+start: U32,+count: U32,+output: U32,accepted: {Shapes.checked_multiply(start,count) == Some{output} : Maybe<&2,U32>}) ->
   {Shapes.product([count],Some{start}) == Some{output} : Maybe<&2,U32>}:
@@ -21,7 +21,7 @@ def counted_when(+count: U32,empty: Bool,classified: {U32.is_zero(count) == empt
   {Shapes.count_nonempty(empty,[count]) == Some{count} : Maybe<&2,U32>}:
   match empty:
     case True{}:
-      %Equal.sym(U32,count,0,ShapeLaws.native_equal(count,0,classified)) : {Some{0} == Some{_} : Maybe<&2,U32>}
+      %Equal.sym(U32,count,0,Arithmetic.equal_of_is_eq(count,0,classified)) : {Some{0} == Some{_} : Maybe<&2,U32>}
       {==}
     case False{}: product_single(1,count,count,one_left)
 

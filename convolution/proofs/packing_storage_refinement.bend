@@ -4,11 +4,8 @@ import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/kernel_tile.bend as Tile
 import ../../lib/traversal_loop.bend as Loop
-import ./packing_loop_refinement.bend as LoopLaws
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LoopLaws
 import ../../lib/kernel_spatial_packing.bend as Packing
-
-type Packed is Data:
-  Packed{input: Tree.Tree<F32>,output: Tree.Tree<Tile.Tile8>}
 
 def Tiles() -> Data:
   Partition.Tree<&2,Tree.Tree<Tile.Tile8>,Unit>
@@ -16,26 +13,13 @@ def Tiles() -> Data:
 type Prepared is Data:
   Prepared{input: Tree.Tree<F32>,tiles: Tiles()}
 
-def pack_pair(p: Packed) -> Array<F32> & Array<Tile.Tile8>:
-  Packed{input_storage,packed_storage} = p
-  (Tree.pack(F32,input_storage),Tree.pack(Tile.Tile8,packed_storage))
-
-def finish_tiles(state: LoopLaws.Tiled()) -> Packed:
-  Packing.Tiles{input_storage,packed_storage,index,position,input_height,input_width,kernel_size,stride,padding,output_width,channels,taps,inner} = state
-  Packed{input_storage,packed_storage}
-
-def finish_refines_storage(+state: LoopLaws.Tiled()) -> {Packing.finish(LoopLaws.pack_tiles(state)) == pack_pair(finish_tiles(state)) : Array<F32> & Array<Tile.Tile8>}:
-  Packing.Tiles{input_storage,packed_storage,index,position,input_height,input_width,kernel_size,stride,padding,output_width,channels,taps,inner} = state
-  {==}
-
 def initial(start: U32,input_storage: Tree.Tree<F32>,packed_storage: Tree.Tree<Tile.Tile8>,input_height: U32,input_width: U32,
   +kernel_size: U32,stride: U32,padding: U32,output_width: U32,+reduction_length: U32) -> LoopLaws.Tiled():
-  Packing.Tiles{input_storage,packed_storage,0,start,input_height,input_width,kernel_size,stride,padding,output_width,
-    U32.to_nat((reduction_length / (kernel_size * kernel_size) : U32)),U32.to_nat(kernel_size),U32.to_nat(reduction_length)}
+  LoopLaws.initial_window(Packing.square(input_height,input_width,kernel_size,stride,padding,output_width,reduction_length),start,input_storage,packed_storage)
 
 def packing(count: Nat,start: U32,input_storage: Tree.Tree<F32>,packed_storage: Tree.Tree<Tile.Tile8>,input_height: U32,input_width: U32,
-  kernel_size: U32,stride: U32,padding: U32,output_width: U32,+reduction_length: U32) -> Packed:
-  finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,U32.to_nat(reduction_length)),
+  kernel_size: U32,stride: U32,padding: U32,output_width: U32,+reduction_length: U32) -> LoopLaws.Packed:
+  LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,Nat.div(count,U32.to_nat(reduction_length)),
     initial(start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,reduction_length)))
 
 law packing_refines_storage:
@@ -51,18 +35,18 @@ law packing_refines_storage:
   for +output_width: U32
   for +reduction_length: U32
   {Packing.pack(count,start,Tree.pack(F32,input_storage),Tree.pack(Tile.Tile8,packed_storage),input_height,input_width,kernel_size,stride,padding,
-    output_width,reduction_length) == pack_pair(packing(count,start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,
+    output_width,reduction_length) == LoopLaws.pack_pair(packing(count,start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,
         reduction_length)) : Array<F32> & Array<Tile.Tile8>}
 def packing_refines_storage(count,start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,reduction_length):
   +tiles = Nat.div(count,U32.to_nat(reduction_length))
   +state = initial(start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,reduction_length)
   %Equal.sym(Packing.Tiled(),Loop.run(~Packing.Tiled(),~Packing.tile_step,tiles,LoopLaws.pack_tiles(state)),
     LoopLaws.pack_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state)),LoopLaws.tiles_refine(tiles,state)) :
-    {Packing.finish(_) == pack_pair(finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))) : Array<F32> & Array<Tile.Tile8>}
-  finish_refines_storage(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))
+    {Packing.finish(_) == LoopLaws.pack_pair(LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))) : Array<F32> & Array<Tile.Tile8>}
+  LoopLaws.finish_matches(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))
 
-def leaf(offset: U32,span: U32,p: Packed) -> Prepared:
-  Packed{input_storage,packed_storage} = p
+def leaf(offset: U32,span: U32,p: LoopLaws.Packed) -> Prepared:
+  LoopLaws.Packed{input_storage,packed_storage} = p
   Prepared{input_storage,Partition.Leaf{packed_storage,offset,span,Unit{}}}
 
 def attach(left: Tiles(),p: Prepared) -> Prepared:
@@ -93,14 +77,6 @@ def after_left(depth: Nat,+offset: U32,+spatial: U32,input_height: U32,input_wid
     attach(left,prepare(depth,(offset + half : U32),(spatial - half : U32),input_storage,input_height,input_width,kernel_size,stride,padding,output_width,reduction_length)))
 
 # Read-only input invariants justify independent preparation of both partitions.
-def packed_input(p: Packed) -> Tree.Tree<F32>:
-  Packed{input_storage,packed_storage} = p
-  input_storage
-
-def finish_preserves_input(+state: LoopLaws.Tiled()) -> {packed_input(finish_tiles(state)) == LoopLaws.tiles_input(state) : Tree.Tree<F32>}:
-  Packing.Tiles{input_storage,packed_storage,index,position,input_height,input_width,kernel_size,stride,padding,output_width,channels,taps,inner} = state
-  {==}
-
 law packing_preserves_input:
   for +count: Nat
   for +start: U32
@@ -113,21 +89,21 @@ law packing_preserves_input:
   for +padding: U32
   for +output_width: U32
   for +reduction_length: U32
-  {packed_input(packing(count,start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,
+  {LoopLaws.packed_input(packing(count,start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,
     reduction_length)) == input_storage : Tree.Tree<F32>}
 def packing_preserves_input(count,start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,reduction_length):
   +tiles = Nat.div(count,U32.to_nat(reduction_length))
   +state = initial(start,input_storage,packed_storage,input_height,input_width,kernel_size,stride,padding,output_width,reduction_length)
-  %LoopLaws.tiles_keep_input(tiles,state) : {packed_input(finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))) == _ : Tree.Tree<F32>}
-  finish_preserves_input(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))
+  %LoopLaws.tiles_keep_input(tiles,state) : {LoopLaws.packed_input(LoopLaws.finish_tiles(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))) == _ : Tree.Tree<F32>}
+  LoopLaws.finish_input(Loop.run(~LoopLaws.Tiled(),~LoopLaws.tile_step,tiles,state))
 
 def prepared_input(p: Prepared) -> Tree.Tree<F32>:
   Prepared{input_storage,t} = p
   input_storage
 
-def leaf_preserves_input(+offset: U32,+span: U32,+p: Packed) -> {prepared_input(leaf(offset,span,
-      p)) == packed_input(p) : Tree.Tree<F32>}:
-  Packed{input_storage,packed_storage} = p
+def leaf_preserves_input(+offset: U32,+span: U32,+p: LoopLaws.Packed) -> {prepared_input(leaf(offset,span,
+      p)) == LoopLaws.packed_input(p) : Tree.Tree<F32>}:
+  LoopLaws.Packed{input_storage,packed_storage} = p
   {==}
 
 def attach_preserves_input(+left: Tiles(),+p: Prepared) -> {prepared_input(attach(left,

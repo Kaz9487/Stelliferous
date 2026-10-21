@@ -3,11 +3,11 @@
 [English](README.md) | [繁體中文](README.zh-TW.md)
 
 ```python
-import stelliferous@0.0.2.0/tensor_f32.bend as F
-import stelliferous@0.0.2.0/math_activation.bend as Act
+import stelliferous@0.0.3.0/tensor_f32.bend as F
+import stelliferous@0.0.3.0/math_activation.bend as Act
 ```
 
-`F` 就是全部的公開 API。形狀是 `List<&2,U32>`。軸從零算起。張量是 `F.Tensor()`，只支援 F32。完整的程式見[開始使用](../docs/getting_started.zh-TW.md)。
+`F` 是張量運算，`Train` 是訓練用的層（[訓練](#訓練)）。形狀是 `List<&2,U32>`。軸從零算起。張量是 `F.Tensor()`，只支援 F32。完整的程式見[開始使用](../docs/getting_started.zh-TW.md)。
 
 每個函式都適用三條規則：
 
@@ -35,9 +35,11 @@ import stelliferous@0.0.2.0/math_activation.bend as Act
 
 | 函式 | 結果 |
 |---|---|
-| `load_weights(folder)`、`save_weights(folder, weights)` | `folder/names.txt` 每行一個名稱。`folder/<name>.npy` 是該名稱的張量 |
+| `load_weights(folder)`、`save_weights(folder, weights)` | `folder/names.txt` 每行一個名稱。`folder/<name>.npy` 是該名稱的張量。`names.txt` 讀不到時，每次 `take` 都回報原因 |
+| `load_checkpoint(path)` | `torch.save` 寫出的 PyTorch `.pt` checkpoint：state dict 的每一項各成一個張量，用它的 PyTorch 名稱。FP16 與 BFloat16 值精確放寬為 FP32，FP64 值與整數捨入為最接近的 FP32，有 stride 的儲存區透過它的 view 讀取。不讀壓縮的項目與 ZIP64 檔案。讀不了的檔案給出的權重，每次 `take` 都回報原因 |
 | `take(name)` | `do F.Model<T>:` 區塊中的一步：從權重取出一個張量 |
 | `keep(name, tensor)` | 把一份複本放進權重，供之後的 `take` 取用 |
+| `weight_names()` | 一步：依順序給出權重裡的名稱，權重不變 |
 | `run(model, weights)` | 模型的結果 |
 | `run_keeping(model, weights)` | 結果與剩下的權重 |
 | `copy_weights(weights)` | 兩份權重 |
@@ -83,6 +85,9 @@ Bend 只能解構參數與欄位，不能解構呼叫結果，所以成對的值
 | `equal_scalar(tensor, value)` | 元素等於 value 時為 1，否則為 0。NaN 為 0，正負零相等 |
 | `not_equal_scalar(tensor, value)` | 元素不等於 value 或任一方為 NaN 時為 1，否則為 0 |
 | `clamp(tensor, low, high)` | 先與 low 取 maximum，再與 high 取 minimum，沿用其 NaN 與正負零行為 |
+| `exp(tensor)` | 逐元素自然指數，下溢逐漸進入次正規數 |
+| `log(tensor)` | 逐元素自然對數。零回傳 −∞，負數回傳 NaN |
+| `sqrt(tensor)` | 逐元素平方根，捨入到最近值。負數回傳 NaN |
 | `broadcast_to(tensor, shape)` | 把張量重複成 `shape` |
 
 廣播從最後一軸對齊。缺少的軸視為 1。每一軸的長度要相等，或其中一個是 1。`maximum` 與 `minimum` 對 NaN 與正負零依循 Base，順序為左、右。除數為零得到無限大或 NaN，不算失敗。
@@ -94,6 +99,10 @@ Bend 只能解構參數與欄位，不能解構呼叫結果，所以成對的值
 | `relu`、`relu6`、`sigmoid`、`silu`、`tanh`、`hard_sigmoid`、`hard_swish`、`gelu_tanh` `(tensor)` | 與 PyTorch 相同。`gelu_tanh` 是 `approximate='tanh'` |
 | `leaky_relu(tensor, slope)` | |
 | `activate(tensor, activation)` | 使用 `Act` 的值：`Act.identity()`、`Act.relu()`、`Act.leaky_relu(slope)` 等 |
+| `activate_derivative(tensor, activation)` | 激活函式在每個元素的導數。`Custom` 會失敗 |
+| `activate_forward(tensor, activation)` | `(activate(tensor, activation), tensor)`：輸出旁邊放著 `activate_backward` 要讀的輸入 |
+| `activate_backward(gradient, input, activation)` | `gradient * activate_derivative(input, activation)`。兩個 tensor 形狀相同，否則呼叫失敗 |
+| `sigmoid_derivative`、`silu_derivative`、`tanh_derivative`、`gelu_tanh_derivative` `(tensor)` | |
 | `apply(~operation, operations, tensor)` | 自訂的 `F32 -> F32` 函式 |
 | `apply_indexed(~operation, operations, tensor)` | 自訂的 `U32 -> F32 -> F32` 函式，另外收到 row-major 索引 |
 
@@ -112,19 +121,18 @@ def clipped(value: F32) -> F32:
 | 函式 | 結果 |
 |---|---|
 | `sum`、`mean`、`max`、`min` `(tensor)` | 對所有元素依 row-major 順序計算，得到 rank-0 張量 |
-| `sum_axis`、`mean_axis`、`max_axis`、`min_axis` `(tensor, axis)` | 該軸被移除 |
+| `sum_axes`、`mean_axes`、`max_axes`、`min_axes` `(tensor, axes)` | 列出的軸被移除 |
+| `softmax(tensor, axis)` | 沿指定軸減去最大值後，以指數總和正規化 |
 
-每個結果依索引遞增取元素，從 `0`、`-inf` 或 `+inf` 開始。mean 是總和除以個數。順序固定，所以總和等於明寫的迴圈，最後幾個位元可能與 NumPy 的 pairwise `sum` 不同。空張量的 `mean` 是 NaN。
+每個結果依列優先順序取列出各軸的值，與軸的列出順序無關。同一軸列出兩次或超出範圍時結果失敗。`max` 與 `min` 依索引遞增取元素，從 `-inf` 或 `+inf` 開始。加總把第 `i` 個元素放進八條 TwoSum lane 的第 `i % 8` 條，再依 [math_sum.bend](math_sum.bend) 的固定樹合併各 lane。`softmax` 也這樣加總指數。mean 是總和除以個數。總和的最後幾個位元可能與 NumPy 的 `sum` 不同。空張量的 `mean` 是 NaN。
 
 ## 佈局
 
 | 函式 | 結果 |
 |---|---|
-| `exp(tensor)` | 逐元素自然指數，下溢逐漸進入次正規數 |
-| `log(tensor)` | 逐元素自然對數。零回傳 −∞，負數回傳 NaN |
-| `softmax(tensor, axis)` | 沿指定軸減去最大值後，以指數總和正規化 |
 | `reshape(tensor, shape)` | 元素相同、形狀不同。不複製 |
 | `transpose(tensor, order)` | 依指定順序排列各軸 |
+| `flip(tensor, axes)` | 沿列出的每個軸反轉順序 |
 | `slice(tensor, axis, start, count, step)` | 沿 `axis` 從 `start` 起每隔 `step` 取 `count` 個。`step` 為正 |
 | `set_slice(target, axis, start, part)` | 把 `part` 沿 `axis` 從 `start` 寫進 `target` |
 | `concat(parts, axis)` | 沿 `axis` 接起來：`F.concat(F.cons(a, F.cons(b, F.single(c))), 1)` |
@@ -145,19 +153,49 @@ def clipped(value: F32) -> F32:
 
 卷積的每個輸出從 +0.0 開始，依輸入通道、核的列、核的行的順序加上乘積，最後加 bias。它怎麼執行與規劃見[設計](../docs/design.zh-TW.md)。證明了什麼見[證明](../docs/proofs.zh-TW.md)。
 
+## 訓練
+
+```python
+import stelliferous@0.0.3.0/tensor_training.bend as Train
+```
+
+一層是 `Train.Layer` 的值。每個動詞都收下這一層，再把它還回來。backward 把梯度存在層裡，`sgd_step` 再套用。層與層的串接自己寫：每層的 `Train.Saved` 留給該層的 backward。[learning.bend](../examples/training/learning.bend) 用這個方式訓練兩個 Conv-BatchNorm-SiLU 區塊。
+
+| 函式 | 結果 |
+|---|---|
+| `conv2d_layer(weights, bias, stride, padding)` | 一層卷積，等同不帶 activation 的 `F.conv2d` |
+| `batch_norm_layer(channels)` | 對 `[N,C,H,W]` 做 batch normalization：gamma 1、beta 0、running mean 0、running variance 1、epsilon 1e-5、momentum 0.1 |
+| `batch_norm_layer_with(channels, epsilon, momentum)` | 同上，換成其他 epsilon 與 momentum |
+| `batch_norm_layer_from(gamma, beta, running_mean, running_variance, epsilon, momentum)` | 同上，使用給定的參數與 running statistics |
+| `activation_layer(activation)` | `Act` 的一個 activation |
+| `average_pool_layer()` | 每個 channel 的平均：`[N,C,H,W]` 變成 `[N,C,1,1]` |
+| `forward(x, layer)` | `(y, (saved, layer))`。batch normalization 使用這批資料的統計量，並更新 running statistics |
+| `backward(dy, saved, layer)` | `(dx, layer)`，層裡帶著參數梯度。`saved` 來自別種層時，`dx` 為失敗 |
+| `evaluate(x, layer)` | 推論用的 `(y, layer)`。batch normalization 使用 running statistics |
+| `sgd_step(layer, rate)` | 有梯度的參數變成 `parameter - gradient * rate`，梯度清空 |
+| `mse(prediction, target)` | `(loss, (gradient, target))`：均方誤差與它對 `prediction` 的梯度 |
+| `cross_entropy(logits, target)` | `(loss, (gradient, target))`，logits 為 `[N,K]`，target 為 `[N,K]`，每一列是各類別的機率：平均 cross entropy 與它對 `logits` 的梯度 |
+| `one_hot(labels, classes)` | 浮點數的類別編號 `[N]` 變成 `[N,classes]` 的列，該類別為 1.0，其餘為 0.0 |
+
+殘差連接用 `F.add` 把兩個輸出相加。backward 時把 `dy` 複製一份（`F.copy`）分給兩條分支，再把兩個輸入梯度相加。
+
 ## 函式庫內部
 
 應用程式不需要這些。列出來是給讀原始碼的人。
 
 | 模組 | 角色 |
 |---|---|
-| [tensor.bend](tensor.bend)、[tensor_layout.bend](tensor_layout.bend)、[tensor_window.bend](tensor_window.bend)、[tensor_convolution.bend](tensor_convolution.bend) | `F` 背後的泛型張量：任意元素型別、dense 與 band 儲存 |
+| [tensor.bend](tensor.bend)、[tensor_layout.bend](tensor_layout.bend)、[tensor_window.bend](tensor_window.bend)、[tensor_convolution.bend](tensor_convolution.bend) | `F` 背後的泛型張量：任意元素型別、以 band 儲存 |
 | `tensor_band*.bend` | Row band 儲存與它的運算 |
 | [tensor_operations.bend](tensor_operations.bend) | 在 view 上有檢查的 `copy`、`combine`、`apply`、`reduce`、`scatter`、`sweep`。`Accepted` 與 `Rejected` 都交回所有 owner |
 | [tensor_view.bend](tensor_view.bend)、[tensor_shape.bend](tensor_shape.bend)、[tensor_cursor.bend](tensor_cursor.bend)、[tensor_access.bend](tensor_access.bend) | View（軸長度、stride、offset）、有檢查的元素數、strided 游標 |
-| `kernel_*.bend` | 卷積核心：權重、packing、GEMM、gather、規劃、成本 |
+| `kernel_*.bend` | 卷積核心：權重、packing、GEMM、gather、規劃、成本、梯度 |
 | [storage_buffer.bend](storage_buffer.bend)、[storage_allocation.bend](storage_allocation.bend)、`storage_*.bend` | `Buffer`：owned array，帶邏輯長度與儲存證書 |
+| [storage_bytes.bend](storage_bytes.bend)、[storage_element_format.bend](storage_element_format.bend) | 從檔案讀出的位元組，以及每種元素儲存格式的 FP32 值 |
+| `checkpoint_*.bend`、[tensor_checkpoint.bend](tensor_checkpoint.bend) | `.pt` 檔：它的 ZIP 項目、pickle 程式，以及它們描述的張量 |
+| [tensor_file.bend](tensor_file.bend)、[tensor_model.bend](tensor_model.bend) | 張量檔案，以及模型取用的具名權重 |
+| [tensor_layer.bend](tensor_layer.bend)、[tensor_batch_norm.bend](tensor_batch_norm.bend)、[tensor_loss.bend](tensor_loss.bend)、[tensor_optimizer.bend](tensor_optimizer.bend)、`tensor_*_gradient.bend` | `Train` 背後的層、loss、更新與梯度 |
 | `traversal_*.bend` | 迴圈：copy、update、fold、indexed output、切分樹 |
-| [math_activation.bend](math_activation.bend)、[math_fp32.bend](math_fp32.bend)、[math_sequence.bend](math_sequence.bend)、[ordered_matrix.bend](ordered_matrix.bend) | Activation 的值與純量函式。證明所用的有序序列與矩陣乘積 |
+| [math_activation.bend](math_activation.bend)、[math_fp32.bend](math_fp32.bend)、[math_sequence.bend](math_sequence.bend)、[math_sum.bend](math_sum.bend)、[ordered_matrix.bend](ordered_matrix.bend) | Activation 的值與純量函式。八條 lane 的加總。證明所用的有序序列與矩陣乘積 |
 | [machine_limits.bend](machine_limits.bend)、[kernel_cost.bend](kernel_cost.bend) 與它們的 `default_*` 檔 | 證明使用的機器界限。規劃器的成本參數 |
 | [proofs/](proofs/) | 函式庫的證明 |

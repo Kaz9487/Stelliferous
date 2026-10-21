@@ -80,20 +80,6 @@ def fresh_equation(-Element: Data,+depth: Nat,value: Element) ->
 def allocated(-Element: Data,+depth: Nat,value: Element) -> Certificate<Element,Array.new(Element,depth,value)>:
   Certificate{depth,fresh_equation(Element,depth,value)}
 
-def stored_equation(-Element: Data,+depth: Nat,-storage: Array<Element>,+index: U32,-value: Element,
-  equation: {storage == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,storage))) : Array<Element>}) ->
-  {Array.set(Element,storage,index,value) == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,Array.set(Element,storage,index,value)))) : Array<Element>}:
-  %restored(Element,depth,Array.set(Element,storage,index,value),
-    Witness.write(Element,depth,storage,index,value,
-      witness_at(Element,depth,storage,equation))) :
-    {_ == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,Array.set(Element,storage,index,value)))) : Array<Element>}
-  {==}
-
-def stored(-Element: Data,-storage: Array<Element>,index: U32,-value: Element,certificate: Certificate<Element,storage>) ->
-  Certificate<Element,Array.set(Element,storage,index,value)>:
-  Certificate{+depth,equation} = certificate
-  Certificate{depth,stored_equation(Element,depth,storage,index,value,equation)}
-
 def family(~Element: Data,-storage: Array<Element>) -> Data:
   Certificate<Element,storage>
 
@@ -117,3 +103,51 @@ def write_list(~Element: Data,values: List<&2,Element>,offset: U32,-storage: Arr
   Certificate<Element,Traversal.write_list(~Element,values,offset,storage)>:
   Certificate{+depth,equation} = certificate
   Certificate{depth,written_equation(~Element,depth,values,offset,storage,equation)}
+
+def set_equation(~Element: Data,+depth: Nat,+index: U32,-value: Element,-storage: Array<Element>,
+  equation: {storage == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,storage))) : Array<Element>}) ->
+  {Array.set(Element,storage,index,value) ==
+    Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,Array.set(Element,storage,index,value)))) : Array<Element>}:
+  %restored(Element,depth,Array.set(Element,storage,index,value),
+    Witness.write(Element,depth,storage,index,value,witness_at(Element,depth,storage,equation))) :
+    {_ == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,Array.set(Element,storage,index,value)))) : Array<Element>}
+  {==}
+
+# One value written; the balance depth is unchanged whatever the value.
+def set(~Element: Data,+index: U32,-value: Element,-storage: Array<Element>,certificate: Certificate<Element,storage>) ->
+  Certificate<Element,Array.set(Element,storage,index,value)>:
+  Certificate{+depth,equation} = certificate
+  Certificate{depth,set_equation(~Element,depth,index,value,storage,equation)}
+
+# Transport a storage certificate across the read-only native array operation.
+def retained(~Element: Data,+depth: Nat,-storage: Array<Element>,-value: Element,-result: Array<Element> & Element,
+  +same: {(storage,value) == result : Array<Element> & Element},
+  +equation: {storage == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,storage))) : Array<Element>}) ->
+  Certificate<Element,Pair.fst(Array<Element>,Element,result)>:
+  Certificate{depth,
+    %Equal.cong(Array<Element> & Element,Array<Element>,pair => Pair.fst(Array<Element>,Element,pair),(storage,value),result,same) :
+      {_ == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,_))) : Array<Element>}
+    equation}
+
+def read_owner(~Element: Data,-storage: Array<Element>,+index: U32,
+  read: Witness.Read<Element,storage,Array.get(Element,storage,index)>) ->
+  {storage == Pair.fst(Array<Element>,Element,Array.get(Element,storage,index)) : Array<Element>}:
+  Witness.Read{value,+same} = read
+  Equal.cong(Array<Element> & Element,Array<Element>,pair => Pair.fst(Array<Element>,Element,pair),(storage,value),Array.get(Element,storage,index),
+    Equal.sym(Array<Element> & Element,Array.get(Element,storage,index),(storage,value),same))
+
+def read_equation(~Element: Data,+depth: Nat,-storage: Array<Element>,+index: U32,
+  +equation: {storage == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,storage))) : Array<Element>},
+  read: Witness.Read<Element,storage,Array.get(Element,storage,index)>) ->
+  {Pair.fst(Array<Element>,Element,Array.get(Element,storage,index)) == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,Pair.fst(Array<Element>,Element,Array.get(Element,storage,index))))) : Array<Element>}:
+  %read_owner(~Element,storage,index,read) :
+    {_ == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,_))) : Array<Element>}
+  equation
+
+def read_kept(~Element: Data,-storage: Array<Element>,+index: U32,certificate: Certificate<Element,storage>) ->
+  Certificate<Element,Pair.fst(Array<Element>,Element,Array.get(Element,storage,index))>:
+  Certificate{+depth,+equation} = certificate
+  Certificate{depth,
+    %read_owner(~Element,storage,index,Witness.observed(Element,storage,index,Witness.ArrayWitness{depth,witness_at(Element,depth,storage,equation)})) :
+      {_ == Tree.pack(Element,normalized(Element,depth,Tree.reflect(Element,_))) : Array<Element>}
+    equation}

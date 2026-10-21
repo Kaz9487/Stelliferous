@@ -6,6 +6,136 @@
 
 在正式發布 1.0.0 之前，公開 API 仍可能隨次版本更新而調整。
 
+## [0.0.3] - 2026-10-21
+
+Stelliferous 0.0.3 新增訓練功能，並支援在 Bend 中直接讀取 PyTorch checkpoint。本次更新的主要內容包括
+
+- 支援卷積、batch normalization、activation 與平均池化層的前向與反向傳播，並提供均方誤差、cross entropy 與 SGD。無論使用多少個 worker，訓練結果皆逐位元一致。
+- 支援直接在 Bend 中讀取 PyTorch 的 `.pt` checkpoint。YOLOv5n 範例改為直接從官方的 `yolov5n.pt` 執行。
+- `softmax`、`select`、batch normalization、損失函式與訓練層皆已完成形式化證明。
+
+本版本升級至 Bend v2.0.37。
+
+### 升級注意事項
+
+- **`sum_axis`、`mean_axis`、`max_axis` 與 `min_axis` 改為 `sum_axes`、`mean_axes`、`max_axes` 與 `min_axes`**
+
+  新函式改為接受一串軸。請將 `sum_axis(t, a)` 改寫為 `sum_axes(t, [a])`，其他三個函式依此類推。同一個軸列出兩次，或軸超出張量的維度時，會回傳失敗結果。
+
+- **加總的數值結果有所調整**
+
+  `sum`、`mean`、`sum_axes`、`mean_axes`、`softmax` 的分母與均方誤差，已改為以八條通道搭配誤差補償（TwoSum）加總，再依固定順序合併。結果更加精確，在不同機器與不同 worker 數量下仍逐位元一致。
+
+  新版輸出與 0.0.2 可能存在末端位元差異。若先前使用 0.0.2 的輸出作為測試基準，請重新產生參考結果。
+
+- **`gelu_tanh` 的數值結果有所調整**
+
+  `gelu_tanh` 為提升精度而重新改寫。對全部 2³² 種 FP32 輸入，最大誤差降至 1.99 ULP，0.0.2 在輸入介於 -2 至 -0.5 時最大可達 15 ULP。若先前使用 0.0.2 的 `gelu_tanh` 輸出作為測試基準，請重新產生參考結果。
+
+- **`max_pool2d` 在輸入高度或寬度為 0 時回傳失敗結果**
+
+  0.0.2 在這種情況下會回傳全為 -∞ 的結果。輸出本身沒有元素的情況仍維持成功。
+
+- **`upsample_nearest` 收到失敗的輸入時原樣傳回**
+
+  0.0.2 回傳的失敗結果帶著放大後的形狀，現在保留輸入的形狀，失敗原因不變。
+
+- **`load_weights` 讀不到 `names.txt` 時的回報方式**
+
+  0.0.2 會回傳空的權重，之後 `take` 只回報找不到名稱。現在每次呼叫 `take` 都會回報無法讀取 `names.txt`。
+
+### 新增功能
+
+- **訓練層**
+
+  新增 `tensor_training.bend` 模組（以 `Train` 匯入），將每一層表示為一個值。可透過 `conv2d_layer`、`batch_norm_layer`、`activation_layer` 與 `average_pool_layer` 建立各種層。
+
+  `forward(x, layer)` 回傳輸出、反向傳播需要的資料與這一層。`backward(dy, saved, layer)` 回傳輸入梯度，以及帶著參數梯度的這一層，再由 `sgd_step(layer, rate)` 套用梯度。`evaluate(x, layer)` 以推論模式執行一層。
+
+  Batch normalization 的計算方式與 PyTorch `BatchNorm2d` 的訓練模式相同，執行統計量以無偏變異數更新。
+
+  `examples/training/learning.bend` 示範以兩個「卷積、batch normalization、SiLU」區塊訓練 40 步。使用方式請參閱 [API 參考文件](lib/README.zh-TW.md#訓練) 與 [入門指南](docs/getting_started.zh-TW.md)。
+
+- **損失函式**
+
+  新增 `Train.mse(prediction, target)` 與 `Train.cross_entropy(logits, target)`，回傳損失、損失的梯度與 target。另提供 `Train.one_hot(labels, classes)`，將類別編號轉換為 `cross_entropy` 所需的格式。
+
+- **Activation 的梯度**
+
+  新增 `activate_forward`、`activate_backward` 與 `activate_derivative`，以及 `sigmoid_derivative`、`silu_derivative`、`tanh_derivative` 與 `gelu_tanh_derivative`。
+
+- **讀取 PyTorch checkpoint**
+
+  新增 `load_checkpoint(path)`，可讀取 `torch.save` 寫出的 `.pt` 檔案，state dict 的每一項各成為一個張量，名稱與 PyTorch 相同。FP16 與 BFloat16 會精確轉為 FP32，FP64 與整數則捨入為最接近的 FP32。
+
+  官方 `yolov5n-v7.0.pt` 的 349 個張量讀取結果與 `torch.load` 逐位元一致。目前不支援壓縮的項目與 ZIP64 檔案。
+
+  另提供 `weight_names()`，可列出一組權重的所有名稱。YOLOv5n 範例在 Bend 中將官方 checkpoint 的 batch normalization 併入卷積權重。
+
+- **張量運算**
+
+  新增 `sqrt(tensor)` 與 `flip(tensor, axes)`。
+
+### 效能
+
+以下為 YOLOv5n 在相同測試機器上，使用 640 × 640 輸入影像進行單次推論的效能比較。
+
+| 版本    |  1 執行緒 |  4 執行緒 |
+| ----- | -----: | -----: |
+| 0.0.2 | 115 毫秒 | 44 毫秒 |
+| 0.0.3 | 117 毫秒 | 47 毫秒 |
+
+兩個版本在同一台機器上交替量測。推論比 0.0.2 略慢，單執行緒約 2%，四執行緒約 7%。
+
+在同一台機器上以四執行緒訓練一個 ResNet-20 形狀網路的 epoch（390 步、batch 128、32 × 32 影像）：
+
+| 函式庫 | 時間 |
+| ----- | -------: |
+| Stelliferous 0.0.3 | 767 秒 |
+| PyTorch 2.14 | 31.1 秒 |
+
+兩者從相同的權重開始，得到相同的 loss。`python run.py training` 可重現這項比較。
+
+完整測試結果請參閱 [效能測試文件](docs/performance.zh-TW.md)。
+
+- **訓練使用所有 worker**
+
+  多張影像的 batch 可以分給多個 worker 處理，卷積的權重梯度則依輸出通道切分給各 worker。
+
+- **版面運算直接在各 worker 的資料上執行**
+
+  `flip`、`transpose`、`slice`、`broadcast_to`、任意軸的 `concat` 與各種歸約運算，皆直接在各 worker 持有的張量區段上執行，不需先將整個張量收集起來。計算結果不變。
+
+### 形式化證明與數值精度
+
+- **新增形式化證明**
+
+  新增 `softmax`、`select`、activation 的導數、batch normalization、`mse`、`cross_entropy`、平均池化、卷積層的前向與反向傳播以及 `sgd` 的證明。
+
+  這些證明確認每個輸出元素皆等於規格所定義的值。另已證明讀回張量時，取得的值即為其契約所描述的值。詳細內容請參閱 [形式化證明文件](docs/proofs.zh-TW.md)。
+
+- **證明的整理**
+
+  每個運算現在只有一條執行路徑，也只有一份證明。走訪張量各部分的證明由所有運算共用，各運算只證明自己的那一步，重複的引理已刪除。`upsample_nearest` 完全改用共用的 view 讀取證明，`upsample_nearest`、`max_pool2d` 與 `concat` 各自的證明檔由 1.6 MB 縮小至 0.7 MB。
+
+- **數值誤差測試**
+
+  `gelu_tanh` 已完整遍歷所有 2³² 種 FP32 位元組合，並以 MPFR 計算的正確捨入結果作為參考，最大誤差為 1.99 ULP。
+
+### 已知限制
+
+- 訓練目前僅提供 SGD。網路的各層需要自行串接，尚未實作自動微分。
+- `one_hot` 目前僅完成 PyTorch 對照測試，尚未提供形式化證明。
+- 數值誤差來自實際量測，尚無對應的形式化誤差界限證明。
+- 證明由官方檢查器驗證，可使用 `python run.py proofs` 執行，不使用 `bend --verdict`。
+- 僅支援 FP32 (F32) 資料型別。
+- 對於權重數量較多、輸出位置較少的卷積運算，以及輸出寬度小於 6 的情況，增加 worker 數量通常無法帶來明顯的效能改善。batch size 大於 1 時，通道多的小影像用四個 worker 反而較慢。詳見 [設計文件](docs/design.zh-TW.md)。
+- 目前推論效能仍落後於 PyTorch，訓練約慢 25 倍。詳細比較請參閱 [效能測試文件](docs/performance.zh-TW.md)。
+
+### 致謝
+
+感謝 [bend-ml](https://github.com/nuxyel/bend-ml) 的 [@nuxyel](https://github.com/nuxyel) 回報 Bend 編譯器的行為。這些內容已整理進 [工具鏈規則](docs/toolchain_rules.zh-TW.md)。
+
 ## [0.0.2] - 2026-10-10
 
 Stelliferous 0.0.2 新增檔案讀寫與模型權重載入功能，同時改善 YOLOv5n 的推論效能。本次更新的主要內容包括

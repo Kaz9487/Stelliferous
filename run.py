@@ -80,6 +80,11 @@ def api(options):
     linux_python('benchmarks/checks/tensor_file_cases.py', failure='The tensor file cases did not pass')
 
 
+def gradients(options):
+    linux_python('benchmarks/checks/gradient_cases.py', failure='The gradient cases did not pass')
+    linux_python('benchmarks/checks/training_cases.py', failure='The training cases did not pass')
+
+
 def reference(case):
     """Export the official reference and fused weights once per case."""
     if not (ROOT / f'out/results/{case}/reference.json').is_file():
@@ -96,6 +101,25 @@ def model(options):
     python('examples/yolov5/compare_results.py', case, '--threads', threads, failure='The numerical comparison did not pass')
     report = 'comparison_native.json' if threads == 1 else f'comparison_native_{threads}t.json'
     print(f'PASS: out/results/{case}/{report}')
+
+
+def checkpoint(options):
+    (ROOT / 'out/models').mkdir(parents=True, exist_ok=True)
+    bend('examples/yolov5/load_checkpoint.bend', 'out/models/load_checkpoint.c')
+    linux('sh', 'examples/yolov5/load_checkpoint.sh', failure='The checkpoint loader did not build or run')
+    python('examples/yolov5/compare_checkpoint.py', failure='The checkpoint comparison did not pass')
+    # storage formats and layouts the official checkpoint does not hold
+    python('examples/yolov5/checkpoint_cases.py', 'out/results/checkpoint/cases.pt', failure='The checkpoint cases could not be written')
+    linux('sh', 'examples/yolov5/load_checkpoint.sh', 'out/results/checkpoint/cases.pt', 'cases', failure='The checkpoint loader did not run on the cases')
+    python('examples/yolov5/compare_checkpoint.py', '--weights', 'out/results/checkpoint/cases.pt', '--loaded', 'out/results/checkpoint/cases/bend',
+           failure='The checkpoint cases comparison did not pass')
+    print('PASS: out/results/checkpoint/official/comparison.json, out/results/checkpoint/cases/comparison.json')
+
+
+def training(options):
+    (ROOT / 'out/build/training').mkdir(parents=True, exist_ok=True)
+    bend('benchmarks/training/epoch.bend', 'out/build/training/epoch.c')
+    linux('sh', 'benchmarks/training/run_epoch.sh', options.threads, failure='The training epoch did not build or run')
 
 
 def benchmark(options):
@@ -131,9 +155,12 @@ ACTIONS = {
     'layout': (layout, 'source layout, names, imports, links and frozen hashes'),
     'integration': (integration, 'native convolution cases on 1, 2, 4 and 8 threads'),
     'api': (api, 'programs against the public API, compared bit for bit with NumPy'),
+    'gradients': (gradients, 'convolution gradients, losses, one training step, batch normalization and 40 learning steps, compared bit for bit with the reference on 1, 2, 4 and 8 workers and the learning steps with PyTorch'),
     'model': (model, 'YOLOv5n: generate, compile, run and compare with the reference'),
+    'checkpoint': (checkpoint, 'load the official .pt checkpoint in Bend and compare every tensor with torch.load'),
     'benchmark': (benchmark, 'time single convolution shapes'),
     'backends': (backends, 'time the YOLOv5n forward on NumPy, Stelliferous and PyTorch'),
+    'training': (training, 'time one epoch of a ResNet-20-shaped network in Stelliferous and PyTorch'),
     'summary': (summary, 'list which recorded results passed, without rerunning them'),
 }
 
@@ -147,6 +174,8 @@ def main():
         if name == 'model':
             command.add_argument('--case', choices=CASES, default='bus_640')
             command.add_argument('--threads', type=int, default=1)
+        if name == 'training':
+            command.add_argument('--threads', type=int, default=4)
         if name == 'backends':
             command.add_argument('--cuda', action='store_true', help='also run the handwritten C and CUDA comparisons')
     options = parser.parse_args()

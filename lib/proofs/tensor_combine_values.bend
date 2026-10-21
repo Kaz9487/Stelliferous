@@ -180,12 +180,8 @@ def combined_ready(~Element: Data,~operation: Element -> Element -> Element,fast
         room}
 
 # The right operand is only read: the model returns it unchanged.
-def reader(~Element: Data,result: AccessLaws.ModelResult<Tree.Tree<Element>,Element>) -> Tree.Tree<Element>:
-  AccessLaws.ModelResult{reader,output} = result
-  reader
-
 def visit_reader(~Element: Data,~Cursor: Data,~sample: Tree.Tree<Element> -> Cursor -> Element,~next: Cursor -> Cursor,~operation: Element -> Element -> Element,count: Nat,+position: U32,+cursor: Cursor,+right: Tree.Tree<Element>,+left: Tree.Tree<Element>) ->
-  {reader(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Cursor,
+  {CopyValues.reader_tree(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Cursor,
     Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,Cursor>,
       ~Visit.model_update_step(~Tree.Tree<Element>,~Element,~Cursor,~sample,~next,~operation),count,Traversal.State{right,left,position,cursor}))) == right : Tree.Tree<Element>}:
   match count:
@@ -194,7 +190,7 @@ def visit_reader(~Element: Data,~Cursor: Data,~sample: Tree.Tree<Element> -> Cur
       visit_reader(~Element,~Cursor,~sample,~next,~operation,rest,(position + 1 : U32),next(cursor),right,Tree.write(Element,left,position,operation(Tree.read(Element,left,position),sample(right,cursor))))
 
 def fast_reader(~Element: Data,~operation: Element -> Element -> Element,count: Nat,+position: U32,+right: Tree.Tree<Element>,+left: Tree.Tree<Element>) ->
-  {reader(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Unit,
+  {CopyValues.reader_tree(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Unit,
     Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,Unit>,
       ~ArrayLaws.model_update_step(~Tree.Tree<Element>,~Element,~Element,~Unit,~AccessLaws.sample_index(~Element),~operation,~Traversal.index),
       count,Traversal.State{right,left,position,Unit{}}))) == right : Tree.Tree<Element>}:
@@ -204,7 +200,7 @@ def fast_reader(~Element: Data,~operation: Element -> Element -> Element,count: 
       fast_reader(~Element,~operation,rest,(position + 1 : U32),right,Tree.write(Element,left,position,operation(Tree.read(Element,left,position),Tree.read(Element,right,position))))
 
 def combined_reader(~Element: Data,~operation: Element -> Element -> Element,fast: Bool,+count: Nat,+source: Views.View,+right: Tree.Tree<Element>,+left: Tree.Tree<Element>) ->
-  {reader(~Element,AccessLaws.combine_model(~Element,~operation,fast,count,source,0,right,left)) == right : Tree.Tree<Element>}:
+  {CopyValues.reader_tree(~Element,AccessLaws.combine_model(~Element,~operation,fast,count,source,0,right,left)) == right : Tree.Tree<Element>}:
   match fast:
     case True{}: fast_reader(~Element,~operation,count,0,right,left)
     case False{}: visit_reader(~Element,~CursorLaws.Coordinates,~TensorVisit.sample(~Element),~CursorLaws.next,~operation,count,0,CursorLaws.initial(source),right,left)

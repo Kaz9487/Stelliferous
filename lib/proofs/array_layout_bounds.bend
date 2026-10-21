@@ -2,8 +2,6 @@
 # accepted address; it does not substitute for non-wrapping layout arithmetic.
 import Base
 import ../tensor_view.bend as Views
-import ./storage_tree_model.bend as Tree
-import ./storage_refinement.bend as StorageLaws
 
 def accepted_address_is_inside(result: Maybe<&2,U32>,length: U32) -> Bool:
   match result:

@@ -1,25 +1,22 @@
 import ../../lib/proofs/storage_shape.bend as Shape
-# Read the flat tabulation of a packed buffer through its proved dense prefix.
+# Read the flat tabulation of a packed buffer through its proved flat prefix.
 # packing_contents proves the actual packer stores this tabulation.
 import Base
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/natural_addition.bend as Addition
-import ../../lib/proofs/fp32_arithmetic_laws.bend as ArithmeticLaws
 import ../../lib/proofs/indexed_sequence_laws.bend as SequenceLaws
 import ../../lib/math_sequence.bend as Sequence
-import ../../lib/proofs/word_arithmetic.bend as WordArithmetic
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ./packing_tabulation.bend as PackingTabulation
 import ./packing_lane_reads.bend as LaneReads
 import ./tile_array_projection.bend as ArrayProjection
 import ./packed_reduction_samples.bend as ReductionSamples
-import ./dense_array_initialization.bend as DenseArrayInitialization
+import ./array_fill_readback.bend as ArrayFill
 import ../../lib/proofs/array_allocation_bounds.bend as ArrayAllocation
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./storage_capacity.bend as StorageCapacity
-import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/proofs/word_encoding.bend as WordEncoding
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_division.bend as Division
@@ -27,7 +24,7 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../specification.bend as ConvSpec
 import ../../lib/kernel_tile.bend as Tile
-import ../scalar_kernel.bend as ScalarConv
+import ./packing_entry_coordinates.bend as PackingEntryCoordinates
 
 def lane_values_at(+count: Nat,+index: Nat,+offset: Nat,+start: U32,+input: Tree.Tree<F32>,+height: U32,+width: U32,+kernel: U32,
   +stride: U32,+padding: U32,+output_width: U32,+inner: U32,+lane: Sequence.Index(8n),inside: {Nat.is_lt(index,
@@ -75,7 +72,7 @@ def readback(+count: Nat,+start: U32,+input: Tree.Tree<F32>,+output: Tree.Tree<T
   %Equal.sym(Tree.Tree<F32>,ArrayProjection.project(filled,lane),Tree.write_sequence(~F32,values,0,ArrayProjection.project(output,lane)),
     PackingTabulation.projected(count,0,start,input,output,height,width,kernel,stride,padding,output_width,inner,lane)) : {Tree.read(F32,_,
       query) == ConvSpec.at(U32.to_nat(query),values) : F32}
-  DenseArrayInitialization.read_filled_prefix(values,ArrayProjection.project(output,lane),depth,query,balanced,depth_ok,
+  ArrayFill.read_filled_prefix(values,ArrayProjection.project(output,lane),depth,query,balanced,depth_ok,
     %Equal.sym(Nat,ConvSpec.length(values),count,length) : {Nat.is_le(_,U32.to_nat(Tree.capacity(F32,ArrayProjection.project(output,
             lane)))) == True{} : Bool}
     room,
@@ -142,18 +139,9 @@ def allocated_readback(limits,count,start,input,height,width,kernel,stride,paddi
 def lane_offset(lane: Sequence.Index(8n)) -> Nat:
   Sequence.index_value(8n,lane)
 
-def indexed_position_encoded(+position: Nat,index: Nat) -> {PackingTabulation.indexed_position(U32.from_nat(position),index) == U32.from_nat(Nat.add(position,
-      index)) : U32}:
-  match index:
-    case 0n:
-      %Equal.sym(Nat,Nat.add(position,0n),position,Addition.zero_right(position)) : {U32.from_nat(position) == U32.from_nat(_) : U32}
-      {==}
-    case 1n+rest:
-      WordArithmetic.native_add(position,1n+rest)
-
 def lane_position_encoded(position: Nat,lane: Sequence.Index(8n)) -> {lane_position(U32.from_nat(position),lane) == U32.from_nat(Nat.add(position,
       lane_offset(lane))) : U32}:
-  indexed_position_encoded(position,Sequence.index_value(8n,lane))
+  PackingEntryCoordinates.indexed_encoded(position,Sequence.index_value(8n,lane))
 
 def logical_position(+start: U32,group: Nat,lane: Sequence.Index(8n)) -> Nat:
   Nat.add(Nat.add(U32.to_nat(start),Nat.mul(group,8n)),lane_offset(lane))

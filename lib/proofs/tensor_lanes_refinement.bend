@@ -34,9 +34,7 @@ import ./word_encoding.bend as WordEncoding
 import ./tensor_cursor_refinement.bend as CursorLaws
 import ./tensor_visit_refinement.bend as TensorVisit
 import ./traversal_visit_refinement.bend as Visit
-import ./tensor_cursor_model.bend as CursorModel
 import ./boolean_logic.bend as Boolean
-import ./tensor_shape_refinement.bend as ShapeLaws
 import ./nat_order.bend as Order
 import ./word_power_of_two.bend as Power
 import ./tensor_operation_bounds.bend as OperationBounds
@@ -384,7 +382,7 @@ def scalar_tail_when(~operation: F32 -> F32 -> F32,+fast: Bool,+count: Nat,+star
     case True{}:
       +position = U32.from_nat(start)
       +source = {Views.View{[Views.Axis{U32.from_nat(count),1}],position} : Views.View}
-      +zero = ShapeLaws.native_equal(position,0,Boolean.right(Access.zero_contiguous(source),U32.is_zero(position),equation))
+      +zero = Arithmetic.equal_of_is_eq(position,0,Boolean.right(Access.zero_contiguous(source),U32.is_zero(position),equation))
       %Equal.sym(U32,position,0,zero) :
         {AccessLaws.combine_model(~F32,~operation,True{},count,source,position,right,left) ==
           AccessLaws.ModelResult{right,MapReadback.run_indexed(~F32,~Tree.Tree<F32>,~pair_value(~operation),count,_,right,left)} : AccessLaws.ModelResult<Tree.Tree<F32>,F32>}

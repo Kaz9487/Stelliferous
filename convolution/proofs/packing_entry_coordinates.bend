@@ -17,8 +17,6 @@ import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/u32_comparison.bend as Comparison
-import ../../lib/proofs/traversal_write_bounds.bend as WriteBounds
-import ./supported_padded_coordinates.bend as Padded
 import ./convolution_guard_facts.bend as Guards
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
@@ -139,7 +137,7 @@ def lane_room(+limits: Machine.Limits,+p: ConvSpec.Problem,+j: Nat,+col_n: Nat,+
   {Nat.is_le(Nat.add(col_n,j),U32.to_nat(Machine.half_word(limits))) == True{} : Bool}:
   +capacity = U32.to_nat(Machine.capacity(limits))
   Order.transitive(Nat.add(col_n,j),Nat.add(col_n,7n),U32.to_nat(Machine.half_word(limits)),Order.offset_le(col_n,j,7n,j_le),
-    Padded.add_seven_bound(limits,col_n,Bounds.strict_le(col_n,capacity,
+    Encoded.add_seven_bound(limits,col_n,Bounds.strict_le(col_n,capacity,
       Bounds.nat_trans(col_n,ConvSpec.out_width(p),capacity,column_inside,Coordinates.width_bound(limits,p,valid,support)))))
 
 def lane_column(+limits: Machine.Limits,+p: ConvSpec.Problem,+position: U32,+j: Nat,+row_n: Nat,+col_n: Nat,+valid: Guards.Valid<p>,+support: Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>,
@@ -192,7 +190,7 @@ def next_row_of(+position: U32,+q: U32,+j: Nat,+row_n: Nat,+c: Nat,+kr: Nat,+kc:
   %Equal.sym(U32,(PackingTabulation.indexed_position(position,j) / ow : U32),U32.from_nat(1n+row_n),lane_row) :
     {(_ * s + (q / k) % k - p : U32) == (((position / ow : U32) + 1) * s + U32.from_nat(kr) - p : U32) : U32}
   %Equal.sym(U32,(position / ow : U32),U32.from_nat(row_n),tile_row) : {(U32.from_nat(1n+row_n) * s + (q / k) % k - p : U32) == ((_ + 1) * s + U32.from_nat(kr) - p : U32) : U32}
-  %Equal.sym(U32,(U32.from_nat(row_n) + 1 : U32),U32.from_nat(1n+row_n),WriteBounds.increment_encoded(row_n)) :
+  %Equal.sym(U32,(U32.from_nat(row_n) + 1 : U32),U32.from_nat(1n+row_n),Bounds.increment_encoded(row_n)) :
     {(U32.from_nat(1n+row_n) * s + (q / k) % k - p : U32) == (_ * s + U32.from_nat(kr) - p : U32) : U32}
   %Equal.sym(U32,(q / k % k : U32),U32.from_nat(kr),row) : {(U32.from_nat(1n+row_n) * s + _ - p : U32) == (U32.from_nat(1n+row_n) * s + U32.from_nat(kr) - p : U32) : U32}
   {==}

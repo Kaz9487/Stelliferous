@@ -8,6 +8,9 @@
 |---|---|
 | [specification.bend](specification.bend)、[specification_law.bend](specification_law.bend) | 凍結。Problem（形狀、輸入、權重、bias）、哪些 problem 有效，以及結果 |
 | [matrix_specification.bend](matrix_specification.bend) | 凍結。語意：每個輸出是一列權重與一塊輸入的有序內積，軸為 `(輸入通道, kernel 列, kernel 行)` |
+| [input_gradient_specification.bend](input_gradient_specification.bend) | 任意步幅的卷積對輸入的梯度：每個輸入元素依 `(輸出通道遞增、核的列遞減、核的行遞減)` 取同餘核位置的乘積從 +0.0 加總，最後加 +0.0 |
+| [parameter_gradient_specification.bend](parameter_gradient_specification.bend) | 卷積每個權重與偏差的梯度，依固定的 FP32 順序 |
+| [parameter_gradient_ready.bend](proofs/parameter_gradient_ready.bend) | `Gradient.weight` 與 `Gradient.bias` 的 Ready 結果在每個索引上都是運算元 value reader 的值的規格值 |
 | [reference.bend](reference.bend)、[ordered_reference.bend](ordered_reference.bend) | 直接依規格計算 |
 | [shape.bend](shape.bend) | 原生策略共用的機器維度 |
 | [scalar_kernel.bend](scalar_kernel.bend) | Direct 策略：一次算一個輸出，不用 workspace |
@@ -23,7 +26,7 @@
 
 兩者使用相同的累加順序，並且對每個分割深度都已證明等於矩陣規格。
 
-`automatic(worker_limit, workspace_budget)` 依[設計](../docs/design.zh-TW.md#規劃)裡的成本模型選擇。`None{}` 不限制 workspace；`Some{0n}` 選擇 Direct。Workspace 計入 packed tile、暫時的 leaf 輸出，以及每次分割所複製的內容。
+`automatic(worker_limit, workspace_budget)` 依[設計](../docs/design.zh-TW.md#規劃)裡的成本模型選擇。`None{}` 不限制 workspace，`Some{0n}` 選擇 Direct。Workspace 計入 packed tile、暫時的 leaf 輸出，以及每次分割所複製的內容。
 
 ## 規格裡的名稱
 

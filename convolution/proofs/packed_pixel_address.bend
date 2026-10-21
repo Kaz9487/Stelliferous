@@ -1,12 +1,12 @@
 import ../../lib/proofs/storage_shape.bend as Shape
-# Native aligned-packer pixel lookup -> logical dense NCHW lookup.
+# Native aligned-packer pixel lookup -> logical row-major NCHW lookup.
 # Loop-counter refinement to convolution (oy,ox,ky,kx) is a separate obligation.
 import Base
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./input_storage.bend as Inputs
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ./list_array_allocation.bend as ListArrayAllocation
-import ./packing_block_reads.bend as Reads
+import ../../lib/proofs/kernel_spatial_packing_samples.bend as Reads
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ./native_convolution_index.bend as NativeConvolutionIndex
 import ../../lib/proofs/padded_interval.bend as PaddedInterval
@@ -14,7 +14,6 @@ import ../../lib/proofs/u32_comparison.bend as Comparison
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ./storage_capacity.bend as StorageCapacity
 import ../specification.bend as ConvSpec
-import ../scalar_kernel.bend as ScalarConv
 import ../../lib/kernel_packing_samples.bend as PackingSamples
 import ../../lib/kernel_spatial_packing.bend as Packing
 

@@ -6,11 +6,12 @@
 
 | Layer | What it owns | Main files |
 |---|---|---|
-| Public F32 API | The functions a program calls | [tensor_f32.bend](../lib/tensor_f32.bend), [math_activation.bend](../lib/math_activation.bend) |
-| Generic tensor | Shape, status, worker count; dense and band storage; broadcasting, layout, windows, FP32 files, named weights | [tensor.bend](../lib/tensor.bend), [tensor_layout.bend](../lib/tensor_layout.bend), [tensor_window.bend](../lib/tensor_window.bend), [tensor_convolution.bend](../lib/tensor_convolution.bend), [tensor_file.bend](../lib/tensor_file.bend), [tensor_model.bend](../lib/tensor_model.bend), `tensor_band*.bend` |
+| Public F32 API | The functions a program calls | [tensor_f32.bend](../lib/tensor_f32.bend), [math_activation.bend](../lib/math_activation.bend), [tensor_training.bend](../lib/tensor_training.bend) |
+| Training | Layers, losses, SGD and the gradients of convolution, batch normalization and activations | [tensor_layer.bend](../lib/tensor_layer.bend), [tensor_batch_norm.bend](../lib/tensor_batch_norm.bend), [tensor_loss.bend](../lib/tensor_loss.bend), [tensor_optimizer.bend](../lib/tensor_optimizer.bend), `tensor_*_gradient.bend` |
+| Generic tensor | Shape, status, worker count, band storage, broadcasting, layout, windows, FP32 files, named weights, PyTorch checkpoints | [tensor.bend](../lib/tensor.bend), [tensor_layout.bend](../lib/tensor_layout.bend), [tensor_window.bend](../lib/tensor_window.bend), [tensor_convolution.bend](../lib/tensor_convolution.bend), [tensor_file.bend](../lib/tensor_file.bend), [tensor_model.bend](../lib/tensor_model.bend), [tensor_checkpoint.bend](../lib/tensor_checkpoint.bend), `checkpoint_*.bend`, `tensor_band*.bend` |
 | Checked operations | `copy`, `combine`, `apply`, `reduce`, `scatter`, `sweep` over views, with guards | [tensor_operations.bend](../lib/tensor_operations.bend), [tensor_view.bend](../lib/tensor_view.bend), [tensor_cursor.bend](../lib/tensor_cursor.bend), [tensor_access.bend](../lib/tensor_access.bend) |
-| Convolution kernel | Weight reorder, packing, 4x8 GEMM, gather, planning | `kernel_*.bend` |
-| Storage and traversal | Owned buffers with certificates; the loops everything else uses | `storage_*.bend`, `traversal_*.bend` |
+| Convolution kernel | Weight reorder, packing, 4x8 GEMM, gather, planning, input and weight gradients | `kernel_*.bend` |
+| Storage and traversal | Owned buffers with certificates, and the loops everything else uses | `storage_*.bend`, `traversal_*.bend` |
 | Convolution package | The frozen specification, the reference, the proved Array engine | [convolution/](../convolution/README.md) |
 
 `lib/` does not depend on `convolution/`, the examples or the benchmarks.
@@ -22,18 +23,17 @@ A tensor owns its storage, its extents, a fill value, a status and a worker coun
 - **Operations consume their arguments.** Binary arithmetic reuses the left operand's storage. `F.copy` keeps a tensor.
 - **Failures travel with the value.** After a failure, later operations skip their work and pass the first problem on. The program sees it where it reads the result.
 - **Shapes are checked at run time.** Extents are values, not types.
-- **Views are internal.** `transpose`, `slice` and `broadcast_to` copy into dense storage; `reshape` only relabels.
+- **Views are internal.** `transpose`, `slice`, `broadcast_to` and `flip` copy band by band into new storage. `reshape` only relabels.
 
-### Dense and band storage
+### Band storage
 
-- **Dense:** one buffer in row-major order.
-- **Bands:** an NCHW tensor cut into ranges of rows. Each band is its own buffer, in `[channels][rows][width]` order.
+A tensor's storage is a set of bands: the NCHW tensor cut into ranges of rows. Each band is its own buffer, in `[channels][rows][width]` order. Row-major storage is one band of one row that holds every element.
 
-A worker can take one band without cloning the whole tensor. Convolution on several workers produces bands; elementwise arithmetic, activation, channel concat, nearest upsampling and max pooling keep them; anything else gathers them into dense storage once. The layout never changes a value.
+A worker can take one band without cloning the whole tensor. Convolution produces bands. Elementwise arithmetic, activation, concat, nearest upsampling, max pooling, the views, reductions and batch normalization work band by band. Readback, saving, convolution weights and a broadcast right operand read a tensor once as its one whole band. The layout never changes a value.
 
 ### Strided access
 
-A cursor walks a view without division. A strided copy runs the innermost axis as a plain loop and steps the cursor once per run. `set_slice`, dense `concat` and constant `pad` are one checked scatter: a contiguous source written through a strided target view.
+A cursor walks a view without division. A strided copy runs the innermost axis as a plain loop and steps the cursor once per run. `set_slice`, the concat of each band and constant `pad` are one checked scatter: a contiguous source written through a strided target view.
 
 ### Functions in hot loops
 
@@ -73,9 +73,8 @@ The numbers are a fixed reference scale, not a calibration to one machine. A wro
 Measured on shapes from other networks, one machine, one run each:
 
 - **Many weights, few output positions** (for example 512 to 512 channels, 3x3, on 7x7): little or no gain from more workers. Every call reorders the weights and every split clones them.
-- **Batch greater than one:** images run one after another.
+- **Batch greater than one:** the images are split over the workers one at a time, each part with its own copy of the weights. Small images with many channels (64 channels on 8x8) run slower on four workers than on one.
 - **Outputs narrower than six positions** use a slower per-entry packing path.
-- **Padding at least as large as the kernel, and empty batches,** take the dense path.
 
 ## What Bend does not provide
 

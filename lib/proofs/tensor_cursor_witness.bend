@@ -1,8 +1,6 @@
 import Base
 import ../tensor_cursor.bend as Cursor
-import ../traversal_array.bend as Traversal
 import ./storage_witness.bend as Witness
-import ./traversal_witness.bend as TraversalWitness
 import ./traversal_visit_witness.bend as VisitWitness
 
 def read_value(~Element: Data,axes: Cursor.Levels(),address: U32,-storage: Array<Element>,-result: Array<Element> & Element,

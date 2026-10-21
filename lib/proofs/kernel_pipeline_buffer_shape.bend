@@ -8,8 +8,8 @@ import ../kernel_window.bend as Window
 import ./kernel_gemm_certificate.bend as GemmCertificate
 import ../storage_buffer.bend as Storage
 import ../kernel_gemm_buffer.bend as GemmBuffer
-import ../kernel_gather_buffer.bend as GatherBuffer
 import ../kernel_pipeline.bend as Pipeline
+import ../tensor_gelu.bend as Gelu
 import ../tensor_operations.bend as Operations
 import ../kernel_tile.bend as Tile
 import ../tensor.bend as Tensors
@@ -70,6 +70,11 @@ def lanes(~Context: Data,~operation: Context -> F32 -> F32,+count: Nat,+position
   Storage.Buffer{array,length,Certificate.Certificate{depth,equation}} = buffer
   {==}
 
+def gelu(+count: Nat,buffer: Storage.Buffer<F32>) ->
+  {footprint(~F32,Gelu.mapped(count,0,buffer)) == footprint(~F32,buffer) : Footprint}:
+  Storage.Buffer{array,length,Certificate.Certificate{depth,equation}} = buffer
+  {==}
+
 def activated(~custom: F32 -> F32,+activation: Activations.Activation,+count: U32,buffer: Storage.Buffer<F32>) ->
   {footprint(~F32,Pipeline.activated(~custom,activation,count,buffer)) == footprint(~F32,buffer) : Footprint}:
   match activation:
@@ -82,14 +87,8 @@ def activated(~custom: F32 -> F32,+activation: Activations.Activation,+count: U3
     case Activations.Tanh{}: lanes(~Unit,~Pipeline.activated_value(~Activations.tanh_value),U32.to_nat(count),0,Unit{},buffer)
     case Activations.HardSigmoid{}: mapped(~Unit,~Pipeline.activated_value(~Activations.hard_sigmoid_value),count,Unit{},buffer)
     case Activations.HardSwish{}: mapped(~Unit,~Pipeline.activated_value(~Activations.hard_swish_value),count,Unit{},buffer)
-    case Activations.GELUTanh{}: lanes(~Unit,~Pipeline.activated_value(~Activations.gelu_tanh_value),U32.to_nat(count),0,Unit{},buffer)
+    case Activations.GELUTanh{}: gelu(U32.to_nat(count),buffer)
     case Activations.Custom{operations}: mapped(~Unit,~Pipeline.activated_value(~custom),count,Unit{},buffer)
-
-def gathered(+channels: U32,+offset: U32,+positions: U32,+span: U32,input: Storage.Buffer<F32>,output: Storage.Buffer<F32>) ->
-  {footprint(~F32,GatherBuffer.run(channels,offset,positions,span,input,output)) == footprint(~F32,output) : Footprint}:
-  Storage.Buffer{input,il,ic} = input
-  Storage.Buffer{output,length,Certificate.Certificate{depth,equation}} = output
-  {==}
 
 type BlockModel is Data:
   BlockModel{input: Buffer.Model<F32>,tiles: Buffer.Model<Tile.Tile8>,weights: Buffer.Model<Tile.Tile8>,bias: Buffer.Model<F32>,output: Buffer.Model<F32>}
@@ -141,7 +140,7 @@ def kept_footprint(+rows: U32,+positions: U32,+inner: U32,+start: U32,+span: U32
   Storage.Buffer{b,bl,Certificate.Certificate{+bd,+be}} = bias
   Storage.Buffer{o,ol,Certificate.Certificate{+od,+oe}} = target
   Storage.Buffer{t,tl,Certificate.Certificate{+td,+te}} = tiles
-  kept_footprint_projection(input,Gemm.run_keeping(rows,t,w,b,o,span,inner,start,positions),tl,wl,bl,ol,
+  kept_footprint_projection(input,Gemm.run_keeping(~True{},rows,t,w,b,o,span,inner,start,positions),tl,wl,bl,ol,
     GemmCertificate.kept(rows,t,w,b,o,span,inner,start,positions,Certificate.Certificate{td,te},Certificate.Certificate{wd,we},Certificate.Certificate{bd,be},Certificate.Certificate{od,oe}))
 
 def packed_footprint(+rows: U32,+positions: U32,+inner: U32,+start: U32,+span: U32,weights: Storage.Buffer<Tile.Tile8>,bias: Storage.Buffer<F32>,target: Storage.Buffer<F32>,pair: Storage.Buffer<F32> & Storage.Buffer<Tile.Tile8>) ->
@@ -149,48 +148,59 @@ def packed_footprint(+rows: U32,+positions: U32,+inner: U32,+start: U32,+span: U
   (input,tiles) = pair
   kept_footprint(rows,positions,inner,start,span,weights,bias,target,input,tiles)
 
-def step_footprint(+work: Pipeline.Work,+pack_start: U32,+start: U32,+span: U32,state: Pipeline.BlockState) ->
-  {footprint(~F32,output(Pipeline.block_step(work,pack_start,start,span,state))) == footprint(~F32,output(state)) : Footprint}:
-  Pipeline.Work{+rows,+h,+w,+k,+s,+p,+ow,+positions,+inner} = work
+def window_step_footprint(+work: Pipeline.WindowWork,+pack_start: U32,+start: U32,+span: U32,state: Pipeline.BlockState) ->
+  {footprint(~F32,output(Pipeline.block_step_window(work,pack_start,start,span,state))) == footprint(~F32,output(state)) : Footprint}:
+  Pipeline.WindowWork{+rows,+positions,+window} = work
+  Packing.Stencil{base,h,w,kr,kc,s,ro,co,ow,+inner} = window
   Pipeline.BlockState{input,tiles,weights,bias,target} = state
   packed_footprint(rows,positions,inner,start,span,weights,bias,target,
-    PackingBuffer.run(Packing.Call{U32.to_nat((span / 8 * inner : U32)),pack_start,h,w,k,s,p,ow,inner},input,tiles))
+    PackingBuffer.run_window(window,U32.to_nat((span / 8 * inner : U32)),pack_start,input,tiles))
 
-def blocks_footprint(+remaining: Nat,+work: Pipeline.Work,+pack_start: U32,+start: U32,+padded: U32,+span: U32,-state: Pipeline.BlockState,observation: BlockObservation<state>) ->
-  {footprint(~F32,output(Pipeline.blocks(remaining,work,pack_start,start,padded,span,state))) == footprint(~F32,output(state)) : Footprint}:
+def window_blocks_footprint(+remaining: Nat,+work: Pipeline.WindowWork,+pack_start: U32,+start: U32,+padded: U32,+span: U32,-state: Pipeline.BlockState,observation: BlockObservation<state>) ->
+  {footprint(~F32,output(Pipeline.blocks_window(remaining,work,pack_start,start,padded,span,state))) == footprint(~F32,output(state)) : Footprint}:
   match remaining:
     case 0n: {==}
     case 1n+ +rest:
       BlockObservation{+model,equation} = observation
-      %equation : {footprint(~F32,output(Pipeline.blocks(1n+rest,work,pack_start,start,padded,span,_))) == footprint(~F32,output(_)) : Footprint}
-      -next = Pipeline.block_step(work,pack_start,start,U32.min(span,(padded - start : U32)),pack_blocks(model))
-      Equal.trans(Footprint,footprint(~F32,output(Pipeline.blocks(rest,work,(pack_start + span : U32),(start + span : U32),padded,span,next))),footprint(~F32,output(next)),footprint(~F32,output(pack_blocks(model))),
-        blocks_footprint(rest,work,(pack_start + span : U32),(start + span : U32),padded,span,next,observe_blocks(Pipeline.block_step(work,pack_start,start,U32.min(span,(padded - start : U32)),pack_blocks(model)))),
-        step_footprint(work,pack_start,start,U32.min(span,(padded - start : U32)),pack_blocks(model)))
-
-def finish_footprint(~custom: F32 -> F32,+activation: Activations.Activation,+count: U32,state: Pipeline.BlockState) ->
-  {footprint(~F32,Pipeline.blocks_finished(~custom,activation,count,state)) == footprint(~F32,output(state)) : Footprint}:
-  Pipeline.BlockState{input,tiles,weights,bias,target} = state
-  activated(~custom,activation,count,target)
+      %equation : {footprint(~F32,output(Pipeline.blocks_window(1n+rest,work,pack_start,start,padded,span,_))) == footprint(~F32,output(_)) : Footprint}
+      -next = Pipeline.block_step_window(work,pack_start,start,U32.min(span,(padded - start : U32)),pack_blocks(model))
+      Equal.trans(Footprint,footprint(~F32,output(Pipeline.blocks_window(rest,work,(pack_start + span : U32),(start + span : U32),padded,span,next))),footprint(~F32,output(next)),footprint(~F32,output(pack_blocks(model))),
+        window_blocks_footprint(rest,work,(pack_start + span : U32),(start + span : U32),padded,span,next,observe_blocks(Pipeline.block_step_window(work,pack_start,start,U32.min(span,(padded - start : U32)),pack_blocks(model)))),
+        window_step_footprint(work,pack_start,start,U32.min(span,(padded - start : U32)),pack_blocks(model)))
 
 def output_size(work: Pipeline.Work) -> U32:
   Pipeline.Work{rows,h,w,k,s,p,ow,positions,inner} = work
   (rows * positions : U32)
 
-def run_footprint(~custom: F32 -> F32,+activation: Activations.Activation,+work: Pipeline.Work,+pack_start: U32,+input: Buffer.Model<F32>,+weights: Buffer.Model<Tile.Tile8>,+bias: Buffer.Model<F32>) ->
-  {footprint(~F32,Pipeline.blocked(~custom,activation,work,pack_start,Buffer.pack(~F32,input),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias))) ==
-    Footprint{Tensors.depth_for(output_size(work)),U32.to_nat(output_size(work))} : Footprint}:
-  Pipeline.Work{+rows,h,w,k,s,p,ow,+positions,+inner} = work
+def window_finish_footprint(~custom: F32 -> F32,+activation: Activations.Activation,+count: U32,state: Pipeline.BlockState) ->
+  {footprint(~F32,Pipeline.kept_output(Pipeline.kept_finished(~custom,activation,count,Pipeline.kept_from_blocks(state)))) == footprint(~F32,output(state)) : Footprint}:
+  Pipeline.BlockState{input,tiles,weights,bias,target} = state
+  activated(~custom,activation,count,target)
+
+def window_output_size(work: Pipeline.WindowWork) -> U32:
+  Pipeline.WindowWork{rows,positions,window} = work
+  (rows * positions : U32)
+
+def window_run_footprint(~custom: F32 -> F32,+activation: Activations.Activation,+work: Pipeline.WindowWork,+pack_start: U32,+input: Buffer.Model<F32>,+weights: Buffer.Model<Tile.Tile8>,+bias: Buffer.Model<F32>) ->
+  {footprint(~F32,Pipeline.kept_output(Pipeline.blocked_window_keeping(~custom,activation,work,pack_start,Buffer.pack(~F32,input),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias)))) ==
+    Footprint{Tensors.depth_for(window_output_size(work)),U32.to_nat(window_output_size(work))} : Footprint}:
+  Pipeline.WindowWork{+rows,+positions,Packing.Stencil{base,h,w,kr,kc,s,ro,co,ow,+inner}} = work
   +padded = Window.padded(positions)
   +span = Pipeline.block_positions(inner)
   +remaining = U32.to_nat(((padded + span - 1) / span : U32))
-  -state = {Pipeline.BlockState{Buffer.pack(~F32,input),Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),U32.max(Pipeline.block_tiles(),inner)),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias),Tensors.buffer(~F32,0.0,(rows * positions : U32))} : Pipeline.BlockState}
+  -state = {Pipeline.BlockState{Buffer.pack(~F32,input),Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),Pipeline.workspace_tiles(Pipeline.block_tiles(),inner,positions)),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias),Tensors.buffer(~F32,0.0,(rows * positions : U32))} : Pipeline.BlockState}
   %allocated(~F32,0.0,(rows * positions : U32)) :
-    {footprint(~F32,Pipeline.blocks_finished(~custom,activation,(rows * positions : U32),Pipeline.blocks(remaining,work,pack_start,0,padded,span,state))) == _ : Footprint}
-  %blocks_footprint(remaining,work,pack_start,0,padded,span,state,observe_blocks(Pipeline.BlockState{Buffer.pack(~F32,input),Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),U32.max(Pipeline.block_tiles(),inner)),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias),Tensors.buffer(~F32,0.0,(rows * positions : U32))})) :
-    {footprint(~F32,Pipeline.blocks_finished(~custom,activation,(rows * positions : U32),Pipeline.blocks(remaining,work,pack_start,0,padded,span,state))) == _ : Footprint}
-  finish_footprint(~custom,activation,(rows * positions : U32),Pipeline.blocks(remaining,work,pack_start,0,padded,span,
-    Pipeline.BlockState{Buffer.pack(~F32,input),Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),U32.max(Pipeline.block_tiles(),inner)),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias),Tensors.buffer(~F32,0.0,(rows * positions : U32))}))
+    {footprint(~F32,Pipeline.kept_output(Pipeline.kept_finished(~custom,activation,(rows * positions : U32),Pipeline.kept_from_blocks(Pipeline.blocks_window(remaining,work,pack_start,0,padded,span,state))))) == _ : Footprint}
+  %window_blocks_footprint(remaining,work,pack_start,0,padded,span,state,observe_blocks(Pipeline.BlockState{Buffer.pack(~F32,input),Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),Pipeline.workspace_tiles(Pipeline.block_tiles(),inner,positions)),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias),Tensors.buffer(~F32,0.0,(rows * positions : U32))})) :
+    {footprint(~F32,Pipeline.kept_output(Pipeline.kept_finished(~custom,activation,(rows * positions : U32),Pipeline.kept_from_blocks(Pipeline.blocks_window(remaining,work,pack_start,0,padded,span,state))))) == _ : Footprint}
+  window_finish_footprint(~custom,activation,(rows * positions : U32),Pipeline.blocks_window(remaining,work,pack_start,0,padded,span,
+    Pipeline.BlockState{Buffer.pack(~F32,input),Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),Pipeline.workspace_tiles(Pipeline.block_tiles(),inner,positions)),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias),Tensors.buffer(~F32,0.0,(rows * positions : U32))}))
+
+def run_footprint(~custom: F32 -> F32,+activation: Activations.Activation,+work: Pipeline.Work,+pack_start: U32,+input: Buffer.Model<F32>,+weights: Buffer.Model<Tile.Tile8>,+bias: Buffer.Model<F32>) ->
+  {footprint(~F32,Pipeline.blocked(~custom,activation,work,pack_start,Buffer.pack(~F32,input),Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias))) ==
+    Footprint{Tensors.depth_for(output_size(work)),U32.to_nat(output_size(work))} : Footprint}:
+  Pipeline.Work{+rows,+h,+w,+k,+s,+p,+ow,+positions,+inner} = work
+  window_run_footprint(~custom,activation,Pipeline.square_work(work),pack_start,input,weights,bias)
 
 # Lift the same footprint fact to an input owner before its contents are observed.
 type BlockFrame is Data:

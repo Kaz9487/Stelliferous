@@ -1,4 +1,4 @@
-# Gather from bands to dense NCHW storage: copy facts, bounds, coverage, the
+# Gather from bands to whole NCHW storage: copy facts, bounds, coverage, the
 # content projection and the values it reads.
 import Base
 import ./tensor_band_copy.bend as BandCopy
@@ -7,6 +7,7 @@ import ./nat_order.bend as Order
 import ./storage_buffer_model.bend as Buffer
 import ./storage_tree_model.bend as Tree
 import ./tensor_band_model.bend as Model
+import ./tensor_band_each.bend as Each
 import ./nat_to_u32_bounds.bend as Bounds
 import ./row_major_index.bend as RowMajor
 import ../machine_limits.bend as Machine
@@ -20,7 +21,6 @@ import ./encoded_coordinates.bend as Encoded
 import ./storage_certificate.bend as Certificate
 import ./strided_range_bounds.bend as Strided
 import ./tensor_band_coordinates.bend as BandCoordinates
-import ./row_major_coordinates.bend as RowCoordinates
 import ./tensor_band_shape_refinement.bend as BandShape
 import ./tensor_band_values.bend as BandValues
 import ./u32_division.bend as U32Division
@@ -29,11 +29,8 @@ import ./binary_radix.bend as Radix
 import ./boolean_logic.bend as Boolean
 import ./contiguous_copy.bend as Contiguous
 import ./natural_addition.bend as Addition
-import ./storage_address_bounds.bend as Address
 import ./storage_copy_refinement.bend as StorageCopyLaws
 import ./tensor_band_plan.bend as BandPlan
-import ./tensor_contiguous_bounds.bend as ContiguousBounds
-import ./tensor_shape_refinement.bend as ShapeLaws
 import ../storage_buffer.bend as Storage
 
 # Discharge the concrete gather copy-region obligations from NCHW geometry.
@@ -92,13 +89,13 @@ def valid(+image: U32,+images: U32,+first: U32,+rows: U32,+channels: U32,+height
   +offset = Nat.mul(U32.to_nat(first),U32.to_nat(width))
   +count = Nat.mul(U32.to_nat(rows),U32.to_nat(width))
   +image_room = image_room(U32.to_nat(image),U32.to_nat(images),U32.to_nat(channels),U32.to_nat(height),U32.to_nat(width),U32.to_nat(capacity),image_inside,total_room)
-  +frame_room = Strided.count_in_stride(base,frame,U32.to_nat(capacity),image_room)
+  +frame_room = Order.drop_left_le(base,frame,U32.to_nat(capacity),image_room)
   +plane_frame = {
     %RowMajor.multiply_commutative(plane,U32.to_nat(channels)) : {Nat.is_le(plane,_) == True{} : Bool}
     RowMajor.product_covers(plane,U32.to_nat(channels),channels_positive) : {Nat.is_le(plane,frame) == True{} : Bool}}
   +plane_room = Order.transitive(plane,frame,U32.to_nat(capacity),plane_frame,frame_room)
   +span = Strided.scaled_span(U32.to_nat(first),U32.to_nat(rows),U32.to_nat(height),U32.to_nat(width),row_span)
-  +count_exact = Arithmetic.multiply(rows,width,capacity,capacity_ok,Order.transitive(count,plane,U32.to_nat(capacity),Strided.count_in_stride(offset,count,plane,span),plane_room))
+  +count_exact = Arithmetic.multiply(rows,width,capacity,capacity_ok,Order.transitive(count,plane,U32.to_nat(capacity),Order.drop_left_le(offset,count,plane,span),plane_room))
   +plane_exact = Arithmetic.multiply(height,width,capacity,capacity_ok,plane_room)
   BandCopy.Valid{capacity_ok,
     Order.transitive(U32.to_nat(channels),frame,U32.to_nat(capacity),RowMajor.product_covers(U32.to_nat(channels),plane,RowMajor.multiply_lt(0n,U32.to_nat(height),U32.to_nat(width),height_positive,width_positive)),frame_room),
@@ -192,7 +189,7 @@ def element_address(+images: U32,+channels: U32,+height: U32,+width: U32,+first:
       {BandCoordinates.global_parts(U32.to_nat(image),U32.to_nat(local_first),channel,_,U32.to_nat(channels),U32.to_nat(height),U32.to_nat(width)) == U32.to_nat(query) : Nat}
     Equal.sym(Nat,U32.to_nat(query),BandCoordinates.global_parts(U32.to_nat(image),U32.to_nat(local_first),channel,index,U32.to_nat(channels),U32.to_nat(height),U32.to_nat(width)),
       query_parts(image,local_first,rows,channels,height,width,capacity,channel,index,valid,stride_exact,channel_inside,index_inside)) : {parts == U32.to_nat(query) : Nat}}
-  Address.equal_values(Bands.global_index(Bands.Geometry{images,channels,height,width},first,rows,position),query,
+  Arithmetic.to_nat_injective(Bands.global_index(Bands.Geometry{images,channels,height,width},first,rows,position),query,
     Equal.trans(Nat,U32.to_nat(Bands.global_index(Bands.Geometry{images,channels,height,width},first,rows,position)),parts,U32.to_nat(query),
       BandCoordinates.native_parts(image,local_first,quotient,remainder,channels,height,width,capacity,BandCopy.readback_capacity_ok(bounds_region,valid),height_positive,width_positive,
         %Equal.sym(Nat,parts,U32.to_nat(query),parts_query) : {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
@@ -247,76 +244,24 @@ def leaf(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input:
     pair_contents(~Element,input,result))
 
 def model(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element>,result: Buffer.Content<Element>) -> Buffer.Content<Element>:
-  match bands:
-    case Model.Leaf{input,first,rows}: leaf_model(~Element,geometry,first,rows,Buffer.content(~Element,input),result)
-    case Model.Fork{left,right}: model(~Element,geometry,right,model(~Element,geometry,left,result))
-
-type Context<-Element: Data> is Data:
-  Context{geometry: Bands.Geometry,bands: Model.Model<Element>}
-
-def proposition(~Element: Data,context: Context<Element>,-result: Storage.Buffer<Element>) -> Type:
-  Context{+geometry,+bands} = context
-  {Buffer.contents(~Element,Bands.gather(~Element,geometry,Model.pack(~Element,bands),result)) ==
-    model(~Element,geometry,bands,Buffer.contents(~Element,result)) : Buffer.Content<Element>}
+  Model.thread(~Element,~Buffer.Content<Element>,~Bands.Geometry,~leaf_model(~Element),geometry,Model.content(~Element,bands),result)
 
 def gather(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element>,result: Storage.Buffer<Element>) ->
   {Buffer.contents(~Element,Bands.gather(~Element,geometry,Model.pack(~Element,bands),result)) ==
     model(~Element,geometry,bands,Buffer.contents(~Element,result)) : Buffer.Content<Element>}:
-  match bands:
-    case Model.Leaf{+input,+first,+rows}:
-      Buffer.lift(~Element,~Context<Element>,~proposition(~Element),Context{geometry,Model.Leaf{input,first,rows}},result,Buffer.observe(~Element,result),
-        result =>
-          +result = result
-          Equal.trans(Buffer.Content<Element>,
-            Buffer.contents(~Element,Bands.gather_leaf(~Element,geometry,first,rows,Buffer.pack(~Element,input),Buffer.pack(~Element,result))),
-            leaf_model(~Element,geometry,first,rows,Buffer.content(~Element,input),Buffer.content(~Element,result)),
-            leaf_model(~Element,geometry,first,rows,Buffer.content(~Element,input),Buffer.contents(~Element,Buffer.pack(~Element,result))),
-            leaf(~Element,geometry,first,rows,input,result),
-            Equal.cong(Buffer.Content<Element>,Buffer.Content<Element>,output => leaf_model(~Element,geometry,first,rows,Buffer.content(~Element,input),output),
-              Buffer.content(~Element,result),Buffer.contents(~Element,Buffer.pack(~Element,result)),
-              Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,result)),Buffer.content(~Element,result),Buffer.packed_contents(~Element,result)))))
-    case Model.Fork{+left,+right}:
-      Buffer.lift(~Element,~Context<Element>,~proposition(~Element),Context{geometry,Model.Fork{left,right}},result,Buffer.observe(~Element,result),
-        result =>
-          +result = result
-          Equal.trans(Buffer.Content<Element>,
-            Buffer.contents(~Element,Bands.gather(~Element,geometry,Model.pack(~Element,right),Bands.gather(~Element,geometry,Model.pack(~Element,left),Buffer.pack(~Element,result)))),
-            model(~Element,geometry,right,Buffer.contents(~Element,Bands.gather(~Element,geometry,Model.pack(~Element,left),Buffer.pack(~Element,result)))),
-            model(~Element,geometry,right,model(~Element,geometry,left,Buffer.contents(~Element,Buffer.pack(~Element,result)))),
-            gather(~Element,geometry,right,Bands.gather(~Element,geometry,Model.pack(~Element,left),Buffer.pack(~Element,result))),
-            Equal.cong(Buffer.Content<Element>,Buffer.Content<Element>,output => model(~Element,geometry,right,output),
-              Buffer.contents(~Element,Bands.gather(~Element,geometry,Model.pack(~Element,left),Buffer.pack(~Element,result))),
-              model(~Element,geometry,left,Buffer.contents(~Element,Buffer.pack(~Element,result))),
-              gather(~Element,geometry,left,Buffer.pack(~Element,result)))))
-
-# Every native tree is connected to the canonical theorem by an equality
-# produced from its refinement_actual owners. No assumed layout/readback premise.
-type Refinement<-Element: Data,-geometry: Bands.Geometry,-bands: Bands.Bands(~Element),-result: Storage.Buffer<Element>> is Data:
-  Refinement{representation: Model.Model<Element>,
-    owners: {Model.pack(~Element,representation) == bands : Bands.Bands(~Element)},
-    execution: {Buffer.contents(~Element,Bands.gather(~Element,geometry,bands,result)) ==
-      model(~Element,geometry,representation,Buffer.contents(~Element,result)) : Buffer.Content<Element>}}
-
-def observed(~Element: Data,+geometry: Bands.Geometry,-bands: Bands.Bands(~Element),result: Storage.Buffer<Element>,observation: Model.Observation<Element,bands>) ->
-  Refinement<Element,geometry,bands,result>:
-  Model.Observation{+representation,+owners} = observation
-  Refinement{representation,owners,
-    %owners : {Buffer.contents(~Element,Bands.gather(~Element,geometry,_,result)) ==
-      model(~Element,geometry,representation,Buffer.contents(~Element,result)) : Buffer.Content<Element>}
-    gather(~Element,geometry,representation,result)}
-
-def refinement_actual(~Element: Data,geometry: Bands.Geometry,bands: Bands.Bands(~Element),result: Storage.Buffer<Element>) -> Refinement<Element,geometry,bands,result>:
-  observed(~Element,geometry,bands,result,Model.observe(~Element,bands))
+  Each.folded(~Element,~Bands.Geometry,~Bands.gather_band(~Element),~leaf_model(~Element),~leaf(~Element),geometry,bands,result)
 
 def leaf_writes(~Element: Data,geometry: Bands.Geometry,+first: U32,+rows: U32,input: Tree.Tree<Element>) -> List<&2,Writes.Assignment<Element>>:
   Bands.Geometry{images,+channels,+height,+width} = geometry
   BandCopy.writes(~Element,U32.to_nat(channels),0,(rows * width : U32),(rows * width : U32),(height * width : U32),0,
     ((first / height * channels * height + first % height) * width : U32),input)
 
+def band_writes(~Element: Data,geometry: Bands.Geometry,+first: U32,+rows: U32,buffer: Buffer.Content<Element>) -> List<&2,Writes.Assignment<Element>>:
+  Buffer.Content{input,length} = buffer
+  leaf_writes(~Element,geometry,first,rows,input)
+
 def refinement_writes(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element>) -> List<&2,Writes.Assignment<Element>>:
-  match bands:
-    case Model.Leaf{input,first,rows}: leaf_writes(~Element,geometry,first,rows,Buffer.tree(~Element,input))
-    case Model.Fork{left,right}: List.append(&2,Writes.Assignment<Element>,refinement_writes(~Element,geometry,left),refinement_writes(~Element,geometry,right))
+  Model.collect(~Element,~Writes.Assignment<Element>,~Bands.Geometry,~band_writes(~Element),geometry,Model.content(~Element,bands))
 
 def leaf_model_writes(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input: Tree.Tree<Element>,+input_length: Nat,+result: Tree.Tree<Element>,+length: Nat) ->
   {leaf_model(~Element,geometry,first,rows,Buffer.Content{input,input_length},Buffer.Content{result,length}) ==
@@ -330,20 +275,14 @@ def leaf_model_writes(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows
     BandCopy.model_writes(~Element,U32.to_nat(channels),0,(rows * width : U32),(rows * width : U32),(height * width : U32),0,
       ((first / height * channels * height + first % height) * width : U32),input,input_length,result,length))
 
+def band_written(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input: Buffer.Content<Element>,+result: Tree.Tree<Element>,+length: Nat) ->
+  {leaf_model(~Element,geometry,first,rows,input,Buffer.Content{result,length}) == Buffer.Content{Writes.pure(Element,band_writes(~Element,geometry,first,rows,input),result),length} : Buffer.Content<Element>}:
+  Buffer.Content{+source,+source_length} = input
+  leaf_model_writes(~Element,geometry,first,rows,source,source_length,result,length)
+
 def model_writes(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element>,+result: Tree.Tree<Element>,+length: Nat) ->
   {model(~Element,geometry,bands,Buffer.Content{result,length}) == Buffer.Content{Writes.pure(Element,refinement_writes(~Element,geometry,bands),result),length} : Buffer.Content<Element>}:
-  match bands:
-    case Model.Leaf{Buffer.Model{+input,+input_length,certificate},+first,+rows}:
-      leaf_model_writes(~Element,geometry,first,rows,input,input_length,result,length)
-    case Model.Fork{+left,+right}:
-      %Equal.sym(Buffer.Content<Element>,model(~Element,geometry,left,Buffer.Content{result,length}),Buffer.Content{Writes.pure(Element,refinement_writes(~Element,geometry,left),result),length},
-        model_writes(~Element,geometry,left,result,length)) :
-        {model(~Element,geometry,right,_) == Buffer.Content{Writes.pure(Element,refinement_writes(~Element,geometry,bands),result),length} : Buffer.Content<Element>}
-      %Equal.sym(Tree.Tree<Element>,Writes.pure(Element,List.append(&2,Writes.Assignment<Element>,refinement_writes(~Element,geometry,left),refinement_writes(~Element,geometry,right)),result),
-        Writes.pure(Element,refinement_writes(~Element,geometry,right),Writes.pure(Element,refinement_writes(~Element,geometry,left),result)),
-        Writes.concatenated_writes(Element,refinement_writes(~Element,geometry,left),refinement_writes(~Element,geometry,right),result)) :
-        {model(~Element,geometry,right,Buffer.Content{Writes.pure(Element,refinement_writes(~Element,geometry,left),result),length}) == Buffer.Content{_,length} : Buffer.Content<Element>}
-      model_writes(~Element,geometry,right,Writes.pure(Element,refinement_writes(~Element,geometry,left),result),length)
+  Each.thread_written(~Element,~Bands.Geometry,~leaf_model(~Element),~band_writes(~Element),~band_written(~Element),geometry,Model.content(~Element,bands),result,length)
 
 def gathered_writes(~Element: Data,+geometry: Bands.Geometry,+bands: Model.Model<Element>,+result: Buffer.Model<Element>) ->
   {Buffer.contents(~Element,Bands.gather(~Element,geometry,Model.pack(~Element,bands),Buffer.pack(~Element,result))) ==
@@ -533,12 +472,11 @@ def matching_planes(~Element: Data,~Context: Data,~value: Context -> U32 -> Elem
           Readback.Matching(~Element,query,value(context,query),values_writes(~Element,call,rest,_,input))
         matching_planes(~Element,~Context,~value,rest,context,call,input,1n+channel,query,values,facts,Order.advance_room(channel,rest,U32.to_nat(values_channels(call)),room)))
 
+def tree_facts_band(~Element: Data,+values_geometry: Bands.Geometry,+capacity: U32,+division_capacity: U32,+first: U32,+rows: U32,+buffer: Buffer.Content<Element>) -> Data:
+  Either<&2,&2,{plane(Call{values_geometry,first,rows,Buffer.content_length(~Element,buffer),capacity,division_capacity}) == 0 : U32},Facts<Call{values_geometry,first,rows,Buffer.content_length(~Element,buffer),capacity,division_capacity}>>
+
 def TreeFacts(~Element: Data,+values_geometry: Bands.Geometry,+capacity: U32,+division_capacity: U32,bands: Model.Model<Element>) -> Data:
-  match bands:
-    case Model.Leaf{buffer,values_first,values_rows}:
-      Either<&2,&2,{plane(Call{values_geometry,values_first,values_rows,Buffer.length(~Element,buffer),capacity,division_capacity}) == 0 : U32},
-        Facts<Call{values_geometry,values_first,values_rows,Buffer.length(~Element,buffer),capacity,division_capacity}>>
-    case Model.Fork{left,right}: Shape.Both<TreeFacts(~Element,values_geometry,capacity,division_capacity,left),TreeFacts(~Element,values_geometry,capacity,division_capacity,right)>
+  Model.ContentAll(~Element,~tree_facts_band(~Element,values_geometry,capacity,division_capacity),Model.content(~Element,bands))
 
 def empty_program(~Element: Data,+call: Call,+input: Tree.Tree<Element>,empty: {plane(call) == 0 : U32}) ->
   {values_writes(~Element,call,U32.to_nat(values_channels(call)),0,input) == [] : List<&2,Writes.Assignment<Element>>}:
@@ -640,7 +578,7 @@ def from_leaf_facts(+limits: Machine.Limits,+images: U32,+channels: U32,+height:
   Inspection.LeafFacts{+local,+rows_fit,+length_exact,allocation_fit} = inspected
   +row_total = Nat.mul(U32.to_nat(images),U32.to_nat(height))
   +image_positive = RowMajor.left_factor_positive(U32.to_nat(images),U32.to_nat(height),
-    Bounds.nat_trans(0n,U32.to_nat(rows),row_total,rows_positive,Strided.count_in_stride(U32.to_nat(first),U32.to_nat(rows),row_total,rows_fit)))
+    Bounds.nat_trans(0n,U32.to_nat(rows),row_total,rows_positive,Order.drop_left_le(U32.to_nat(first),U32.to_nat(rows),row_total,rows_fit)))
   +spatial = Nat.mul(U32.to_nat(height),U32.to_nat(width))
   +frame = Nat.mul(U32.to_nat(channels),spatial)
   +total = Nat.mul(U32.to_nat(images),frame)
@@ -655,7 +593,7 @@ def from_leaf_facts(+limits: Machine.Limits,+images: U32,+channels: U32,+height:
   +height_room = Order.transitive(U32.to_nat(height),spatial,U32.to_nat(machine_capacity),RowMajor.product_covers(U32.to_nat(height),U32.to_nat(width),width_positive),spatial_room)
   +height_double = Limits.double_bound(limits,U32.to_nat(height),height_room)
   +span = Inspection.local_span(height,first,rows,Machine.half_word(limits),Limits.half_word_fits(limits),height_positive,height_double,local)
-  +rows_bound = Strided.count_in_stride(Nat.mod(U32.to_nat(first),U32.to_nat(height)),U32.to_nat(rows),U32.to_nat(height),span)
+  +rows_bound = Order.drop_left_le(Nat.mod(U32.to_nat(first),U32.to_nat(height)),U32.to_nat(rows),U32.to_nat(height),span)
   +count = Nat.mul(U32.to_nat(rows),U32.to_nat(width))
   +count_spatial = RowMajor.mul_le(U32.to_nat(rows),U32.to_nat(height),U32.to_nat(width),rows_bound)
   +count_room = Order.transitive(count,spatial,U32.to_nat(machine_capacity),count_spatial,spatial_room)
@@ -680,7 +618,7 @@ def from_leaf_facts(+limits: Machine.Limits,+images: U32,+channels: U32,+height:
     height_positive,width_positive,count_exact,height_double,span}
 
 def zero_plane(+rows: U32,+width: U32,empty: {U32.is_zero(rows) == True{} : Bool}) -> {(rows * width : U32) == 0 : U32}:
-  %Equal.sym(U32,rows,0,ShapeLaws.native_equal(rows,0,empty)) : {(_ * width : U32) == 0 : U32}
+  %Equal.sym(U32,rows,0,Arithmetic.equal_of_is_eq(rows,0,empty)) : {(_ * width : U32) == 0 : U32}
   Arithmetic.multiply_zero_left(width)
 
 def selected_leaf(empty: Bool,+limits: Machine.Limits,+geometry: Bands.Geometry,+first: U32,+rows: U32,+length: Nat,+depth: Nat,+capacity: U32,
@@ -691,7 +629,7 @@ def selected_leaf(empty: Bool,+limits: Machine.Limits,+geometry: Bands.Geometry,
     case True{} Bands.Geometry{images,channels,height,width} domain: Inl{zero_plane(rows,width,compared)}
     case False{} Bands.Geometry{images,channels,height,width} Domain{capacity_ok,channels_positive,height_positive,width_positive,machine_room,allocation_room}:
       Inr{from_leaf_facts(limits,images,channels,height,width,first,rows,length,depth,capacity,capacity_ok,channels_positive,height_positive,width_positive,
-        ContiguousBounds.extent_positive(rows,compared),machine_room,allocation_room,facts)}
+        Arithmetic.word_nonzero_positive(rows,compared),machine_room,allocation_room,facts)}
 
 def leaf_checked(+limits: Machine.Limits,+geometry: Bands.Geometry,+first: U32,+rows: U32,+length: Nat,+depth: Nat,+capacity: U32,
   domain: Domain<geometry,limits,capacity>,accepted: {Inspection.valid(Bands.leaf_inspection(geometry,length,depth,first,rows)) == True{} : Bool}) ->
@@ -731,21 +669,6 @@ def from_metadata(~Element: Data,+geometry: Bands.Geometry,+limits: Machine.Limi
   Facts<Call{geometry,first,rows,Buffer.length(~Element,input),capacity,Machine.half_word(limits)}>:
   Buffer.Sized{depth_ok,room} = ready
   from_slice(~Element,geometry,limits,first,rows,Buffer.length(~Element,input),input,capacity,domain,metadata,rows_positive,room)
-
-# Halo preparation exposes content and readiness, without an affine owner.
-# The same inspected geometry follows directly from its balanced tree witness.
-def from_content(~Element: Data,+geometry: Bands.Geometry,+limits: Machine.Limits,+first: U32,+rows: U32,+input: Buffer.Content<Element>,+capacity: U32,
-  domain: Domain<geometry,limits,capacity>,metadata: BandShape.Leaf(geometry,first,rows,Buffer.content_length(~Element,input)),
-  rows_positive: {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool},ready: Buffer.ContentReady<Element,input>) ->
-  Facts<Call{geometry,first,rows,Buffer.content_length(~Element,input),capacity,Machine.half_word(limits)}>:
-  Bands.Geometry{+images,+channels,+height,+width} = geometry
-  Buffer.Content{+tree,+length} = input
-  Domain{capacity_ok,channels_positive,height_positive,width_positive,machine_room,allocation_room} = domain
-  BandShape.Fields{local,rows_fit,length_exact} = metadata
-  Buffer.ContentReady{+depth,balanced,depth_ok,room} = ready
-  from_leaf_facts(limits,images,channels,height,width,first,rows,length,depth,capacity,capacity_ok,channels_positive,height_positive,width_positive,rows_positive,machine_room,allocation_room,
-    Inspection.LeafFacts{local,rows_fit,length_exact,
-      %Shape.capacity(Element,depth,tree,balanced) : {Nat.is_le(length,U32.to_nat(_)) == True{} : Bool} room})
 
 # A logical NCHW point located in a band names an actual gather assignment.
 def leaf_covered(~Element: Data,+call: Call,+input: Tree.Tree<Element>,+image: Nat,+channel: Nat,+row: Nat,+column: Nat,+local: Nat,+facts: Facts<call>,
@@ -867,43 +790,28 @@ def indexed_leaf_address(+call: Call,+position: U32,+image: Nat,+channel: Nat,+r
     element_address(images,channels,height,width,first,rows,position,capacity,division_capacity,channel,index,valid,stride_exact,position_parts,division_ok,plane_bound,height_positive,width_positive,channel_inside,index_inside),
     leaf_address(call,image,channel,row,column,local,facts,channel_inside,row_inside,column_inside,local_inside,located))
 
-# The domain bounds every element of the tensor by the capacity, so the index
-# of a pixel of the batch is below it.
-def pixel_inside(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+channel: Nat,+row: Nat,+column: Nat,domain: Domain<geometry,limits,capacity>,
+# A pixel of the batch lies below the element count.
+def pixel_below(+geometry: Bands.Geometry,+channel: Nat,+row: Nat,+column: Nat,
   channel_inside: {Nat.is_lt(channel,BandValues.channels(geometry)) == True{} : Bool},+row_inside: {Nat.is_lt(row,Inspection.total_rows(geometry)) == True{} : Bool},
-  column_inside: {Nat.is_lt(column,BandValues.width(geometry)) == True{} : Bool}) ->
-  {Nat.is_lt(BandValues.pixel(geometry,channel,row,column),U32.to_nat(capacity)) == True{} : Bool}:
+  column_inside: {Nat.is_lt(column,BandValues.width(geometry)) == True{} : Bool},+height_positive: {height_positive(geometry) == True{} : Bool}) ->
+  {Nat.is_lt(BandValues.pixel(geometry,channel,row,column),elements(geometry)) == True{} : Bool}:
   Bands.Geometry{+images,+channels,+height,+width} = geometry
-  Domain{capacity_ok,channels_positive,+height_positive,width_positive,machine_room,allocation_room} = domain
   +image = Nat.div(row,U32.to_nat(height))
-  +local = Nat.mod(row,U32.to_nat(height))
-  +combined_channel = Nat.add(Nat.mul(image,U32.to_nat(channels)),channel)
-  +index = RowMajor.index(combined_channel,U32.to_nat(height),U32.to_nat(width),local,column)
-  +total = Nat.mul(Nat.mul(U32.to_nat(images),U32.to_nat(channels)),Nat.mul(U32.to_nat(height),U32.to_nat(width)))
-  +image_inside = RowMajor.row_inside(image,U32.to_nat(images),U32.to_nat(height),local,
-    %DivisionOrder.quotient_exact(row,U32.to_nat(height),height_positive) : {Nat.is_lt(_,Nat.mul(U32.to_nat(images),U32.to_nat(height))) == True{} : Bool} row_inside)
-  Bounds.nat_trans(index,total,U32.to_nat(capacity),
-    RowMajor.in_bounds(combined_channel,Nat.mul(U32.to_nat(images),U32.to_nat(channels)),U32.to_nat(height),U32.to_nat(width),local,column,
-      RowMajor.radix(image,U32.to_nat(images),channel,U32.to_nat(channels),image_inside,channel_inside),DivisionOrder.remainder_small(row,U32.to_nat(height),height_positive),column_inside),
-    %Equal.sym(Nat,total,Nat.mul(U32.to_nat(images),Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(height),U32.to_nat(width)))),RowMajor.assoc(U32.to_nat(images),U32.to_nat(channels),Nat.mul(U32.to_nat(height),U32.to_nat(width)))) :
-      {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool} allocation_room)
+  %RowMajor.assoc(U32.to_nat(images),U32.to_nat(channels),Nat.mul(U32.to_nat(height),U32.to_nat(width))) :
+    {Nat.is_lt(RowMajor.index(Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),U32.to_nat(height),U32.to_nat(width),Nat.mod(row,U32.to_nat(height)),column),_) == True{} : Bool}
+  RowMajor.in_bounds(Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),Nat.mul(U32.to_nat(images),U32.to_nat(channels)),U32.to_nat(height),U32.to_nat(width),Nat.mod(row,U32.to_nat(height)),column,
+    RowMajor.radix(image,U32.to_nat(images),channel,U32.to_nat(channels),DivisionOrder.quotient_below(row,U32.to_nat(images),U32.to_nat(height),height_positive,row_inside),channel_inside),
+    DivisionOrder.remainder_small(row,U32.to_nat(height),height_positive),column_inside)
 
-# The index of a pixel of the batch survives the machine word.
-def pixel_exact(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+channel: Nat,+row: Nat,+column: Nat,+domain: Domain<geometry,limits,capacity>,
-  channel_inside: {Nat.is_lt(channel,BandValues.channels(geometry)) == True{} : Bool},+row_inside: {Nat.is_lt(row,Inspection.total_rows(geometry)) == True{} : Bool},
-  column_inside: {Nat.is_lt(column,BandValues.width(geometry)) == True{} : Bool}) ->
-  {U32.to_nat(U32.from_nat(BandValues.pixel(geometry,channel,row,column))) == BandValues.pixel(geometry,channel,row,column) : Nat}:
-  Domain{capacity_ok,channels_positive,height_positive,width_positive,machine_room,allocation_room} = domain
-  +inside = pixel_inside(geometry,limits,capacity,channel,row,column,domain,channel_inside,row_inside,column_inside)
-  Bounds.roundtrip(BandValues.pixel(geometry,channel,row,column),capacity,capacity_ok,Bounds.strict_le(BandValues.pixel(geometry,channel,row,column),U32.to_nat(capacity),inside))
-
-# The word of a pixel of the batch is below the capacity of the domain.
-def pixel_word_inside(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+channel: Nat,+row: Nat,+column: Nat,+domain: Domain<geometry,limits,capacity>,
-  +channel_inside: {Nat.is_lt(channel,BandValues.channels(geometry)) == True{} : Bool},+row_inside: {Nat.is_lt(row,Inspection.total_rows(geometry)) == True{} : Bool},
-  +column_inside: {Nat.is_lt(column,BandValues.width(geometry)) == True{} : Bool}) ->
-  {Nat.is_lt(U32.to_nat(U32.from_nat(BandValues.pixel(geometry,channel,row,column))),U32.to_nat(capacity)) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(BandValues.pixel(geometry,channel,row,column))),BandValues.pixel(geometry,channel,row,column),pixel_exact(geometry,limits,capacity,channel,row,column,domain,channel_inside,row_inside,column_inside)) : {Nat.is_lt(_,U32.to_nat(capacity)) == True{} : Bool}
-  pixel_inside(geometry,limits,capacity,channel,row,column,domain,channel_inside,row_inside,column_inside)
+# A point of an image inside the batch lies below the element count.
+def point_below(+images: U32,+channels: U32,+height: U32,+width: U32,+image: Nat,+channel: Nat,+row: Nat,+column: Nat,
+  image_inside: {Nat.is_lt(image,U32.to_nat(images)) == True{} : Bool},channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool},
+  row_inside: {Nat.is_lt(row,U32.to_nat(height)) == True{} : Bool},column_inside: {Nat.is_lt(column,U32.to_nat(width)) == True{} : Bool}) ->
+  {Nat.is_lt(point(Bands.Geometry{0,channels,height,width},image,channel,row,column),elements(Bands.Geometry{images,channels,height,width})) == True{} : Bool}:
+  %RowMajor.assoc(U32.to_nat(images),U32.to_nat(channels),Nat.mul(U32.to_nat(height),U32.to_nat(width))) :
+    {Nat.is_lt(RowMajor.index(Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),U32.to_nat(height),U32.to_nat(width),row,column),_) == True{} : Bool}
+  RowMajor.in_bounds(Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),Nat.mul(U32.to_nat(images),U32.to_nat(channels)),U32.to_nat(height),U32.to_nat(width),row,column,
+    RowMajor.radix(image,U32.to_nat(images),channel,U32.to_nat(channels),image_inside,channel_inside),row_inside,column_inside)
 
 # The row of a cell of a leaf, counted over the batch, is a row of the tensor.
 def cell_row_inside(+geometry: Bands.Geometry,+first: U32,+rows: U32,+length: Nat,+row: Nat,metadata: BandShape.Leaf(geometry,first,rows,length),
@@ -977,59 +885,11 @@ def observed_value(~Element: Data,~Context: Data,~value: Context -> U32 -> Eleme
     %content_equal : BandValues.Values(~Element,~Context,~value,context,geometry,_) values,
     image,channel,row,column,inside,depth_ok)
 
-def flat_read_located(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+call: Call,+input: Tree.Tree<Element>,+position: Nat,facts: Facts<call>,
-  values: BandValues.Leaf(~Element,~Context,~value,context,values_geometry(call),values_first(call),values_rows(call),input,length(call)),
-  inside: {Nat.is_lt(position,length(call)) == True{} : Bool},
-  coordinates: RowCoordinates.Coordinates<U32.to_nat(values_channels(call)),U32.to_nat(values_rows(call)),U32.to_nat(values_width(call)),position>) ->
-  {Tree.read(Element,input,U32.from_nat(position)) == value(context,Bands.global_index(values_geometry(call),values_first(call),values_rows(call),U32.from_nat(position))) : Element}:
-  Call{Bands.Geometry{+images,+channels,+height,+width},+first,+rows,+length,+capacity,+division_capacity} = call
-  RowCoordinates.Coordinates{+channel,+row,+column,+channel_inside,+row_inside,+column_inside,+exact} = coordinates
-  +geometry = {Bands.Geometry{images,channels,height,width} : Bands.Geometry}
-  +cell = BandValues.position(geometry,rows,channel,row,column)
-  %Equal.sym(Nat,position,cell,exact) : {Tree.read(Element,input,U32.from_nat(_)) == value(context,Bands.global_index(geometry,first,rows,U32.from_nat(_))) : Element}
-  %Equal.sym(U32,Bands.global_index(geometry,first,rows,U32.from_nat(cell)),U32.from_nat(BandValues.pixel(geometry,channel,Nat.add(U32.to_nat(first),row),column)),
-      indexed_pixel(Call{Bands.Geometry{images,channels,height,width},first,rows,length,capacity,division_capacity},channel,row,column,facts,channel_inside,row_inside,column_inside,
-        %exact : {Nat.is_lt(_,length) == True{} : Bool} inside)) :
-    {Tree.read(Element,input,U32.from_nat(cell)) == value(context,_) : Element}
-  BandValues.leaf_read(~Element,~Context,~value,context,geometry,first,rows,input,length,channel,row,column,values,channel_inside,row_inside,column_inside)
+def domain_channels_positive(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,domain: Domain<geometry,limits,capacity>) -> {channels_positive(geometry) == True{} : Bool}:
+  Domain{capacity_ok,channels_positive,height_positive,width_positive,machine_room,allocation_room} = domain
+  channels_positive
 
-# The flat reading of a leaf: the element at a local position is the logical
-# value at the global index of that position. Operations whose schedule runs
-# over flat addresses read the cells of the relation through it; the position
-# is split into its channel, row and column here, once.
-def flat_read(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+call: Call,+input: Tree.Tree<Element>,+position: Nat,facts: Facts<call>,
-  values: BandValues.Leaf(~Element,~Context,~value,context,values_geometry(call),values_first(call),values_rows(call),input,length(call)),
-  +inside: {Nat.is_lt(position,length(call)) == True{} : Bool}) ->
-  {Tree.read(Element,input,U32.from_nat(position)) == value(context,Bands.global_index(values_geometry(call),values_first(call),values_rows(call),U32.from_nat(position))) : Element}:
-  Call{Bands.Geometry{+images,+channels,+height,+width},+first,+rows,+length,+capacity,+division_capacity} = call
-  Facts{+valid,+stride_exact,+length_exact,+length_bound,+division_ok,+plane_bound,+height_positive,+width_positive,+count_exact,+height_bound,+row_span} = facts
-  flat_read_located(~Element,~Context,~value,context,Call{Bands.Geometry{images,channels,height,width},first,rows,length,capacity,division_capacity},input,position,
-    Facts{valid,stride_exact,length_exact,length_bound,division_ok,plane_bound,height_positive,width_positive,count_exact,height_bound,row_span},values,inside,
-    RowCoordinates.locate(U32.to_nat(channels),U32.to_nat(rows),U32.to_nat(width),position,width_positive,
-      %count_exact : {Nat.is_lt(position,Nat.mul(U32.to_nat(channels),_)) == True{} : Bool}
-      %length_exact : {Nat.is_lt(position,_) == True{} : Bool}
-      inside))
+def gather_width_positive(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,domain: Domain<geometry,limits,capacity>) -> {width_positive(geometry) == True{} : Bool}:
+  Domain{capacity_ok,channels_positive,height_positive,width_positive,machine_room,allocation_room} = domain
+  width_positive
 
-# A position inside the content of a leaf shows that the leaf has rows.
-def leaf_rows_positive(+geometry: Bands.Geometry,+first: U32,+rows: U32,+length: Nat,+position: Nat,
-  metadata: BandShape.Leaf(geometry,first,rows,length),inside: {Nat.is_lt(position,length) == True{} : Bool}) ->
-  {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool}:
-  Bands.Geometry{images,+channels,height,+width} = geometry
-  BandShape.Fields{local,rows_fit,length_exact} = metadata
-  RowMajor.left_factor_positive(U32.to_nat(rows),U32.to_nat(width),
-    RowMajor.left_factor_positive(Nat.mul(U32.to_nat(rows),U32.to_nat(width)),U32.to_nat(channels),
-      %RowMajor.multiply_commutative(U32.to_nat(channels),Nat.mul(U32.to_nat(rows),U32.to_nat(width))) : {Nat.is_lt(0n,_) == True{} : Bool}
-      %length_exact : {Nat.is_lt(0n,_) == True{} : Bool}
-      Order.le_lt_trans(0n,position,length,Order.zero_le(position),inside)))
-
-# The same flat reading for a leaf described by its metadata and readiness.
-# The facts of its gather call are built here.
-def flat_read_content(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,+limits: Machine.Limits,+first: U32,+rows: U32,
-  +input: Buffer.Content<Element>,+capacity: U32,+position: Nat,domain: Domain<geometry,limits,capacity>,
-  +metadata: BandShape.Leaf(geometry,first,rows,Buffer.content_length(~Element,input)),ready: Buffer.ContentReady<Element,input>,
-  values: BandValues.Leaf(~Element,~Context,~value,context,geometry,first,rows,Buffer.content_tree(~Element,input),Buffer.content_length(~Element,input)),
-  +inside: {Nat.is_lt(position,Buffer.content_length(~Element,input)) == True{} : Bool}) ->
-  {Tree.read(Element,Buffer.content_tree(~Element,input),U32.from_nat(position)) == value(context,Bands.global_index(geometry,first,rows,U32.from_nat(position))) : Element}:
-  flat_read(~Element,~Context,~value,context,Call{geometry,first,rows,Buffer.content_length(~Element,input),capacity,Machine.half_word(limits)},Buffer.content_tree(~Element,input),position,
-    from_content(~Element,geometry,limits,first,rows,input,capacity,domain,metadata,
-      leaf_rows_positive(geometry,first,rows,Buffer.content_length(~Element,input),position,metadata,inside),ready),values,inside)

@@ -11,12 +11,11 @@ import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/proofs/u32_shift.bend as U32Shift
 import ../../lib/proofs/u32_comparison.bend as Comparison
-import ../../lib/proofs/natural_addition.bend as Addition
 import ./convolution_guard_facts.bend as Guards
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
-import ./window_samples.bend as Samples
 import ./window_positions.bend as Positions
+import ../../lib/proofs/nat_division.bend as Division
 
 def stride_word(+limits: Machine.Limits,+problem: ConvSpec.Problem,
   +support: Guards.Supported<problem,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
@@ -68,7 +67,7 @@ def start_when(+limits: Machine.Limits,+problem: ConvSpec.Problem,+facts: Guards
             stride_positive),
           %Equal.sym(Nat,U32.to_nat(U32.from_nat(Guards.stride(problem))),Guards.stride(problem),stride_word(limits,problem,support)) : {Nat.div(U32.to_nat(first),_) == block : Nat}
           %Equal.sym(Nat,U32.to_nat(first),Nat.mul(block,Guards.stride(problem)),first_exact) : {Nat.div(_,Guards.stride(problem)) == block : Nat}
-          Positions.exact_quotient(block,Guards.stride(problem),stride_positive)) : {U32.to_nat(quotient) == block : Nat}}
+          Division.exact_quotient(block,Guards.stride(problem),stride_positive)) : {U32.to_nat(quotient) == block : Nat}}
       +width_exact = Coordinates.width_exact(limits,problem,facts,support)
       +product_exact = {Equal.trans(Nat,U32.to_nat(product),Nat.mul(U32.to_nat(quotient),U32.to_nat(width_u)),Nat.mul(block,ConvSpec.out_width(problem)),
           Arithmetic.multiply(quotient,width_u,capacity,Limits.capacity_fits(limits),

@@ -7,27 +7,25 @@
 <text x="455" y="96" font-size="12" font-weight="600" fill="#9198a1">4 threads</text>
 <line x1="189.5" y1="108" x2="189.5" y2="268" stroke="#30363d"/>
 <line x1="454.5" y1="108" x2="454.5" y2="268" stroke="#30363d"/>
-<rect x="28" y="123" width="10" height="10" rx="2" fill="#a56eff"/><text x="46" y="132.5" font-weight="600">Stelliferous 0.0.2</text>
-<path d="M190,118H312Q316,118 316,122V134Q316,138 312,138H190Z" fill="#a56eff"/>
-<text x="324" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">110</text>
-<text x="356" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" fill="#9198a1">−28%</text>
-<path d="M455,118H500Q504,118 504,122V134Q504,138 500,138H455Z" fill="#a56eff"/>
-<text x="512" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">43</text>
-<text x="536" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="12" fill="#9198a1">−22%</text>
-<rect x="28" y="163" width="10" height="10" rx="2" fill="#3b1a70"/><text x="46" y="172.5" fill="#9198a1">Stelliferous 0.0.1</text>
-<path d="M190,158H363Q367,158 367,162V174Q367,178 363,178H190Z" fill="#3b1a70"/>
-<text x="375" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">153.7</text>
-<path d="M455,158H514Q518,158 518,162V174Q518,178 514,178H455Z" fill="#3b1a70"/>
-<text x="526" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">54.8</text>
+<rect x="28" y="123" width="10" height="10" rx="2" fill="#a56eff"/><text x="46" y="132.5" font-weight="600">Stelliferous 0.0.3</text>
+<path d="M190,118H321Q325,118 325,122V134Q325,138 321,138H190Z" fill="#a56eff"/>
+<text x="333" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">117</text>
+<path d="M455,118H505Q509,118 509,122V134Q509,138 505,138H455Z" fill="#a56eff"/>
+<text x="517" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">47</text>
+<rect x="28" y="163" width="10" height="10" rx="2" fill="#3b1a70"/><text x="46" y="172.5" fill="#9198a1">Stelliferous 0.0.2</text>
+<path d="M190,158H318Q322,158 322,162V174Q322,178 318,178H190Z" fill="#3b1a70"/>
+<text x="330" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">115</text>
+<path d="M455,158H502Q506,158 506,162V174Q506,178 502,178H455Z" fill="#3b1a70"/>
+<text x="514" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">44</text>
 <rect x="28" y="203" width="10" height="10" rx="2" fill="#6e7681"/><text x="46" y="212.5" fill="#9198a1">NumPy / OpenBLAS</text>
-<path d="M190,198H332Q336,198 336,202V214Q336,218 332,218H190Z" fill="#6e7681"/>
-<text x="344" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">126.9</text>
-<path d="M455,198H581Q585,198 585,202V214Q585,218 581,218H455Z" fill="#6e7681"/>
-<text x="593" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">113.3</text>
+<path d="M190,198H340Q344,198 344,202V214Q344,218 340,218H190Z" fill="#6e7681"/>
+<text x="352" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">133.7</text>
+<path d="M455,198H585Q589,198 589,202V214Q589,218 585,218H455Z" fill="#6e7681"/>
+<text x="597" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">116.3</text>
 <rect x="28" y="243" width="10" height="10" rx="2" fill="#6e7681"/><text x="46" y="252.5" fill="#9198a1">PyTorch</text>
-<path d="M190,238H243Q247,238 247,242V254Q247,258 243,258H190Z" fill="#6e7681"/>
-<text x="255" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">49.3</text>
+<path d="M190,238H245Q249,238 249,242V254Q249,258 245,258H190Z" fill="#6e7681"/>
+<text x="257" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">51.1</text>
 <path d="M455,238H468Q472,238 472,242V254Q472,258 468,258H455Z" fill="#6e7681"/>
-<text x="480" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">14.8</text>
+<text x="480" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">15.2</text>
 </g>
 </svg>

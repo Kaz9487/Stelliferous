@@ -7,6 +7,11 @@ import ./storage_buffer_model.bend as Buffer
 type Assignment<-T: Data> is Data:
   Put{index: U32,value: T}
 
+def prepend(~Element: Data,keep: Bool,index: U32,value: Element,rest: List<&2,Assignment<Element>>) -> List<&2,Assignment<Element>>:
+  match keep:
+    case False{}: rest
+    case True{}: Put{index,value} <> rest
+
 def native(-T: Data,writes: List<&2,Assignment<T>>,out: Array<T>) -> Array<T>:
   match writes:
     case []:
@@ -20,6 +25,17 @@ def pure(-T: Data,writes: List<&2,Assignment<T>>,out: Tree.Tree<T>) -> Tree.Tree
       out
     case Put{i,v} <> rest:
       pure(T,rest,Tree.write(T,out,i,v))
+
+def sequence(~Element: Data,values: List<&2,Element>,+offset: U32) -> List<&2,Assignment<Element>>:
+  match values:
+    case Nil{}: []
+    case head <> rest: Put{offset,head} <> sequence(~Element,rest,(offset + 1 : U32))
+
+def sequence_refines(~Element: Data,+values: List<&2,Element>,+offset: U32,+tree: Tree.Tree<Element>) ->
+  {pure(Element,sequence(~Element,values,offset),tree) == Tree.write_sequence(~Element,values,offset,tree) : Tree.Tree<Element>}:
+  match values:
+    case Nil{}: {==}
+    case +head <> +rest: sequence_refines(~Element,rest,(offset + 1 : U32),Tree.write(Element,tree,offset,head))
 
 def concatenated_native(-T: Data,+first: List<&2,Assignment<T>>,+second: List<&2,Assignment<T>>,-output: Array<T>) ->
   {native(T,List.append(&2,Assignment<T>,first,second),output) == native(T,second,native(T,first,output)) : Array<T>}:
@@ -62,11 +78,6 @@ def evaluate(-T: Data,program: Program<T>) -> Tree.Tree<T>:
     case Append{writes,previous}:
       pure(T,writes,evaluate(T,previous))
 
-def initial_tree(-T: Data,program: Program<T>) -> Tree.Tree<T>:
-  match program:
-    case Initial{tree}: tree
-    case Append{writes,previous}: initial_tree(T,previous)
-
 # Structural invariants do not depend on the values being written.
 def writes_preserve_balance(-Element: Data,+writes: List<&2,Assignment<Element>>,+tree: Tree.Tree<Element>,+depth: Nat,
   balanced: Shape.Balanced(Element,depth,tree)) -> Shape.Balanced(Element,depth,pure(Element,writes,tree)):
@@ -88,17 +99,3 @@ def content_ready(~Element: Data,+writes: List<&2,Assignment<Element>>,+tree: Tr
   Buffer.ContentReady{depth,writes_preserve_balance(Element,writes,tree,depth,balanced),depth_ok,
     %Equal.sym(U32,Tree.capacity(Element,pure(Element,writes,tree)),Tree.capacity(Element,tree),writes_preserve_capacity(Element,writes,tree,depth,balanced)) :
       {Nat.is_le(length,U32.to_nat(_)) == True{} : Bool} room}
-
-def program_preserves_balance(-Element: Data,+program: Program<Element>,+depth: Nat,
-  balanced: Shape.Balanced(Element,depth,initial_tree(Element,program))) -> Shape.Balanced(Element,depth,evaluate(Element,program)):
-  match program:
-    case Initial{tree}: balanced
-    case Append{+writes,+previous}:
-      writes_preserve_balance(Element,writes,evaluate(Element,previous),depth,program_preserves_balance(Element,previous,depth,balanced))
-
-def program_preserves_capacity(-Element: Data,+program: Program<Element>,+depth: Nat,
-  +balanced: Shape.Balanced(Element,depth,initial_tree(Element,program))) ->
-  {Tree.capacity(Element,evaluate(Element,program)) == Tree.capacity(Element,initial_tree(Element,program)) : U32}:
-  Equal.trans(U32,Tree.capacity(Element,evaluate(Element,program)),U32.shln(1,depth),Tree.capacity(Element,initial_tree(Element,program)),
-    Shape.capacity(Element,depth,evaluate(Element,program),program_preserves_balance(Element,program,depth,balanced)),
-    Equal.sym(U32,Tree.capacity(Element,initial_tree(Element,program)),U32.shln(1,depth),Shape.capacity(Element,depth,initial_tree(Element,program),balanced)))

@@ -4,10 +4,8 @@ import Base
 import ../../lib/proofs/kernel_tile_refinement.bend as TileLaws
 import ../../lib/kernel_rows.bend as Rows
 import ../../lib/kernel_tile.bend as Tile
-import ../../lib/kernel_weights.bend as Weights
 import ../../lib/math_sequence.bend as Sequence
 import ../../lib/ordered_matrix.bend as OrderedMatrix
-import ../../lib/traversal_reduction.bend as Reduction
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/kernel_accumulator.bend as Accumulator
@@ -17,7 +15,7 @@ import ../../lib/proofs/traversal_reduction_refinement.bend as ReductionLaws
 import ../../lib/proofs/ordered_reduction_split.bend as Ordered
 import ../matrix_specification.bend as MatrixSpec
 import ./matrix_reduction_order.bend as MatrixOrder
-import ./gemm_output_readback.bend as GemmReadback
+import ../../lib/proofs/kernel_gemm_readback.bend as GemmReadback
 import ../specification.bend as ConvSpec
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
@@ -40,78 +38,29 @@ import ./reduction_coordinate_bounds.bend as Coordinates
 import ./weight_reorder_bounds.bend as WeightBounds
 import ./weight_reorder_readback.bend as WeightReadback
 import ./packed_matrix_accessors.bend as Accessors
-import ./prepared_packing_samples.bend as Prepared
 import ./convolution_leaf_contract.bend as LeafContract
 import ./packing_tile_bounds.bend as PackingBounds
 import ./packing_readback.bend as PackingReadback
 import ./matrix_reduction_bounds.bend as ReductionBounds
 import ./output_values.bend as Values
 import ../inference.bend as NativeConv
-import ../../lib/kernel_gemm.bend as Gemm
-
-def row_of(row: Nat) -> Accumulator.Row:
-  match row:
-    case 0n: Accumulator.R0{}
-    case 1n+a:
-      match a:
-        case 0n: Accumulator.R1{}
-        case 1n+b:
-          match b:
-            case 0n: Accumulator.R2{}
-            case 1n+c: Accumulator.R3{}
+import ../../lib/proofs/encoded_coordinates.bend as Encoding
 
 def lane_of(lane: Nat) -> Sequence.Index(8n):
   TileLaws.lane_of(lane)
-
-def selected_row(+row: Nat,+values: Rows.Rows<Tile.Tile8>) ->
-  {GemmReadback.select_row(row,values) == Accumulator.row(~Tile.Tile8,row_of(row),values) : Tile.Tile8}:
-  match row:
-    case 0n:
-      Rows.Rows{a,b,c,d} = values
-      {==}
-    case 1n+ +a:
-      match a:
-        case 0n:
-          Rows.Rows{a,b,c,d} = values
-          {==}
-        case 1n+ +b:
-          match b:
-            case 0n:
-              Rows.Rows{a,b,c,d} = values
-              {==}
-            case 1n+ +c:
-              Rows.Rows{a,b,c,d} = values
-              {==}
 
 def selected_lane(+lane: Nat,+values: Tile.Tile8) ->
   {GemmReadback.select_lane(lane,values) == Tile.element_at(lane_of(lane),values) : F32}:
   TileLaws.selected_lane(lane,values)
 
 def selected_key(+row: Nat,+lane: Nat,+values: Rows.Rows<Tile.Tile8>) ->
-  {GemmReadback.select_lane(lane,GemmReadback.select_row(row,values)) == ReductionModel.accumulator_at(ReductionModel.RowLane{row_of(row),lane_of(lane)},values) : F32}:
-  %Equal.sym(Tile.Tile8,GemmReadback.select_row(row,values),Accumulator.row(~Tile.Tile8,row_of(row),values),selected_row(row,values)) :
-    {GemmReadback.select_lane(lane,_) == ReductionModel.accumulator_at(ReductionModel.RowLane{row_of(row),lane_of(lane)},values) : F32}
-  selected_lane(lane,Accumulator.row(~Tile.Tile8,row_of(row),values))
-
-def selected_dot(upper: Bool,key: ReductionModel.RowLane,count: Nat,state: ReductionModel.State()) -> F32:
-  match upper:
-    case False{}: ReductionModel.ordered_dot(~False{},key,count,state)
-    case True{}: ReductionModel.ordered_dot(~True{},key,count,state)
-
-def accumulator_dot(+upper: Bool,+key: ReductionModel.RowLane,+count: Nat,+state: ReductionModel.State()) ->
-  {ReductionModel.accumulator_at(key,Reduction.accumulator(~&2,~Tree.Tree<Tile.Tile8>,~Tree.Tree<Tile.Tile8>,~U32,~Rows.Rows<Tile.Tile8>,ReductionModel.selected(upper,count,state))) ==
-    selected_dot(upper,key,count,state) : F32}:
-  match upper:
-    case False{}: ReductionModel.run_matches_ordered_dot(~False{},key,count,state)
-    case True{}: ReductionModel.run_matches_ordered_dot(~True{},key,count,state)
+  {GemmReadback.select_lane(lane,Accumulator.select_row(~Tile.Tile8,row,values)) == ReductionModel.accumulator_at(ReductionModel.RowLane{Accumulator.row_of(row),lane_of(lane)},values) : F32}:
+  %Equal.sym(Tile.Tile8,Accumulator.select_row(~Tile.Tile8,row,values),Accumulator.row(~Tile.Tile8,Accumulator.row_of(row),values),Accumulator.selection_matches(~Tile.Tile8,row,values)) :
+    {GemmReadback.select_lane(lane,_) == ReductionModel.accumulator_at(ReductionModel.RowLane{Accumulator.row_of(row),lane_of(lane)},values) : F32}
+  selected_lane(lane,Accumulator.row(~Tile.Tile8,Accumulator.row_of(row),values))
 
 def initial_zero(+key: ReductionModel.RowLane) -> {ReductionModel.accumulator_at(key,Rows.filled(~Tile.Tile8,Tile.filled(0.0))) == 0.0 : F32}:
-  ReductionModel.RowLane{+row,+lane} = key
-  match row:
-    case Accumulator.R0{}: Accumulator.initial_at(lane,0.0)
-    case Accumulator.R1{}: Accumulator.initial_at(lane,0.0)
-    case Accumulator.R2{}: Accumulator.initial_at(lane,0.0)
-    case Accumulator.R3{}: Accumulator.initial_at(lane,0.0)
+  ReductionModel.initial_zero(key)
 
 def Source() -> Data:
   ReductionLaws.SampleSource<Tile.Tile8,Tile.Tile8,U32>
@@ -159,7 +108,7 @@ def reordered(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<prob
 def weights_capacity(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Guards.Valid<problem>,+fast: Support.FastSupported<limits,problem>) ->
   {Nat.is_le(Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
   Guards.Valid{v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10} = valid
-  %Guards.reflect(ConvSpec.length(Guards.weights(problem)),Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),v9) :
+  %Order.equal_of_is_eq(ConvSpec.length(Guards.weights(problem)),Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),v9) :
     {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
   NativeWeightRefinement.weights_bound(limits,problem,Padded.scalar(limits,problem,fast))
 
@@ -176,8 +125,8 @@ def lane_word(first: U32,lane: Sequence.Index(8n)) -> U32:
     case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{empty}}}}}}}}:
       match empty:
 
-def sample_lane(+tree: Tree.Tree<F32>,+rows: U32,+inner: U32,+first: U32,+destination: U32,+index: U32,+lane: Sequence.Index(8n)) ->
-  {Tile.element_at(lane,WeightsReadback.sample(tree,Weights.Context{rows,inner,first,destination},index)) ==
+def sample_lane(+tree: Tree.Tree<F32>,+rows: U32,+inner: U32,+first: U32,+index: U32,+lane: Sequence.Index(8n)) ->
+  {Tile.element_at(lane,WeightsReadback.sample_linear(tree,rows,inner,first,index)) ==
     WeightsReadback.value(tree,rows,inner,lane_word(first,lane),index) : F32}:
   match lane:
     case Sequence.First{}: {==}
@@ -266,10 +215,6 @@ def lane_word_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+fast: Su
     case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{empty}}}}}}}}:
       match empty:
 
-def word_from_exact(+word: U32,+value: Nat,exact: {U32.to_nat(word) == value : Nat}) -> {word == U32.from_nat(value) : U32}:
-  %exact : {word == U32.from_nat(_) : U32}
-  Equal.sym(U32,U32.from_nat(U32.to_nat(word)),word,Arithmetic.native_roundtrip(word))
-
 def weight_address(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Guards.Valid<problem>,+fast: Support.FastSupported<limits,problem>,
   +block: Nat,+channel: Nat,+base: U32,+tap: Nat,
   +base_exact: {U32.to_nat(base) == Nat.mul(block,Coordinates.inner(problem)) : Nat},
@@ -290,7 +235,7 @@ def weight_address(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Gu
   +tap_exact = Bounds.roundtrip(tap,cap,fits,Order.transitive(tap,target,U32.to_nat(cap),
     %Order.commutative(tap,Nat.mul(block,inner)) : {Nat.is_le(tap,_) == True{} : Bool}
     Order.le_add(tap,Nat.mul(block,inner)),small))
-  word_from_exact((base + U32.from_nat(tap) : U32),target,
+  Encoding.encoding((base + U32.from_nat(tap) : U32),target,
     %base_exact : {U32.to_nat((base + U32.from_nat(tap) : U32)) == Nat.add(_,tap) : Nat}
     %tap_exact : {U32.to_nat((base + U32.from_nat(tap) : U32)) == Nat.add(U32.to_nat(base),_) : Nat}
     Arithmetic.add(base,U32.from_nat(tap),cap,fits,
@@ -326,7 +271,7 @@ def value_read(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Guards
       %Equal.sym(Nat,U32.to_nat(word),channel,word_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(native)),U32.to_nat(cap)) == True{} : Bool}
       %Equal.sym(Nat,U32.to_nat(native),inner,inner_exact) : {Nat.is_le(Nat.mul(channel,_),U32.to_nat(cap)) == True{} : Bool}
       product_small) : {U32.to_nat(product) == Nat.mul(channel,inner) : Nat}}
-  +address = word_from_exact((product + U32.from_nat(tap) : U32),target,
+  +address = Encoding.encoding((product + U32.from_nat(tap) : U32),target,
     %product_exact : {U32.to_nat((product + U32.from_nat(tap) : U32)) == Nat.add(_,tap) : Nat}
     %tap_exact : {U32.to_nat((product + U32.from_nat(tap) : U32)) == Nat.add(U32.to_nat(product),_) : Nat}
     Arithmetic.add(product,U32.from_nat(tap),cap,fits,
@@ -390,7 +335,6 @@ def weight_agrees(~upper: Bool,+limits: Machine.Limits,+problem: ConvSpec.Proble
   +address = (base + U32.from_nat(tap) : U32)
   +target = U32.from_nat(Nat.add(Nat.mul(block,Coordinates.inner(problem)),tap))
   +first = (U32.from_nat(block) * 8 : U32)
-  +destination = (U32.from_nat(block) * native : U32)
   +lane8 = CoordinateLaws.weight_lane(upper,row)
   +eight_le = block_le_channel(block,lane8,channel,channel_exact)
   +block_le = Order.transitive(block,Nat.mul(block,8n),channel,RowMajor.product_covers(block,8n,{==}),eight_le)
@@ -402,11 +346,12 @@ def weight_agrees(~upper: Bool,+limits: Machine.Limits,+problem: ConvSpec.Proble
   %Equal.sym(U32,address,target,weight_address(limits,problem,facts,fast,block,channel,base,tap,base_exact,block_le,channel_inside,tap_inside)) :
     {Tile.element_at(lane8,Tree.read(Tile.Tile8,reordered(problem,storage_contract),_)) == MatrixSpec.weight(problem,channel,MatrixSpec.KIndex{input_channel,kernel_row,kernel_column}) : F32}
   %Equal.sym(F32,Tile.element_at(lane8,Tree.read(Tile.Tile8,reordered(problem,storage_contract),target)),
-    Tile.element_at(lane8,WeightsReadback.sample(weights,Weights.Context{rows,native,first,destination},U32.from_nat(tap))),
-    WeightReadback.run_readback(limits,problem,facts,fast,weights,lane8,block,tap,block_inside,tap_inside)) :
+    Tile.element_at(lane8,WeightsReadback.sample_linear(weights,rows,native,first,U32.from_nat(tap))),
+    Equal.cong(Tile.Tile8,F32,tile => Tile.element_at(lane8,tile),Tree.read(Tile.Tile8,reordered(problem,storage_contract),target),
+      WeightsReadback.sample_linear(weights,rows,native,first,U32.from_nat(tap)),WeightReadback.run_readback(limits,problem,facts,fast,weights,block,tap,block_inside,tap_inside))) :
     {_ == MatrixSpec.weight(problem,channel,MatrixSpec.KIndex{input_channel,kernel_row,kernel_column}) : F32}
-  %Equal.sym(F32,Tile.element_at(lane8,WeightsReadback.sample(weights,Weights.Context{rows,native,first,destination},U32.from_nat(tap))),
-    WeightsReadback.value(weights,rows,native,lane_word(first,lane8),U32.from_nat(tap)),sample_lane(weights,rows,native,first,destination,U32.from_nat(tap),lane8)) :
+  %Equal.sym(F32,Tile.element_at(lane8,WeightsReadback.sample_linear(weights,rows,native,first,U32.from_nat(tap))),
+    WeightsReadback.value(weights,rows,native,lane_word(first,lane8),U32.from_nat(tap)),sample_lane(weights,rows,native,first,U32.from_nat(tap),lane8)) :
     {_ == MatrixSpec.weight(problem,channel,MatrixSpec.KIndex{input_channel,kernel_row,kernel_column}) : F32}
   %Equal.sym(F32,WeightsReadback.value(weights,rows,native,lane_word(first,lane8),U32.from_nat(tap)),
     Tree.read(F32,weights,U32.from_nat(Nat.add(Nat.mul(channel,Coordinates.inner(problem)),tap))),

@@ -8,13 +8,11 @@ import ../shape.bend as ConvShape
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
-import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../../lib/proofs/word_arithmetic.bend as WordArithmetic
-import ../../lib/proofs/word_multiplication.bend as Multiplication
 import ../../lib/proofs/traversal_reduction_refinement.bend as ReductionLaws
 import ../../lib/proofs/ordered_reduction_split.bend as Ordered
 import ../../lib/proofs/sequence_membership.bend as Members
@@ -29,11 +27,11 @@ import ./scalar_output_coordinates.bend as OutputCoordinates
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./matrix_reduction_order.bend as MatrixOrder
 import ./matrix_reduction_bounds.bend as ReductionBounds
-import ./scalar_tensor_lengths.bend as Lengths
 import ./native_weight_refinement.bend as NativeWeightRefinement
 import ./input_storage.bend as Inputs
 import ./scalar_convolution_reads.bend as ConvolutionReads
 import ./execution_storage.bend as ExecutionStorage
+import ../../lib/proofs/nat_order.bend as Order
 
 type Evaluation is Data:
   Evaluation{limits: Machine.Limits,problem: ConvSpec.Problem,inputs: Inputs.Contract<problem>,pixel: OutputCoordinates.OutputPixel<problem>,
@@ -140,7 +138,7 @@ def weight_length_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+vali
   {U32.to_nat((U32.from_nat(Guards.output_channel_count(problem)) * Coordinates.native_inner(problem) : U32)) == ConvSpec.length(Guards.weights(problem)) : Nat}:
   Guards.Valid{channels,outputs,height,width,kernel,stride,padding,extent,input,weights,bias} = valid
   +count = ConvSpec.length(Guards.weights(problem))
-  +shape_exact = Guards.reflect(count,Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),weights)
+  +shape_exact = Order.equal_of_is_eq(count,Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),weights)
   %Equal.sym(Nat,count,Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),shape_exact) :
     {U32.to_nat((U32.from_nat(Guards.output_channel_count(problem)) * Coordinates.native_inner(problem) : U32)) == _ : Nat}
   %Equal.sym(U32,(U32.from_nat(Guards.output_channel_count(problem)) * Coordinates.native_inner(problem) : U32),

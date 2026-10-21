@@ -146,8 +146,108 @@ def observe(~Element: Data,buffer: Storage.Buffer<Element>) -> Observation<Eleme
   StorageLaws.lift_observation(~Element,~Nat,~proposition(~Element),length,storage,StorageLaws.observe(Element,storage),
     tree => certificate => Observation{Model{tree,length,certificate},{==}})(certificate)
 
+# A model of any buffer.
+def observed_model(~Element: Data,-buffer: Storage.Buffer<Element>,observation: Observation<Element,buffer>) -> Model<Element>:
+  Observation{model,equation} = observation
+  model
+
+def observed_equation(~Element: Data,-buffer: Storage.Buffer<Element>,+observation: Observation<Element,buffer>) ->
+  {pack(~Element,observed_model(~Element,buffer,observation)) == buffer : Storage.Buffer<Element>}:
+  Observation{model,equation} = observation
+  equation
+
+def remodel(~Element: Data,buffer: Storage.Buffer<Element>) -> Model<Element>:
+  observed_model(~Element,buffer,observe(~Element,buffer))
+
+def remodeled(~Element: Data,buffer: Storage.Buffer<Element>) -> {pack(~Element,remodel(~Element,buffer)) == buffer : Storage.Buffer<Element>}:
+  observed_equation(~Element,buffer,observe(~Element,buffer))
 def lift(~Element: Data,~Context: Data,~Proposition: Context -> @-buffer: Storage.Buffer<Element> -> Type,+context: Context,-buffer: Storage.Buffer<Element>,
   observation: Observation<Element,buffer>,canonical: @+model: Model<Element> -> Proposition(context,pack(~Element,model))) -> Proposition(context,buffer):
   Observation{model,equation} = observation
   %equation : Proposition(context,_)
   canonical(model)
+
+def certificate_equation(~Element: Data,model: Model<Element>) ->
+  {Tree.pack(Element,tree(~Element,model)) == Tree.pack(Element,Certificate.normalized(Element,depth(~Element,model),Tree.reflect(Element,Tree.pack(Element,tree(~Element,model))))) : Array<Element>}:
+  Model{tree,length,Certificate.Certificate{depth,equation}} = model
+  equation
+
+# Certificate transport follows the native read equation at the original depth.
+def read_result(~Element: Data,+model: Model<Element>,-value: Element,-result: Array<Element> & Element,
+  +same: {(Tree.pack(Element,tree(~Element,model)),value) == result : Array<Element> & Element}) ->
+  {Storage.read_result(~Element,length(~Element,model),result,
+    Certificate.retained(~Element,depth(~Element,model),Tree.pack(Element,tree(~Element,model)),value,result,same,
+      certificate_equation(~Element,model))) == (pack(~Element,model),value) : Storage.Buffer<Element> & Element}:
+  Model{+tree,+length,Certificate.Certificate{+depth,+original}} = model
+  %proof@same :
+    {Storage.read_result(~Element,length,_,Certificate.retained(~Element,depth,Tree.pack(Element,tree),value,_,proof,original)) == (pack(~Element,model),value) : Storage.Buffer<Element> & Element}
+  {==}
+
+def read_observed(~Element: Data,+model: Model<Element>,+index: U32,
+  observed: Witness.Read<Element,Tree.pack(Element,tree(~Element,model)),Array.get(Element,Tree.pack(Element,tree(~Element,model)),index)>) ->
+  {Storage.read_result(~Element,length(~Element,model),Array.get(Element,Tree.pack(Element,tree(~Element,model)),index),
+    Certificate.Certificate{depth(~Element,model),Certificate.read_equation(~Element,depth(~Element,model),Tree.pack(Element,tree(~Element,model)),index,certificate_equation(~Element,model),observed)}) ==
+    (pack(~Element,model),Tree.read(Element,tree(~Element,model),index)) : Storage.Buffer<Element> & Element}:
+  Model{+tree,+length,Certificate.Certificate{+depth,+original}} = model
+  Witness.Read{value,+same} = observed
+  Equal.trans(Storage.Buffer<Element> & Element,
+    Storage.read_result(~Element,length,Array.get(Element,Tree.pack(Element,tree),index),Certificate.Certificate{depth,Certificate.read_equation(~Element,depth,Tree.pack(Element,tree),index,original,observed)}),
+    (pack(~Element,model),value),(pack(~Element,model),Tree.read(Element,tree,index)),
+    read_result(~Element,model,value,Array.get(Element,Tree.pack(Element,tree),index),Equal.sym(Array<Element> & Element,Array.get(Element,Tree.pack(Element,tree),index),(Tree.pack(Element,tree),value),same)),
+    Equal.cong(Element,Storage.Buffer<Element> & Element,value => (pack(~Element,model),value),value,Tree.read(Element,tree,index),
+      Equal.cong(Array<Element> & Element,Element,pair => Pair.snd(Array<Element>,Element,pair),(Tree.pack(Element,tree),value),(Tree.pack(Element,tree),Tree.read(Element,tree,index)),
+        Equal.trans(Array<Element> & Element,(Tree.pack(Element,tree),value),Array.get(Element,Tree.pack(Element,tree),index),(Tree.pack(Element,tree),Tree.read(Element,tree,index)),
+          Equal.sym(Array<Element> & Element,Array.get(Element,Tree.pack(Element,tree),index),(Tree.pack(Element,tree),value),same),StorageLaws.read(Element,tree,index)))))
+
+def read(~Element: Data,+model: Model<Element>,+index: U32) ->
+  {Storage.read(~Element,pack(~Element,model),index) == (pack(~Element,model),Tree.read(Element,tree(~Element,model),index)) : Storage.Buffer<Element> & Element}:
+  Model{+tree,+length,Certificate.Certificate{+depth,+equation}} = model
+  read_observed(~Element,model,index,Witness.observed(Element,Tree.pack(Element,tree),index,Witness.ArrayWitness{depth,Certificate.witness_at(Element,depth,Tree.pack(Element,tree),equation)}))
+
+def read_masked(~Element: Data,+fallback: Element,valid: Bool,+model: Model<Element>,+index: U32) ->
+  {Storage.read_masked(~Element,fallback,valid,pack(~Element,model),index) ==
+    (pack(~Element,model),Bool.pick(Element,valid,Tree.read(Element,tree(~Element,model),index),fallback)) : Storage.Buffer<Element> & Element}:
+  match valid:
+    case False{}: {==}
+    case True{}: read(~Element,model,index)
+
+def content_parts(+model: Model<F32>) -> {content(~F32,model) == Content{tree(~F32,model),length(~F32,model)} : Content<F32>}:
+  Model{tree,length,certificate} = model
+  {==}
+
+def model_length(+model: Model<F32>) -> {content_length(~F32,content(~F32,model)) == length(~F32,model) : Nat}:
+  Model{tree,length,certificate} = model
+  {==}
+
+def read_content(+index: U32,+content: Content<F32>) -> {Tree.read(F32,content_tree(~F32,content),index) == value(~F32,index,content) : F32}:
+  Content{tree,length} = content
+  {==}
+
+def buffer_contents(~Element: Data,+model: Model<Element>,-buffer: Storage.Buffer<Element>,equal: {pack(~Element,model) == buffer : Storage.Buffer<Element>}) ->
+  {content(~Element,model) == contents(~Element,buffer) : Content<Element>}:
+  Equal.trans(Content<Element>,content(~Element,model),contents(~Element,pack(~Element,model)),contents(~Element,buffer),
+    Equal.sym(Content<Element>,contents(~Element,pack(~Element,model)),content(~Element,model),packed_contents(~Element,model)),
+    Equal.cong(Storage.Buffer<Element>,Content<Element>,contents(~Element),pack(~Element,model),buffer,equal))
+
+def content_tree_of(~Element: Data,+model: Model<Element>) -> {content_tree(~Element,content(~Element,model)) == tree(~Element,model) : Tree.Tree<Element>}:
+  Model{tree,length,certificate} = model
+  {==}
+
+def observed_content(~Element: Data,-buffer: Storage.Buffer<Element>,observation: Observation<Element,buffer>) ->
+  {content(~Element,observed_model(~Element,buffer,observation)) == contents(~Element,buffer) : Content<Element>}:
+  Observation{+model,equation} = observation
+  buffer_contents(~Element,model,buffer,equation)
+
+def remodel_content(~Element: Data,buffer: Storage.Buffer<Element>) ->
+  {content(~Element,remodel(~Element,buffer)) == contents(~Element,buffer) : Content<Element>}:
+  observed_content(~Element,buffer,observe(~Element,buffer))
+# A value written into a buffer is written into its contents.
+def write_value_packed(~Element: Data,+index: U32,+value: Element,+model: Model<Element>) ->
+  {contents(~Element,Storage.write(~Element,index,value,pack(~Element,model))) ==
+    Content{Tree.write(Element,content_tree(~Element,content(~Element,model)),index,value),content_length(~Element,content(~Element,model))} : Content<Element>}:
+  Model{+tree,+length,certificate} = model
+  %Equal.sym(Array<Element>,Array.set(Element,Tree.pack(Element,tree),index,value),Tree.pack(Element,Tree.write(Element,tree,index,value)),
+    StorageLaws.write(Element,tree,index,value)) :
+    {Content{Tree.reflect(Element,_),length} == Content{Tree.write(Element,tree,index,value),length} : Content<Element>}
+  Equal.cong(Tree.Tree<Element>,Content<Element>,tree => Content{tree,length},Tree.reflect(Element,Tree.pack(Element,Tree.write(Element,tree,index,value))),
+    Tree.write(Element,tree,index,value),StorageLaws.reflect_packed(Element,Tree.write(Element,tree,index,value)))

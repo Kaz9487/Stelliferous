@@ -1,6 +1,7 @@
 # A job's four accumulator rows are one half of the eight-lane weight tile.
 # These erased observations connect the native projections to shared samples.
 import Base
+import ./kernel_tile_refinement.bend as TileLaws
 import ../kernel_rows.bend as Rows
 import ../kernel_tile.bend as Tile
 import ../math_sequence.bend as Sequence
@@ -51,3 +52,16 @@ def weight_sample(+upper: Bool,+row: Accumulator.Row,+tile: Tile.Tile8) ->
     case True{} Accumulator.R1{} Tile.Tile{a,b,c,d,e,f,g,h}: {==}
     case True{} Accumulator.R2{} Tile.Tile{a,b,c,d,e,f,g,h}: {==}
     case True{} Accumulator.R3{} Tile.Tile{a,b,c,d,e,f,g,h}: {==}
+
+
+def weight_lane_matches(upper: Bool,row: Accumulator.Row) ->
+  {weight_lane(upper,row) == TileLaws.lane_of(Nat.add(Bool.pick(Nat,upper,4n,0n),row_number(row))) : Sequence.Index(8n)}:
+  match upper row:
+    case False{} Accumulator.R0{}: {==}
+    case False{} Accumulator.R1{}: {==}
+    case False{} Accumulator.R2{}: {==}
+    case False{} Accumulator.R3{}: {==}
+    case True{} Accumulator.R0{}: {==}
+    case True{} Accumulator.R1{}: {==}
+    case True{} Accumulator.R2{}: {==}
+    case True{} Accumulator.R3{}: {==}

@@ -9,7 +9,6 @@ import ./traversal_visit_refinement.bend as Visit
 import ./traversal_array_refinement.bend as ArrayLaws
 import ./storage_tree_model.bend as Tree
 import ./storage_refinement.bend as StorageLaws
-import ../kernel_block.bend as Block
 
 def sample(~Element: Data,tree: Tree.Tree<Element>,coordinates: CursorLaws.Coordinates) -> Element:
   CursorLaws.Coordinates{axes,offset,valid} = coordinates

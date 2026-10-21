@@ -140,13 +140,6 @@ def balanced(~Element: Data,~Context: Data,~operation: Context -> Element -> Ele
   evidence: Shape.Balanced(Element,depth,input)) -> Shape.Balanced(Element,depth,run(~Element,~Context,~operation,count,position,context,input)):
   balanced_indexed(~Element,~Context,~ArrayLaws.unindexed(~Element,~Context,~operation),count,position,context,input,depth,evidence)
 
-def outside(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,count: Nat,+position: Nat,+query: U32,+context: Context,+input: Tree.Tree<Element>,+depth: Nat,+capacity: U32,
-  +capacity_equal: {Tree.capacity(Element,input) == capacity : U32},+balanced: Shape.Balanced(Element,depth,input),+limit: {Nat.is_le(depth,30n) == True{} : Bool},
-  +capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},+room: {Nat.is_le(Nat.add(position,count),U32.to_nat(capacity)) == True{} : Bool},
-  +query_inside: {U32.is_lt(query,capacity) == True{} : Bool},+separate: Interval.Outside<position,count,U32.to_nat(query)>) ->
-  {Tree.read(Element,run(~Element,~Context,~operation,count,U32.from_nat(position),context,input),query) == Tree.read(Element,input,query) : Element}:
-  outside_indexed(~Element,~Context,~ArrayLaws.unindexed(~Element,~Context,~operation),count,position,query,context,input,depth,capacity,capacity_equal,balanced,Order.successor(depth,30n,limit),capacity_ok,room,query_inside,separate)
-
 def inside(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,count: Nat,+position: Nat,index: Nat,+context: Context,+input: Tree.Tree<Element>,+depth: Nat,+capacity: U32,
   +capacity_equal: {Tree.capacity(Element,input) == capacity : U32},+balanced: Shape.Balanced(Element,depth,input),+limit: {Nat.is_le(depth,30n) == True{} : Bool},
   +capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},+room: {Nat.is_le(Nat.add(position,count),U32.to_nat(capacity)) == True{} : Bool},

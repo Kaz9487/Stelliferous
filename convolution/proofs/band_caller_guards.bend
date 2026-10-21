@@ -14,12 +14,10 @@ import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./supported_padded_coordinates.bend as Padded
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
-import ../../lib/proofs/boolean_logic.bend as Boolean
 import ../../lib/tensor_convolution.bend as TensorConvolution
 import ./band_window_leaf.bend as WindowLeaf
 import ./window_start.bend as Start
 import ../../lib/proofs/nat_order.bend as Order
-import ../../lib/proofs/u32_comparison.bend as Comparison
 
 def problem(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,dimensions: KernelShape.Dimensions,+weights: List<&2,F32>,+bias: List<&2,F32>,+image: Nat) -> ConvSpec.Problem:
   KernelShape.Dimensions{ci,co,height,width,kernel,stride,padding} = dimensions
@@ -75,11 +73,6 @@ def words(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSpec.v
     Bounds.roundtrip(ConvSpec.out_height(problem),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinateBounds.row_limit(limits,problem,conditions,support)),
     Bounds.roundtrip(ConvSpec.out_width(problem),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinateBounds.col_limit(limits,problem,conditions,support))}
 
-def padding_small(+images: U32,+batched: Bool,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,
-  eligible: {TensorConvolution.uses_band_windows(TensorConvolution.Geometry{images,batched,KernelShape.Dimensions{ci,co,height,width,kernel,stride,padding}}) == True{} : Bool}) ->
-  {Nat.is_lt(padding,kernel) == True{} : Bool}:
-  Boolean.right(U32.is_lt(0,images),Nat.is_lt(padding,kernel),eligible)
-
 def dimension_room(+limits: Machine.Limits) -> {Nat.is_le(U32.to_nat(Machine.dimension(limits)),U32.to_nat(WindowLeaf.capacity(limits))) == True{} : Bool}:
   Order.transitive(U32.to_nat(Machine.dimension(limits)),U32.to_nat(Machine.coordinate(limits)),U32.to_nat(WindowLeaf.capacity(limits)),
     Bounds.as_nat_le(Machine.dimension(limits),Machine.coordinate(limits),Limits.dimension_within_coordinate(limits)),WindowLeaf.coordinate_room(limits))
@@ -102,11 +95,21 @@ def room(+limits: Machine.Limits,+images: U32,+problem: ConvSpec.Problem,+suppor
     Order.transitive(height,U32.to_nat(Machine.dimension(limits)),U32.to_nat(envelope),SupportedCoordinateBounds.height_bound(limits,problem,support),dimension_room(limits)),
     Order.transitive(padding,U32.to_nat(Machine.dimension(limits)),U32.to_nat(envelope),SupportedCoordinateBounds.pad_bound(limits,problem,support),dimension_room(limits)),output_room}
 
-def images_positive(+images: U32,+batched: Bool,+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,
-  eligible: {TensorConvolution.uses_band_windows(TensorConvolution.Geometry{images,batched,KernelShape.Dimensions{ci,co,height,width,kernel,stride,padding}}) == True{} : Bool}) ->
-  {Nat.is_lt(0n,U32.to_nat(images)) == True{} : Bool}:
-  %Comparison.lt(0,images) : {_ == True{} : Bool}
-  Boolean.left(U32.is_lt(0,images),Nat.is_lt(padding,kernel),eligible)
+# One image's output and its input height fit the machine capacity, whatever
+# the batch, as the support guard checks.
+def output_buffer(+limits: Machine.Limits,+problem: ConvSpec.Problem,
+  support: Guards.Supported<problem,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
+  {Nat.is_le(Nat.mul(Guards.output_channel_count(problem),Nat.mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  Guards.Supported{ci,co,height,width,kernel,stride,padding,input,weights,output,vertical,horizontal} = support
+  output
+
+def plane_room(+limits: Machine.Limits,+problem: ConvSpec.Problem,+supported: {NativeConv.supports_packed_with_limits(limits,problem) == True{} : Bool}) ->
+  {Nat.is_le(Nat.mul(Guards.output_channel_count(problem),Nat.mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  output_buffer(limits,problem,Padded.scalar(limits,problem,Support.fast(limits,problem,supported)))
+
+def height_room(+limits: Machine.Limits,+problem: ConvSpec.Problem,+supported: {NativeConv.supports_packed_with_limits(limits,problem) == True{} : Bool}) ->
+  {Nat.is_le(Guards.height(problem),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  Limits.dimension_capacity(limits,Guards.height(problem),SupportedCoordinateBounds.height_bound(limits,problem,Padded.scalar(limits,problem,Support.fast(limits,problem,supported))))
 
 def output_positive_facts(+problem: ConvSpec.Problem,facts: Guards.Valid<problem>) -> {Guards.output_channels_positive(problem) == True{} : Bool}:
   Guards.Valid{ci,co,height,width,kernel,stride,kh,kw,input,weights,bias} = facts

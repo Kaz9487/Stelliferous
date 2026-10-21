@@ -15,7 +15,10 @@ import ./word_encoding.bend as WordEncoding
 import ./tensor_band_shape_refinement.bend as BandShape
 import ./natural_addition.bend as Addition
 import ../tensor_band.bend as Bands
-import ./tensor_band_coordinates.bend as BandCoordinates
+import ./binary_radix.bend as Radix
+import ./nat_to_u32_bounds.bend as Bounds
+import ./tensor_band_plan.bend as BandPlan
+import ./tensor_band_inspection.bend as Inspection
 
 # The global NCHW index of a pixel: image, channel, row inside the image and
 # column.
@@ -49,11 +52,20 @@ def located_pixel(+geometry: Bands.Geometry,+image: Nat,+channel: Nat,+row: Nat,
   +whole = Nat.add(Nat.mul(image,base),row)
   +positive = Order.le_lt_trans(0n,row,base,Order.zero_le(row),row_inside)
   %located : {pixel(Bands.Geometry{images,channels,height,width},channel,_,column) == point(Bands.Geometry{images,channels,height,width},image,channel,row,column) : Nat}
-  %Equal.sym(Nat,Nat.div(whole,base),image,BandCoordinates.quotient(image,row,base,positive,row_inside)) :
+  %Equal.sym(Nat,Nat.div(whole,base),image,Radix.quotient(image,row,base,positive,row_inside)) :
     {point(Bands.Geometry{images,channels,height,width},_,channel,Nat.mod(whole,base),column) == point(Bands.Geometry{images,channels,height,width},image,channel,row,column) : Nat}
-  %Equal.sym(Nat,Nat.mod(whole,base),row,BandCoordinates.remainder(image,row,base,positive,row_inside)) :
+  %Equal.sym(Nat,Nat.mod(whole,base),row,Radix.remainder(image,row,base,positive,row_inside)) :
     {point(Bands.Geometry{images,channels,height,width},image,channel,_,column) == point(Bands.Geometry{images,channels,height,width},image,channel,row,column) : Nat}
   {==}
+
+# A row of a band that fits in the batch lies in one of its images.
+def image_below(+first: Nat,+rows: Nat,+row: Nat,+batch: Nat,+height: Nat,+height_positive: {Nat.is_lt(0n,height) == True{} : Bool},
+  row_inside: {Nat.is_lt(row,rows) == True{} : Bool},rows_fit: {Nat.is_le(Nat.add(first,rows),Nat.mul(batch,height)) == True{} : Bool}) ->
+  {Nat.is_lt(Nat.div(Nat.add(first,row),height),batch) == True{} : Bool}:
+  RowMajor.cancel_multiply_lt(Nat.div(Nat.add(first,row),height),batch,height,
+    Order.le_lt_trans(Nat.mul(Nat.div(Nat.add(first,row),height),height),Nat.add(first,row),Nat.mul(batch,height),
+      DivisionOrder.product_below(Nat.add(first,row),height,height_positive),
+      Bounds.nat_trans(Nat.add(first,row),Nat.add(first,rows),Nat.mul(batch,height),Order.offset_lt(first,row,rows,row_inside),rows_fit)))
 
 def channels(geometry: Bands.Geometry) -> Nat:
   Bands.Geometry{images,channels,height,width} = geometry
@@ -122,10 +134,12 @@ def Channels(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+co
 def Leaf(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input: Tree.Tree<Element>,+length: Nat) -> Data:
   Channels(~Element,~Context,~value,context,geometry,first,rows,input,length,channels(geometry))
 
+def band_values(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,context: Context,geometry: Bands.Geometry,+first: U32,+rows: U32,+buffer: Buffer.Content<Element>) -> Data:
+  Buffer.Content{tree,length} = buffer
+  Leaf(~Element,~Context,~value,context,geometry,first,rows,tree,length)
+
 def Values(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,bands: Model.Content<Element>) -> Data:
-  match bands:
-    case Model.RowBand{Buffer.Content{input,length},first,rows}: Leaf(~Element,~Context,~value,context,geometry,first,rows,input,length)
-    case Model.Joined{left,right}: Shape.Both<Values(~Element,~Context,~value,context,geometry,left),Values(~Element,~Context,~value,context,geometry,right)>
+  Model.ContentAll(~Element,~band_values(~Element,~Context,~value,context,geometry),bands)
 
 def channels_cell(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input: Tree.Tree<Element>,+length: Nat,+count: Nat,
   +channel: Nat,+row: Nat,+column: Nat,values: Channels(~Element,~Context,~value,context,geometry,first,rows,input,length,count),
@@ -247,29 +261,77 @@ def cells(~Evidence: Data,~Property: @+evidence: Evidence -> @+channel: Nat -> @
   Members.All(Nat,{channel => Members.All(Nat,{row => Members.All(Nat,{column => Property(evidence,channel,row,column) : Nat -> Data},Ranges.range(width(geometry(evidence)),0n)) : Nat -> Data},Ranges.range(U32.to_nat(rows(evidence)),0n)) : Nat -> Data},Ranges.range(channels(geometry(evidence)),0n)):
   cells_channels(~Evidence,~Property,~geometry,~rows,~cell,channels(geometry(evidence)),0n,evidence,Order.reflexive(channels(geometry(evidence))))
 
+# A property of every cell of a table of channels, rows and columns, from a
+# rule for one cell with its three bounds. What the rule needs travels as one
+# context value.
+def table_columns(~Context: Data,~Property: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> Data,~channels: @+context: Context -> Nat,~rows: @+context: Context -> Nat,~width: @+context: Context -> Nat,
+  ~cell: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> @+channel_inside: {Nat.is_lt(channel,channels(context)) == True{} : Bool} ->
+    @+row_inside: {Nat.is_lt(row,rows(context)) == True{} : Bool} -> @+column_inside: {Nat.is_lt(column,width(context)) == True{} : Bool} -> Property(context,channel,row,column),
+  +context: Context,count: Nat,+start: Nat,+channel: Nat,+row: Nat,
+  +channel_inside: {Nat.is_lt(channel,channels(context)) == True{} : Bool},+row_inside: {Nat.is_lt(row,rows(context)) == True{} : Bool},
+  +room: {Nat.is_le(Nat.add(start,count),width(context)) == True{} : Bool}) ->
+  Members.All(Nat,{column => Property(context,channel,row,column) : Nat -> Data},Ranges.range(count,start)):
+  match count:
+    case 0n: Unit{}
+    case 1n+ +rest:
+      Shape.Both{cell(context,channel,row,start,channel_inside,row_inside,Order.room_index(start,rest,width(context),room)),
+        table_columns(~Context,~Property,~channels,~rows,~width,~cell,context,rest,1n+start,channel,row,channel_inside,row_inside,Order.advance_room(start,rest,width(context),room))}
+
+def table_rows(~Context: Data,~Property: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> Data,~channels: @+context: Context -> Nat,~rows: @+context: Context -> Nat,~width: @+context: Context -> Nat,
+  ~cell: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> @+channel_inside: {Nat.is_lt(channel,channels(context)) == True{} : Bool} ->
+    @+row_inside: {Nat.is_lt(row,rows(context)) == True{} : Bool} -> @+column_inside: {Nat.is_lt(column,width(context)) == True{} : Bool} -> Property(context,channel,row,column),
+  +context: Context,count: Nat,+start: Nat,+channel: Nat,+channel_inside: {Nat.is_lt(channel,channels(context)) == True{} : Bool},
+  +room: {Nat.is_le(Nat.add(start,count),rows(context)) == True{} : Bool}) ->
+  Members.All(Nat,{row => Members.All(Nat,{column => Property(context,channel,row,column) : Nat -> Data},Ranges.range(width(context),0n)) : Nat -> Data},Ranges.range(count,start)):
+  match count:
+    case 0n: Unit{}
+    case 1n+ +rest:
+      Shape.Both{table_columns(~Context,~Property,~channels,~rows,~width,~cell,context,width(context),0n,channel,start,channel_inside,Order.room_index(start,rest,rows(context),room),Order.reflexive(width(context))),
+        table_rows(~Context,~Property,~channels,~rows,~width,~cell,context,rest,1n+start,channel,channel_inside,Order.advance_room(start,rest,rows(context),room))}
+
+def table_channels(~Context: Data,~Property: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> Data,~channels: @+context: Context -> Nat,~rows: @+context: Context -> Nat,~width: @+context: Context -> Nat,
+  ~cell: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> @+channel_inside: {Nat.is_lt(channel,channels(context)) == True{} : Bool} ->
+    @+row_inside: {Nat.is_lt(row,rows(context)) == True{} : Bool} -> @+column_inside: {Nat.is_lt(column,width(context)) == True{} : Bool} -> Property(context,channel,row,column),
+  +context: Context,count: Nat,+start: Nat,+room: {Nat.is_le(Nat.add(start,count),channels(context)) == True{} : Bool}) ->
+  Members.All(Nat,{channel => Members.All(Nat,{row => Members.All(Nat,{column => Property(context,channel,row,column) : Nat -> Data},Ranges.range(width(context),0n)) : Nat -> Data},Ranges.range(rows(context),0n)) : Nat -> Data},Ranges.range(count,start)):
+  match count:
+    case 0n: Unit{}
+    case 1n+ +rest:
+      Shape.Both{table_rows(~Context,~Property,~channels,~rows,~width,~cell,context,rows(context),0n,start,Order.room_index(start,rest,channels(context),room),Order.reflexive(rows(context))),
+        table_channels(~Context,~Property,~channels,~rows,~width,~cell,context,rest,1n+start,Order.advance_room(start,rest,channels(context),room))}
+
+def table(~Context: Data,~Property: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> Data,~channels: @+context: Context -> Nat,~rows: @+context: Context -> Nat,~width: @+context: Context -> Nat,
+  ~cell: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> @+channel_inside: {Nat.is_lt(channel,channels(context)) == True{} : Bool} ->
+    @+row_inside: {Nat.is_lt(row,rows(context)) == True{} : Bool} -> @+column_inside: {Nat.is_lt(column,width(context)) == True{} : Bool} -> Property(context,channel,row,column),
+  +context: Context) ->
+  Members.All(Nat,{channel => Members.All(Nat,{row => Members.All(Nat,{column => Property(context,channel,row,column) : Nat -> Data},Ranges.range(width(context),0n)) : Nat -> Data},Ranges.range(rows(context),0n)) : Nat -> Data},Ranges.range(channels(context),0n)):
+  table_channels(~Context,~Property,~channels,~rows,~width,~cell,context,channels(context),0n,Order.reflexive(channels(context)))
+
 # A leaf without cells satisfies the relation with any content: no cell has a
 # position below zero.
-type EmptyCells<-Element: Data,-Context: Data> is Data:
-  EmptyCells{context: Context,geometry: Bands.Geometry,first: U32,rows: U32,input: Tree.Tree<Element>,length: Nat,empty: {cell_count(geometry,rows) == 0n : Nat}}
+type EmptyCellScope<-Element: Data,-Context: Data> is Data:
+  EmptyCellScope{context: Context,geometry: Bands.Geometry,first: U32,rows: U32,input: Tree.Tree<Element>,length: Nat,empty: {cell_count(geometry,rows) == 0n : Nat}}
 
-def empty_geometry(~Element: Data,~Context: Data,evidence: EmptyCells<Element,Context>) -> Bands.Geometry:
-  EmptyCells{context,geometry,first,rows,input,length,empty} = evidence
-  geometry
+def empty_cell_channels(~Element: Data,~Context: Data,+scope: EmptyCellScope<Element,Context>) -> Nat:
+  EmptyCellScope{context,geometry,first,rows,input,length,empty} = scope
+  channels(geometry)
 
-def empty_rows(~Element: Data,~Context: Data,evidence: EmptyCells<Element,Context>) -> U32:
-  EmptyCells{context,geometry,first,rows,input,length,empty} = evidence
-  rows
+def empty_cell_rows(~Element: Data,~Context: Data,+scope: EmptyCellScope<Element,Context>) -> Nat:
+  EmptyCellScope{context,geometry,first,rows,input,length,empty} = scope
+  U32.to_nat(rows)
 
-def EmptyCell(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+evidence: EmptyCells<Element,Context>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
-  EmptyCells{context,+geometry,first,+rows,input,length,empty} = evidence
+def empty_cell_width(~Element: Data,~Context: Data,+scope: EmptyCellScope<Element,Context>) -> Nat:
+  EmptyCellScope{context,geometry,first,rows,input,length,empty} = scope
+  width(geometry)
+
+def EmptyCell(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+scope: EmptyCellScope<Element,Context>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
+  EmptyCellScope{context,geometry,first,rows,input,length,empty} = scope
   At(~Element,~Context,~value,context,geometry,first,rows,input,length,channel,row,column)
 
-def empty_cell(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+evidence: EmptyCells<Element,Context>,+channel: Nat,+row: Nat,+column: Nat,
-  channel_inside: {Nat.is_lt(channel,channels(empty_geometry(~Element,~Context,evidence))) == True{} : Bool},
-  row_inside: {Nat.is_lt(row,U32.to_nat(empty_rows(~Element,~Context,evidence))) == True{} : Bool},
-  column_inside: {Nat.is_lt(column,width(empty_geometry(~Element,~Context,evidence))) == True{} : Bool}) ->
-  EmptyCell(~Element,~Context,~value,evidence,channel,row,column):
-  EmptyCells{+context,+geometry,+first,+rows,+input,+length,empty} = evidence
+def empty_cell(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+scope: EmptyCellScope<Element,Context>,+channel: Nat,+row: Nat,+column: Nat,
+  +channel_inside: {Nat.is_lt(channel,empty_cell_channels(~Element,~Context,scope)) == True{} : Bool},+row_inside: {Nat.is_lt(row,empty_cell_rows(~Element,~Context,scope)) == True{} : Bool},+column_inside: {Nat.is_lt(column,empty_cell_width(~Element,~Context,scope)) == True{} : Bool}) ->
+  EmptyCell(~Element,~Context,~value,scope,channel,row,column):
+  EmptyCellScope{+context,+geometry,+first,+rows,+input,+length,+empty} = scope
   +cell = position(geometry,rows,channel,row,column)
   Empty.absurd(At(~Element,~Context,~value,context,geometry,first,rows,input,length,channel,row,column),
     WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(cell,0n),True{},Equal.sym(Bool,Nat.is_lt(cell,0n),False{},Division.lt_zero(cell)),
@@ -277,11 +339,47 @@ def empty_cell(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+
 
 def empty_leaf(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input: Tree.Tree<Element>,+length: Nat,
   empty: {cell_count(geometry,rows) == 0n : Nat}) -> Leaf(~Element,~Context,~value,context,geometry,first,rows,input,length):
-  cells(~EmptyCells<Element,Context>,~EmptyCell(~Element,~Context,~value),~empty_geometry(~Element,~Context),~empty_rows(~Element,~Context),~empty_cell(~Element,~Context,~value),
-    EmptyCells{context,geometry,first,rows,input,length,empty})
+  table(~EmptyCellScope<Element,Context>,~EmptyCell(~Element,~Context,~value),~empty_cell_channels(~Element,~Context),~empty_cell_rows(~Element,~Context),~empty_cell_width(~Element,~Context),~empty_cell(~Element,~Context,~value),EmptyCellScope{context,geometry,first,rows,input,length,empty})
 
-def dense_value(~Element: Data,input: Tree.Tree<Element>,index: U32) -> Element:
+def stored_value(~Element: Data,input: Tree.Tree<Element>,index: U32) -> Element:
   Tree.read(Element,input,index)
+
+# A leaf of every row of the first image, read from a whole tree of that image:
+# the position of each cell is its pixel.
+type WholeCellScope<-Element: Data> is Data:
+  WholeCellScope{images: U32,channels: U32,height: U32,width: U32,input: Tree.Tree<Element>,length: Nat,
+    length_exact: {length == cell_count(Bands.Geometry{images,channels,height,width},height) : Nat}}
+
+def whole_cell_channels(~Element: Data,+scope: WholeCellScope<Element>) -> Nat:
+  WholeCellScope{images,channels,height,width,input,length,length_exact} = scope
+  U32.to_nat(channels)
+
+def whole_cell_rows(~Element: Data,+scope: WholeCellScope<Element>) -> Nat:
+  WholeCellScope{images,channels,height,width,input,length,length_exact} = scope
+  U32.to_nat(height)
+
+def whole_cell_width(~Element: Data,+scope: WholeCellScope<Element>) -> Nat:
+  WholeCellScope{images,channels,height,width,input,length,length_exact} = scope
+  U32.to_nat(width)
+
+def WholeCell(~Element: Data,+scope: WholeCellScope<Element>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
+  WholeCellScope{images,channels,height,width,input,length,length_exact} = scope
+  At(~Element,~Tree.Tree<Element>,~stored_value(~Element),input,Bands.Geometry{images,channels,height,width},0,height,input,length,channel,row,column)
+
+def whole_cell(~Element: Data,+scope: WholeCellScope<Element>,+channel: Nat,+row: Nat,+column: Nat,
+  +channel_inside: {Nat.is_lt(channel,whole_cell_channels(~Element,scope)) == True{} : Bool},+row_inside: {Nat.is_lt(row,whole_cell_rows(~Element,scope)) == True{} : Bool},+column_inside: {Nat.is_lt(column,whole_cell_width(~Element,scope)) == True{} : Bool}) ->
+  WholeCell(~Element,scope,channel,row,column):
+  WholeCellScope{+images,+channels,+height,+width,+input,+length,+length_exact} = scope
+  +geometry = {Bands.Geometry{images,channels,height,width} : Bands.Geometry}
+  Shape.Both{position_within(geometry,height,length,channel,row,column,length_exact,channel_inside,row_inside,column_inside),
+    Equal.cong(Nat,Element,index => Tree.read(Element,input,U32.from_nat(index)),position(geometry,height,channel,row,column),pixel(geometry,channel,row,column),
+      Equal.sym(Nat,pixel(geometry,channel,row,column),point(geometry,0n,channel,row,column),located_pixel(geometry,0n,channel,row,column,row,row_inside,{==})))}
+
+def whole_leaf(~Element: Data,+images: U32,+channels: U32,+height: U32,+width: U32,+input: Tree.Tree<Element>,+length: Nat,
+  length_exact: {length == cell_count(Bands.Geometry{images,channels,height,width},height) : Nat}) ->
+  Leaf(~Element,~Tree.Tree<Element>,~stored_value(~Element),input,Bands.Geometry{images,channels,height,width},0,height,input,length):
+  table(~WholeCellScope<Element>,~WholeCell(~Element),~whole_cell_channels(~Element),~whole_cell_rows(~Element),~whole_cell_width(~Element),~whole_cell(~Element),
+    WholeCellScope{images,channels,height,width,input,length,length_exact})
 
 # Change a logical context only when its pointwise values agree. The actual
 # bands, the cells and their positions stay identical.
@@ -327,6 +425,9 @@ def transport_channels(~Element: Data,~Before: Data,~After: Data,~before_value: 
       Shape.Both{transport_rows(~Element,~Before,~After,~before_value,~after_value,~Related,~agreement,before,after,related,geometry,first,rows,tree,length,channel,Ranges.range(U32.to_nat(rows),0n),head),
         transport_channels(~Element,~Before,~After,~before_value,~after_value,~Related,~agreement,before,after,related,geometry,first,rows,tree,length,rest,tail)}
 
+type ValuesScope<-Before: Data,-After: Data,-Related: Before -> After -> Data> is Data:
+  ValuesScope{before: Before,after: After,related: Related(before,after),geometry: Bands.Geometry}
+
 def values(~Element: Data,~Before: Data,~After: Data,~before_value: Before -> U32 -> Element,~after_value: After -> U32 -> Element,~Related: Before -> After -> Data,
   ~agreement: Agreement(~Element,~Before,~After,~before_value,~after_value,~Related),+before: Before,+after: After,+related: Related(before,after),+geometry: Bands.Geometry,
   bands: Model.Content<Element>,evidence: Values(~Element,~Before,~before_value,before,geometry,bands)) ->
@@ -338,3 +439,35 @@ def values(~Element: Data,~Before: Data,~After: Data,~before_value: Before -> U3
       Shape.Both{left_values,right_values} = evidence
       Shape.Both{values(~Element,~Before,~After,~before_value,~after_value,~Related,~agreement,before,after,related,geometry,left,left_values),
         values(~Element,~Before,~After,~before_value,~after_value,~Related,~agreement,before,after,related,geometry,right,right_values)}
+
+# What a band kernel shows of its result tree: values, storage readiness and
+# leaf metadata. With row coverage it gives a well-formed layout.
+def PipelineContract(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,+content: Model.Content<Element>) -> Data:
+  Shape.Both<Values(~Element,~Context,~value,context,geometry,content),
+    Shape.Both<Model.ContentReady(~Element,content),BandShape.Contents(~Element,geometry,content)>>
+
+def pipeline_joined(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,+left: Model.Content<Element>,+right: Model.Content<Element>,
+  left_evidence: PipelineContract(~Element,~Context,~value,context,geometry,left),right_evidence: PipelineContract(~Element,~Context,~value,context,geometry,right)) ->
+  PipelineContract(~Element,~Context,~value,context,geometry,Model.Joined{left,right}):
+  Shape.Both{left_values,Shape.Both{left_ready,left_metadata}} = left_evidence
+  Shape.Both{right_values,Shape.Both{right_ready,right_metadata}} = right_evidence
+  Shape.Both{Shape.Both{left_values,right_values},Shape.Both{Shape.Both{left_ready,right_ready},Shape.Both{left_metadata,right_metadata}}}
+
+def pipeline_well_formed(~Element: Data,~Context: Data,~value: Context -> U32 -> Element,+context: Context,+geometry: Bands.Geometry,+content: Model.Content<Element>,
+  evidence: PipelineContract(~Element,~Context,~value,context,geometry,content),coverage: BandPlan.Coverage(Model.content_layout(~Element,content),0n,Inspection.total_rows(geometry))) ->
+  Shape.Both<Values(~Element,~Context,~value,context,geometry,content),BandShape.WellFormed<Element,geometry,content>>:
+  Shape.Both{values,Shape.Both{ready,metadata}} = evidence
+  Shape.Both{values,BandShape.WellFormed{metadata,ready,coverage}}
+
+# One cell of a table of channels, rows and columns, from its three bounds.
+def table_cell(~Context: Data,~Property: @+context: Context -> @+channel: Nat -> @+row: Nat -> @+column: Nat -> Data,~channels: @+context: Context -> Nat,~rows: @+context: Context -> Nat,~width: @+context: Context -> Nat,
+  +context: Context,+channel: Nat,+row: Nat,+column: Nat,
+  table: Members.All(Nat,{channel => Members.All(Nat,{row => Members.All(Nat,{column => Property(context,channel,row,column) : Nat -> Data},Ranges.range(width(context),0n)) : Nat -> Data},Ranges.range(rows(context),0n)) : Nat -> Data},Ranges.range(channels(context),0n)),
+  channel_inside: {Nat.is_lt(channel,channels(context)) == True{} : Bool},row_inside: {Nat.is_lt(row,rows(context)) == True{} : Bool},
+  column_inside: {Nat.is_lt(column,width(context)) == True{} : Bool}) -> Property(context,channel,row,column):
+  Members.all_member(Nat,{column => Property(context,channel,row,column) : Nat -> Data},column,Ranges.range(width(context),0n),
+    Members.all_member(Nat,{row => Members.All(Nat,{column => Property(context,channel,row,column) : Nat -> Data},Ranges.range(width(context),0n)) : Nat -> Data},row,Ranges.range(rows(context),0n),
+      Members.all_member(Nat,{channel => Members.All(Nat,{row => Members.All(Nat,{column => Property(context,channel,row,column) : Nat -> Data},Ranges.range(width(context),0n)) : Nat -> Data},Ranges.range(rows(context),0n)) : Nat -> Data},
+        channel,Ranges.range(channels(context),0n),table,Members.range_member(channels(context),0n,channel,channel_inside)),
+      Members.range_member(rows(context),0n,row,row_inside)),
+    Members.range_member(width(context),0n,column,column_inside))

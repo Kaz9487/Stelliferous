@@ -1,4 +1,5 @@
 import Base
+import ./row_major_index.bend as RowMajor
 import ./natural_addition.bend as Addition
 import ./word_arithmetic.bend as WordArithmetic
 import ./nat_to_u32_bounds.bend as Bounds
@@ -149,3 +150,50 @@ def bounded_multiply(+a: U32,+b: U32,+cap: U32,cap_ok: {U32.is_le(cap,2147483648
   %Equal.sym(U32,U32.mul(a,b),U32.from_nat(Nat.mul(U32.to_nat(a),U32.to_nat(b))),native_multiply(a,b)) : {U32.to_nat(_) == Nat.mul(U32.to_nat(a),
       U32.to_nat(b)) : Nat}
   Bounds.roundtrip(Nat.mul(U32.to_nat(a),U32.to_nat(b)),cap,cap_ok,h)
+
+# Encoding respects products even when the natural operands exceed a word.
+def encoded_product_roundtrip(+value: Nat,remaining: Nat,+width: Nat) ->
+  {WordArithmetic.encode(Nat.mul(Word.to_nat(width,WordArithmetic.encode(value,width)),remaining),width) == WordArithmetic.encode(Nat.mul(value,remaining),width) : Word(width)}:
+  match remaining:
+    case 0n:
+      Equal.cong(Nat,Word(width),n => WordArithmetic.encode(n,width),Nat.mul(Word.to_nat(width,WordArithmetic.encode(value,width)),0n),Nat.mul(value,0n),
+        Equal.trans(Nat,Nat.mul(Word.to_nat(width,WordArithmetic.encode(value,width)),0n),0n,Nat.mul(value,0n),RowMajor.multiply_zero_right(Word.to_nat(width,WordArithmetic.encode(value,width))),Equal.sym(Nat,Nat.mul(value,0n),0n,RowMajor.multiply_zero_right(value))))
+    case 1n+ +rest:
+      +decoded = Word.to_nat(width,WordArithmetic.encode(value,width))
+      %Equal.sym(Nat,Nat.mul(decoded,1n+rest),Nat.add(decoded,Nat.mul(decoded,rest)),RowMajor.multiply_successor_right(decoded,rest)) :
+        {WordArithmetic.encode(_,width) == WordArithmetic.encode(Nat.mul(value,1n+rest),width) : Word(width)}
+      %Equal.sym(Nat,Nat.mul(value,1n+rest),Nat.add(value,Nat.mul(value,rest)),RowMajor.multiply_successor_right(value,rest)) :
+        {WordArithmetic.encode(Nat.add(decoded,Nat.mul(decoded,rest)),width) == WordArithmetic.encode(_,width) : Word(width)}
+      %WordArithmetic.encode_add(decoded,Nat.mul(decoded,rest),width) :
+        {_ == WordArithmetic.encode(Nat.add(value,Nat.mul(value,rest)),width) : Word(width)}
+      %WordArithmetic.encode_add(value,Nat.mul(value,rest),width) :
+        {Word.add(width,WordArithmetic.encode(decoded,width),WordArithmetic.encode(Nat.mul(decoded,rest),width)) == _ : Word(width)}
+      %Equal.sym(Word(width),WordArithmetic.encode(decoded,width),WordArithmetic.encode(value,width),word_roundtrip(width,WordArithmetic.encode(value,width))) :
+        {Word.add(width,_,WordArithmetic.encode(Nat.mul(decoded,rest),width)) == Word.add(width,WordArithmetic.encode(value,width),WordArithmetic.encode(Nat.mul(value,rest),width)) : Word(width)}
+      %Equal.sym(Word(width),WordArithmetic.encode(Nat.mul(decoded,rest),width),WordArithmetic.encode(Nat.mul(value,rest),width),encoded_product_roundtrip(value,rest,width)) :
+        {Word.add(width,WordArithmetic.encode(value,width),_) == Word.add(width,WordArithmetic.encode(value,width),WordArithmetic.encode(Nat.mul(value,rest),width)) : Word(width)}
+      {==}
+
+def encoded_multiply(+left: Nat,+right: Nat,+width: Nat) ->
+  {Word.mul(width,WordArithmetic.encode(left,width),WordArithmetic.encode(right,width)) == WordArithmetic.encode(Nat.mul(left,right),width) : Word(width)}:
+  +a = Word.to_nat(width,WordArithmetic.encode(left,width))
+  +b = Word.to_nat(width,WordArithmetic.encode(right,width))
+  %Equal.sym(Word(width),Word.mul(width,WordArithmetic.encode(left,width),WordArithmetic.encode(right,width)),WordArithmetic.encode(Nat.mul(a,b),width),multiply(width,WordArithmetic.encode(left,width),WordArithmetic.encode(right,width))) :
+    {_ == WordArithmetic.encode(Nat.mul(left,right),width) : Word(width)}
+  %Equal.sym(Word(width),WordArithmetic.encode(Nat.mul(a,b),width),WordArithmetic.encode(Nat.mul(left,b),width),encoded_product_roundtrip(left,b,width)) :
+    {_ == WordArithmetic.encode(Nat.mul(left,right),width) : Word(width)}
+  %Equal.sym(Nat,Nat.mul(left,b),Nat.mul(b,left),RowMajor.multiply_commutative(left,b)) :
+    {WordArithmetic.encode(_,width) == WordArithmetic.encode(Nat.mul(left,right),width) : Word(width)}
+  %Equal.sym(Word(width),WordArithmetic.encode(Nat.mul(b,left),width),WordArithmetic.encode(Nat.mul(right,left),width),encoded_product_roundtrip(right,left,width)) :
+    {_ == WordArithmetic.encode(Nat.mul(left,right),width) : Word(width)}
+  Equal.cong(Nat,Word(width),n => WordArithmetic.encode(n,width),Nat.mul(right,left),Nat.mul(left,right),RowMajor.multiply_commutative(right,left))
+
+def native_encoded_multiply(+left: Nat,+right: Nat) ->
+  {(U32.from_nat(left) * U32.from_nat(right) : U32) == U32.from_nat(Nat.mul(left,right)) : U32}:
+  %Equal.sym(U32,U32.from_nat(left),U32{WordArithmetic.encode(left,32n)},WordArithmetic.native_encoding(left)) :
+    {(_ * U32.from_nat(right) : U32) == U32.from_nat(Nat.mul(left,right)) : U32}
+  %Equal.sym(U32,U32.from_nat(right),U32{WordArithmetic.encode(right,32n)},WordArithmetic.native_encoding(right)) :
+    {(U32{WordArithmetic.encode(left,32n)} * _ : U32) == U32.from_nat(Nat.mul(left,right)) : U32}
+  %Equal.sym(U32,U32.from_nat(Nat.mul(left,right)),U32{WordArithmetic.encode(Nat.mul(left,right),32n)},WordArithmetic.native_encoding(Nat.mul(left,right))) :
+    {U32{Word.mul(32n,WordArithmetic.encode(left,32n),WordArithmetic.encode(right,32n))} == _ : U32}
+  Equal.cong(Word(32n),U32,word => U32{word},Word.mul(32n,WordArithmetic.encode(left,32n),WordArithmetic.encode(right,32n)),WordArithmetic.encode(Nat.mul(left,right),32n),encoded_multiply(left,right,32n))

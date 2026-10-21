@@ -3,8 +3,8 @@
 Graph operations have explicit begin/end effects around the public tensor call
 and its ownership copies. Snapshot gathering is outside this interval.
 Host copies made by Tensor.get_buffer are timed separately. A diagnostic copy of the
-official generated C carries the timers; its saved tensors must match the normal
-example run bitwise. The dependency graph gives the critical path, which bounds the
+official generated C carries the timers; its saved tensors must match an
+uninstrumented run of the same C bitwise. The dependency graph gives the critical path, which bounds the
 speedup available from running independent operations at the same time.
 """
 
@@ -144,7 +144,6 @@ def main():
     if args.threads < 1:
         parser.error('--threads must be positive')
     stem = args.case + (f'_cpu_{args.threads}t' if args.threads != 1 else '')
-    backend = 'native' + (f'_{args.threads}t' if args.threads != 1 else '')
     generated = ROOT / f'out/models/{stem}.c'
     subprocess.run([sys.executable, '-B', str(ROOT / 'benchmarks/convolution/report_plans.py'), str(ROOT / f'out/models/{stem}.json')], check=True)
     graph = json.loads((ROOT / f'out/models/{stem}.json').read_text())
@@ -155,16 +154,24 @@ def main():
     instrumented = directory / f'{stem}_timing.c'
     instrumented.write_text(instrument_timing(generated.read_text(), len(operations)))
     subprocess.run([sys.executable, '-B', str(ROOT / 'scripts/check_generated_c.py'), str(instrumented)], check=True)
-    executable = directory / f'{stem}_timing'
     compiler = os.environ.get('CC') or shutil.which('clang')
     if not compiler:
         parser.error('Set CC to a Clang-compatible compiler')
-    subprocess.run(
-        [compiler, '-O3', '-march=native', '-ffp-contract=off', '-std=c11', str(instrumented),
-         '-lpthread', '-lm', '-o', str(executable)],
-        check=True,
-    )
+    executable, normal = directory / f'{stem}_timing', directory / f'{stem}_normal'
+    for source, binary in [(instrumented, executable), (generated, normal)]:
+        subprocess.run(
+            [compiler, '-O3', '-march=native', '-ffp-contract=off', '-std=c11', str(source),
+             '-lpthread', '-lm', '-o', str(binary)],
+            check=True,
+        )
 
+    # The graph's own uninstrumented run is the reference: its decode differs
+    # from the handwritten example's, so the example's snapshots do not apply.
+    reference = directory / f'{stem}_reference'
+    reference.mkdir(parents=True, exist_ok=True)
+    subprocess.run([str(normal), '--threads', str(args.threads), '--gpu', 'off'], cwd=ROOT, check=True,
+                   stdout=subprocess.DEVNULL,
+                   env=dict(os.environ, BEND_OUTDIR=str(reference), BEND_DUMP='1', BEND_REPETITIONS='1'))
     report = ROOT / 'out/results/model_operations' / stem
     report.mkdir(parents=True, exist_ok=True)
     command = [str(executable), '--threads', str(args.threads), '--gpu', 'off']
@@ -172,7 +179,7 @@ def main():
                    env=dict(os.environ, BEND_OUTDIR=str(report), BEND_DUMP='1', BEND_REPETITIONS='1'))
     for label in graph['snapshots']:
         actual = report / f'{label}.bin'
-        expected = ROOT / f'out/results/{args.case}/{backend}/{label}.bin'
+        expected = reference / f'{label}.bin'
         assert actual.read_bytes() == expected.read_bytes(), f'Instrumentation changed {label}'
         actual.unlink()
     subprocess.run(command, cwd=ROOT, check=True, stdout=subprocess.DEVNULL,

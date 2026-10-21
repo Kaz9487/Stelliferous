@@ -1,26 +1,22 @@
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LibPacking
 import ../../lib/proofs/storage_shape.bend as Shape
 # Every leaf of actual prepare has the frozen sample.
 import Base
 import ./tile_array_projection.bend as ArrayProjection
 import ./input_storage.bend as Inputs
-import ../../lib/traversal_partition.bend as Partition
-import ../../lib/storage_buffer.bend as Storage
 import ../../lib/math_sequence.bend as Sequence
 import ../specification.bend as ConvSpec
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/kernel_tile.bend as Tile
-import ../scalar_kernel.bend as ScalarConv
 import ../inference.bend as NativeConv
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ./convolution_guard_facts.bend as Guards
 import ./concrete_support_guard.bend as Support
-import ./list_array_storage.bend as ListStorage
 import ./packing_storage_refinement.bend as PackingStorage
 import ./packing_tile_bounds.bend as PackingBounds
-import ./tile_partition_bounds.bend as TilePartitionBounds
+import ../../lib/proofs/kernel_partition_bounds.bend as TilePartitionBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./packed_reduction_samples.bend as ReductionSamples
 import ./packing_readback.bend as PackingReadback
@@ -30,20 +26,21 @@ import ./packing_tabulation.bend as PackingTabulation
 import ./packing_contents.bend as PackingContents
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
+import ../../lib/proofs/traversal_partition_refinement.bend as PartitionLaws
 
 def original_input(+p: ConvSpec.Problem,storage_contract: Inputs.Contract<p>) -> Tree.Tree<F32>:
   Inputs.input_tree(p,storage_contract)
 
-def workspace_pack(+p: ConvSpec.Problem,+storage_contract: Inputs.Contract<p>,+offset: U32,+span: U32,workspace: Tree.Tree<Tile.Tile8>) -> PackingStorage.Packed:
+def workspace_pack(+p: ConvSpec.Problem,+storage_contract: Inputs.Contract<p>,+offset: U32,+span: U32,workspace: Tree.Tree<Tile.Tile8>) -> LibPacking.Packed:
   PackingStorage.packing(U32.to_nat(PackingBounds.count(span,p)),offset,original_input(p,storage_contract),workspace,
     U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),U32.from_nat(Guards.stride(p)),
     U32.from_nat(Guards.pad(p)),U32.from_nat(ConvSpec.out_width(p)),Coordinates.native_inner(p))
 
-def allocated_pack(+p: ConvSpec.Problem,+storage_contract: Inputs.Contract<p>,+offset: U32,+span: U32) -> PackingStorage.Packed:
+def allocated_pack(+p: ConvSpec.Problem,+storage_contract: Inputs.Contract<p>,+offset: U32,+span: U32) -> LibPacking.Packed:
   workspace_pack(p,storage_contract,offset,span,PackingReadback.allocated(PackingBounds.count(span,p)))
 
-def packed_output(pair: PackingStorage.Packed) -> Tree.Tree<Tile.Tile8>:
-  PackingStorage.Packed{input,output} = pair
+def packed_output(pair: LibPacking.Packed) -> Tree.Tree<Tile.Tile8>:
+  LibPacking.Packed{input,output} = pair
   output
 
 def LeafSamples(+p: ConvSpec.Problem,+offset: U32,+span: U32,+data: Tree.Tree<Tile.Tile8>) -> Type:
@@ -69,13 +66,11 @@ type LeafEvidence<-p: ConvSpec.Problem,-offset: U32,-span: U32,-data: Tree.Tree<
 def LeafCertificate(p: ConvSpec.Problem,offset: U32,span: U32,data: Tree.Tree<Tile.Tile8>) -> Data:
   LeafEvidence<p,offset,span,data>
 
-def AllCertificates(+p: ConvSpec.Problem,tiles: PackingStorage.Tiles()) -> Data:
-  match tiles:
-    case Partition.Leaf{data,offset,span,Unit{}}:
-      LeafCertificate(p,offset,span,data)
-    case Partition.Fork{left,right}:
-      Shape.Both<AllCertificates(p,left),AllCertificates(p,right)>
+def PartCertificate(+p: ConvSpec.Problem,+offset: U32,+span: U32,+details: Unit,data: Tree.Tree<Tile.Tile8>) -> Data:
+  LeafCertificate(p,offset,span,data)
 
+def AllCertificates(+p: ConvSpec.Problem,tiles: PackingStorage.Tiles()) -> Data:
+  PartitionLaws.All(~&2,~Tree.Tree<Tile.Tile8>,~Unit,~ConvSpec.Problem,~PartCertificate,p,tiles)
 def PreparedCertificates(+p: ConvSpec.Problem,result: PackingStorage.Prepared) -> Data:
   PackingStorage.Prepared{input,tiles} = result
   AllCertificates(p,tiles)
@@ -99,9 +94,9 @@ def workspace_contents(+limits: Machine.Limits,+p: ConvSpec.Problem,+storage_con
     U32.from_nat(Guards.pad(p)),U32.from_nat(ConvSpec.out_width(p)),Coordinates.native_inner(p))) ==
       PackingTabulation.fill(_,0,offset,input,buffer,U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),U32.from_nat(Guards.stride(p)),
     U32.from_nat(Guards.pad(p)),U32.from_nat(ConvSpec.out_width(p)),Coordinates.native_inner(p)) : Tree.Tree<Tile.Tile8>}
-  Equal.cong(PackingStorage.Packed,Tree.Tree<Tile.Tile8>,pair => packed_output(pair),PackingStorage.packing(entries,offset,input,buffer,U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),U32.from_nat(Guards.stride(p)),
+  Equal.cong(LibPacking.Packed,Tree.Tree<Tile.Tile8>,pair => packed_output(pair),PackingStorage.packing(entries,offset,input,buffer,U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),U32.from_nat(Guards.stride(p)),
     U32.from_nat(Guards.pad(p)),U32.from_nat(ConvSpec.out_width(p)),Coordinates.native_inner(p)),
-    PackingStorage.Packed{input,PackingTabulation.fill(entries,0,offset,input,buffer,U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),U32.from_nat(Guards.stride(p)),
+    LibPacking.Packed{input,PackingTabulation.fill(entries,0,offset,input,buffer,U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),U32.from_nat(Guards.stride(p)),
     U32.from_nat(Guards.pad(p)),U32.from_nat(ConvSpec.out_width(p)),Coordinates.native_inner(p))},
     PackingContents.packing_contents(limits,p,PackingBounds.groups(span),offset,input,buffer,valid,Padded.scalar(limits,p,support),
       PackingBounds.elements_bound(limits,p,span,support,span_bound),range))
@@ -211,9 +206,9 @@ def prepare(+p: ConvSpec.Problem,depth: Nat,offset: U32,span: U32,input: Tree.Tr
   PackingStorage.prepare(depth,offset,span,input,U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),
     U32.from_nat(Guards.stride(p)),U32.from_nat(Guards.pad(p)),U32.from_nat(ConvSpec.out_width(p)),Coordinates.native_inner(p))
 
-def leaf_certificate(+p: ConvSpec.Problem,+offset: U32,+span: U32,+packed: PackingStorage.Packed,proof: LeafCertificate(p,offset,span,
+def leaf_certificate(+p: ConvSpec.Problem,+offset: U32,+span: U32,+packed: LibPacking.Packed,proof: LeafCertificate(p,offset,span,
     packed_output(packed))) -> PreparedCertificates(p,PackingStorage.leaf(offset,span,packed)):
-  PackingStorage.Packed{input,output} = packed
+  LibPacking.Packed{input,output} = packed
   proof
 
 def attach_certificates(+p: ConvSpec.Problem,+left: PackingStorage.Tiles(),+right: PackingStorage.Prepared,left_proof: AllCertificates(p,left),
@@ -271,15 +266,15 @@ def certified_leaf_samples(+limits: Machine.Limits,+p: ConvSpec.Problem,+offset:
   leaf_samples(limits,p,storage_contract,offset,span,valid,supported,span_bound,padded_range(p,offset,span,range_bound))
 
 # A packed pair exposes the unchanged input and the written workspace.
-def packed_pair(+pair: PackingStorage.Packed) ->
-  {pair == PackingStorage.Packed{PackingStorage.packed_input(pair),packed_output(pair)} : PackingStorage.Packed}:
-  PackingStorage.Packed{input,output} = pair
+def packed_pair(+pair: LibPacking.Packed) ->
+  {pair == LibPacking.Packed{LibPacking.packed_input(pair),packed_output(pair)} : LibPacking.Packed}:
+  LibPacking.Packed{input,output} = pair
   {==}
 
 def workspace_pair(+p: ConvSpec.Problem,+storage_contract: Inputs.Contract<p>,+offset: U32,+span: U32,+workspace: Tree.Tree<Tile.Tile8>) ->
   {workspace_pack(p,storage_contract,offset,span,workspace) ==
-    PackingStorage.Packed{original_input(p,storage_contract),packed_output(workspace_pack(p,storage_contract,offset,span,workspace))} : PackingStorage.Packed}:
+    LibPacking.Packed{original_input(p,storage_contract),packed_output(workspace_pack(p,storage_contract,offset,span,workspace))} : LibPacking.Packed}:
   %PackingStorage.packing_preserves_input(U32.to_nat(PackingBounds.count(span,p)),offset,original_input(p,storage_contract),workspace,
     U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),U32.from_nat(Guards.kernel(p)),U32.from_nat(Guards.stride(p)),U32.from_nat(Guards.pad(p)),U32.from_nat(ConvSpec.out_width(p)),Coordinates.native_inner(p)) :
-    {workspace_pack(p,storage_contract,offset,span,workspace) == PackingStorage.Packed{_,packed_output(workspace_pack(p,storage_contract,offset,span,workspace))} : PackingStorage.Packed}
+    {workspace_pack(p,storage_contract,offset,span,workspace) == LibPacking.Packed{_,packed_output(workspace_pack(p,storage_contract,offset,span,workspace))} : LibPacking.Packed}
   packed_pair(workspace_pack(p,storage_contract,offset,span,workspace))
