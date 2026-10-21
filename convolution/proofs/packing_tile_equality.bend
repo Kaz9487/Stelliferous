@@ -8,10 +8,10 @@ import ../../lib/kernel_spatial_packing.bend as Packing
 import ../../lib/kernel_tile.bend as Tile
 import ../../lib/proofs/kernel_tile_refinement.bend as TileLaws
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ./packing_block_reads.bend as Reads
+import ../../lib/proofs/kernel_spatial_packing_samples.bend as Reads
 import ./packing_lane_reads.bend as LaneReads
 import ./packing_tabulation.bend as PackingTabulation
-import ./packing_loop_refinement.bend as LoopLaws
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LoopLaws
 
 law fill_append:
   for +n: Nat

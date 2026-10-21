@@ -6,6 +6,8 @@ import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./u32_comparison.bend as Comparison
 import ./nat_to_u32_bounds.bend as Bounds
 import ./word_encoding.bend as WordEncoding
+import ./nat_order.bend as Order
+import ./word_power_of_two.bend as WordPowerOfTwo
 
 law out_pad:
   for +n: Nat
@@ -104,3 +106,6 @@ def double(+x: U32,h: {U32.is_lt(x,2147483648) == True{} : Bool}) -> {U32.to_nat
   match x:
     case U32{w}:
       double_word(w)(h)
+
+def power_fits(+depth: Nat,+depth_ok: {Nat.is_le(depth,30n) == True{} : Bool}) -> {U32.is_le(U32.shln(1,depth),2147483648) == True{} : Bool}:
+  WordPowerOfTwo.native_power_bound(depth,Order.transitive(depth,30n,31n,depth_ok,{==}))

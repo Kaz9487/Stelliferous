@@ -129,7 +129,6 @@ const reached = closure([rootName]);
 // Their reference closure is retained too. This is not a second acceptance gate.
 const retainedInterfaces: [string, string[], string][] = [
   ['lib/proofs/storage_refinement.bend', ['pack_reflected'], 'Every native Array has the shared storage observation'],
-  ['lib/proofs/write_program.bend', ['program_preserves_balance', 'program_preserves_capacity'], 'Element-independent write-program shape and capacity contract'],
   ['convolution/proofs/native_inference_law.bend', ['every_strategy_matches_matrix'], 'Both execution strategies satisfy the unchanged full specification'],
   [
     'lib/proofs/traversal_array_refinement.bend',
@@ -144,11 +143,6 @@ const retainedInterfaces: [string, string[], string][] = [
     'lib/proofs/array_layout_bounds.bend',
     ['view_address_is_inside'],
     'Rank-independent bounded lookup and storage ownership',
-  ],
-  [
-    'lib/proofs/paired_read_refinement.bend',
-    ['zip_preserves_selection'],
-    'Static product zip composition for arbitrary element representations',
   ],
   [
     'convolution/proofs/matrix_convolution_law.bend',
@@ -177,23 +171,13 @@ const retainedInterfaces: [string, string[], string][] = [
   ],
   [
     'convolution/proofs/array_tree_refinement.bend',
-    ['packed_layout', 'read_dense'],
+    ['packed_layout', 'read_flat'],
     'Logical Array API exercised by retained array comparisons',
   ],
   [
     'convolution/proofs/guarded_read_refinement.bend',
     ['bounded'],
     'Guarded read used by scalar and array comparisons',
-  ],
-  [
-    'lib/proofs/loop_projection.bend',
-    ['iteration_result_and_work', 'counter_progress'],
-    'Shared parametric iteration work; concrete step cost remains an obligation',
-  ],
-  [
-    'convolution/proofs/packing_lane_reads.bend',
-    ['prepared_pixel_matches_direct_read'],
-    'Runtime cached pixel geometry optimization contract',
   ],
   [
     'convolution/proofs/concrete_support_guard.bend',

@@ -13,6 +13,8 @@ import ./traversal_certificate.bend as TraversalCertificate
 import ./tensor_access_certificate.bend as AccessCertificate
 import ./contiguous_copy.bend as Contiguous
 import ./write_program.bend as Writes
+import ./storage_buffer_model.bend as Buffer
+import ./storage_clone_refinement.bend as Cloned
 
 type Owners<-Element: Data> is Data:
   Owners{source: Tree.Tree<Element>,source_length: Nat,output: Tree.Tree<Element>,output_length: Nat}
@@ -86,20 +88,17 @@ def packed(~Element: Data,+call: Call,+input: Tree.Tree<Element>,+output: Tree.T
     {values(~Element,input_length,output_length,_) == model(~Element,count,source,destination,Owners{input,input_length,output,output_length}) : Owners<Element>}
   represented_values(~Element,input,input_length,Writes.pure(Element,Contiguous.writes(~Element,U32.to_nat(count),input,0,source,destination),output),output_length)
 
-def proposition(~Element: Data,call: Call,-input: Array<Element>,-output: Array<Element>,-input_tree: Tree.Tree<Element>,-output_tree: Tree.Tree<Element>) -> Type:
-  +call = call
-  @input_certificate: Certificate.Certificate<Element,input> -> @output_certificate: Certificate.Certificate<Element,output> ->
-  {observe(~Element,Copy.range(~Element,call_count(call),call_source(call),call_destination(call),
-      Storage.Buffer{input,call_input_length(call),input_certificate},Storage.Buffer{output,call_output_length(call),output_certificate})) ==
-    model(~Element,call_count(call),call_source(call),call_destination(call),Owners{input_tree,call_input_length(call),output_tree,call_output_length(call)}) : Owners<Element>}
-
 def range_pair(~Element: Data,count: U32,source: U32,destination: U32,owners: Storage.Buffer<Element> & Storage.Buffer<Element>) -> Storage.Buffer<Element> & Storage.Buffer<Element>:
   (input,output) = owners
   Copy.range(~Element,count,source,destination,input,output)
 
-def range(~Element: Data,+count: U32,+source: U32,+destination: U32,owners: Storage.Buffer<Element> & Storage.Buffer<Element>) ->
-  {observe(~Element,range_pair(~Element,count,source,destination,owners)) == model(~Element,count,source,destination,observe(~Element,owners)) : Owners<Element>}:
-  (Storage.Buffer{input,+input_length,input_certificate},Storage.Buffer{output,+output_length,output_certificate}) = owners
-  +call = {Call{count,source,destination,input_length,output_length} : Call}
-  StorageLaws.lift_pair_observation(~Element,~Call,~proposition(~Element),call,input,output,StorageLaws.observe(Element,input),StorageLaws.observe(Element,output),
-    input_tree => output_tree => input_certificate => output_certificate => packed(~Element,call,input_tree,output_tree,input_certificate,output_certificate))(input_certificate)(output_certificate)
+# The canonical owners keep the certificates a copy actually returns.
+type ActualOwners<-Element: Data> is Data:
+  ActualOwners{source: Buffer.Model<Element>,output: Buffer.Model<Element>}
+
+def actual_observed(~Element: Data,-owners: Storage.Buffer<Element> & Storage.Buffer<Element>,observation: Cloned.Observation<Element,owners>) -> ActualOwners<Element>:
+  Cloned.Observation{source,output,equation} = observation
+  ActualOwners{source,output}
+
+def actual_model(~Element: Data,owners: Storage.Buffer<Element> & Storage.Buffer<Element>) -> ActualOwners<Element>:
+  actual_observed(~Element,owners,Cloned.observe_pair(~Element,owners))

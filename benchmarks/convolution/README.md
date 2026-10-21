@@ -12,7 +12,7 @@ Samples, the environment and the report go to `out/results/cpu_convolution/`.
 
 ## Method
 
-- 1 and 4 threads; two warmups and seven samples per backend, in one process.
+- 1 and 4 threads, with two warmups and seven samples per backend in one process.
 - Total latency covers packing, allocation, kernels and gather. Core latency covers the multiply-accumulate loop only. File I/O is not timed.
 - The C reference follows the same packed algorithm and accumulation order. It is built twice, with and without automatic vectorization, and both builds must match Bend bit for bit.
 - The C reference partitions channels and Bend partitions output positions, so the comparison isolates vectorization, not every cost of generated code.

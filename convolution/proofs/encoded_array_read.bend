@@ -9,7 +9,7 @@ import ./list_array_storage.bend as ListStorage
 import ./list_array_allocation.bend as ListArrayAllocation
 import ../specification.bend as ConvSpec
 import ../scalar_kernel.bend as ScalarConv
-import ./dense_array_initialization.bend as DenseArrayInitialization
+import ./array_fill_readback.bend as ArrayFill
 import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/kernel_spatial_packing.bend as Packing
 
@@ -28,7 +28,7 @@ def length_within_capacity(+xs: List<&2,F32>,proof: ListArrayAllocation.Ready(xs
   {Nat.is_le(ConvSpec.length(xs),U32.to_nat(Tree.capacity(F32,ListStorage.representation(xs)))) == True{} : Bool}:
   Shape.Both{limit,room} = proof
   %Equal.sym(U32,Tree.capacity(F32,ListStorage.representation(xs)),Tree.capacity(F32,ListArrayAllocation.initial(xs)),
-    DenseArrayInitialization.capacity(xs,0,ListArrayAllocation.initial(xs),ListArrayAllocation.depth(xs),
+    ArrayFill.capacity(xs,0,ListArrayAllocation.initial(xs),ListArrayAllocation.depth(xs),
       Shape.fresh(F32,ListArrayAllocation.depth(xs),0.0))) : {Nat.is_le(ConvSpec.length(xs),U32.to_nat(_)) == True{} : Bool}
   room
 

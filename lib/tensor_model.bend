@@ -8,9 +8,11 @@ import ./tensor_file.bend as Files
 def Tensor() -> Type:
   Tensors.Tensor<F32>
 
+# A store that could not be loaded keeps its problem, and every take reports it.
 type Store is Type:
   Empty{}
   Entry{name: String,tensor: Tensor(),rest: Store}
+  Unavailable{problem: Tensors.Problem}
 
 # A step: given the store, a value and the store that remains.
 def Model(A: Type) -> Type:
@@ -29,6 +31,10 @@ def Model.bind(-A: Type,-B: Type,step: Model(A),next: A -> Model(B)) -> Model(B)
 def missing(+name: String) -> Tensor():
   Tensors.failed(~F32,"take",Tensors.MissingName{name},[],0.0,1)
 
+def unavailable(problem: Tensors.Problem) -> Tensor():
+  Tensors.Problem{operation,reason} = problem
+  Tensors.failed(~F32,operation,reason,[],0.0,1)
+
 def passed(name: String,tensor: Tensor(),pair: Tensor() & Store) -> Tensor() & Store:
   (result,store) = pair
   (result,Entry{name,tensor,store})
@@ -37,12 +43,15 @@ def scan(rest: Store,same: Bool,+name: String,tensor: Tensor(),+wanted: String) 
   match rest same:
     case Empty{} True{}: (tensor,Empty{})
     case Entry{next,other,more} True{}: (tensor,Entry{next,other,more})
+    case Unavailable{problem} True{}: (tensor,Unavailable{problem})
     case Empty{} False{}: (missing(wanted),Entry{name,tensor,Empty{}})
+    case Unavailable{+problem} False{}: (unavailable(problem),Entry{name,tensor,Unavailable{problem}})
     case Entry{+next,other,more} False{}: passed(name,tensor,scan(more,String.eq(next,wanted),next,other,wanted))
 
 def taken(store: Store,+wanted: String) -> Tensor() & Store:
   match store:
     case Empty{}: (missing(wanted),Empty{})
+    case Unavailable{+problem}: (unavailable(problem),Unavailable{problem})
     case Entry{+name,tensor,rest}: scan(rest,String.eq(name,wanted),name,tensor,wanted)
 
 # The tensor of that name leaves the store. A name that is not there gives a
@@ -55,6 +64,20 @@ def kept(+name: String,pair: Tensor() & Tensor(),store: Store) -> Tensor() & Sto
   (tensor,Entry{name,copy,store})
 
 # Puts a copy under the name, for a later take, and gives the tensor back.
+def named_rest(+name: String,tensor: Tensor(),pair: List<&2,String> & Store) -> List<&2,String> & Store:
+  (names,rest) = pair
+  (name <> names,Entry{name,tensor,rest})
+
+# The names in the store, in its order, and the store unchanged.
+def names(store: Store) -> List<&2,String> & Store:
+  match store:
+    case Empty{}: ([],Empty{})
+    case Unavailable{problem}: ([],Unavailable{problem})
+    case Entry{+name,tensor,rest}: named_rest(name,tensor,names(rest))
+
+def listed_names() -> Model(List<&2,String>):
+  store => names(store)
+
 def keep(+name: String,tensor: Tensor()) -> Model(Tensor()):
   store => kept(name,Layout.copy(~F32,tensor),store)
 
@@ -81,6 +104,7 @@ def copied_entry(+name: String,pair: Tensor() & Tensor(),rest: Store & Store) ->
 def copy(store: Store) -> Store & Store:
   match store:
     case Empty{}: (Empty{},Empty{})
+    case Unavailable{+problem}: (Unavailable{problem},Unavailable{problem})
     case Entry{+name,tensor,rest}: copied_entry(name,Layout.copy(~F32,tensor),copy(rest))
 
 # Loading: folder/names.txt lists one name per line; folder/<name>.npy holds its tensor.
@@ -100,9 +124,12 @@ def load_each(names: List<&2,String>,+folder: String) -> IO(Store):
             store : Store <- load_each(rest,folder)
             IO.pure(Store,entry(name,tensor,store))
 
+def unlisted(+folder: String,detail: String) -> Store:
+  Unavailable{Tensors.Problem{"load_weights",Tensors.FileFault{folder ++ "/names.txt",detail}}}
+
 def named(text: Result<&1,&1,U32 & String,String>,+folder: String) -> IO(Store):
   match text:
-    case Fail{error}: IO.pure(Store,Empty{})
+    case Fail{error}: IO.pure(Store,unlisted(folder,"cannot be read"))
     case Done{text}: load_each(String.lines(text),folder)
 
 def listed(read: File & Result<&1,&1,U32 & String,String>,+folder: String) -> IO(Store):
@@ -113,13 +140,13 @@ def listed(read: File & Result<&1,&1,U32 & String,String>,+folder: String) -> IO
 
 def opened(result: Result<&1,&1,U32 & String,File>,+folder: String) -> IO(Store):
   match result:
-    case Fail{error}: IO.pure(Store,Empty{})
+    case Fail{error}: IO.pure(Store,unlisted(folder,"cannot be opened"))
     case Done{file}:
       do IO<Store>:
         read : File & Result<&1,&1,U32 & String,String> <- File.read(file,1048576)
         listed(read,folder)
 
-# A folder without names.txt gives an empty store; every take then fails by name.
+# A folder whose names.txt cannot be read gives a store whose every take reports it.
 def load(+folder: String) -> IO(Store):
   do IO<Store>:
     result : Result<&1,&1,U32 & String,File> <- File.open(folder ++ "/names.txt","r")
@@ -127,23 +154,20 @@ def load(+folder: String) -> IO(Store):
 
 # Saving: the tensors of a store as folder/<name>.npy, and their names in folder/names.txt.
 
-def named_rest(+name: String,tensor: Tensor(),pair: Store & String) -> Store & String:
-  (rest,text) = pair
-  (Entry{name,tensor,rest},name ++ "
-" ++ text)
-
 def first(written: File & Result<&1,&1,U32 & String,Unit>) -> File:
   (file,result) = written
   file
 
-def names(store: Store) -> Store & String:
-  match store:
-    case Empty{}: (Empty{},"")
-    case Entry{+name,tensor,rest}: named_rest(name,tensor,names(rest))
+def lines(names: List<&2,String>) -> String:
+  match names:
+    case []: ""
+    case name <> rest: name ++ "
+" ++ lines(rest)
 
 def save_each(store: Store,+folder: String) -> IO(Store):
   match store:
     case Empty{}: IO.pure(Store,Empty{})
+    case Unavailable{problem}: IO.pure(Store,Unavailable{problem})
     case Entry{+name,tensor,rest}:
       do IO<Store>:
         saved : Tensor() <- Files.save_npy(folder ++ "/" ++ name ++ ".npy",tensor)
@@ -158,11 +182,11 @@ def listing(result: Result<&1,&1,U32 & String,File>,text: String) -> IO(Unit):
         written : File & Result<&1,&1,U32 & String,Unit> <- File.write(file,text)
         File.close(first(written))
 
-def save_listed(pair: Store & String,+folder: String) -> IO(Store):
-  (store,text) = pair
+def save_listed(pair: List<&2,String> & Store,+folder: String) -> IO(Store):
+  (names,store) = pair
   do IO<Store>:
     result : Result<&1,&1,U32 & String,File> <- File.open(folder ++ "/names.txt","w")
-    listing(result,text)
+    listing(result,lines(names))
     save_each(store,folder)
 
 # Gives the store back; a tensor that could not be written comes back failed.

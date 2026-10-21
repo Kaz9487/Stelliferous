@@ -2,7 +2,6 @@
 # output is read back against the frozen matrix in prepared_output_readback.
 import Base
 import ../../lib/tensor.bend as Tensors
-import ../../lib/tensor_f32.bend as F
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/kernel_pipeline.bend as Pipeline
 import ../../lib/traversal_partition.bend as Partition
@@ -18,16 +17,14 @@ import ./convolution_guard_facts.bend as Guards
 import ./supported_padded_coordinates.bend as Padded
 import ./tile_layout.bend as TileLayout
 import ./gather_storage_model.bend as GatherModel
-import ./gather_tree_readback.bend as GatherTreeReadback
 import ./prepared_output_readback.bend as PreparedOutputReadback
 import ./microkernel_storage_execution.bend as Execution
 import ./window_partition.bend as Windows
 import ./microkernel_leaf_readback.bend as MicroLeaf
 import ./gemm_dot_matches_matrix.bend as GemmDot
-import ./gather_blocks.bend as Blocks
+import ../../lib/proofs/kernel_gather_blocks.bend as Blocks
 import ./gather_copy_coordinates.bend as GatherCopyCoordinates
 import ./packed_output_allocation.bend as PackedOutputAllocation
-import ./concrete_support_guard.bend as Support
 import ../../lib/proofs/write_program.bend as Writes
 
 def work(+problem: ConvSpec.Problem) -> Pipeline.Work:
@@ -61,13 +58,13 @@ def finish_same(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<pr
 def spatial_positive(+problem: ConvSpec.Problem) -> {Nat.is_lt(0n,GatherCopyCoordinates.spatial(problem)) == True{} : Bool}:
   ConvSpec.Problem{shape,input,weights,bias} = problem
   ConvSpec.Shape{+input_channels,+output_channels,+height,+width,+kernel,+stride,+padding} = shape
-  Support.positive_mul(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding),{==},{==})
+  Order.product_positive(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding),{==},{==})
 
 def count_positive(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSpec.valid(problem) == True{} : Bool},
   +supported: {NativeConv.supports_packed_with_limits(limits,problem) == True{} : Bool}) -> {Nat.is_lt(0n,U32.to_nat(PreparedOutputReadback.count(problem))) == True{} : Bool}:
   %Equal.sym(Nat,U32.to_nat(PreparedOutputReadback.count(problem)),Nat.mul(Guards.output_channel_count(problem),GatherCopyCoordinates.spatial(problem)),PreparedOutputReadback.count_exact(limits,problem,valid,supported)) :
     {Nat.is_lt(0n,_) == True{} : Bool}
-  Support.positive_mul(Guards.output_channel_count(problem),GatherCopyCoordinates.spatial(problem),PackedOutputAllocation.channel_positive(problem,Guards.valid(problem,valid)),spatial_positive(problem))
+  Order.product_positive(Guards.output_channel_count(problem),GatherCopyCoordinates.spatial(problem),PackedOutputAllocation.channel_positive(problem,Guards.valid(problem,valid)),spatial_positive(problem))
 
 # The actual pipelined execution is exactly the model read back in
 # prepared_output_readback; only the depth routine, windows and allocation differ.

@@ -34,7 +34,7 @@ def round_trip(+name: String,tensor: F.Tensor()) -> IO(Unit):
     returned : F.Tensor() <- F.save_raw("out/results/tensor_file/" ++ name ++ "_returned.bin",npy)
     metadata(F.workers(returned))
 
-def dense(+name: String,+shape: List<&2,U32>) -> IO(Unit):
+def whole(+name: String,+shape: List<&2,U32>) -> IO(Unit):
   do IO<Unit>:
     tensor : F.Tensor() <- F.load_raw("out/results/tensor_file/" ++ name ++ "_input.bin",shape)
     round_trip(name,tensor)
@@ -43,7 +43,7 @@ def partitioned(result: Result<&2,&1,F.Problem(),F.Storage()>) -> F.Tensor():
   match result:
     case Fail{problem}: F.zeros([0])
     case Done{buffer}:
-      Tensors.Banded{Bands.split(~F32,1n,Bands.Geometry{2,3,173,17},0.0,buffer),Bands.Geometry{2,3,173,17},[2,3,173,17],0.0,Tensors.Usable{},3}
+      Tensors.Tensor{Bands.from_whole(~F32,Bands.Geometry{2,3,173,17},0.0,Bands.image_plan(2n,0,1n,173),buffer),Bands.Geometry{2,3,173,17},[2,3,173,17],0.0,Tensors.Usable{},3}
 
 def banded() -> IO(Unit):
   do IO<Unit>:
@@ -182,7 +182,7 @@ def main():
         np.save(
             OUT / f'weights_input/{name}.npy', expected[name].view(np.float32), allow_pickle=False
         )
-    calls = [f'    dense("{name}",{shape})' for name, shape in shapes.items() if name != 'banded']
+    calls = [f'    whole("{name}",{shape})' for name, shape in shapes.items() if name != 'banded']
     program = (
         HELPERS
         + '\ndef main() -> IO(Unit):\n  do IO<Unit>:\n'

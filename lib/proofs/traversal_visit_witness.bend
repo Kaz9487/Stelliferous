@@ -1,7 +1,6 @@
 # Shape and owner preservation for traversals with consumed cursor state.
 import Base
 import ../traversal_array.bend as Traversal
-import ../traversal_loop.bend as Loop
 import ./storage_witness.bend as Witness
 import ./traversal_witness.bend as TraversalWitness
 
@@ -28,6 +27,18 @@ def step(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: 
       %Equal.sym(Traversal.State<&1,&1,Reader,Array<Element>,Context>,state,Traversal.State{reader,output,position,context},equation) :
         TraversalWitness.StateEvidence<Reader,Element,Context,reader,depth,Traversal.visit_step(~Reader,~Element,~Context,~read,_)>
       store(~Reader,~Element,~Context,depth,reader,position,output,read(reader,context),output_evidence,read_preserves(reader,context,reader_evidence))
+
+def visit(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,
+  ~read: Reader -> Context -> Reader & Traversal.Visited<Context,Element>,
+  ~read_preserves: @-reader: Reader -> @context: Context -> ReaderEvidence(reader) -> Sample<Reader,Element,Context,reader,read(reader,context)>,
+  +depth: Nat,count: Nat,-reader: Reader,-state: Traversal.State<&1,&1,Reader,Array<Element>,Context>,+reader_evidence: ReaderEvidence(reader),
+  evidence: TraversalWitness.StateEvidence<Reader,Element,Context,reader,depth,state>) ->
+  TraversalWitness.StateEvidence<Reader,Element,Context,reader,depth,Traversal.visit(~Reader,~Element,~Context,~read,count,state)>:
+  match count:
+    case 0n: evidence
+    case 1n+rest:
+      visit(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,depth,rest,reader,Traversal.visit_step(~Reader,~Element,~Context,~read,state),reader_evidence,
+        step(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,depth,reader,state,reader_evidence,evidence))
 
 def spread_store(~Element: Data,~Context: Data,+depth: Nat,-input: Array<Element>,+position: U32,-output: Array<Element>,target: Traversal.Target<Context>,
   -result: Array<Element> & Element,output_evidence: Witness.Witness(Element,depth,output),observed: Witness.Read<Element,input,result>) ->
@@ -82,19 +93,6 @@ def update_step(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-r
         TraversalWitness.StateEvidence<Reader,Element,Context,reader,depth,Traversal.visit_update_step(~Reader,~Element,~Context,~read,~combine,_)>
       update_current(~Reader,~Element,~Context,~read,~combine,depth,reader,position,context,output,Array.get(Element,output,position),output_evidence,
         Witness.read(Element,depth,output,position,output_evidence),read_preserves(reader,context,reader_evidence))
-
-def update(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,
-  ~read: Reader -> Context -> Reader & Traversal.Visited<Context,Element>,~combine: Element -> Element -> Element,
-  ~read_preserves: @-reader: Reader -> @context: Context -> ReaderEvidence(reader) -> Sample<Reader,Element,Context,reader,read(reader,context)>,
-  +depth: Nat,count: Nat,-reader: Reader,-state: Traversal.State<&1,&1,Reader,Array<Element>,Context>,+reader_evidence: ReaderEvidence(reader),
-  evidence: TraversalWitness.StateEvidence<Reader,Element,Context,reader,depth,state>) ->
-  TraversalWitness.StateEvidence<Reader,Element,Context,reader,depth,Traversal.visit_update(~Reader,~Element,~Context,~read,~combine,count,state)>:
-  match count:
-    case 0n: evidence
-    case 1n+rest:
-      update(~Reader,~Element,~Context,~ReaderEvidence,~read,~combine,~read_preserves,depth,rest,reader,
-        Traversal.visit_update_step(~Reader,~Element,~Context,~read,~combine,state),reader_evidence,
-        update_step(~Reader,~Element,~Context,~ReaderEvidence,~read,~combine,~read_preserves,depth,reader,state,reader_evidence,evidence))
 
 def fold_value(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~combine: Accumulator -> Element -> Accumulator,
   -reader: Reader,+position: U32,-accumulator: Accumulator,-result: Reader & Traversal.Visited<Context,Element>,sample: Sample<Reader,Element,Context,reader,result>) ->

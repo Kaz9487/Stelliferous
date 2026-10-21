@@ -3,9 +3,6 @@ import ../../lib/proofs/storage_shape.bend as Shape
 import Base
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/word_power_of_two.bend as Power
-import ./array_tree_structure.bend as ArrayTreeStructure
-import ./tree_indexing.bend as TreeIndex
-import ./native_array_model.bend as NativeArrayModel
 
 def Bound(+capacity: U32,+index: U32) -> Type:
   {U32.is_lt(index,capacity) == True{} : Bool} -> {U32.and(index,U32.sub(capacity,1)) == index : U32}

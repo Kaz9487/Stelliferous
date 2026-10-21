@@ -1,9 +1,12 @@
 # One ownership/read/update refinement for every accumulator and address policy.
 # Read premises must be discharged by the actual readers, not by their callers.
 import Base
+import ./natural_addition.bend as Addition
+import ./nat_to_u32_bounds.bend as Bounds
+import ./ordered_ranges.bend as Ranges
+import ./ordered_reduction_split.bend as Ordered
 import ../traversal_reduction.bend as Reduction
 import ./storage_tree_model.bend as Tree
-import ./storage_refinement.bend as StorageLaws
 import ./loop_projection.bend as Projection
 import ../ordered_matrix.bend as OrderedMatrix
 import ../math_fp32.bend as Fp32
@@ -234,3 +237,40 @@ def model_loop_matches_ordered_dot(~Input: Data,~Weight: Data,~InputSample: Data
     ~ordered_dot_zero(~Input,~Weight,~InputSample,~WeightSample,~Context,~Accumulator,~Key,~sample_input,~sample_weights,~input_at,~weight_at,~accumulator_at),
     ~ordered_dot_step(~Input,~Weight,~InputSample,~WeightSample,~Context,~Accumulator,~Key,~sample_input,~sample_weights,~input_at,~weight_at,~accumulator_at,~update,~update_matches),
     count,key,state)
+
+# Shared consecutive address bridge, also used by forward matrix reduction.
+type AddressLayout is Data:
+  AddressLayout{input: Nat,weight: Nat}
+
+def mapped_address(context: AddressLayout,+index: Nat) -> AddressPair:
+  AddressLayout{input,weight} = context
+  AddressPair{U32.from_nat(Nat.add(input,index)),U32.from_nat(Nat.add(weight,index))}
+
+def address_key(context: AddressLayout,index: Nat) -> AddressPair:
+  mapped_address(context,index)
+
+def address_taps(indices: List<&2,Nat>,input_base: Nat,weight_base: Nat) -> List<&2,AddressPair>:
+  Ordered.map_keys(~Nat,~AddressPair,~AddressLayout,~address_key,indices,AddressLayout{input_base,weight_base})
+
+def address_successor(+base: Nat,+index: Nat) -> {(U32.from_nat(Nat.add(base,index)) + 1 : U32) == U32.from_nat(Nat.add(base,1n+index)) : U32}:
+  %Equal.sym(Nat,Nat.add(base,1n+index),1n+Nat.add(base,index),Addition.successor_right(base,index)) : {(U32.from_nat(Nat.add(base,
+          index)) + 1 : U32) == U32.from_nat(_) : U32}
+  Bounds.add_one(U32.from_nat(Nat.add(base,index)))
+
+def consecutive_taps(+count: Nat,+start: Nat,+input_base: Nat,+weight_base: Nat) -> {addresses(count,U32.from_nat(Nat.add(input_base,start)),
+    U32.from_nat(Nat.add(weight_base,start))) == address_taps(Ranges.range(count,start),input_base,weight_base) : List<&2,AddressPair>}:
+  match count:
+    case 0n:
+      {==}
+    case 1n+ +rest:
+      +first = {AddressPair{U32.from_nat(Nat.add(input_base,start)),U32.from_nat(Nat.add(weight_base,start))} : AddressPair}
+      %Equal.sym(U32,(U32.from_nat(Nat.add(input_base,start)) + 1 : U32),U32.from_nat(Nat.add(input_base,1n+start)),address_successor(input_base,
+          start)) : {first <> addresses(rest,_,(U32.from_nat(Nat.add(weight_base,
+              start)) + 1 : U32)) == first <> address_taps(Ranges.range(rest,1n+start),input_base,weight_base) : List<&2,AddressPair>}
+      %Equal.sym(U32,(U32.from_nat(Nat.add(weight_base,start)) + 1 : U32),U32.from_nat(Nat.add(weight_base,1n+start)),
+        address_successor(weight_base,start)) : {first <> addresses(rest,U32.from_nat(Nat.add(input_base,1n+start)),
+          _) == first <> address_taps(Ranges.range(rest,1n+start),input_base,weight_base) : List<&2,AddressPair>}
+      %consecutive_taps(rest,1n+start,input_base,weight_base) : {first <> addresses(rest,U32.from_nat(Nat.add(input_base,1n+start)),
+          U32.from_nat(Nat.add(weight_base,1n+start))) == first <> _ : List<&2,AddressPair>}
+      {==}
+

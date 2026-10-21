@@ -91,10 +91,12 @@ def not_equal_elements(left: F32,right: F32) -> F32:
 # selected is 0 or all ones, so selected + 1 is 1 or 0 modulo 2^32.
 # This masked integer product keeps the native selection in value lanes.
 def select(mask: F32,yes: F32,no: F32) -> F32:
-  +magnitude = U32.and(F32.bits(mask),2147483647)
+  F32{+mask_word} = mask
+  F32{+yes_word} = yes
+  F32{+no_word} = no
+  +magnitude = U32.and(U32{mask_word},2147483647)
   +selected = (0 - U32.shrn((magnitude + 2147483647 : U32),31n) : U32)
-  +no = F32.bits(no)
-  FP32.from_bits((U32.and(F32.bits(yes),selected) + no * (selected + 1 : U32) : U32))
+  FP32.from_bits((U32.and(U32{yes_word},selected) + U32{no_word} * (selected + 1 : U32) : U32))
 
 def selected(value: F32,mask: F32) -> F32:
   select(mask,value,0.0)
@@ -103,4 +105,6 @@ def rejected(value: F32,mask: F32) -> F32:
   select(mask,0.0,value)
 
 def union(left: F32,right: F32) -> F32:
-  FP32.from_bits(U32.or(F32.bits(left),F32.bits(right)))
+  F32{left_word} = left
+  F32{right_word} = right
+  FP32.from_bits(U32.or(U32{left_word},U32{right_word}))

@@ -6,15 +6,11 @@ import ../../lib/storage_buffer.bend as Storage
 import ../specification.bend as ConvSpec
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/kernel_gather.bend as Gather
-import ../scalar_kernel.bend as ScalarConv
-import ../../lib/proofs/write_program.bend as Writes
 import ./storage_capacity.bend as StorageCapacity
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/array_allocation_bounds.bend as ArrayAllocation
 import ./convolution_guard_facts.bend as Guards
-import ./concrete_support_guard.bend as Support
 import ./packed_leaf_bounds.bend as LeafBounds
 import ./packed_output_bounds.bend as Output
 import ./packing_tile_bounds.bend as PackingBounds
@@ -45,6 +41,6 @@ def allocated(+limits: Machine.Limits,+problem: ConvSpec.Problem,+span: U32,+gro
   +exact = Output.count_exact(limits,problem,span,supported,span_bound)
   from_allocation(count(problem,span),ArrayAllocation.allocated(count(problem,span),Machine.capacity(limits),Limits.capacity_fits(limits),Limits.capacity_allocatable(limits),
     %Equal.sym(Nat,U32.to_nat(count(problem,span)),Nat.mul(Guards.output_channel_count(problem),U32.to_nat(span)),exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Support.positive_mul(Guards.output_channel_count(problem),U32.to_nat(span),channel_positive(problem,valid),Order.le_lt_trans(0n,Nat.mul(group,8n),U32.to_nat(span),Order.zero_le(Nat.mul(group,8n)),Output.group_start_inside(span,group,group_inside))),
+    Order.product_positive(Guards.output_channel_count(problem),U32.to_nat(span),channel_positive(problem,valid),Order.le_lt_trans(0n,Nat.mul(group,8n),U32.to_nat(span),Order.zero_le(Nat.mul(group,8n)),Output.group_start_inside(span,group,group_inside))),
     %Equal.sym(Nat,U32.to_nat(count(problem,span)),Nat.mul(Guards.output_channel_count(problem),U32.to_nat(span)),exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     Output.elements_bound(limits,problem,span,supported,span_bound)))

@@ -1,5 +1,5 @@
 # Element- and length-indexed sequence model. Random get is O(index);
-# runtime dense storage is Array<Element>, not this sequential observation.
+# runtime storage is Array<Element>, not this sequential observation.
 import Base
 
 law Values:

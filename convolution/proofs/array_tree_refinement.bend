@@ -15,7 +15,7 @@ law read_path:
   {NativeArrayModel.read(path,Tree.pack(F32,tree)) == (Tree.pack(F32,tree),TreeIndex.selected(path,tree)) : Array<F32> & F32}
 
 # A typed route can only point at an actual leaf. The index is an unbounded Nat.
-law read_dense:
+law read_flat:
   for +tree: Tree.Tree<F32>
   for +route: TreeIndex.Routes(tree)
   {NativeArrayModel.read(TreeIndex.encode(tree,route),Tree.pack(F32,tree)) == (Tree.pack(F32,tree),ConvSpec.at(TreeIndex.index(tree,
@@ -127,7 +127,7 @@ def cat_nil(xs):
       %cat_nil(tail) : {h <> TreeIndex.cat(tail,Nil{}) == h <> _ : List<&2,F32>}
       {==}
 
-def read_dense(tree,route):
+def read_flat(tree,route):
   %cat_nil(TreeIndex.flatten(tree)) : {NativeArrayModel.read(TreeIndex.encode(tree,route),Tree.pack(F32,tree)) == (Tree.pack(F32,tree),
       ConvSpec.at(TreeIndex.index(tree,route),_)) : Array<F32> & F32}
   %logical_lookup(tree,route,Nil{}) : {NativeArrayModel.read(TreeIndex.encode(tree,route),Tree.pack(F32,tree)) == (Tree.pack(F32,tree),

@@ -7,6 +7,7 @@ import ./storage_address_bounds.bend as Address
 import ./word_power_of_two.bend as Power
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
 def capacity_node(~Element: Data,+left: Tree.Tree<Element>,+right: Tree.Tree<Element>,+half: U32,+index: U32,+value: Element,choice: Bool,
   left_capacity: {Tree.capacity(Element,Tree.store(Element,left,half,index,value)) == Tree.capacity(Element,left) : U32}) ->
@@ -98,7 +99,7 @@ def fetch_preserved(~Element: Data,+depth: Nat,tree: Tree.Tree<Element>,+index: 
   {Tree.fetch(Element,Tree.store(Element,tree,Address.capacity(depth),index,value),Address.capacity(depth),query) == Tree.fetch(Element,tree,Address.capacity(depth),query) : Element}:
   match depth tree:
     case 0n Tree.Leaf{old}:
-      Empty.absurd({value == old : Element},Address.unequal_words(index,query,different,Address.equal_values(index,query,
+      Empty.absurd({value == old : Element},Address.unequal_words(index,query,different,Arithmetic.to_nat_injective(index,query,
         Equal.trans(Nat,U32.to_nat(index),0n,U32.to_nat(query),Equal.sym(Nat,0n,U32.to_nat(index),Address.below_one_value(index,index_inside)),Address.below_one_value(query,query_inside)))))
     case 0n Tree.Node{left,right}: match balanced:
     case 1n+rest Tree.Leaf{old}: match balanced:

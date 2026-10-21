@@ -31,12 +31,25 @@ def multiply_bounded(left: U32,right: U32,limit: U32) -> Maybe<&2,U32>:
   U32{bits} = left
   encoded(multiply_bits(32n,bits,U32.to_nat(right),U32.to_nat(limit)))
 
-# Unit products already fit a word. Shapes and contiguous strides frequently
-# use them; returning the operand avoids the 32-step natural Horner traversal.
-def multiply_right(unit: Bool,left: U32,right: U32) -> Maybe<&2,U32>:
+# A left operand at most 2^31 divided by a right operand of at most 2^30
+# gives a product of at most 2^31, which the native product holds. Other
+# products take the exact bit traversal.
+def multiply_small(fits: Bool,+left: U32,+right: U32) -> Maybe<&2,U32>:
+  match fits:
+    case True{}: Some{(left * right : U32)}
+    case False{}: multiply_bounded(left,right,Machine.word_max())
+
+def multiply_divided(large: Bool,+left: U32,+right: U32) -> Maybe<&2,U32>:
+  match large:
+    case True{}: multiply_bounded(left,right,Machine.word_max())
+    case False{}: multiply_small(U32.is_le(left,(2147483648 / right : U32)),left,right)
+
+# Unit products already fit a word; shapes and contiguous strides frequently
+# use them.
+def multiply_right(unit: Bool,+left: U32,+right: U32) -> Maybe<&2,U32>:
   match unit:
     case True{}: Some{left}
-    case False{}: multiply_bounded(left,right,Machine.word_max())
+    case False{}: multiply_divided(U32.is_zero(right) || U32.is_lt(1073741824,right),left,right)
 
 def multiply_left(unit: Bool,+left: U32,+right: U32) -> Maybe<&2,U32>:
   match unit:

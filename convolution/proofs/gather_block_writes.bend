@@ -1,6 +1,6 @@
 # Bounds and matrix values for every store in the real channel-copy schedule.
 import Base
-import ./bounded_write_readback.bend as WriteReadback
+import ../../lib/proofs/write_program_readback.bend as WriteReadback
 import ../specification.bend as ConvSpec
 import ../inference.bend as NativeConv
 import ../../lib/kernel_gather.bend as Gather
@@ -24,10 +24,10 @@ import ./supported_padded_coordinates.bend as Padded
 import ./gather_copy_coordinates.bend as GatherCopyCoordinates
 import ./gather_output_index.bend as GatherOutputIndex
 import ./gather_block_coordinates.bend as BlockCoordinates
-import ./gather_block_width.bend as Width
-import ./gather_blocks.bend as Blocks
+import ../../lib/proofs/kernel_gather_width.bend as Width
+import ../../lib/proofs/kernel_gather_blocks.bend as Blocks
 import ./gather_leaf_writes.bend as GatherLeafWrites
-import ./conditional_write_coverage.bend as Coverage
+import ../../lib/proofs/write_program_readback.bend as NaturalCoverage
 import ./output_values.bend as Values
 
 def point_value(+matches: Bool,+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage: Inputs.Contract<problem>,+input: Tree.Tree<Tile.Tile8>,+offset: U32,+span: U32,+row: U32,+column: U32,+channel: Nat,+output_row: Nat,+output_column: Nat,
@@ -36,7 +36,7 @@ def point_value(+matches: Bool,+limits: Machine.Limits,+problem: ConvSpec.Proble
   +kept: {Nat.is_lt(Nat.add(U32.to_nat(offset),U32.to_nat(column)),GatherCopyCoordinates.spatial(problem)) == True{} : Bool},
   equal: {Nat.is_eq(GatherLeafWrites.query(problem,channel,output_row,output_column),U32.to_nat(BlockCoordinates.destination(row,Padded.spatial(problem),offset,column))) == matches : Bool},
   row_inside: {Nat.is_lt(output_row,ConvSpec.out_height(problem)) == True{} : Bool},column_inside: {Nat.is_lt(output_column,ConvSpec.out_width(problem)) == True{} : Bool}) ->
-  Coverage.Matches(matches,Tree.read(F32,GatherLeafWrites.output(problem,storage,offset,span),BlockCoordinates.source(row,span,column)),Values.matrix_value(problem,channel,output_row,output_column)):
+  NaturalCoverage.Matches(matches,Tree.read(F32,GatherLeafWrites.output(problem,storage,offset,span),BlockCoordinates.source(row,span,column)),Values.matrix_value(problem,channel,output_row,output_column)):
   match matches:
     case False{}: Unit{}
     case True{}:

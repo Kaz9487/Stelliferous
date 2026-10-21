@@ -4,7 +4,6 @@
 import Base
 import ../traversal_lanes.bend as Lanes
 import ../traversal_cells.bend as Cells
-import ../traversal_array.bend as Traversal
 import ../kernel_tile.bend as Tile
 import ./storage_witness.bend as Witness
 import ./traversal_witness.bend as TraversalWitness
@@ -95,26 +94,27 @@ def scattered(~Context: Data,+depth: Nat,-values: Array<F32>,-scratch: Array<Til
       Evidence{Lanes.scatter(values,position,tile),scratch,(position + 8 : U32),U32.and((slot + 1 : U32),63),context,{==},
         scatter(depth,values,position,tile,values_witness),scratch_witness}
 
-def stored(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,-values: Array<F32>,-scratch: Array<Tile.Tile8>,+position: U32,+slot: U32,+context: Context,
+def stored(~Context: Data,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,+depth: Nat,-values: Array<F32>,-scratch: Array<Tile.Tile8>,+position: U32,+slot: U32,+context: Context,
   values_witness: Witness.Witness(F32,depth,values),scratch_witness: Witness.Witness(Tile.Tile8,6n,scratch),
-  gathered: Gathered<values,Lanes.gather(~Context,~map,values,position,context)>) ->
-  Evidence<Context,depth,Cells.stored(~Array<F32>,~Tile.Tile8,~Context,~Lanes.scatter,~8,position,slot,context,scratch,Lanes.gather(~Context,~map,values,position,context))>:
+  gathered: Gathered<values,collect(values,position,context)>) ->
+  Evidence<Context,depth,Cells.stored(~Array<F32>,~Tile.Tile8,~Context,~Lanes.scatter,~8,position,slot,context,scratch,collect(values,position,context))>:
   match gathered:
     case Gathered{cell,equation}:
       +written = Witness.write(Tile.Tile8,6n,scratch,slot,cell,scratch_witness)
-      %Equal.sym(Array<F32> & Tile.Tile8,Lanes.gather(~Context,~map,values,position,context),(values,cell),equation) :
+      %Equal.sym(Array<F32> & Tile.Tile8,collect(values,position,context),(values,cell),equation) :
         Evidence<Context,depth,Cells.stored(~Array<F32>,~Tile.Tile8,~Context,~Lanes.scatter,~8,position,slot,context,scratch,_)>
       scattered(~Context,depth,values,Array.set(Tile.Tile8,scratch,slot,cell),position,slot,context,values_witness,written,
         Witness.read(Tile.Tile8,6n,Array.set(Tile.Tile8,scratch,slot,cell),slot,written))
 
-def step(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,-state: Cells.State<Array<F32>,Tile.Tile8,Context>,evidence: Evidence<Context,depth,state>) ->
-  Evidence<Context,depth,Cells.step(~Array<F32>,~Tile.Tile8,~Context,~Lanes.gather(~Context,~map),~Lanes.scatter,~8,state)>:
+def step(~Context: Data,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,
+  ~collected: @+depth: Nat -> @-values: Array<F32> -> @+position: U32 -> @+context: Context -> @+witness: Witness.Witness(F32,depth,values) -> Gathered<values,collect(values,position,context)>,+depth: Nat,-state: Cells.State<Array<F32>,Tile.Tile8,Context>,evidence: Evidence<Context,depth,state>) ->
+  Evidence<Context,depth,Cells.step(~Array<F32>,~Tile.Tile8,~Context,~collect,~Lanes.scatter,~8,state)>:
   match evidence:
     case Evidence{values,scratch,+position,+slot,+context,equation,+values_witness,scratch_witness}:
       %Equal.sym(Cells.State<Array<F32>,Tile.Tile8,Context>,state,Cells.State{values,scratch,position,slot,context},equation) :
-        Evidence<Context,depth,Cells.step(~Array<F32>,~Tile.Tile8,~Context,~Lanes.gather(~Context,~map),~Lanes.scatter,~8,_)>
-      stored(~Context,~map,depth,values,scratch,position,slot,context,values_witness,scratch_witness,
-        gather(~Context,~map,depth,values,position,context,values_witness))
+        Evidence<Context,depth,Cells.step(~Array<F32>,~Tile.Tile8,~Context,~collect,~Lanes.scatter,~8,_)>
+      stored(~Context,~collect,depth,values,scratch,position,slot,context,values_witness,scratch_witness,
+        collected(depth,values,position,context,values_witness))
 
 def finish(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,count: Nat,-state: Cells.State<Array<F32>,Tile.Tile8,Context>,evidence: Evidence<Context,depth,state>) ->
   Witness.Witness(F32,depth,Lanes.finish(~Context,~map,count,state)):
@@ -124,8 +124,9 @@ def finish(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,count: Nat,-st
         Witness.Witness(F32,depth,Lanes.finish(~Context,~map,count,_))
       TraversalWitness.map_in_place(~F32,~Context,~map,depth,count,position,context,values,values_witness)
 
-def rounds(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,count: Nat,-state: Cells.State<Array<F32>,Tile.Tile8,Context>,evidence: Evidence<Context,depth,state>) ->
-  Witness.Witness(F32,depth,Lanes.rounds(~Context,~map,count,state)):
+def rounds_with(~Context: Data,~map: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,
+  ~collected: @+depth: Nat -> @-values: Array<F32> -> @+position: U32 -> @+context: Context -> @+witness: Witness.Witness(F32,depth,values) -> Gathered<values,collect(values,position,context)>,+depth: Nat,count: Nat,-state: Cells.State<Array<F32>,Tile.Tile8,Context>,evidence: Evidence<Context,depth,state>) ->
+  Witness.Witness(F32,depth,Lanes.rounds_with(~Array<F32>,~Context,~collect,~Lanes.scatter,~Lanes.finish(~Context,~map),count,state)):
   match count:
     case 0n: finish(~Context,~map,depth,0n,state,evidence)
     case 1n: finish(~Context,~map,depth,1n,state,evidence)
@@ -136,8 +137,12 @@ def rounds(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,count: Nat,-st
     case 6n: finish(~Context,~map,depth,6n,state,evidence)
     case 7n: finish(~Context,~map,depth,7n,state,evidence)
     case 1n+1n+1n+1n+1n+1n+1n+1n+rest:
-      rounds(~Context,~map,depth,rest,Cells.step(~Array<F32>,~Tile.Tile8,~Context,~Lanes.gather(~Context,~map),~Lanes.scatter,~8,state),
-        step(~Context,~map,depth,state,evidence))
+      rounds_with(~Context,~map,~collect,~collected,depth,rest,Cells.step(~Array<F32>,~Tile.Tile8,~Context,~collect,~Lanes.scatter,~8,state),
+        step(~Context,~collect,~collected,depth,state,evidence))
+
+def rounds(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,count: Nat,-state: Cells.State<Array<F32>,Tile.Tile8,Context>,evidence: Evidence<Context,depth,state>) ->
+  Witness.Witness(F32,depth,Lanes.rounds(~Context,~map,count,state)):
+  rounds_with(~Context,~map,~Lanes.gather(~Context,~map),~gather(~Context,~map),depth,count,state,evidence)
 
 def map(~Context: Data,~map: Context -> F32 -> F32,+depth: Nat,count: Nat,+position: U32,+context: Context,-values: Array<F32>,witness: Witness.Witness(F32,depth,values)) ->
   Witness.Witness(F32,depth,Lanes.map(~Context,~map,count,position,context,values)):

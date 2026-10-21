@@ -2,7 +2,7 @@ import Base
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../specification.bend as ConvSpec
 
-# Logical paths and dense indices over the common element-parameterized tree.
+# Logical paths and flat indices over the common element-parameterized tree.
 # Invalid-path behavior differs from native wrapping; the container is shared.
 
 type Path is Data:

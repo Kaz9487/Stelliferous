@@ -1,7 +1,7 @@
 // FP32 results of the elementwise mathematical functions against MPFR, over
-// consecutive 32-bit input words.
+// consecutive or sampled 32-bit input words.
 //   math_accuracy input BASE COUNT FILE
-//   math_accuracy check FUNCTION BASE COUNT INPUT OUTPUT
+//   math_accuracy check FUNCTION BASE|sample COUNT INPUT OUTPUT
 #include <float.h>
 #include <math.h>
 #include <mpfr.h>
@@ -31,7 +31,7 @@ static int64_t position(float value) {
   return word >> 31 ? -magnitude : magnitude;
 }
 
-static mpfr_t scale, cubic, scratch;
+static mpfr_t scale, cubic, scratch, numerator;
 
 // 1 / (1 + exp(-t))
 static void logistic(mpfr_t result, mpfr_t t) {
@@ -44,7 +44,80 @@ static void logistic(mpfr_t result, mpfr_t t) {
 // The real function each name stands for. gelu_tanh is PyTorch's
 // 0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3))), written as x logistic(2 t).
 static void reference(mpfr_t result, mpfr_t x, const char *name) {
-  if (!strcmp(name, "exp")) mpfr_exp(result, x, MPFR_RNDN);
+  if (!strcmp(name, "identity_derivative")) mpfr_set_ui(result, 1, MPFR_RNDN);
+  else if (!strcmp(name, "relu_derivative")) mpfr_set_ui(result, mpfr_cmp_ui(x, 0) > 0, MPFR_RNDN);
+  else if (!strcmp(name, "relu6_derivative")) mpfr_set_ui(result, mpfr_cmp_ui(x, 0) > 0 && mpfr_cmp_ui(x, 6) < 0, MPFR_RNDN);
+  else if (!strcmp(name, "leaky_relu_derivative")) mpfr_set_d(result, mpfr_cmp_ui(x, 0) > 0 ? 1.0 : 0.125, MPFR_RNDN);
+  else if (!strcmp(name, "hard_sigmoid_derivative")) mpfr_set_flt(result, mpfr_cmp_si(x, -3) > 0 && mpfr_cmp_ui(x, 3) < 0 ? 1.0f / 6.0f : 0.0f, MPFR_RNDN);
+  else if (!strcmp(name, "hard_swish_derivative")) {
+    if (mpfr_cmp_si(x, -3) <= 0) mpfr_set_zero(result, 1);
+    else if (mpfr_cmp_ui(x, 3) >= 0) mpfr_set_ui(result, 1, MPFR_RNDN);
+    else {
+      mpfr_div_ui(result, x, 3, MPFR_RNDN);
+      mpfr_set_flt(result, mpfr_get_flt(result, MPFR_RNDN), MPFR_RNDN);
+      mpfr_add_d(result, result, 0.5, MPFR_RNDN);
+      mpfr_set_flt(result, mpfr_get_flt(result, MPFR_RNDN), MPFR_RNDN);
+    }
+  }
+  else if (!strcmp(name, "sigmoid_derivative") || !strcmp(name, "tanh_derivative")) {
+    mpfr_abs(result, x, MPFR_RNDN);
+    if (!strcmp(name, "tanh_derivative")) mpfr_mul_2ui(result, result, 1, MPFR_RNDN);
+    mpfr_neg(result, result, MPFR_RNDN);
+    mpfr_exp(result, result, MPFR_RNDN);
+    mpfr_add_ui(scratch, result, 1, MPFR_RNDN);
+    mpfr_sqr(scratch, scratch, MPFR_RNDN);
+    mpfr_div(result, result, scratch, MPFR_RNDN);
+    if (!strcmp(name, "tanh_derivative")) mpfr_mul_2ui(result, result, 2, MPFR_RNDN);
+  }
+  else if (!strcmp(name, "silu_derivative")) {
+    if (mpfr_inf_p(x)) {
+      if (mpfr_sgn(x) < 0) mpfr_set_zero(result, -1);
+      else mpfr_set_ui(result, 1, MPFR_RNDN);
+    } else {
+      mpfr_abs(result, x, MPFR_RNDN);
+      mpfr_neg(result, result, MPFR_RNDN);
+      mpfr_exp(result, result, MPFR_RNDN);
+      mpfr_add_ui(scratch, result, 1, MPFR_RNDN);
+      mpfr_sqr(scratch, scratch, MPFR_RNDN);
+      mpfr_abs(numerator, x, MPFR_RNDN);
+      mpfr_neg(numerator, numerator, MPFR_RNDN);
+      mpfr_add_ui(numerator, numerator, 1, MPFR_RNDN);
+      mpfr_add(numerator, numerator, result, MPFR_RNDN);
+      mpfr_mul(result, result, numerator, MPFR_RNDN);
+      mpfr_div(result, result, scratch, MPFR_RNDN);
+      if (mpfr_sgn(x) >= 0) mpfr_ui_sub(result, 1, result, MPFR_RNDN);
+    }
+  }
+  else if (!strcmp(name, "gelu_tanh_derivative")) {
+    if (mpfr_inf_p(x)) {
+      if (mpfr_sgn(x) < 0) mpfr_set_zero(result, -1);
+      else mpfr_set_ui(result, 1, MPFR_RNDN);
+    } else {
+      mpfr_abs(numerator, x, MPFR_RNDN);
+      mpfr_neg(numerator, numerator, MPFR_RNDN);
+      mpfr_pow_ui(result, numerator, 3, MPFR_RNDN);
+      mpfr_mul(result, result, cubic, MPFR_RNDN);
+      mpfr_add(result, result, numerator, MPFR_RNDN);
+      mpfr_mul(result, result, scale, MPFR_RNDN);
+      mpfr_mul_2ui(result, result, 1, MPFR_RNDN);
+      mpfr_exp(result, result, MPFR_RNDN);
+      mpfr_sqr(scratch, numerator, MPFR_RNDN);
+      mpfr_mul(scratch, scratch, cubic, MPFR_RNDN);
+      mpfr_mul_ui(scratch, scratch, 3, MPFR_RNDN);
+      mpfr_add_ui(scratch, scratch, 1, MPFR_RNDN);
+      mpfr_mul(scratch, scratch, numerator, MPFR_RNDN);
+      mpfr_mul(scratch, scratch, scale, MPFR_RNDN);
+      mpfr_mul_2ui(scratch, scratch, 1, MPFR_RNDN);
+      mpfr_add_ui(numerator, scratch, 1, MPFR_RNDN);
+      mpfr_add(numerator, numerator, result, MPFR_RNDN);
+      mpfr_add_ui(scratch, result, 1, MPFR_RNDN);
+      mpfr_sqr(scratch, scratch, MPFR_RNDN);
+      mpfr_mul(result, result, numerator, MPFR_RNDN);
+      mpfr_div(result, result, scratch, MPFR_RNDN);
+      if (mpfr_sgn(x) >= 0) mpfr_ui_sub(result, 1, result, MPFR_RNDN);
+    }
+  }
+  else if (!strcmp(name, "exp")) mpfr_exp(result, x, MPFR_RNDN);
   else if (!strcmp(name, "log")) mpfr_log(result, x, MPFR_RNDN);
   else if (!strcmp(name, "tanh")) mpfr_tanh(result, x, MPFR_RNDN);
   else if (!strcmp(name, "sigmoid")) logistic(result, x);
@@ -88,20 +161,23 @@ int main(int argc, char **argv) {
     return fclose(file) != 0;
   }
   if (argc != 7 || strcmp(argv[1], "check")) {
-    fprintf(stderr, "usage: math_accuracy input BASE COUNT FILE | check FUNCTION BASE COUNT INPUT OUTPUT\n");
+    fprintf(stderr, "usage: math_accuracy input BASE COUNT FILE | check FUNCTION BASE|sample COUNT INPUT OUTPUT\n");
     return 2;
   }
   const char *name = argv[2];
-  uint32_t base = (uint32_t)strtoull(argv[3], 0, 0);
+  int sampled = !strcmp(argv[3], "sample");
+  uint32_t base = sampled ? 0 : (uint32_t)strtoull(argv[3], 0, 0);
   size_t count = strtoull(argv[4], 0, 0);
   float *inputs = read_floats(argv[5], count);
   float *outputs = read_floats(argv[6], count);
   // silu and gelu_tanh are 0 times infinity at an infinite input.
   int product = !strcmp(name, "silu") || !strcmp(name, "gelu_tanh");
 
-  mpfr_set_default_prec(PRECISION);
+  // Tiny sampled products can sit extremely close to subnormal midpoints.
+  // Use more precision and a narrower decision interval for those samples.
+  mpfr_set_default_prec(sampled ? 256 : PRECISION);
   mpfr_t x, value, nudge, error;
-  mpfr_inits(x, value, nudge, error, scale, cubic, scratch, (mpfr_ptr)0);
+  mpfr_inits(x, value, nudge, error, scale, cubic, scratch, numerator, (mpfr_ptr)0);
   mpfr_const_pi(scale, MPFR_RNDN);
   mpfr_ui_div(scale, 2, scale, MPFR_RNDN);
   mpfr_sqrt(scale, scale, MPFR_RNDN);
@@ -112,8 +188,8 @@ int main(int argc, char **argv) {
   uint32_t largest_word = base, plus_infinity = 0, minus_infinity = 0;
 
   for (size_t index = 0; index < count; index++) {
-    uint32_t word = base + (uint32_t)index;
     float input = inputs[index], output = outputs[index];
+    uint32_t word = sampled ? to_word(input) : base + (uint32_t)index;
     if (word != to_word(input)) {
       fprintf(stderr, "input file does not hold word %u at %zu\n", word, index);
       return 2;
@@ -140,7 +216,7 @@ int main(int argc, char **argv) {
     if (mpfr_regular_p(value)) {
       // The reference is decided when both ends of a far wider interval than
       // the working error round to the same float.
-      mpfr_mul_2si(nudge, value, -100, MPFR_RNDN);
+      mpfr_mul_2si(nudge, value, sampled ? -200 : -100, MPFR_RNDN);
       mpfr_add(error, value, nudge, MPFR_RNDN);
       float above = mpfr_get_flt(error, MPFR_RNDN);
       mpfr_sub(error, value, nudge, MPFR_RNDN);

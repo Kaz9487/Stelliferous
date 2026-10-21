@@ -3,13 +3,9 @@ import Base
 import ./input_storage.bend as Inputs
 import ../specification.bend as ConvSpec
 import ../matrix_specification.bend as MatrixSpec
-import ../../lib/machine_limits.bend as Machine
-import ../inference.bend as NativeConv
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/ordered_matrix.bend as OrderedMatrix
 import ./convolution_guard_facts.bend as Guards
-import ./concrete_support_guard.bend as Support
-import ./list_array_storage.bend as ListStorage
 
 def matrix_dot(indices: List<&2,MatrixSpec.Reduction>,p: ConvSpec.Problem,output_channel_index: Nat,output_row_index: Nat,output_column_index: Nat,accumulator: F32) -> F32:
   OrderedMatrix.dot(~Nat,~MatrixSpec.Reduction,~MatrixSpec.Pixel,~ConvSpec.Problem,~MatrixSpec.patch,~MatrixSpec.weight,indices,output_channel_index,

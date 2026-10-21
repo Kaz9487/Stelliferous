@@ -7,7 +7,6 @@ import ../tensor_shape.bend as Shapes
 import ../machine_limits.bend as Machine
 import ../default_machine_limits.bend as Default
 import ./tensor_shape_refinement.bend as ShapeLaws
-import ./tensor_count_refinement.bend as Count
 import ./checked_word_completion.bend as Completion
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./u32_full_range.bend as FullRange
@@ -19,30 +18,14 @@ import ./nat_order.bend as Order
 import ./boolean_logic.bend as Boolean
 import ./word_encoding.bend as WordEncoding
 
-def positive_natural(+value: Nat,nonzero: {Nat.is_eq(value,0n) == False{} : Bool}) -> {Nat.is_lt(0n,value) == True{} : Bool}:
-  match value:
-    case 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(Equal.sym(Bool,True{},False{},nonzero)))
-    case 1n+rest: {==}
-
-def positive_word(+value: U32,nonzero: {U32.is_zero(value) == False{} : Bool}) ->
-  {Nat.is_lt(0n,U32.to_nat(value)) == True{} : Bool}:
-  positive_natural(U32.to_nat(value),%Comparison.eq(value,0) : {_ == False{} : Bool} nonzero)
-
-def positive_product(+left: Nat,+right: Nat,left_positive: {Nat.is_lt(0n,left) == True{} : Bool},right_positive: {Nat.is_lt(0n,right) == True{} : Bool}) ->
-  {Nat.is_lt(0n,Nat.mul(left,right)) == True{} : Bool}:
-  match left right:
-    case 0n right: Empty.absurd({Nat.is_lt(0n,Nat.mul(0n,right)) == True{} : Bool},WordEncoding.false_true(left_positive))
-    case 1n+left 0n: Empty.absurd({Nat.is_lt(0n,Nat.mul(1n+left,0n)) == True{} : Bool},WordEncoding.false_true(right_positive))
-    case 1n+left 1n+right: {==}
-
 def positive_elements(+extents: List<&2,U32>,nonempty: {Shapes.has_zero(extents) == False{} : Bool}) ->
   {Nat.is_lt(0n,ShapeLaws.elements(extents)) == True{} : Bool}:
   match extents:
     case []: {==}
     case +head <> +tail:
       +nonempty = nonempty
-      positive_product(U32.to_nat(head),ShapeLaws.elements(tail),
-        positive_word(head,Boolean.or_false_left(U32.is_zero(head),Shapes.has_zero(tail),nonempty)),
+      Order.product_positive(U32.to_nat(head),ShapeLaws.elements(tail),
+        Arithmetic.word_nonzero_positive(head,Boolean.or_false_left(U32.is_zero(head),Shapes.has_zero(tail),nonempty)),
         positive_elements(tail,Boolean.or_false_right(U32.is_zero(head),Shapes.has_zero(tail),nonempty)))
 
 def checked_product(+left: U32,+right: U32,+limit: U32,
@@ -59,7 +42,7 @@ def product_complete(+extents: List<&2,U32>,+accumulator: U32,+limit: U32,+maxim
   {Shapes.product(extents,Some{accumulator}) == Some{U32.from_nat(Nat.mul(U32.to_nat(accumulator),ShapeLaws.elements(extents)))} : Maybe<&2,U32>}:
   match extents:
     case []:
-      %Equal.sym(Nat,Nat.mul(U32.to_nat(accumulator),1n),U32.to_nat(accumulator),ShapeLaws.times_one(U32.to_nat(accumulator))) : {Some{accumulator} == Some{U32.from_nat(_)} : Maybe<&2,U32>}
+      %Equal.sym(Nat,Nat.mul(U32.to_nat(accumulator),1n),U32.to_nat(accumulator),Order.times_one(U32.to_nat(accumulator))) : {Some{accumulator} == Some{U32.from_nat(_)} : Maybe<&2,U32>}
       Equal.cong(U32,Maybe<&2,U32>,value => Some{value},accumulator,U32.from_nat(U32.to_nat(accumulator)),Equal.sym(U32,U32.from_nat(U32.to_nat(accumulator)),accumulator,Arithmetic.native_roundtrip(accumulator)))
     case +head <> +tail:
       +tail_nonempty = Boolean.or_false_right(U32.is_zero(head),Shapes.has_zero(tail),nonempty)

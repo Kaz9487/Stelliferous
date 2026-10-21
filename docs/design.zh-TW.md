@@ -6,11 +6,12 @@
 
 | 層 | 負責的內容 | 主要檔案 |
 |---|---|---|
-| 公開 F32 API | 程式呼叫的函式 | [tensor_f32.bend](../lib/tensor_f32.bend)、[math_activation.bend](../lib/math_activation.bend) |
-| 通用張量 | 形狀、狀態、worker 數；dense 與 band 儲存；廣播、layout、視窗、FP32 檔案、具名權重 | [tensor.bend](../lib/tensor.bend)、[tensor_layout.bend](../lib/tensor_layout.bend)、[tensor_window.bend](../lib/tensor_window.bend)、[tensor_convolution.bend](../lib/tensor_convolution.bend)、[tensor_file.bend](../lib/tensor_file.bend)、[tensor_model.bend](../lib/tensor_model.bend)、`tensor_band*.bend` |
+| 公開 F32 API | 程式呼叫的函式 | [tensor_f32.bend](../lib/tensor_f32.bend)、[math_activation.bend](../lib/math_activation.bend)、[tensor_training.bend](../lib/tensor_training.bend) |
+| 訓練 | 層、loss、SGD，以及卷積、batch normalization 與 activation 的梯度 | [tensor_layer.bend](../lib/tensor_layer.bend)、[tensor_batch_norm.bend](../lib/tensor_batch_norm.bend)、[tensor_loss.bend](../lib/tensor_loss.bend)、[tensor_optimizer.bend](../lib/tensor_optimizer.bend)、`tensor_*_gradient.bend` |
+| 通用張量 | 形狀、狀態、worker 數、band 儲存、廣播、layout、視窗、FP32 檔案、具名權重、PyTorch checkpoint | [tensor.bend](../lib/tensor.bend)、[tensor_layout.bend](../lib/tensor_layout.bend)、[tensor_window.bend](../lib/tensor_window.bend)、[tensor_convolution.bend](../lib/tensor_convolution.bend)、[tensor_file.bend](../lib/tensor_file.bend)、[tensor_model.bend](../lib/tensor_model.bend)、[tensor_checkpoint.bend](../lib/tensor_checkpoint.bend)、`checkpoint_*.bend`、`tensor_band*.bend` |
 | 檢查過的運算 | 在 view 上的 `copy`、`combine`、`apply`、`reduce`、`scatter`、`sweep`，附 guard | [tensor_operations.bend](../lib/tensor_operations.bend)、[tensor_view.bend](../lib/tensor_view.bend)、[tensor_cursor.bend](../lib/tensor_cursor.bend)、[tensor_access.bend](../lib/tensor_access.bend) |
-| 卷積 kernel | 權重重排、packing、4x8 GEMM、gather、規劃 | `kernel_*.bend` |
-| 儲存與走訪 | 帶憑證的自有 buffer；其他部分共用的迴圈 | `storage_*.bend`、`traversal_*.bend` |
+| 卷積 kernel | 權重重排、packing、4x8 GEMM、gather、規劃、輸入與權重梯度 | `kernel_*.bend` |
+| 儲存與走訪 | 帶憑證的自有 buffer，以及其他部分共用的迴圈 | `storage_*.bend`、`traversal_*.bend` |
 | 卷積套件 | 凍結的規格、參考實作、已證明的 Array 引擎 | [convolution/](../convolution/README.zh-TW.md) |
 
 `lib/` 不依賴 `convolution/`、範例或 benchmarks。
@@ -22,18 +23,17 @@
 - **運算會用掉參數。** 二元運算重用左運算元的儲存。要保留張量就用 `F.copy`。
 - **失敗跟著值走。** 失敗之後，後面的運算不做事，只把第一個問題往下傳。程式在讀取結果的地方看到它。
 - **形狀在執行期檢查。** 各軸長度是值，不是型別。
-- **View 只在內部使用。** `transpose`、`slice` 與 `broadcast_to` 會複製到 dense 儲存；`reshape` 只改標示。
+- **View 只在內部使用。** `transpose`、`slice`、`broadcast_to` 與 `flip` 逐 band 複製到新的儲存。`reshape` 只改標示。
 
-### Dense 與 band 儲存
+### Band 儲存
 
-- **Dense：**一個 row-major 的 buffer。
-- **Band：**把 NCHW 張量依列切成數段。每個 band 是獨立的 buffer，順序為 `[channels][rows][width]`。
+張量的儲存是一組 band：把 NCHW 張量依列切成數段。每個 band 是獨立的 buffer，順序為 `[channels][rows][width]`。Row-major 儲存就是只有一列、裝下全部元素的一個 band。
 
-Worker 可以拿走一個 band，不必複製整個張量。多個 worker 的卷積會產生 band；逐元素運算、activation、沿通道的 concat、nearest upsample 與 max pooling 會保留 band；其他運算先一次 gather 成 dense 儲存。Layout 不會改變任何數值。
+Worker 可以拿走一個 band，不必複製整個張量。卷積會產生 band。逐元素運算、activation、concat、nearest upsample、max pooling、view、reduce 與 batch normalization 都逐 band 進行。讀回、存檔、卷積權重與廣播的右運算元會把張量一次讀成整個張量的一個 band。Layout 不會改變任何數值。
 
 ### Strided 存取
 
-Cursor 走訪 view 時不做除法。Strided 複製把最內層的軸當成一般迴圈，每一段只推進 cursor 一次。`set_slice`、dense `concat` 與常數 `pad` 是同一個檢查過的 scatter：把連續的來源寫進 strided 的目標 view。
+Cursor 走訪 view 時不做除法。Strided 複製把最內層的軸當成一般迴圈，每一段只推進 cursor 一次。`set_slice`、每個 band 的 concat 與常數 `pad` 是同一個檢查過的 scatter：把連續的來源寫進 strided 的目標 view。
 
 ### 熱迴圈裡的函式
 
@@ -73,9 +73,8 @@ Cursor 走訪 view 時不做除法。Strided 複製把最內層的軸當成一�
 以其他網路的形狀量測，單一機器、各一次：
 
 - **權重多、輸出位置少**（例如 512 到 512 通道、3x3、7x7 輸出）：增加 worker 幾乎沒有幫助。每次呼叫都要重排權重，每次分割都要複製它。
-- **Batch 大於一：**影像一張接一張處理。
+- **Batch 大於一：**影像一次一張分給 worker，每一份各自複製權重。通道多的小影像（8x8 上 64 個通道）用四個 worker 比一個慢。
 - **寬度小於六的輸出**走較慢的逐項 packing 路徑。
-- **Padding 不小於 kernel，以及空的 batch**，走 dense 路徑。
 
 ## Bend 沒有提供的功能
 

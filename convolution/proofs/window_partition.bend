@@ -22,7 +22,7 @@ import ./supported_padded_coordinates.bend as Padded
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./input_storage.bend as Inputs
-import ./tile_partition_bounds.bend as TilePartitionBounds
+import ../../lib/proofs/kernel_partition_bounds.bend as TilePartitionBounds
 import ./tile_layout.bend as TileLayout
 import ./gather_storage_model.bend as GatherModel
 import ./gemm_dot_matches_matrix.bend as GemmDot
@@ -31,7 +31,6 @@ import ./microkernel_storage_execution.bend as Execution
 import ./window_band_values.bend as WindowBandValues
 import ./window_problem.bend as WindowProblem
 import ./window_positions.bend as Positions
-import ./window_start.bend as Start
 import ./window_covers.bend as Covers
 import ./window_contents.bend as Contents
 import ./window_leaf_readback.bend as LeafReadback
@@ -39,6 +38,7 @@ import ../scalar_kernel.bend as ScalarConv
 import ../../lib/proofs/binary_radix.bend as Radix
 import ./gather_copy_coordinates.bend as GatherCopyCoordinates
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
+import ../../lib/proofs/nat_division.bend as Division
 
 # The split passes the input channel count as reduction length over kernel area.
 def channels_word(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSpec.valid(problem) == True{} : Bool},
@@ -54,7 +54,7 @@ def channels_word(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Co
   +capacity = Machine.capacity(limits)
   +cap = U32.to_nat(capacity)
   +kernel_positive = Contents.valid_condition(problem,valid,6n)
-  +area_positive = Support.positive_mul(kernel,kernel,kernel_positive,kernel_positive)
+  +area_positive = Order.product_positive(kernel,kernel,kernel_positive,kernel_positive)
   +area_le = Order.transitive(area,Nat.mul(channels,area),cap,
     %RowMajor.multiply_commutative(area,channels) : {Nat.is_le(area,_) == True{} : Bool}
     RowMajor.product_covers(area,channels,Contents.valid_condition(problem,valid,10n)),
@@ -78,7 +78,7 @@ def channels_word(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Co
     %Equal.sym(Nat,U32.to_nat(Coordinates.native_inner(problem)),Coordinates.inner(problem),Coordinates.inner_exact(limits,problem,facts,support)) :
       {Nat.div(_,U32.to_nat(area_word)) == channels : Nat}
     %Equal.sym(Nat,U32.to_nat(area_word),area,area_exact) : {Nat.div(Coordinates.inner(problem),_) == channels : Nat}
-    Positions.exact_quotient(channels,area,area_positive))
+    Division.exact_quotient(channels,area,area_positive))
 
 # A partition window: its rows cover the span and hold their input band.
 type State<-problem: ConvSpec.Problem,-window: Execution.InputWindow,-offset: U32,-span: U32> is Data:
@@ -107,7 +107,7 @@ def leaf_window(+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage_cont
       LeafReadback.band_leaf(limits,problem,storage_contract,valid,supported,offset,span,1n+more,span_exact,span_bound,offset_alignment,range,width_blocks,width,
         tree,first,rows,cover,contents,room,
         %Equal.sym(Nat,U32.to_nat(span),Nat.mul(1n+more,8n),span_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-        Support.positive_mul(1n+more,8n,{==},{==}))
+        Order.product_positive(1n+more,8n,{==},{==}))
 
 # A partition leaf over aligned rows stores the whole-input leaf output.
 def leaf_state(+limits: Machine.Limits,+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,
@@ -166,7 +166,7 @@ def kept_right(+limits: Machine.Limits,+problem: ConvSpec.Problem,+offset: U32,+
   +end = Nat.add(start,U32.to_nat(span))
   State{tree,first,rows,{==},
     Positions.cover_within(problem,U32.to_nat(first),U32.to_nat(rows),start,U32.to_nat(span),U32.to_nat((offset + TilePartitionBounds.half(span) : U32)),
-      U32.to_nat((span - TilePartitionBounds.half(span) : U32)),cover,Covers.out_width_positive(problem),
+      U32.to_nat((span - TilePartitionBounds.half(span) : U32)),cover,Coordinates.width_positive(problem),
       %Equal.sym(Nat,U32.to_nat((offset + TilePartitionBounds.half(span) : U32)),Nat.add(start,half),TilePartitionBounds.offset_exact(offset,span,capacity,fits,capacity_room)) :
         {Nat.is_le(start,_) == True{} : Bool}
       Order.le_add(start,half),
@@ -185,7 +185,7 @@ def kept(+limits: Machine.Limits,+problem: ConvSpec.Problem,+offset: U32,+span: 
   Children{
     State{tree,first,rows,{==},
       Positions.cover_within(problem,U32.to_nat(first),U32.to_nat(rows),start,U32.to_nat(span),start,U32.to_nat(TilePartitionBounds.half(span)),cover,
-        Covers.out_width_positive(problem),Order.reflexive(start),
+        Coordinates.width_positive(problem),Order.reflexive(start),
         TilePartitionBounds.left_interval_bound(offset,span,Machine.capacity(limits),end,Limits.capacity_fits(limits),capacity_room,Order.reflexive(end))),
       contents,room},
     kept_right(limits,problem,offset,span,tree,first,rows,cover,contents,room,capacity_room)}
@@ -320,6 +320,11 @@ def partition_aligned(+limits: Machine.Limits,+problem: ConvSpec.Problem,+storag
       +right_bound = Order.transitive(U32.to_nat((span - half : U32)),U32.to_nat(span),padded,TilePartitionBounds.remainder_le(span,capacity,fits,bounded),span_bound)
       +left_window = PartitionLaws.first(~Execution.InputWindow,pair)
       +right_window = PartitionLaws.second(~Execution.InputWindow,pair)
+      %Equal.sym(GatherModel.ConvResult(),Execution.partition(1n+rest,work,offset,span,window,reordered,bias),
+        Partition.Fork{Execution.partition(rest,work,offset,half,left_window,reordered,bias),
+          Execution.partition(rest,work,(offset + half : U32),(span - half : U32),right_window,reordered,bias)},
+        Execution.partition_step(rest,work,offset,span,window,reordered,bias)) :
+        {_ == MicroLeaf.layout_result(problem,storage_contract,TileLayout.divide(1n+rest,offset,span)) : GatherModel.ConvResult()}
       %Equal.sym(GatherModel.ConvResult(),Execution.partition(rest,work,offset,half,left_window,reordered,bias),
         MicroLeaf.layout_result(problem,storage_contract,TileLayout.divide(rest,offset,half)),
         partition_aligned(limits,problem,storage_contract,valid,supported,width_blocks,width,rest,offset,half,offset_alignment,
@@ -372,6 +377,11 @@ def partition_unaligned(+problem: ConvSpec.Problem,+storage_contract: Inputs.Con
       +bias = Inputs.bias_tree(problem,storage_contract)
       +half = TilePartitionBounds.half(span)
       +root = root_window(problem,storage_contract)
+      %Equal.sym(GatherModel.ConvResult(),Execution.partition(1n+rest,work,offset,span,root,reordered,bias),
+        Partition.Fork{Execution.partition(rest,work,offset,half,PartitionLaws.first(~Execution.InputWindow,Execution.split(work,offset,half,root)),reordered,bias),
+          Execution.partition(rest,work,(offset + half : U32),(span - half : U32),PartitionLaws.second(~Execution.InputWindow,Execution.split(work,offset,half,root)),reordered,bias)},
+        Execution.partition_step(rest,work,offset,span,root,reordered,bias)) :
+        {_ == MicroLeaf.layout_result(problem,storage_contract,TileLayout.divide(1n+rest,offset,span)) : GatherModel.ConvResult()}
       %Equal.sym(PartitionLaws.Split<Execution.InputWindow>,Execution.split(work,offset,half,root),PartitionLaws.Split{root,root},
         root_split(problem,storage_contract,offset,half,unaligned)) :
         {Partition.Fork{Execution.partition(rest,work,offset,half,PartitionLaws.first(~Execution.InputWindow,_),reordered,bias),
@@ -395,7 +405,7 @@ def root_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvS
   +height = Guards.height(problem)
   +height_exact = SupportedCoordinateBounds.height_exact(limits,problem,Padded.scalar(limits,problem,Support.fast(limits,problem,supported)))
   %Equal.sym(Nat,U32.to_nat(U32.from_nat(height)),height,height_exact) : Positions.Cover<problem,0n,_,0n,U32.to_nat(Padded.padded(problem))>
-  Positions.Cover{0n,{==},Order.reflexive(height),Contents.valid_condition(problem,valid,8n),Contents.valid_condition(problem,valid,4n),Inl{{==}},Inl{{==}}}
+  Positions.Cover{0n,{==},Order.reflexive(height),Contents.valid_condition(problem,valid,8n),Contents.valid_condition(problem,valid,4n),Positions.Start{{==}},Inl{{==}}}
 
 def root_room(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,+valid: {ConvSpec.valid(problem) == True{} : Bool}) ->
   {Nat.is_le(WindowProblem.count(problem,Guards.height(problem)),U32.to_nat(Tree.capacity(F32,Inputs.input_tree(problem,storage_contract)))) == True{} : Bool}:
@@ -405,7 +415,7 @@ def root_room(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<prob
   StorageLaws.SequenceEvidence{+storage,+stored,+room} = input_evidence
   +problem = {ConvSpec.Problem{ConvSpec.Shape{ci,co,height,width,kernel,stride,padding},input,weights,bias} : ConvSpec.Problem}
   +input_length = Boolean.every_condition_holds(Guards.valid_conditions(problem),2n,valid)
-  %Guards.reflect(ConvSpec.length(input),Nat.mul(ci,Nat.mul(height,width)),input_length) :
+  %Order.equal_of_is_eq(ConvSpec.length(input),Nat.mul(ci,Nat.mul(height,width)),input_length) :
     {Nat.is_le(_,U32.to_nat(Tree.capacity(F32,storage))) == True{} : Bool}
   room
 

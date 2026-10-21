@@ -2,14 +2,14 @@
 
 [English](getting_started.md) | [繁體中文](getting_started.zh-TW.md)
 
-範例從 BendHub 匯入已發布的套件 `stelliferous@0.0.2.0`。自己的程式只需要 Bend、Clang 和那幾行 import。以下步驟是設定本庫，內含函式庫原始碼（[lib](../lib/README.zh-TW.md)）、證明與效能量測。
+範例從 BendHub 匯入已發布的套件 `stelliferous@0.0.3.0`。自己的程式只需要 Bend、Clang 和那幾行 import。以下步驟是設定本庫，內含函式庫原始碼（[lib](../lib/README.zh-TW.md)）、證明與效能量測。
 
 ## 安裝
 
-需要 Git、Node.js、[Bun](https://bun.sh)、Python 3 與 Clang（或由 `CC` 指定的 C 編譯器）；Linux、macOS 或 WSL。
+需要 Git、Node.js、[Bun](https://bun.sh)、Python 3 與 Clang（或由 `CC` 指定的 C 編譯器），作業系統為 Linux、macOS 或 WSL。
 
 ```sh
-git clone --depth 1 --branch v2.0.36 https://github.com/bendlang/bend.git .tools/bend
+git clone --depth 1 --branch v2.0.37 https://github.com/bendlang/bend.git .tools/bend
 git -C .tools/bend rev-parse HEAD    # 必須印出 scripts/toolchain.json 裡的 commit
 ```
 
@@ -21,8 +21,8 @@ git -C .tools/bend rev-parse HEAD    # 必須印出 scripts/toolchain.json 裡�
 
 ```python
 import Base
-import stelliferous@0.0.2.0/tensor_f32.bend as F
-import stelliferous@0.0.2.0/math_activation.bend as Act
+import stelliferous@0.0.3.0/tensor_f32.bend as F
+import stelliferous@0.0.3.0/math_activation.bend as Act
 
 def main() -> List<&2,F32>:
   # 1.0 到 16.0，排成 [batch, channels, height, width]
@@ -35,7 +35,7 @@ def main() -> List<&2,F32>:
   feature = F.conv2d(image,weights,bias,1,1,Act.relu())
   # 2x2 視窗：4x4 -> 2x2
   pooled  = F.max_pool2d(feature,2)
-  # 讀出數值；上面任何一步失敗就回傳 []
+  # 讀出數值，上面任何一步失敗就回傳 []
   F.to_list_or(pooled,[])
 ```
 
@@ -66,7 +66,7 @@ def text(result: Result<&2,&2,F.Problem(),F32>) -> String:
     case Fail{problem}: F.describe(problem)
 
 def main() -> String:
-  # [2] + [3] 失敗；relu、sum、item 把失敗往下傳
+  # [2] + [3] 失敗，relu、sum、item 把失敗往下傳
   text(F.item(F.sum(F.relu(F.add(F.zeros([2]),F.zeros([3]))))))
 ```
 
@@ -85,7 +85,7 @@ def block(input: F.Tensor(),weights: F.Tensor(),bias: F.Tensor()) -> F.Tensor():
 def network(image: F.Tensor()) -> F.Tensor():
   first  = block(image,F.full([4,1,3,3],0.1),F.zeros([4]))
   second = block(first,F.full([8,4,3,3],0.01),F.ones([8]))
-  F.mean_axis(F.mean_axis(second,3),2)
+  F.mean_axes(second,[2,3])
 ```
 
 ```sh
@@ -93,9 +93,38 @@ node scripts/bend_launcher.mjs examples/small_network.bend -o out/small_network
 ./out/small_network
 ```
 
+## 訓練網路
+
+一層是一個值。`forward` 回傳它的 `backward` 要讀的東西，`backward` 把梯度放進層裡，`sgd_step` 再套用梯度。一個接在網路其餘部分之前的 Conv-BatchNorm-SiLU 區塊：
+
+```python
+import stelliferous@0.0.3.0/tensor_training.bend as Train
+
+# 網路的各層，依序排列
+type Network is Type:
+  End{}
+  Then{layer: Train.Layer,rest: Network}
+
+# conv -> batch norm -> SiLU，接在網路其餘部分之前
+def block(weights: F.Tensor(),bias: F.Tensor(),rest: Network) -> Network:
+  Then{Train.conv2d_layer(weights,bias,1,1),Then{Train.batch_norm_layer(32),Then{Train.activation_layer(Act.silu()),rest}}}
+
+# Train.forward(x, layer)          -> (y, (saved, layer))
+# Train.backward(dy, saved, layer) -> (dx, layer)
+# Train.sgd_step(layer, rate)      -> layer
+```
+
+[examples/training/learning.bend](../examples/training/learning.bend) 把兩個這樣的區塊訓練 40 步。這項檢查在 1、2、4、8 個執行緒上執行它：
+
+```sh
+python run.py gradients
+```
+
+每個位元都要等於 NumPy 參考實作，loss 與各層參數要和 PyTorch 在捨入誤差內一致。
+
 ## 載入與儲存數值
 
-檔案內容是 FP32 數值，小端序、row-major 順序、沒有檔頭；NumPy 用 `array.astype('<f4').tofile(path)` 寫出。檔案讀不到，或內容與形狀不符時，得到失敗的張量。[examples/save_and_load.bend](../examples/save_and_load.bend)：
+檔案內容是 FP32 數值，小端序、row-major 順序、沒有檔頭。NumPy 用 `array.astype('<f4').tofile(path)` 寫出。檔案讀不到，或內容與形狀不符時，得到失敗的張量。[examples/save_and_load.bend](../examples/save_and_load.bend)：
 
 ```python
 def main() -> IO(Unit):
@@ -122,10 +151,10 @@ weights : F.Tensor() <- F.load_npy("out/weights/named/model.0.conv.weight.npy")
 
 ## 載入模型的權重
 
-`F.take` 依名稱從權重取出張量；`F.keep` 放一份副本進去，留給之後的步驟使用，例如跳接。[examples/yolov5/yolov5n.bend](../examples/yolov5/yolov5n.bend) 是完整的模型。
+`F.take` 依名稱從權重取出張量。`F.keep` 放一份副本進去，留給之後的步驟使用，例如跳接。[examples/yolov5/yolov5n.bend](../examples/yolov5/yolov5n.bend) 是完整的模型。
 
 ```python
-# A step takes tensors by name; the lines of a do block run in order.
+# A step takes tensors by name. The lines of a do block run in order.
 def block(x: F.Tensor(),+name: String) -> F.Model(F.Tensor()):
   do F.Model<F.Tensor()>:
     weights : F.Tensor() <- F.take(name ++ ".weight")
@@ -134,10 +163,17 @@ def block(x: F.Tensor(),+name: String) -> F.Model(F.Tensor()):
 
 def main() -> IO(Unit):
   do IO<Unit>:
-    # folder/names.txt lists the names; folder/<name>.npy holds each tensor
+    # folder/names.txt lists the names, and folder/<name>.npy holds each tensor
     weights : F.Weights() <- F.load_weights("out/weights/named")
     result : F.Tensor() <- F.expect(F.run(F.Tensor(),block(F.zeros([1,3,8,8]),"stem"),weights))
     ...
+```
+
+`F.load_checkpoint` 直接讀 PyTorch 的 `.pt` checkpoint，state dict 的每一項各成一個張量，用它的 PyTorch 名稱：
+
+```python
+# the official checkpoint, FP16 widened to FP32, with names such as "model.0.conv.weight"
+weights : F.Weights() <- F.load_checkpoint("data/weights/yolov5n-v7.0.pt")
 ```
 
 ## 使用多個 worker

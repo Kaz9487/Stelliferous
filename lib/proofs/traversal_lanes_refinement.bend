@@ -20,8 +20,14 @@ import ./nat_division.bend as Division
 import ./word_encoding.bend as WordEncoding
 import ./word_arithmetic.bend as WordArithmetic
 import ./word_power_of_two.bend as Power
+import ./kernel_tile_refinement.bend as TileLaws
+import ./loop_projection.bend as Projection
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
-# The tile a round gathers at position.
+def tile_values(values: Tile.Tile8) -> List<&2,F32>:
+  Tile.Tile{a,b,c,d,e,f,g,h} = values
+  [a,b,c,d,e,f,g,h]
+
 def cell(~Context: Data,~map: Context -> F32 -> F32,+values: Tree.Tree<F32>,+position: U32,+context: Context) -> Tile.Tile8:
   +p1 = (position + 1 : U32)
   +p2 = (p1 + 1 : U32)
@@ -32,6 +38,49 @@ def cell(~Context: Data,~map: Context -> F32 -> F32,+values: Tree.Tree<F32>,+pos
   +p7 = (p6 + 1 : U32)
   Tile.Tile{map(context,Tree.read(F32,values,position)),map(context,Tree.read(F32,values,p1)),map(context,Tree.read(F32,values,p2)),map(context,Tree.read(F32,values,p3)),
     map(context,Tree.read(F32,values,p4)),map(context,Tree.read(F32,values,p5)),map(context,Tree.read(F32,values,p6)),map(context,Tree.read(F32,values,p7))}
+
+def position_after(count: Nat,position: U32) -> U32:
+  match count:
+    case 0n: position
+    case 1n+rest: position_after(rest,(position + 1 : U32))
+
+def position_after_matches(+count: Nat,+position: U32) -> {position_after(count,position) == (position + U32.from_nat(count) : U32) : U32}:
+  match count:
+    case 0n: Equal.sym(U32,(position + 0 : U32),position,Arithmetic.add_zero(position))
+    case 1n+ +rest:
+      Equal.trans(U32,position_after(rest,(position + 1 : U32)),((position + 1 : U32) + U32.from_nat(rest) : U32),(position + U32.from_nat(1n+rest) : U32),position_after_matches(rest,(position + 1 : U32)),Equal.sym(U32,(position + U32.from_nat(1n+rest) : U32),((position + 1 : U32) + U32.from_nat(rest) : U32),Projection.indexed_successor(position,rest)))
+
+def identity_cell_at(+lane: Nat,+values: Tree.Tree<F32>,+position: U32,within: {Nat.is_lt(lane,8n) == True{} : Bool}) ->
+  {TileLaws.select_lane(lane,cell(~Unit,~(context => value => value),values,position,Unit{})) == Tree.read(F32,values,position_after(lane,position)) : F32}:
+  match lane:
+    case 0n: {==}
+    case 1n: {==}
+    case 2n: {==}
+    case 3n: {==}
+    case 4n: {==}
+    case 5n: {==}
+    case 6n: {==}
+    case 7n: {==}
+    case 8n+ +rest:
+      Empty.absurd({TileLaws.select_lane(lane,cell(~Unit,~(context => value => value),values,position,Unit{})) == Tree.read(F32,values,position_after(lane,position)) : F32},
+        WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(rest,0n),True{},Equal.sym(Bool,Nat.is_lt(rest,0n),False{},Division.lt_zero(rest)),within)))
+
+def identity_cell_indexed(+lane: Nat,+values: Tree.Tree<F32>,+position: U32,within: {Nat.is_lt(lane,8n) == True{} : Bool}) ->
+  {TileLaws.select_lane(lane,cell(~Unit,~(context => value => value),values,position,Unit{})) == Tree.read(F32,values,(position + U32.from_nat(lane) : U32)) : F32}:
+  %position_after_matches(lane,position) : {TileLaws.select_lane(lane,cell(~Unit,~(context => value => value),values,position,Unit{})) == Tree.read(F32,values,_) : F32}
+  identity_cell_at(lane,values,position,within)
+
+def identity_cell_equal(+left: Tree.Tree<F32>,+right: Tree.Tree<F32>,+position: U32,
+  e0: {Tree.read(F32,left,position_after(0n,position)) == Tree.read(F32,right,position_after(0n,position)) : F32},
+  e1: {Tree.read(F32,left,position_after(1n,position)) == Tree.read(F32,right,position_after(1n,position)) : F32},
+  e2: {Tree.read(F32,left,position_after(2n,position)) == Tree.read(F32,right,position_after(2n,position)) : F32},
+  e3: {Tree.read(F32,left,position_after(3n,position)) == Tree.read(F32,right,position_after(3n,position)) : F32},
+  e4: {Tree.read(F32,left,position_after(4n,position)) == Tree.read(F32,right,position_after(4n,position)) : F32},
+  e5: {Tree.read(F32,left,position_after(5n,position)) == Tree.read(F32,right,position_after(5n,position)) : F32},
+  e6: {Tree.read(F32,left,position_after(6n,position)) == Tree.read(F32,right,position_after(6n,position)) : F32},
+  e7: {Tree.read(F32,left,position_after(7n,position)) == Tree.read(F32,right,position_after(7n,position)) : F32}) ->
+  {cell(~Unit,~(context => value => value),left,position,Unit{}) == cell(~Unit,~(context => value => value),right,position,Unit{}) : Tile.Tile8}:
+  TileLaws.tiles_equal(cell(~Unit,~(context => value => value),left,position,Unit{}),cell(~Unit,~(context => value => value),right,position,Unit{}),e0,e1,e2,e3,e4,e5,e6,e7)
 
 def gathered(~Context: Data,~map: Context -> F32 -> F32,+values: Tree.Tree<F32>,+position: U32,+context: Context) ->
   {Lanes.gather(~Context,~map,Tree.pack(F32,values),position,context) == (Tree.pack(F32,values),cell(~Context,~map,values,position,context)) : Array<F32> & Tile.Tile8}:
@@ -303,3 +352,138 @@ def map(~Context: Data,~map: Context -> F32 -> F32,+count: Nat,+start: Nat,+cont
     {Lanes.rounds(~Context,~map,count,Cells.State{Tree.pack(F32,values),_,position,0,context}) == Tree.pack(F32,MapReadback.run(~F32,~Context,~map,count,position,context,values)) : Array<F32>}
   rounds(~Context,~map,count,start,0,context,values,Tree.fresh(Tile.Tile8,6n,Tile.filled(0.0)),depth,U32.shln(1,depth),Shape.capacity(F32,depth,values,balanced),balanced,limit,
     Power.native_power_bound(depth,Order.successor(depth,30n,limit)),room)
+
+# A change after gathering is determined by one eight-value leaf equation.
+def GatherRoundLaw(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8) -> Type:
+  @+context: Context -> @+a: F32 -> @+b: F32 -> @+c: F32 -> @+d: F32 -> @+e: F32 -> @+f: F32 -> @+g: F32 -> @read: Array<F32> & F32 ->
+  {after(context,Lanes.gathered(~Context,~initial,context,a,b,c,d,e,f,g,read)) == Lanes.gathered(~Context,~operation,context,a,b,c,d,e,f,g,read) : Array<F32> & Tile.Tile8}
+
+def transform7(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),+position: U32,+context: Context,+a: F32,+b: F32,+c: F32,+d: F32,+e: F32,+f: F32,read: Array<F32> & F32) ->
+  {after(context,Lanes.gather7(~Context,~initial,position,context,a,b,c,d,e,f,read)) == Lanes.gather7(~Context,~operation,position,context,a,b,c,d,e,f,read) : Array<F32> & Tile.Tile8}:
+  (values,g) = read
+  lawful(context,a,b,c,d,e,f,g,Array.get(F32,values,(position + 1 : U32)))
+
+def transform6(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),+position: U32,+context: Context,+a: F32,+b: F32,+c: F32,+d: F32,+e: F32,read: Array<F32> & F32) ->
+  {after(context,Lanes.gather6(~Context,~initial,position,context,a,b,c,d,e,read)) == Lanes.gather6(~Context,~operation,position,context,a,b,c,d,e,read) : Array<F32> & Tile.Tile8}:
+  (values,f) = read
+  transform7(~Context,~initial,~operation,~after,~lawful,(position + 1 : U32),context,a,b,c,d,e,f,Array.get(F32,values,(position + 1 : U32)))
+
+def transform5(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),+position: U32,+context: Context,+a: F32,+b: F32,+c: F32,+d: F32,read: Array<F32> & F32) ->
+  {after(context,Lanes.gather5(~Context,~initial,position,context,a,b,c,d,read)) == Lanes.gather5(~Context,~operation,position,context,a,b,c,d,read) : Array<F32> & Tile.Tile8}:
+  (values,e) = read
+  transform6(~Context,~initial,~operation,~after,~lawful,(position + 1 : U32),context,a,b,c,d,e,Array.get(F32,values,(position + 1 : U32)))
+
+def transform4(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),+position: U32,+context: Context,+a: F32,+b: F32,+c: F32,read: Array<F32> & F32) ->
+  {after(context,Lanes.gather4(~Context,~initial,position,context,a,b,c,read)) == Lanes.gather4(~Context,~operation,position,context,a,b,c,read) : Array<F32> & Tile.Tile8}:
+  (values,d) = read
+  transform5(~Context,~initial,~operation,~after,~lawful,(position + 1 : U32),context,a,b,c,d,Array.get(F32,values,(position + 1 : U32)))
+
+def transform3(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),+position: U32,+context: Context,+a: F32,+b: F32,read: Array<F32> & F32) ->
+  {after(context,Lanes.gather3(~Context,~initial,position,context,a,b,read)) == Lanes.gather3(~Context,~operation,position,context,a,b,read) : Array<F32> & Tile.Tile8}:
+  (values,c) = read
+  transform4(~Context,~initial,~operation,~after,~lawful,(position + 1 : U32),context,a,b,c,Array.get(F32,values,(position + 1 : U32)))
+
+def transform2(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),+position: U32,+context: Context,+a: F32,read: Array<F32> & F32) ->
+  {after(context,Lanes.gather2(~Context,~initial,position,context,a,read)) == Lanes.gather2(~Context,~operation,position,context,a,read) : Array<F32> & Tile.Tile8}:
+  (values,b) = read
+  transform3(~Context,~initial,~operation,~after,~lawful,(position + 1 : U32),context,a,b,Array.get(F32,values,(position + 1 : U32)))
+
+def transform1(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),+position: U32,+context: Context,read: Array<F32> & F32) ->
+  {after(context,Lanes.gather1(~Context,~initial,position,context,read)) == Lanes.gather1(~Context,~operation,position,context,read) : Array<F32> & Tile.Tile8}:
+  (values,a) = read
+  transform2(~Context,~initial,~operation,~after,~lawful,(position + 1 : U32),context,a,Array.get(F32,values,(position + 1 : U32)))
+
+def gather_transform(~Context: Data,~initial: Context -> F32 -> F32,~operation: Context -> F32 -> F32,~after: Context -> (Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8,~lawful: GatherRoundLaw(~Context,~initial,~operation,~after),values: Array<F32>,+position: U32,+context: Context) ->
+  {after(context,Lanes.gather(~Context,~initial,values,position,context)) == Lanes.gather(~Context,~operation,values,position,context) : Array<F32> & Tile.Tile8}:
+  transform1(~Context,~initial,~operation,~after,~lawful,position,context,Array.get(F32,values,position))
+
+# A gather equal to the scalar gather may use any internal arithmetic stages.
+def GatherLaw(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8) -> Type:
+  @values: Array<F32> -> @+position: U32 -> @+context: Context ->
+  {collect(values,position,context) == Lanes.gather(~Context,~operation,values,position,context) : Array<F32> & Tile.Tile8}
+
+def collected_values(~Context: Data,~operation: Context -> F32 -> F32,+values: Tree.Tree<F32>,+position: U32,+context: Context) -> Tree.Tree<F32>:
+  Batch.batch(~F32,~Context,~ArrayLaws.unindexed(~F32,~Context,~operation),8n,position,context,values,values)
+
+def collected_state(~Context: Data,~operation: Context -> F32 -> F32,+values: Tree.Tree<F32>,+scratch: Tree.Tree<Tile.Tile8>,+position: U32,+slot: U32,+context: Context) -> Cells.State<Array<F32>,Tile.Tile8,Context>:
+  Cells.State{Tree.pack(F32,collected_values(~Context,~operation,values,position,context)),
+    Tree.pack(Tile.Tile8,Tree.write(Tile.Tile8,scratch,slot,cell(~Context,~operation,values,position,context))),
+    (position + 8 : U32),U32.and((slot + 1 : U32),63),context}
+
+def collected_step(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,+values: Tree.Tree<F32>,+scratch: Tree.Tree<Tile.Tile8>,+position: U32,+slot: U32,+context: Context,
+  gathered: {collect(Tree.pack(F32,values),position,context) == (Tree.pack(F32,values),cell(~Context,~operation,values,position,context)) : Array<F32> & Tile.Tile8}) ->
+  {Cells.step(~Array<F32>,~Tile.Tile8,~Context,~collect,~Lanes.scatter,~8,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}) == collected_state(~Context,~operation,values,scratch,position,slot,context) : Cells.State<Array<F32>,Tile.Tile8,Context>}:
+  CellLaws.round(~F32,~Tile.Tile8,~Context,~collect,~Lanes.scatter,~8,values,scratch,position,slot,context,
+    cell(~Context,~operation,values,position,context),collected_values(~Context,~operation,values,position,context),gathered,cell_scattered(~Context,~operation,values,position,context))
+
+def WithProperty(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,count: Nat) -> Type:
+  @+values: Tree.Tree<F32> -> @+scratch: Tree.Tree<Tile.Tile8> -> @+position: U32 -> @+slot: U32 -> @+context: Context ->
+  {Lanes.rounds_with(~Array<F32>,~Context,~collect,~Lanes.scatter,~Lanes.finish(~Context,~operation),count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}) ==
+    Lanes.rounds(~Context,~operation,count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}) : Array<F32>}
+
+def with_few(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,+count: Nat,small: {Nat.is_lt(count,8n) == True{} : Bool}) -> WithProperty(~Context,~operation,~collect,count):
+  +small = small
+  values => scratch => position => slot => context =>
+    Equal.trans(Array<F32>,
+      Lanes.rounds_with(~Array<F32>,~Context,~collect,~Lanes.scatter,~Lanes.finish(~Context,~operation),count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}),
+      Lanes.finish(~Context,~operation,count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}),
+      Lanes.rounds(~Context,~operation,count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}),
+      finish_small(~Array<F32>,~Context,~collect,~Lanes.scatter,~Lanes.finish(~Context,~operation),count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context},small),
+      Equal.sym(Array<F32>,Lanes.rounds(~Context,~operation,count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}),
+        Lanes.finish(~Context,~operation,count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}),
+        finish_small(~Array<F32>,~Context,~Lanes.gather(~Context,~operation),~Lanes.scatter,~Lanes.finish(~Context,~operation),count,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context},small)))
+
+def with_more(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,~lawful: GatherLaw(~Context,~operation,~collect),+rest: Nat,remaining: WithProperty(~Context,~operation,~collect,rest)) -> WithProperty(~Context,~operation,~collect,8n+rest):
+  values => scratch => position => slot => context =>
+    %Equal.sym(Cells.State<Array<F32>,Tile.Tile8,Context>,
+      Cells.step(~Array<F32>,~Tile.Tile8,~Context,~collect,~Lanes.scatter,~8,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}),collected_state(~Context,~operation,values,scratch,position,slot,context),
+      collected_step(~Context,~operation,~collect,values,scratch,position,slot,context,
+        Equal.trans(Array<F32> & Tile.Tile8,collect(Tree.pack(F32,values),position,context),Lanes.gather(~Context,~operation,Tree.pack(F32,values),position,context),
+          (Tree.pack(F32,values),cell(~Context,~operation,values,position,context)),lawful(Tree.pack(F32,values),position,context),gathered(~Context,~operation,values,position,context)))) :
+      {Lanes.rounds_with(~Array<F32>,~Context,~collect,~Lanes.scatter,~Lanes.finish(~Context,~operation),rest,_) ==
+        Lanes.rounds(~Context,~operation,rest,Cells.step(~Array<F32>,~Tile.Tile8,~Context,~Lanes.gather(~Context,~operation),~Lanes.scatter,~8,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context})) : Array<F32>}
+    %Equal.sym(Cells.State<Array<F32>,Tile.Tile8,Context>,
+      Cells.step(~Array<F32>,~Tile.Tile8,~Context,~Lanes.gather(~Context,~operation),~Lanes.scatter,~8,Cells.State{Tree.pack(F32,values),Tree.pack(Tile.Tile8,scratch),position,slot,context}),collected_state(~Context,~operation,values,scratch,position,slot,context),
+      collected_step(~Context,~operation,~Lanes.gather(~Context,~operation),values,scratch,position,slot,context,gathered(~Context,~operation,values,position,context))) :
+      {Lanes.rounds_with(~Array<F32>,~Context,~collect,~Lanes.scatter,~Lanes.finish(~Context,~operation),rest,collected_state(~Context,~operation,values,scratch,position,slot,context)) == Lanes.rounds(~Context,~operation,rest,_) : Array<F32>}
+    remaining(collected_values(~Context,~operation,values,position,context),Tree.write(Tile.Tile8,scratch,slot,cell(~Context,~operation,values,position,context)),(position + 8 : U32),U32.and((slot + 1 : U32),63),context)
+
+def with_rounds(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,~lawful: GatherLaw(~Context,~operation,~collect),count: Nat) -> WithProperty(~Context,~operation,~collect,count):
+  by_rounds(~WithProperty(~Context,~operation,~collect),~with_few(~Context,~operation,~collect),~with_more(~Context,~operation,~collect,~lawful),count)
+
+def with_packed(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,~lawful: GatherLaw(~Context,~operation,~collect),+count: Nat,+position: U32,+context: Context,+values: Tree.Tree<F32>) ->
+  {Lanes.map_with(~Context,~operation,~collect,count,position,context,Tree.pack(F32,values)) == Lanes.map(~Context,~operation,count,position,context,Tree.pack(F32,values)) : Array<F32>}:
+  %StorageLaws.fresh(Tile.Tile8,6n,Tile.filled(0.0)) :
+    {Lanes.rounds_with(~Array<F32>,~Context,~collect,~Lanes.scatter,~Lanes.finish(~Context,~operation),count,Cells.State{Tree.pack(F32,values),_,position,0,context}) ==
+      Lanes.rounds(~Context,~operation,count,Cells.State{Tree.pack(F32,values),_,position,0,context}) : Array<F32>}
+  with_rounds(~Context,~operation,~collect,~lawful,count)(values,Tree.fresh(Tile.Tile8,6n,Tile.filled(0.0)),position,0,context)
+
+def with_observed(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,~lawful: GatherLaw(~Context,~operation,~collect),+count: Nat,+position: U32,+context: Context,-values: Array<F32>,observation: StorageLaws.Observation<F32,values>) ->
+  {Lanes.map_with(~Context,~operation,~collect,count,position,context,values) == Lanes.map(~Context,~operation,count,position,context,values) : Array<F32>}:
+  StorageLaws.Observation{+tree,packed,reflected} = observation
+  %packed : {Lanes.map_with(~Context,~operation,~collect,count,position,context,_) == Lanes.map(~Context,~operation,count,position,context,_) : Array<F32>}
+  with_packed(~Context,~operation,~collect,~lawful,count,position,context,tree)
+
+def map_with(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,~lawful: GatherLaw(~Context,~operation,~collect),+count: Nat,+position: U32,+context: Context,values: Array<F32>) ->
+  {Lanes.map_with(~Context,~operation,~collect,count,position,context,values) == Lanes.map(~Context,~operation,count,position,context,values) : Array<F32>}:
+  with_observed(~Context,~operation,~collect,~lawful,count,position,context,values,StorageLaws.observe(F32,values))
+
+def map_with_when(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,~lawful: GatherLaw(~Context,~operation,~collect),+covered: Bool,+count: Nat,+position: U32,+context: Context,values: Array<F32>) ->
+  {Lanes.map_with_when(~Context,~operation,~collect,covered,count,position,context,values) == Lanes.map_when(~Context,~operation,covered,count,position,context,values) : Array<F32>}:
+  match covered:
+    case False{}: {==}
+    case True{}: map_with(~Context,~operation,~collect,~lawful,count,position,context,values)
+
+def TileLaw(~Context: Data,~operation: Context -> F32 -> F32,~transform: Context -> Tile.Tile8 -> Tile.Tile8) -> Type:
+  @+context: Context -> @+a: F32 -> @+b: F32 -> @+c: F32 -> @+d: F32 -> @+e: F32 -> @+f: F32 -> @+g: F32 -> @+h: F32 ->
+  {transform(context,Tile.Tile{a,b,c,d,e,f,g,h}) == Tile.Tile{operation(context,a),operation(context,b),operation(context,c),operation(context,d),operation(context,e),operation(context,f),operation(context,g),operation(context,h)} : Tile.Tile8}
+
+def transformed_round(~Context: Data,~operation: Context -> F32 -> F32,~transform: Context -> Tile.Tile8 -> Tile.Tile8,~lawful: TileLaw(~Context,~operation,~transform),+context: Context,+a: F32,+b: F32,+c: F32,+d: F32,+e: F32,+f: F32,+g: F32,read: Array<F32> & F32) ->
+  {Lanes.transformed(~Context,~transform,context,Lanes.gathered(~Context,~Lanes.identity(~Context),context,a,b,c,d,e,f,g,read)) == Lanes.gathered(~Context,~operation,context,a,b,c,d,e,f,g,read) : Array<F32> & Tile.Tile8}:
+  (values,h) = read
+  Equal.cong(Tile.Tile8,Array<F32> & Tile.Tile8,tile => (values,tile),transform(context,Tile.Tile{a,b,c,d,e,f,g,h}),
+    Tile.Tile{operation(context,a),operation(context,b),operation(context,c),operation(context,d),operation(context,e),operation(context,f),operation(context,g),operation(context,h)},lawful(context,a,b,c,d,e,f,g,h))
+
+def gather_tiles(~Context: Data,~operation: Context -> F32 -> F32,~transform: Context -> Tile.Tile8 -> Tile.Tile8,~lawful: TileLaw(~Context,~operation,~transform),values: Array<F32>,+position: U32,+context: Context) ->
+  {Lanes.gather_transformed(~Context,~transform,values,position,context) == Lanes.gather(~Context,~operation,values,position,context) : Array<F32> & Tile.Tile8}:
+  gather_transform(~Context,~Lanes.identity(~Context),~operation,~Lanes.transformed(~Context,~transform),~transformed_round(~Context,~operation,~transform,~lawful),values,position,context)

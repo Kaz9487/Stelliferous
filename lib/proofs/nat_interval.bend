@@ -2,7 +2,6 @@ import Base
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./natural_addition.bend as Addition
-import ./nat_extrema.bend as Extrema
 
 def shifted_inside(+begin: Nat,+end: Nat,+query: Nat,+lower: {Nat.is_le(begin,query) == True{} : Bool},+upper: {Nat.is_lt(query,end) == True{} : Bool}) ->
   {Nat.is_lt(Nat.sub(query,begin),Nat.sub(end,begin)) == True{} : Bool}:

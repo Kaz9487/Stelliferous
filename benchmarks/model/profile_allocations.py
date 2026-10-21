@@ -41,7 +41,7 @@ def instrument_operations(source, operations):
     # Official Array primitives keep these native producers even when their
     # Bend callers inline. Observe real allocations after BLK_ALLOC, separately
     # from generic heap requests and owner-level clone interpretations.
-    producers = [('blk_new', 'l', 'arr ? c : buf_wcls(c)', 'c'),
+    producers = [('blk_new', 'l', 'blk_wcls(arr, c)', 'c'),
                  ('blk_copy', 'dst', 'cls', 'blk_cls(a)'),
                  ('blk_node', 'n', 'arr ? c + 1 : c', 'c + 1'),
                  ('blk_half', 'n', 'cw', 'c')]
@@ -122,7 +122,7 @@ def instrument_operations(source, operations):
         replace(anchor, 'free(label);profile_phase=profile_operation;return term_pak(CID_UNIT,0);',
                 'save return resumes next operation')
         mode = 'save_pause_resume'
-        protocol = 'Forward begin/previous save return to current save entry; unmarked dense operands/computation are counted and state-save C/IO is paused. Bend/IO dispatch bookkeeping can differ from explicit effects.'
+        protocol = 'Forward begin/previous save return to current save entry; unmarked operands/computation are counted and state-save C/IO is paused. Bend/IO dispatch bookkeeping can differ from explicit effects.'
     anchor = 'Term tensor_end_run(Env environment,Term* arguments,IoWork* work){'
     replace(anchor, anchor + f'if(profile_operation!={phases} || profile_phase!={phases})'
             '{fprintf(stderr,"allocation operation count mismatch\\n");exit(2);}'

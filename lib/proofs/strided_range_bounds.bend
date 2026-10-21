@@ -50,19 +50,13 @@ def query_inside(+base: Nat,+offset: Nat,+stride: Nat,+count: Nat,+channels: Nat
   Bounds.nat_trans(Nat.add(start(base,offset,stride,channel),index),Nat.add(start(base,offset,stride,channel),count),capacity,
     Order.offset_lt(start(base,offset,stride,channel),index,count,index_inside),end_inside(base,offset,stride,count,channels,channel,capacity,channel_inside,span,room))
 
-def count_in_stride(+offset: Nat,+count: Nat,+stride: Nat,span: {Nat.is_le(Nat.add(offset,count),stride) == True{} : Bool}) ->
-  {Nat.is_le(count,stride) == True{} : Bool}:
-  Order.transitive(count,Nat.add(offset,count),stride,
-    %Order.commutative(count,offset) : {Nat.is_le(count,_) == True{} : Bool}
-    Order.le_add(count,offset),span)
-
 def query_before(+base: Nat,+offset: Nat,+stride: Nat,+count: Nat,+target: Nat,+later: Nat,+index: Nat,
   ordered: {Nat.is_lt(target,later) == True{} : Bool},inside: {Nat.is_lt(index,count) == True{} : Bool},span: {Nat.is_le(Nat.add(offset,count),stride) == True{} : Bool}) ->
   {Nat.is_lt(Nat.add(start(base,offset,stride,target),index),start(base,offset,stride,later)) == True{} : Bool}:
   %Equal.sym(Nat,Nat.add(start(base,offset,stride,target),index),Nat.add(Nat.add(base,offset),Nat.add(Nat.mul(target,stride),index)),
     Addition.associative(Nat.add(base,offset),Nat.mul(target,stride),index)) : {Nat.is_lt(_,start(base,offset,stride,later)) == True{} : Bool}
   Order.offset_lt(Nat.add(base,offset),Nat.add(Nat.mul(target,stride),index),Nat.mul(later,stride),
-    RowMajor.radix(target,later,index,stride,ordered,Bounds.nat_trans(index,count,stride,inside,count_in_stride(offset,count,stride,span))))
+    RowMajor.radix(target,later,index,stride,ordered,Bounds.nat_trans(index,count,stride,inside,Order.drop_left_le(offset,count,stride,span))))
 
 def native_start(+destination: U32,+stride: U32,+channel: Nat,+capacity: U32,+capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
   channel_bound: {Nat.is_le(channel,U32.to_nat(capacity)) == True{} : Bool},

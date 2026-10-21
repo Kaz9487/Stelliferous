@@ -1,7 +1,6 @@
 # Rank-independent forward-strided metadata. The Array owner is passed separately.
 # A vector, matrix and tensor use the same descriptor and lookup operation.
 import Base
-import ./storage_buffer.bend as Storage
 import ./tensor_shape.bend as Shapes
 import ./machine_limits.bend as Machine
 
@@ -143,6 +142,61 @@ def axis_extents_of(view: View) -> List<&2,U32>:
 def fits(view: View,logical_length: U32) -> Bool:
   +view = view
   fits_nonempty(Shapes.has_zero(axis_extents_of(view)),view,logical_length)
+
+# The view read with the flagged axes in reverse: such an axis starts at its
+# last element and steps by the negated stride, in wrapping U32 arithmetic.
+# Every address a traversal of it reaches is an address of the view. Its
+# strides are not forward strides, so no check of this file accepts it.
+def flag(flags: List<&2,Bool>) -> Bool:
+  match flags:
+    case Nil{}: False{}
+    case Con{head,tail}: head
+
+def later_flags(flags: List<&2,Bool>) -> List<&2,Bool>:
+  match flags:
+    case Nil{}: Nil{}
+    case Con{head,tail}: tail
+
+# The flags after the first count, the first count flags, and whether none of
+# those is set.
+def drop_flags(count: Nat,flags: List<&2,Bool>) -> List<&2,Bool>:
+  match count:
+    case 0n: flags
+    case 1n+rest: drop_flags(rest,later_flags(flags))
+
+def fitted_flags(count: Nat,+flags: List<&2,Bool>) -> List<&2,Bool>:
+  match count:
+    case 0n: []
+    case 1n+rest: flag(flags) <> fitted_flags(rest,later_flags(flags))
+
+def forward(count: Nat,+flags: List<&2,Bool>) -> Bool:
+  match count:
+    case 0n: True{}
+    case 1n+rest: Bool.not(flag(flags)) && forward(rest,later_flags(flags))
+
+def directed(reverse: Bool,stride: U32) -> U32:
+  match reverse:
+    case False{}: stride
+    case True{}: (0 - stride : U32)
+
+def mirrored_start(reverse: Bool,+extent: U32,stride: U32,+offset: U32) -> U32:
+  match reverse:
+    case False{}: offset
+    case True{}: Bool.pick(U32,U32.is_lt(1,extent),(offset + (extent - 1) * stride : U32),offset)
+
+def mirrored_axes(axes: List<&2,Axis>,+flags: List<&2,Bool>) -> List<&2,Axis>:
+  match axes:
+    case Nil{}: Nil{}
+    case Con{Axis{extent,stride},tail}: Axis{extent,directed(flag(flags),stride)} <> mirrored_axes(tail,later_flags(flags))
+
+def mirrored_offset(axes: List<&2,Axis>,+flags: List<&2,Bool>,offset: U32) -> U32:
+  match axes:
+    case Nil{}: offset
+    case Con{Axis{extent,+stride},tail}: mirrored_offset(tail,later_flags(flags),mirrored_start(flag(flags),extent,stride,offset))
+
+def mirrored(view: View,+flags: List<&2,Bool>) -> View:
+  View{+axes,offset} = view
+  View{mirrored_axes(axes,flags),mirrored_offset(axes,flags,offset)}
 
 def contains_index(indices: List<&2,Nat>,+axis: Nat) -> Bool:
   match indices:

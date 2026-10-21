@@ -15,6 +15,23 @@ def elements(extents: List<&2,U32>) -> Nat:
     case []: 1n
     case extent <> tail: Nat.mul(U32.to_nat(extent),elements(tail))
 
+# The cells of three extents.
+def elements_three(+channels: U32,+rows: U32,+width: U32) ->
+  {elements([channels,rows,width]) == Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(rows),U32.to_nat(width))) : Nat}:
+  Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(rows),value)),Nat.mul(U32.to_nat(width),1n),U32.to_nat(width),Order.times_one(U32.to_nat(width)))
+
+# The cells of two shapes one after the other.
+def elements_appended(+left: List<&2,U32>,+right: List<&2,U32>) ->
+  {elements(List.append(&2,U32,left,right)) == Nat.mul(elements(left),elements(right)) : Nat}:
+  match left:
+    case Nil{}: Equal.sym(Nat,Nat.add(elements(right),0n),elements(right),Addition.zero_right(elements(right)))
+    case Con{+head,+tail}:
+      Equal.trans(Nat,Nat.mul(U32.to_nat(head),elements(List.append(&2,U32,tail,right))),Nat.mul(U32.to_nat(head),Nat.mul(elements(tail),elements(right))),
+        Nat.mul(Nat.mul(U32.to_nat(head),elements(tail)),elements(right)),
+        Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(head),value),elements(List.append(&2,U32,tail,right)),Nat.mul(elements(tail),elements(right)),elements_appended(tail,right)),
+        Equal.sym(Nat,Nat.mul(Nat.mul(U32.to_nat(head),elements(tail)),elements(right)),Nat.mul(U32.to_nat(head),Nat.mul(elements(tail),elements(right))),
+          RowMajor.assoc(U32.to_nat(head),elements(tail),elements(right))))
+
 law Count:
   for result: Maybe<&2,U32>
   for expected: Nat
@@ -31,18 +48,12 @@ def checked_count(+result: Maybe<&2,U32>,+left: U32,+right: U32,
     case None{}: Unit{}
     case Some{value}: Checked.multiply_sound(left,right,value,computed)
 
-def times_one(+value: Nat) -> {Nat.mul(value,1n) == value : Nat}:
-  match value:
-    case 0n: {==}
-    case 1n+ +rest:
-      Equal.cong(Nat,Nat,value => 1n+value,Nat.mul(rest,1n),rest,times_one(rest))
-
 def product(+extents: List<&2,U32>,+accumulator: Maybe<&2,U32>,+expected: Nat,previous: Count(accumulator,expected)) ->
   Count(Shapes.product(extents,accumulator),Nat.mul(expected,elements(extents))):
   match extents accumulator:
     case Nil{} None{}: Unit{}
     case Nil{} Some{+value}:
-      %Equal.sym(Nat,Nat.mul(expected,1n),expected,times_one(expected)) : {_ == U32.to_nat(value) : Nat}
+      %Equal.sym(Nat,Nat.mul(expected,1n),expected,Order.times_one(expected)) : {_ == U32.to_nat(value) : Nat}
       previous
     case Con{extent,tail} None{}: Unit{}
     case Con{+extent,+tail} Some{+value}:
@@ -60,13 +71,6 @@ def nonempty_numel(+extents: List<&2,U32>,nonempty: {Shapes.has_zero(extents) ==
   %Equal.sym(Bool,Shapes.has_zero(extents),False{},nonempty) : Count(Shapes.count_nonempty(_,extents),elements(extents))
   nonempty_count(extents)
 
-def native_equal(+left: U32,+right: U32,equal: {U32.is_eq(left,right) == True{} : Bool}) -> {left == right : U32}:
-  %Arithmetic.native_roundtrip(left) : {_ == right : U32}
-  %Arithmetic.native_roundtrip(right) : {U32.from_nat(U32.to_nat(left)) == _ : U32}
-  Equal.cong(Nat,U32,value => U32.from_nat(value),U32.to_nat(left),U32.to_nat(right),Order.equal_of_is_eq(U32.to_nat(left),U32.to_nat(right),{
-    %Comparison.eq(left,right) : {_ == True{} : Bool}
-    equal : {Nat.is_eq(U32.to_nat(left),U32.to_nat(right)) == True{} : Bool}}))
-
 def same_extents(+left: List<&2,U32>,+right: List<&2,U32>,same: {Shapes.same_extents(left,right) == True{} : Bool}) ->
   {left == right : List<&2,U32>}:
   match left right:
@@ -75,7 +79,7 @@ def same_extents(+left: List<&2,U32>,+right: List<&2,U32>,same: {Shapes.same_ext
     case Con{head,tail} Nil{}: Empty.absurd({head <> tail == Nil{} : List<&2,U32>},WordEncoding.false_true(same))
     case Con{+head,+tail} Con{+other,+rest}:
       +same = same
-      %native_equal(head,other,Boolean.left(U32.is_eq(head,other),Shapes.same_extents(tail,rest),same)) : {head <> tail == _ <> rest : List<&2,U32>}
+      %Arithmetic.equal_of_is_eq(head,other,Boolean.left(U32.is_eq(head,other),Shapes.same_extents(tail,rest),same)) : {head <> tail == _ <> rest : List<&2,U32>}
       %same_extents(tail,rest,Boolean.right(U32.is_eq(head,other),Shapes.same_extents(tail,rest),same)) : {head <> tail == head <> _ : List<&2,U32>}
       {==}
 
@@ -87,7 +91,7 @@ def empty_product_selected(zero: Bool,+head: U32,+tail: List<&2,U32>,comparison:
   tail_case: {Shapes.has_zero(tail) == True{} : Bool} -> {elements(tail) == 0n : Nat}) -> {elements(head <> tail) == 0n : Nat}:
   match zero:
     case True{}:
-      %Equal.sym(U32,head,0,native_equal(head,0,comparison)) : {elements(_ <> tail) == 0n : Nat}
+      %Equal.sym(U32,head,0,Arithmetic.equal_of_is_eq(head,0,comparison)) : {elements(_ <> tail) == 0n : Nat}
       {==}
     case False{}:
       %Equal.sym(Nat,elements(tail),0n,tail_case({
@@ -107,3 +111,15 @@ def numel_selected(empty: Bool,+extents: List<&2,U32>,comparison: {Shapes.has_ze
 
 def numel(+extents: List<&2,U32>) -> Count(Shapes.numel(Shapes.Shape{extents}),elements(extents)):
   numel_selected(Shapes.has_zero(extents),extents,{==})
+
+def same_extents_reflexive(+extents: List<&2,U32>) -> {Shapes.same_extents(extents,extents) == True{} : Bool}:
+  match extents:
+    case []: {==}
+    case +head <> +tail:
+      %Equal.sym(Bool,U32.is_eq(head,head),True{},Equal.trans(Bool,U32.is_eq(head,head),Nat.is_eq(U32.to_nat(head),U32.to_nat(head)),True{},Comparison.eq(head,head),Order.equal_reflexive(U32.to_nat(head)))) : {_ && Shapes.same_extents(tail,tail) == True{} : Bool}
+      same_extents_reflexive(tail)
+
+def drop_zero(shape: List<&2,U32>) -> {List.drop(&2,U32,shape,0n) == shape : List<&2,U32>}:
+  match shape:
+    case []: {==}
+    case head <> tail: {==}

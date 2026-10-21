@@ -1,37 +1,37 @@
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LibPacking
 # Erase data buffers from the actual prepare recursion, retaining every tile.
 import Base
 import ../../lib/traversal_partition.bend as Partition
+import ../../lib/tensor_band.bend as Bands
+import ../../lib/proofs/tensor_band_walk.bend as Walk
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ./packing_storage_refinement.bend as PackingStorage
 import ../../lib/kernel_tile.bend as Tile
-import ../../lib/kernel_gather.bend as Gather
+import ../../lib/proofs/traversal_partition_refinement.bend as PartitionLaws
 
 def Layout() -> Data:
   Partition.Tree<&2,Unit,Unit>
 
-def tiles(t: PackingStorage.Tiles()) -> Layout():
-  match t:
-    case Partition.Leaf{data,offset,span,Unit{}}:
-      Partition.Leaf{Unit{},offset,span,Unit{}}
-    case Partition.Fork{left,right}:
-      Partition.Fork{tiles(left),tiles(right)}
+def no_block(+context: Unit,+offset: U32,+span: U32,+details: Unit,block: Tree.Tree<Tile.Tile8>) -> Unit:
+  Unit{}
 
+def no_details(+context: Unit,+details: Unit) -> Unit:
+  Unit{}
+
+def tiles(t: PackingStorage.Tiles()) -> Layout():
+  PartitionLaws.map(~&2,~&2,~Tree.Tree<Tile.Tile8>,~Unit,~Unit,~Unit,~Unit,~no_block,~no_details,Unit{},t)
 def prepared(p: PackingStorage.Prepared) -> Layout():
   PackingStorage.Prepared{x,t} = p
   tiles(t)
 
+# The parts of the plan the Array executor runs.
 def divide(depth: Nat,+offset: U32,+span: U32) -> Layout():
-  match depth:
-    case 0n:
-      Partition.Leaf{Unit{},offset,span,Unit{}}
-    case 1n+ +rest:
-      +half = (span / 16 * 8 : U32)
-      Partition.Fork{divide(rest,offset,half),divide(rest,(offset + half : U32),(span - half : U32))}
+  Walk.shape(Bands.unit_plan(depth,8,offset,span))
 
-def leaf(+offset: U32,+span: U32,+pair: PackingStorage.Packed) -> {prepared(PackingStorage.leaf(offset,span,
+def leaf(+offset: U32,+span: U32,+pair: LibPacking.Packed) -> {prepared(PackingStorage.leaf(offset,span,
       pair)) == Partition.Leaf{Unit{},offset,span,Unit{}} : Layout()}:
-  PackingStorage.Packed{x,y} = pair
+  LibPacking.Packed{x,y} = pair
   {==}
 
 def attach(+left: PackingStorage.Tiles(),+p: PackingStorage.Prepared) -> {prepared(PackingStorage.attach(left,

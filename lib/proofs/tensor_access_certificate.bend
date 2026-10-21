@@ -242,76 +242,98 @@ def combine(~Element: Data,~operation: Element -> Element -> Element,fast: Bool,
   TraversalCertificate.operation(~Array<Element>,~Element,~CopyCall,~Certificate.family(~Element),~combine_operation(~Element,~operation),~combined(~Element,~operation),
     CopyCall{fast,count,source,destination},input,output,Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},output_certificate)
 
-type ReduceCall is Data:
-  ReduceCall{fast: Bool,count: Nat,view: Views.View}
+# The reduction of the lines of a view: every run reads the input and
+# returns it, so the visit returns its input and writes only its output.
+def ran(~Element: Data,~Accumulator: Data,+axes: Cursor.Levels(),+address: U32,+extent: U32,+stride: U32,+position: U32,
+  -input: Array<Element>,-state: Traversal.State<&1,&2,Array<Element>,Accumulator,Traversal.Strided>,
+  evidence: TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Traversal.Strided,input,state>) ->
+  TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,
+    Access.ran(~Element,~Accumulator,axes,address,extent,stride,position,Traversal.finish_fold(~Array<Element>,~Accumulator,~Traversal.Strided,state))>:
+  match evidence:
+    case TraversalWitness.FoldEvidence{accumulator,inner,context,equation}:
+      %Equal.sym(Traversal.State<&1,&2,Array<Element>,Accumulator,Traversal.Strided>,state,Traversal.State{input,accumulator,inner,context},equation) :
+        TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,
+          Access.ran(~Element,~Accumulator,axes,address,extent,stride,position,Traversal.finish_fold(~Array<Element>,~Accumulator,~Traversal.Strided,_))>
+      TraversalWitness.FoldEvidence{accumulator,(position + 1 : U32),Access.Runs{Cursor.advance(axes,address),extent,stride},{==}}
 
-def reduce_operation(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
-  call: ReduceCall,storage: Array<Element>,initial: Accumulator) -> Array<Element> & Accumulator:
-  ReduceCall{fast,count,view} = call
-  Access.reduce_run(~Element,~Accumulator,~operation,fast,count,view,storage,initial)
+def fold_run(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
+  -input: Array<Element>,-state: Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,+witness: Witness.ArrayWitness<Element,input>,
+  evidence: TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,state>) ->
+  TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,Access.fold_run(~Element,~Accumulator,~operation,state)>:
+  match evidence:
+    case TraversalWitness.FoldEvidence{+accumulator,+position,Access.Runs{Cursor.Cursor{+axes,+address},+extent,+stride},equation}:
+      %Equal.sym(Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,state,
+          Traversal.State{input,accumulator,position,Access.Runs{Cursor.Cursor{axes,address},extent,stride}},equation) :
+        TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,Access.fold_run(~Element,~Accumulator,~operation,_)>
+      ran(~Element,~Accumulator,axes,address,extent,stride,position,input,
+        Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Traversal.Strided>,
+          ~Traversal.fold_round(~Array<Element>,~Element,~Accumulator,~Traversal.Strided,~Traversal.strided(~Element),~operation),Nat.div(U32.to_nat(extent),8n),
+          Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Traversal.Strided>,
+            ~Traversal.fold_step(~Array<Element>,~Element,~Accumulator,~Traversal.Strided,~Traversal.strided(~Element),~operation),Nat.mod(U32.to_nat(extent),8n),
+            Traversal.State{input,accumulator,0,Traversal.Strided{address,stride}})),
+        TraversalWitness.rounds(~Array<Element>,~Element,~Accumulator,~Traversal.Strided,~TraversalWitness.array_evidence(~Element),~Traversal.strided(~Element),~operation,
+          ~TraversalWitness.strided_read(~Element),U32.to_nat(extent),input,0,Traversal.Strided{address,stride},accumulator,witness))
 
-def reduced(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
-  call: ReduceCall,-storage: Array<Element>,-initial: Accumulator,certificate: Certificate.Certificate<Element,storage>) ->
-  {TraversalWitness.first(~Array<Element>,~Accumulator,reduce_operation(~Element,~Accumulator,~operation,call,storage,initial)) == storage : Array<Element>}:
-  match call:
-    case ReduceCall{True{},count,Views.View{axes,offset}}:
-      TraversalWitness.fold(~Array<Element>,~Element,~Accumulator,~Traversal.Offsets,~TraversalWitness.array_evidence(~Element),~Traversal.source_offset(~Element),~operation,~TraversalWitness.offset_read(~Element),
-        count,storage,0,Traversal.Offsets{offset,0},initial,Certificate.witness(Element,storage,certificate))
-    case ReduceCall{False{},count,view}:
-      TraversalWitness.fold_finished(~Array<Element>,~Accumulator,~Cursor.Cursor,storage,
-        Traversal.visit_fold(~Array<Element>,~Element,~Accumulator,~Cursor.Cursor,~Cursor.read(~Element),~operation,count,Traversal.State{storage,initial,0,Cursor.prepare(view)}),
-        VisitWitness.fold_run(~Array<Element>,~Element,~Accumulator,~Cursor.Cursor,~TraversalWitness.array_evidence(~Element),~Cursor.read(~Element),~operation,~CursorWitness.read(~Element),
-          count,storage,Traversal.State{storage,initial,0,Cursor.prepare(view)},Certificate.witness(Element,storage,certificate),
-          TraversalWitness.FoldEvidence{initial,0,Cursor.prepare(view),{==}}))
+def runs_done(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,count: Nat,
+  -input: Array<Element>,-state: Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,+witness: Witness.ArrayWitness<Element,input>,
+  evidence: TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,state>) ->
+  TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,
+    Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,~Access.fold_run(~Element,~Accumulator,~operation),count,state)>:
+  match count:
+    case 0n: evidence
+    case 1n+rest:
+      runs_done(~Element,~Accumulator,~operation,rest,input,Access.fold_run(~Element,~Accumulator,~operation,state),witness,
+        fold_run(~Element,~Accumulator,~operation,input,state,witness,evidence))
 
-def reduce(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,fast: Bool,count: Nat,view: Views.View,
-  -storage: Array<Element>,-initial: Accumulator,certificate: Certificate.Certificate<Element,storage>) ->
-  Certificate.Certificate<Element,TraversalWitness.first(~Array<Element>,~Accumulator,Access.reduce_run(~Element,~Accumulator,~operation,fast,count,view,storage,initial))>:
-  Certificate.Certificate{+depth,+equation} = certificate
-  TraversalCertificate.fold_operation(~Array<Element>,~Accumulator,~ReduceCall,~Certificate.family(~Element),~reduce_operation(~Element,~Accumulator,~operation),~reduced(~Element,~Accumulator,~operation),
-    ReduceCall{fast,count,view},storage,initial,Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation})
+def folded_line(~Element: Data,~Accumulator: Data,~finish: Accumulator -> Element,+runs: Nat,+initial: Accumulator,
+  -input: Array<Element>,-state: Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,
+  evidence: TraversalWitness.FoldEvidence<Array<Element>,Accumulator,Access.Runs,input,state>) ->
+  VisitWitness.Sample<Array<Element>,Element,Access.Lines<Accumulator>,input,Access.folded_line(~Element,~Accumulator,~finish,runs,initial,state)>:
+  match evidence:
+    case TraversalWitness.FoldEvidence{accumulator,position,Access.Runs{cursor,extent,stride},equation}:
+      %Equal.sym(Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,state,Traversal.State{input,accumulator,position,Access.Runs{cursor,extent,stride}},equation) :
+        VisitWitness.Sample<Array<Element>,Element,Access.Lines<Accumulator>,input,Access.folded_line(~Element,~Accumulator,~finish,runs,initial,_)>
+      VisitWitness.Sample{Access.Lines{cursor,runs,extent,stride,initial},finish(accumulator),{==}}
 
-type IndexedCall is Data:
-  IndexedCall{count: Nat,view: Views.View}
+def fold_line(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  -input: Array<Element>,context: Access.Lines<Accumulator>,evidence: Witness.ArrayWitness<Element,input>) ->
+  VisitWitness.Sample<Array<Element>,Element,Access.Lines<Accumulator>,input,Access.fold_line(~Element,~Accumulator,~operation,~finish,input,context)>:
+  Access.Lines{+cursor,+runs,+extent,+stride,+initial} = context
+  folded_line(~Element,~Accumulator,~finish,runs,initial,input,
+    Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Access.Runs>,~Access.fold_run(~Element,~Accumulator,~operation),runs,
+      Traversal.State{input,initial,0,Access.Runs{cursor,extent,stride}}),
+    runs_done(~Element,~Accumulator,~operation,runs,input,Traversal.State{input,initial,0,Access.Runs{cursor,extent,stride}},evidence,
+      TraversalWitness.FoldEvidence{initial,0,Access.Runs{cursor,extent,stride},{==}}))
 
-def indexed_operation(~Element: Data,~operation: U32 -> Element -> Element,call: IndexedCall,input: Array<Element>,output: Array<Element>) ->
-  Array<Element> & Array<Element>:
-  IndexedCall{count,view} = call
-  Access.apply_indexed_run(~Element,~operation,count,view,input,output)
+type LinesCall<-Accumulator: Data> is Data:
+  LinesCall{count: Nat,view: Views.View,runs: Nat,extent: U32,stride: U32,initial: Accumulator}
 
-def indexed_sample(~Element: Data,~operation: U32 -> Element -> Element,-storage: Array<Element>,+position: U32,-result: Array<Element> & Element,
-  sample: TraversalWitness.Sample<Array<Element>,Element,storage,result>) ->
-  TraversalWitness.Sample<Array<Element>,Element,storage,Access.indexed_value(~Element,~operation,position,result)>:
-  match sample:
-    case TraversalWitness.Sample{value,equation}:
-      %Equal.sym(Array<Element> & Element,result,(storage,value),equation) :
-        TraversalWitness.Sample<Array<Element>,Element,storage,Access.indexed_value(~Element,~operation,position,_)>
-      TraversalWitness.Sample{operation(position,value),{==}}
+def lines_operation(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  call: LinesCall<Accumulator>,input: Array<Element>,output: Array<Element>) -> Array<Element> & Array<Element>:
+  LinesCall{count,view,runs,extent,stride,initial} = call
+  Access.reduce_lines(~Element,~Accumulator,~operation,~finish,count,view,runs,extent,stride,initial,input,output)
 
-def indexed_read(~Element: Data,~operation: U32 -> Element -> Element,-storage: Array<Element>,context: Traversal.Offsets,index: U32,
-  evidence: Witness.ArrayWitness<Element,storage>) ->
-  TraversalWitness.Sample<Array<Element>,Element,storage,Access.read_indexed(~Element,~operation,storage,context,index)>:
-  +index = index
-  indexed_sample(~Element,~operation,storage,index,Traversal.source_offset(~Element,storage,context,index),
-    TraversalWitness.offset_read(~Element,storage,context,index,evidence))
-
-def indexed(~Element: Data,~operation: U32 -> Element -> Element,+depth: Nat,call: IndexedCall,-input: Array<Element>,-output: Array<Element>,
-  input_certificate: Certificate.Certificate<Element,input>,
+def lined(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  +depth: Nat,call: LinesCall<Accumulator>,-input: Array<Element>,-output: Array<Element>,input_certificate: Certificate.Certificate<Element,input>,
   equation: {output == Tree.pack(Element,Certificate.normalized(Element,depth,Tree.reflect(Element,output))) : Array<Element>}) ->
-  TraversalWitness.ResultEvidence<Array<Element>,Element,input,depth,indexed_operation(~Element,~operation,call,input,output)>:
+  TraversalWitness.ResultEvidence<Array<Element>,Element,input,depth,lines_operation(~Element,~Accumulator,~operation,~finish,call,input,output)>:
   match call:
-    case IndexedCall{count,Views.View{axes,offset}}:
-      TraversalCertificate.completed(~Array<Element>,~Element,~Traversal.Offsets,~TraversalWitness.array_evidence(~Element),
-        ~Traversal.run(~Array<Element>,~Element,~Traversal.Offsets,~Access.read_indexed(~Element,~operation),~Traversal.destination_offset),
-        ~TraversalWitness.run(~Array<Element>,~Element,~Traversal.Offsets,~TraversalWitness.array_evidence(~Element),~Access.read_indexed(~Element,~operation),~Traversal.destination_offset,~indexed_read(~Element,~operation)),
-        count,0,Traversal.Offsets{offset,0},input,output,Certificate.witness(Element,input,input_certificate),depth,equation)
+    case LinesCall{count,view,runs,extent,stride,initial}:
+      TraversalCertificate.completed(~Array<Element>,~Element,~Access.Lines<Accumulator>,~TraversalWitness.array_evidence(~Element),
+        ~Traversal.visit(~Array<Element>,~Element,~Access.Lines<Accumulator>,~Access.fold_line(~Element,~Accumulator,~operation,~finish)),
+        ~VisitWitness.visit(~Array<Element>,~Element,~Access.Lines<Accumulator>,~TraversalWitness.array_evidence(~Element),
+          ~Access.fold_line(~Element,~Accumulator,~operation,~finish),~fold_line(~Element,~Accumulator,~operation,~finish)),
+        count,0,Access.Lines{Cursor.prepare(view),runs,extent,stride,initial},input,output,Certificate.witness(Element,input,input_certificate),depth,equation)
 
-def apply_indexed(~Element: Data,~operation: U32 -> Element -> Element,count: Nat,view: Views.View,-input: Array<Element>,-output: Array<Element>,
+def lines(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  count: Nat,view: Views.View,runs: Nat,extent: U32,stride: U32,initial: Accumulator,-input: Array<Element>,-output: Array<Element>,
   input_certificate: Certificate.Certificate<Element,input>,output_certificate: Certificate.Certificate<Element,output>) ->
-  TraversalCertificate.Certificates<Array<Element>,Element,Certificate.family(~Element),Access.apply_indexed_run(~Element,~operation,count,view,input,output)>:
+  TraversalCertificate.Certificates<Array<Element>,Element,Certificate.family(~Element),
+    Access.reduce_lines(~Element,~Accumulator,~operation,~finish,count,view,runs,extent,stride,initial,input,output)>:
   Certificate.Certificate{+depth,+equation} = input_certificate
-  TraversalCertificate.operation(~Array<Element>,~Element,~IndexedCall,~Certificate.family(~Element),~indexed_operation(~Element,~operation),~indexed(~Element,~operation),
-    IndexedCall{count,view},input,output,Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},output_certificate)
+  TraversalCertificate.operation(~Array<Element>,~Element,~LinesCall<Accumulator>,~Certificate.family(~Element),
+    ~lines_operation(~Element,~Accumulator,~operation,~finish),~lined(~Element,~Accumulator,~operation,~finish),
+    LinesCall{count,view,runs,extent,stride,initial},input,output,Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},output_certificate)
 
 def window_read_sample(~Element: Data,+pad: Element,valid: Bool,-input: Array<Element>,+index: U32,
   evidence: Witness.ArrayWitness<Element,input>) ->

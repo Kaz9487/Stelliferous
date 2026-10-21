@@ -17,12 +17,16 @@ import ../../lib/proofs/traversal_partition_refinement.bend as PartitionLaws
 import ../../lib/proofs/kernel_gemm_refinement.bend as GemmLaws
 import ../../lib/proofs/kernel_weights_refinement.bend as WeightsLaws
 import ./packing_storage_refinement.bend as PackingStorage
+import ../../lib/proofs/kernel_spatial_packing_refinement.bend as LibPacking
 import ./gather_storage_model.bend as GatherModel
-import ./gather_blocks.bend as Blocks
+import ../../lib/proofs/kernel_gather_blocks.bend as Blocks
 import ../../lib/kernel_window.bend as KernelWindow
 import ../../lib/proofs/kernel_window_copy.bend as WindowCopy
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/proofs/write_program.bend as Writes
+import ../../lib/tensor_band.bend as Bands
+import ../../lib/proofs/tensor_band_walk.bend as Walk
+import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 
 def allocated(+rows: U32,+span: U32) -> Tree.Tree<F32>:
   Tree.fresh(F32,Tensors.depth_for((rows * span : U32)),0.0)
@@ -31,25 +35,25 @@ def allocated_matches(+rows: U32,+span: U32) ->
   {ArrayPipeline.allocated(rows,span) == Tree.pack(F32,allocated(rows,span)) : Array<F32>}:
   AllocationLaws.fresh(~F32,Tensors.depth_for((rows * span : U32)),0.0)
 
-def computed(+rows: U32,+span: U32,inner: U32,weights: Tree.Tree<Tile.Tile8>,bias: Tree.Tree<F32>,packed: PackingStorage.Packed) -> Tree.Tree<F32>:
-  PackingStorage.Packed{input,tiles} = packed
-  GemmLaws.run(rows,tiles,weights,bias,allocated(rows,span),span,inner)
+def computed(+rows: U32,+span: U32,inner: U32,weights: Tree.Tree<Tile.Tile8>,bias: Tree.Tree<F32>,packed: LibPacking.Packed) -> Tree.Tree<F32>:
+  LibPacking.Packed{input,tiles} = packed
+  GemmLaws.run(~True{},rows,tiles,weights,bias,allocated(rows,span),span,inner)
 
-def computed_matches(+rows: U32,+span: U32,+inner: U32,+weights: Tree.Tree<Tile.Tile8>,+bias: Tree.Tree<F32>,+packed: PackingStorage.Packed) ->
-  {ArrayPipeline.computed(rows,span,inner,Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),PackingStorage.pack_pair(packed)) ==
+def computed_matches(+rows: U32,+span: U32,+inner: U32,+weights: Tree.Tree<Tile.Tile8>,+bias: Tree.Tree<F32>,+packed: LibPacking.Packed) ->
+  {ArrayPipeline.computed(rows,span,inner,Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),LibPacking.pack_pair(packed)) ==
     Tree.pack(F32,computed(rows,span,inner,weights,bias,packed)) : Array<F32>}:
-  PackingStorage.Packed{input,+tiles} = packed
+  LibPacking.Packed{input,+tiles} = packed
   %Equal.sym(Array<F32>,ArrayPipeline.allocated(rows,span),Tree.pack(F32,allocated(rows,span)),allocated_matches(rows,span)) :
-    {Gemm.run(rows,Tree.pack(Tile.Tile8,tiles),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),_,span,inner) ==
-      Tree.pack(F32,GemmLaws.run(rows,tiles,weights,bias,allocated(rows,span),span,inner)) : Array<F32>}
-  GemmLaws.run_matches(rows,tiles,weights,bias,allocated(rows,span),span,inner)
+    {Gemm.run(~True{},rows,Tree.pack(Tile.Tile8,tiles),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),_,span,inner) ==
+      Tree.pack(F32,GemmLaws.run(~True{},rows,tiles,weights,bias,allocated(rows,span),span,inner)) : Array<F32>}
+  GemmLaws.run_matches(~True{},rows,tiles,weights,bias,allocated(rows,span),span,inner)
 
-def packed(call: Packing.Call,input: Tree.Tree<F32>,output: Tree.Tree<Tile.Tile8>) -> PackingStorage.Packed:
+def packed(call: Packing.Call,input: Tree.Tree<F32>,output: Tree.Tree<Tile.Tile8>) -> LibPacking.Packed:
   Packing.Call{count,start,h,w,k,s,p,+ow,inner} = call
   PackingStorage.packing(count,start,input,output,h,w,k,s,p,ow,inner)
 
 def packed_matches(+call: Packing.Call,+input: Tree.Tree<F32>,+output: Tree.Tree<Tile.Tile8>) ->
-  {Packing.run(call,Tree.pack(F32,input),Tree.pack(Tile.Tile8,output)) == PackingStorage.pack_pair(packed(call,input,output)) : Array<F32> & Array<Tile.Tile8>}:
+  {Packing.run(call,Tree.pack(F32,input),Tree.pack(Tile.Tile8,output)) == LibPacking.pack_pair(packed(call,input,output)) : Array<F32> & Array<Tile.Tile8>}:
   Packing.Call{count,start,h,w,k,s,p,+ow,inner} = call
   PackingStorage.packing_refines_storage(count,start,input,output,h,w,k,s,p,ow,inner)
 
@@ -143,36 +147,123 @@ def leaf_matches(+work: Pipeline.Work,+offset: U32,+span: U32,+window: InputWind
     AllocationLaws.fresh(~Tile.Tile8,Tensors.depth_for(count),Tile.filled(0.0))) :
     {Partition.Leaf{ArrayPipeline.computed(rows,span,inner,Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),Packing.run(call,Tree.pack(F32,input),_)),offset,span,rows} ==
       PartitionLaws.represent(~F32,Partition.Leaf{computed(rows,span,inner,weights,bias,prepared),offset,span,rows}) : Partition.Tree<&1,Array<F32>,U32>}
-  %Equal.sym(Array<F32> & Array<Tile.Tile8>,Packing.run(call,Tree.pack(F32,input),Tree.pack(Tile.Tile8,tiles)),PackingStorage.pack_pair(prepared),packed_matches(call,input,tiles)) :
+  %Equal.sym(Array<F32> & Array<Tile.Tile8>,Packing.run(call,Tree.pack(F32,input),Tree.pack(Tile.Tile8,tiles)),LibPacking.pack_pair(prepared),packed_matches(call,input,tiles)) :
     {Partition.Leaf{ArrayPipeline.computed(rows,span,inner,Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),_),offset,span,rows} ==
       PartitionLaws.represent(~F32,Partition.Leaf{computed(rows,span,inner,weights,bias,prepared),offset,span,rows}) : Partition.Tree<&1,Array<F32>,U32>}
-  %Equal.sym(Array<F32>,ArrayPipeline.computed(rows,span,inner,Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),PackingStorage.pack_pair(prepared)),
+  %Equal.sym(Array<F32>,ArrayPipeline.computed(rows,span,inner,Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias),LibPacking.pack_pair(prepared)),
     Tree.pack(F32,computed(rows,span,inner,weights,bias,prepared)),computed_matches(rows,span,inner,weights,bias,prepared)) :
     {Partition.Leaf{_,offset,span,rows} == PartitionLaws.represent(~F32,Partition.Leaf{computed(rows,span,inner,weights,bias,prepared),offset,span,rows}) : Partition.Tree<&1,Array<F32>,U32>}
   {==}
 
+# What one part owns: its input window, its weights and its bias.
+type Owners is Data:
+  Owners{window: InputWindow,weights: Tree.Tree<Tile.Tile8>,bias: Tree.Tree<F32>}
+
+def represent_owners(owners: Owners) -> ArrayPipeline.Owners:
+  Owners{window,weights,bias} = owners
+  ArrayPipeline.Owners{represent(window),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)}
+
+def halves(+pair: PartitionLaws.Split<InputWindow>,+weights: Tree.Tree<Tile.Tile8>,+bias: Tree.Tree<F32>) -> PartitionLaws.Split<Owners>:
+  PartitionLaws.Split{Owners{PartitionLaws.first(~InputWindow,pair),weights,bias},Owners{PartitionLaws.second(~InputWindow,pair),weights,bias}}
+
+# The left half reads the positions of its plan; both halves keep the weights and bias.
+def divide(work: Pipeline.Work,left: Bands.Plan,right: Bands.Plan,owners: Owners) -> PartitionLaws.Split<Owners>:
+  Owners{window,+weights,+bias} = owners
+  +offset = Bands.first(left)
+  halves(split(work,offset,(Bands.first(right) - offset : U32),window),weights,bias)
+
+def divide_matches(+work: Pipeline.Work,+left: Bands.Plan,+right: Bands.Plan,+owners: Owners) ->
+  {ArrayPipeline.divide(work,left,right,represent_owners(owners)) ==
+    Bands.Divided{represent_owners(PartitionLaws.first(~Owners,divide(work,left,right,owners))),represent_owners(PartitionLaws.second(~Owners,divide(work,left,right,owners)))} :
+    Bands.Division<ArrayPipeline.Owners>}:
+  Owners{+window,+weights,+bias} = owners
+  +offset = Bands.first(left)
+  +half = (Bands.first(right) - offset : U32)
+  +pair = split(work,offset,half,window)
+  %Equal.sym(ArrayPipeline.InputWindow & ArrayPipeline.InputWindow,ArrayPipeline.split(work,offset,half,represent(window)),
+    PartitionLaws.represent_pair(~ArrayPipeline.InputWindow,~InputWindow,~represent,pair),split_matches(work,offset,half,window)) :
+    {ArrayPipeline.divided(_,Array.clone(Tile.Tile8,Tree.pack(Tile.Tile8,weights)),Array.clone(F32,Tree.pack(F32,bias))) ==
+      Bands.Divided{ArrayPipeline.Owners{represent(PartitionLaws.first(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)},
+        ArrayPipeline.Owners{represent(PartitionLaws.second(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)}} : Bands.Division<ArrayPipeline.Owners>}
+  %Equal.sym(PartitionLaws.Split<InputWindow>,pair,PartitionLaws.Split{PartitionLaws.first(~InputWindow,pair),PartitionLaws.second(~InputWindow,pair)},
+    PartitionLaws.split_eta(~InputWindow,pair)) :
+    {ArrayPipeline.divided(PartitionLaws.represent_pair(~ArrayPipeline.InputWindow,~InputWindow,~represent,_),
+        Array.clone(Tile.Tile8,Tree.pack(Tile.Tile8,weights)),Array.clone(F32,Tree.pack(F32,bias))) ==
+      Bands.Divided{ArrayPipeline.Owners{represent(PartitionLaws.first(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)},
+        ArrayPipeline.Owners{represent(PartitionLaws.second(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)}} : Bands.Division<ArrayPipeline.Owners>}
+  %Equal.sym(Array<Tile.Tile8> & Array<Tile.Tile8>,Array.clone(Tile.Tile8,Tree.pack(Tile.Tile8,weights)),(Tree.pack(Tile.Tile8,weights),Tree.pack(Tile.Tile8,weights)),
+    StorageLaws.clone(Tile.Tile8,weights)) :
+    {ArrayPipeline.divided((represent(PartitionLaws.first(~InputWindow,pair)),represent(PartitionLaws.second(~InputWindow,pair))),_,Array.clone(F32,Tree.pack(F32,bias))) ==
+      Bands.Divided{ArrayPipeline.Owners{represent(PartitionLaws.first(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)},
+        ArrayPipeline.Owners{represent(PartitionLaws.second(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)}} : Bands.Division<ArrayPipeline.Owners>}
+  %Equal.sym(Array<F32> & Array<F32>,Array.clone(F32,Tree.pack(F32,bias)),(Tree.pack(F32,bias),Tree.pack(F32,bias)),StorageLaws.clone(F32,bias)) :
+    {ArrayPipeline.divided((represent(PartitionLaws.first(~InputWindow,pair)),represent(PartitionLaws.second(~InputWindow,pair))),
+        (Tree.pack(Tile.Tile8,weights),Tree.pack(Tile.Tile8,weights)),_) ==
+      Bands.Divided{ArrayPipeline.Owners{represent(PartitionLaws.first(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)},
+        ArrayPipeline.Owners{represent(PartitionLaws.second(~InputWindow,pair)),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)}} : Bands.Division<ArrayPipeline.Owners>}
+  {==}
+
+def part(work: Pipeline.Work,offset: U32,span: U32,owners: Owners) -> GatherModel.ConvResult():
+  Owners{window,weights,bias} = owners
+  leaf(work,offset,span,window,weights,bias)
+
+def part_matches(+work: Pipeline.Work,+offset: U32,+span: U32,+owners: Owners) ->
+  {ArrayPipeline.part(work,offset,span,represent_owners(owners)) == PartitionLaws.represent(~F32,part(work,offset,span,owners)) : Partition.Tree<&1,Array<F32>,U32>}:
+  Owners{+window,+weights,+bias} = owners
+  leaf_matches(work,offset,span,window,weights,bias)
+
+# Positions [offset, offset + span) halved depth times at whole blocks of eight.
 def partition(depth: Nat,work: Pipeline.Work,offset: U32,span: U32,input: InputWindow,weights: Tree.Tree<Tile.Tile8>,bias: Tree.Tree<F32>) -> GatherModel.ConvResult():
-  PartitionLaws.partition(~InputWindow,~Tile.Tile8,~F32,~F32,~Pipeline.Work,~split,~leaf,depth,work,offset,span,input,weights,bias)
+  Walk.model(~Owners,~Tree.Tree<F32>,~U32,~Pipeline.Work,~divide,~part,Bands.unit_plan(depth,8,offset,span),work,Owners{input,weights,bias})
 
 def partition_matches(+depth: Nat,+work: Pipeline.Work,+offset: U32,+span: U32,+input: InputWindow,+weights: Tree.Tree<Tile.Tile8>,+bias: Tree.Tree<F32>) ->
   {ArrayPipeline.partition(depth,work,offset,span,represent(input),Tree.pack(Tile.Tile8,weights),Tree.pack(F32,bias)) ==
     PartitionLaws.represent(~F32,partition(depth,work,offset,span,input,weights,bias)) : Partition.Tree<&1,Array<F32>,U32>}:
-  PartitionLaws.run_matches(~ArrayPipeline.InputWindow,~InputWindow,~Tile.Tile8,~F32,~F32,~Pipeline.Work,~represent,~ArrayPipeline.split,~split,~ArrayPipeline.leaf,~leaf,~split_matches,~leaf_matches,
-    depth,work,offset,span,input,weights,bias)
+  Walk.walk_matches(~ArrayPipeline.Owners,~Owners,~Array<F32>,~Tree.Tree<F32>,~U32,~Pipeline.Work,~Unit,~Bands.always,~ArrayPipeline.divide,~ArrayPipeline.part,~ArrayPipeline.whole,
+    ~represent_owners,~PartitionLaws.pack_values(~F32),~divide,~part,~divide_matches,~part_matches,
+    Bands.unit_plan(depth,8,offset,span),True{},Unit{},work,Owners{input,weights,bias})
+
+# The halves of a halved plan start at its offset and after its first half.
+def divide_halved(+rest: Nat,+work: Pipeline.Work,+offset: U32,+span: U32,+window: InputWindow,+weights: Tree.Tree<Tile.Tile8>,+bias: Tree.Tree<F32>) ->
+  {divide(work,Bands.unit_plan(rest,8,offset,(span / 16 * 8 : U32)),Bands.unit_plan(rest,8,(offset + span / 16 * 8 : U32),(span - span / 16 * 8 : U32)),Owners{window,weights,bias}) ==
+    halves(split(work,offset,(span / 16 * 8 : U32),window),weights,bias) : PartitionLaws.Split<Owners>}:
+  +half = (span / 16 * 8 : U32)
+  +next = (offset + half : U32)
+  +left = Bands.unit_plan(rest,8,offset,half)
+  +right = Bands.unit_plan(rest,8,next,(span - half : U32))
+  %Equal.sym(U32,Bands.first(left),offset,Walk.unit_plan_first(rest,8,offset,half)) :
+    {halves(split(work,_,(Bands.first(right) - _ : U32),window),weights,bias) == halves(split(work,offset,half,window),weights,bias) : PartitionLaws.Split<Owners>}
+  %Equal.sym(U32,Bands.first(right),next,Walk.unit_plan_first(rest,8,next,(span - half : U32))) :
+    {halves(split(work,offset,(_ - offset : U32),window),weights,bias) == halves(split(work,offset,half,window),weights,bias) : PartitionLaws.Split<Owners>}
+  %Equal.sym(U32,(next - offset : U32),half,Arithmetic.subtract_first(offset,half)) :
+    {halves(split(work,offset,_,window),weights,bias) == halves(split(work,offset,half,window),weights,bias) : PartitionLaws.Split<Owners>}
+  {==}
+
+# One split of the halved plan: the left half copies its band, the right
+# half keeps the window.
+def partition_step(+rest: Nat,+work: Pipeline.Work,+offset: U32,+span: U32,+window: InputWindow,+weights: Tree.Tree<Tile.Tile8>,+bias: Tree.Tree<F32>) ->
+  {partition(1n+rest,work,offset,span,window,weights,bias) ==
+    Partition.Fork{partition(rest,work,offset,(span / 16 * 8 : U32),PartitionLaws.first(~InputWindow,split(work,offset,(span / 16 * 8 : U32),window)),weights,bias),
+      partition(rest,work,(offset + span / 16 * 8 : U32),(span - span / 16 * 8 : U32),PartitionLaws.second(~InputWindow,split(work,offset,(span / 16 * 8 : U32),window)),weights,bias)} :
+    GatherModel.ConvResult()}:
+  +half = (span / 16 * 8 : U32)
+  +left = Bands.unit_plan(rest,8,offset,half)
+  +right = Bands.unit_plan(rest,8,(offset + half : U32),(span - half : U32))
+  %Equal.sym(PartitionLaws.Split<Owners>,divide(work,left,right,Owners{window,weights,bias}),halves(split(work,offset,half,window),weights,bias),
+    divide_halved(rest,work,offset,span,window,weights,bias)) :
+    {Partition.Fork{Walk.model(~Owners,~Tree.Tree<F32>,~U32,~Pipeline.Work,~divide,~part,left,work,PartitionLaws.first(~Owners,_)),
+        Walk.model(~Owners,~Tree.Tree<F32>,~U32,~Pipeline.Work,~divide,~part,right,work,PartitionLaws.second(~Owners,_))} ==
+      Partition.Fork{partition(rest,work,offset,half,PartitionLaws.first(~InputWindow,split(work,offset,half,window)),weights,bias),
+        partition(rest,work,(offset + half : U32),(span - half : U32),PartitionLaws.second(~InputWindow,split(work,offset,half,window)),weights,bias)} : GatherModel.ConvResult()}
+  {==}
 
 def native_gather(partitions: Partition.Tree<&1,Array<F32>,U32>,output: Array<F32>,positions: U32) -> Array<F32>:
-  Partition.gather(~Array<F32>,~(rows => offset => positions => span => input => output => Gather.gather_block(rows,offset,positions,span,input,output)),partitions,output,positions)
+  Partition.gather(~&1,~Array<F32>,~(rows => offset => positions => span => input => output => Gather.gather_block(rows,offset,positions,span,input,output)),partitions,output,positions)
 
 def gather_matches(+partitions: GatherModel.ConvResult(),+output: Tree.Tree<F32>,+positions: U32) ->
   {native_gather(PartitionLaws.represent(~F32,partitions),Tree.pack(F32,output),positions) == Tree.pack(F32,GatherModel.gather(partitions,output,positions)) : Array<F32>}:
-  match partitions:
-    case Partition.Leaf{input,offset,span,rows}: Blocks.block(rows,offset,positions,span,input,output)
-    case Partition.Fork{+left,+right}:
-      %Equal.sym(Array<F32>,native_gather(PartitionLaws.represent(~F32,left),Tree.pack(F32,output),positions),Tree.pack(F32,GatherModel.gather(left,output,positions)),
-        gather_matches(left,output,positions)) :
-        {native_gather(PartitionLaws.represent(~F32,right),_,positions) == Tree.pack(F32,GatherModel.gather(right,GatherModel.gather(left,output,positions),positions)) : Array<F32>}
-      gather_matches(right,GatherModel.gather(left,output,positions),positions)
-
+  PartitionLaws.gathered(~&1,~Array<F32>,~Tree.Tree<F32>,~PartitionLaws.pack_values(~F32),~(rows => offset => positions => span => input => output => Gather.gather_block(rows,offset,positions,span,input,output)),
+    ~PartitionLaws.write_copy(~F32,~Blocks.block_writes),~Blocks.block,partitions,output,positions)
 def finish_leaf(identity: Bool,input: Tree.Tree<F32>,+rows: U32,offset: U32,span: U32,+positions: U32) -> Tree.Tree<F32>:
   match identity:
     case True{}: input

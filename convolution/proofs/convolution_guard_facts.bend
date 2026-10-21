@@ -2,7 +2,6 @@
 # Machine support facts are in concrete_support_guard.bend.
 import Base
 import ../../lib/proofs/boolean_logic.bend as Boolean
-import ../../lib/proofs/nat_order.bend as Order
 import ../specification.bend as ConvSpec
 
 def input_channel_count(problem: ConvSpec.Problem) -> Nat:
@@ -51,9 +50,6 @@ def weights(problem: ConvSpec.Problem) -> List<&2,F32>:
 def bias(problem: ConvSpec.Problem) -> List<&2,F32>:
   ConvSpec.Problem{shape,input,weights,bias} = problem
   bias
-
-def reflect(+a: Nat,+b: Nat,h: {Nat.is_eq(a,b) == True{} : Bool}) -> {a == b : Nat}:
-  Order.equal_of_is_eq(a,b,h)
 
 def input_channels_positive(+problem: ConvSpec.Problem) -> Bool:
   Nat.is_lt(0n,input_channel_count(problem))

@@ -42,23 +42,23 @@ RULES = {
     "C1": ("a ~ parameter that is not leading",
            "Template parameters come first in a def's parameter list (only leading binders take ~).",
            "Move every ~ parameter to the front and reorder the arguments at the call sites."),
-    "C2": ("a call whose number of ~ arguments differs from the declaration",
+    "C2": ("a call with excess or non-leading ~ arguments",
            "Only parameters the callee declares with ~ take ~. An extra ~ fails in the parser "
            "(expected : a term / observed : '~'), often reported on a nearby line.",
-           "Write ~ on exactly the callee's leading ~ parameters, or on none."),
+           "Write ~ on a leading prefix of the callee's ~ parameters, or on none."),
     "D4": ("a let of a constructor without a type annotation",
            "A constructor needs a target type to be checked; alone on the right of a let it cannot be inferred.",
            "Write +x = {Ctor{...} : Type}."),
     "E1": ("a large Nat in a type or expression",
            "Nat is unary. When two types containing a closed large Nat in different spellings are compared, "
-           "the checker unfolds it; the recursion depth grows with the value and the stack overflows "
+           "the checker may unfold it. Structural comparison depth grows with the value and can overflow the stack "
            "(the machine stack overflowed), with no location. Computing with a large Nat literal takes time "
            "proportional to its value even when it does not overflow.",
            "Keep the quantity abstract: make it a parameter (for example +limit: U32) and use it only through "
            "equations and inequalities. Compare concrete numbers on U32 (U32.is_le)."),
     "E1?": ("a default machine limit converted to Nat (a risk, not always a failure)",
             "U32.to_nat(Machine.capacity(Default.limits())) is a closed large Nat that can be computed. "
-            "Comparing two types that spell it differently overflows the stack, with no location.",
+            "Comparing differently spelled types can expose this computation and overflow the stack, with no location.",
             "Follow the convolution proofs: take +limits: Machine.Limits, write Machine.capacity(limits) in types, "
             "and substitute Default.limits() only at the top public entry. See count_within in "
             "lib/proofs/bounded_u32_arithmetic.bend and lib/proofs/checked_word_completion.bend."),
@@ -166,7 +166,7 @@ def lint(path):
         if table is None or name not in table:
             continue
         leading = table[name][0]
-        if count != leading or not all(marked[:count]):
+        if count > leading or not all(marked[:count]):
             report(line, "C2", f"{target} declares {leading} ~ parameters; the call writes {count}")
 
     let_indent = None

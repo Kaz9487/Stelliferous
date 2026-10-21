@@ -99,3 +99,23 @@ def map_when(~Context: Data,~operation: Context -> F32 -> F32,covered: Bool,coun
   match covered:
     case True{}: map(~Context,~operation,count,position,context,values)
     case False{}: Traversal.map_in_place(~F32,~Context,~operation,count,position,context,values)
+
+# An arbitrary gather uses the common rounds and the operation's scalar tail.
+def map_with(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,count: Nat,position: U32,context: Context,values: Array<F32>) -> Array<F32>:
+  rounds_with(~Array<F32>,~Context,~collect,~scatter,~finish(~Context,~operation),count,Cells.State{values,scratch(),position,0,context})
+
+def map_with_when(~Context: Data,~operation: Context -> F32 -> F32,~collect: Array<F32> -> U32 -> Context -> Array<F32> & Tile.Tile8,covered: Bool,count: Nat,position: U32,context: Context,values: Array<F32>) -> Array<F32>:
+  match covered:
+    case True{}: map_with(~Context,~operation,~collect,count,position,context,values)
+    case False{}: Traversal.map_in_place(~F32,~Context,~operation,count,position,context,values)
+
+def identity(~Context: Data,context: Context,value: F32) -> F32:
+  value
+
+def transformed(~Context: Data,~transform: Context -> Tile.Tile8 -> Tile.Tile8,context: Context,read: Array<F32> & Tile.Tile8) -> Array<F32> & Tile.Tile8:
+  (values,tile) = read
+  (values,transform(context,tile))
+
+def gather_transformed(~Context: Data,~transform: Context -> Tile.Tile8 -> Tile.Tile8,values: Array<F32>,position: U32,context: Context) -> Array<F32> & Tile.Tile8:
+  +context = context
+  transformed(~Context,~transform,context,gather(~Context,~identity(~Context),values,position,context))

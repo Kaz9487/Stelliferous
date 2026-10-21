@@ -2,7 +2,6 @@
 import Base
 import ../machine_limits.bend as Machine
 import ./bounded_u32_arithmetic.bend as Arithmetic
-import ./checked_word_refinement.bend as Checked
 import ./u32_division.bend as U32Division
 import ./nat_division_order.bend as DivisionOrder
 import ./machine_limit_bounds.bend as Limits
@@ -70,9 +69,6 @@ def sum_bound(+left: Nat,+right: Nat,+left_upper: U32,+right_upper: U32,+sum_upp
   Order.transitive(Nat.add(left,right),Nat.add(U32.to_nat(left_upper),right),Nat.add(U32.to_nat(left_upper),U32.to_nat(right_upper)),
     Order.add_le(left,U32.to_nat(left_upper),right,left_inside),Order.offset_le(U32.to_nat(left_upper),right,U32.to_nat(right_upper),right_inside))
 
-def twice_natural(+value: Nat) -> {Nat.mul(2n,value) == Nat.add(value,value) : Nat}:
-  Equal.cong(Nat,Nat,tail => Nat.add(value,tail),Nat.add(value,0n),value,Addition.zero_right(value))
-
 def twice_bound(+value: Nat,+upper: U32,+twice_upper: U32,+limits: Machine.Limits,
   inside: {Nat.is_le(value,U32.to_nat(upper)) == True{} : Bool},+upper_room: {U32.is_le(upper,Machine.capacity(limits)) == True{} : Bool},
   native_twice: {twice_upper == (upper + upper : U32) : U32}) ->
@@ -80,7 +76,7 @@ def twice_bound(+value: Nat,+upper: U32,+twice_upper: U32,+limits: Machine.Limit
   +exact = Equal.trans(Nat,U32.to_nat(twice_upper),U32.to_nat((upper + upper : U32)),Nat.mul(2n,U32.to_nat(upper)),
     Equal.cong(U32,Nat,U32.to_nat,twice_upper,(upper + upper : U32),native_twice),
     Equal.trans(Nat,U32.to_nat((upper + upper : U32)),Nat.add(U32.to_nat(upper),U32.to_nat(upper)),Nat.mul(2n,U32.to_nat(upper)),
-      half_add(upper,upper,limits,upper_room,upper_room),Equal.sym(Nat,Nat.mul(2n,U32.to_nat(upper)),Nat.add(U32.to_nat(upper),U32.to_nat(upper)),twice_natural(U32.to_nat(upper)))))
+      half_add(upper,upper,limits,upper_room,upper_room),Equal.sym(Nat,Nat.mul(2n,U32.to_nat(upper)),Nat.add(U32.to_nat(upper),U32.to_nat(upper)),Order.twice(U32.to_nat(upper)))))
   %Equal.sym(Nat,U32.to_nat(twice_upper),Nat.mul(2n,U32.to_nat(upper)),exact) : {Nat.is_le(Nat.mul(2n,value),_) == True{} : Bool}
   %RowMajor.multiply_commutative(value,2n) : {Nat.is_le(_,Nat.mul(2n,U32.to_nat(upper))) == True{} : Bool}
   %RowMajor.multiply_commutative(U32.to_nat(upper),2n) : {Nat.is_le(Nat.mul(value,2n),_) == True{} : Bool}
@@ -147,7 +143,7 @@ def axis_output_exact(+envelope: Envelope,+extent: U32,+kernel: U32,+stride: U32
     sum_bound(quotient,1n,padded,1,output,limits,quotient_small,Order.reflexive(1n),pr,ur,oe),
     Bounds.as_nat_le(output,capacity,orr))
   Equal.trans(Nat,U32.to_nat(output_extent),U32.to_nat((quotient_native + 1 : U32)),Nat.add(quotient,1n),
-    Equal.cong(U32,Nat,U32.to_nat,output_extent,(quotient_native + 1 : U32),Checked.classified_equal(output_extent,(quotient_native + 1 : U32),output_equal)),
+    Equal.cong(U32,Nat,U32.to_nat,output_extent,(quotient_native + 1 : U32),Arithmetic.equal_of_is_eq(output_extent,(quotient_native + 1 : U32),output_equal)),
     Equal.trans(Nat,U32.to_nat((quotient_native + 1 : U32)),Nat.add(U32.to_nat(quotient_native),1n),Nat.add(quotient,1n),
       Arithmetic.add(quotient_native,1,capacity,Limits.capacity_fits(limits),
         %Equal.sym(Nat,U32.to_nat(quotient_native),quotient,qe) : {Nat.is_le(Nat.add(_,1n),U32.to_nat(capacity)) == True{} : Bool} sum_room),

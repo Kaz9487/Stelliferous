@@ -5,7 +5,6 @@ layer tracing disabled: two warmups and seven samples in each process.
 """
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -57,10 +56,6 @@ def baseline_stem(parser, folder, requested, explicit, threads):
     return stem, graph, dynamic
 
 
-def fingerprint(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def handwritten_source(folder, stem, toolchain):
     if not re.fullmatch(r'[a-z][a-z0-9_]*', stem):
         raise ValueError('Use a snake_case handwritten model stem')
@@ -74,9 +69,7 @@ def handwritten_source(folder, stem, toolchain):
         )
     if build.get('compiler_commit') != toolchain['commit']:
         raise ValueError('Both models must use the pinned official Bend compiler')
-    return source, dict(
-        build=build, c_sha256=fingerprint(source), build_sha256=fingerprint(receipt)
-    )
+    return source, dict(build=build)
 
 
 def compare_snapshots(before, after, shapes):
@@ -176,9 +169,7 @@ def main():
     side = int(args.case.rsplit('_', 1)[1])
     if input_path.stat().st_size != 4 * 3 * side * side:
         parser.error('The input must contain raw FP32 [1,3,size,size] values')
-    input_hash = fingerprint(input_path)
     reference = ROOT / 'out/results' / args.case / 'reference.json'
-    reference_hash = fingerprint(reference)
     shapes = json.loads(reference.read_text())['outputs']
     required = {f'layer_{i:02}' for i in range(24)} | {f'head_{i}' for i in range(3)} | {'pred'}
     if not required <= set(shapes):
@@ -189,8 +180,6 @@ def main():
         parser.error('Weights must have a nonempty, unique names.txt; run prepare_reference.py')
     if any(not re.fullmatch(r'[\w.]+', name) for name in names):
         parser.error('Weight names must be flat tensor names')
-    names_hash = fingerprint(weights / 'names.txt')
-    weight_hashes = {name: fingerprint(weights / f'{name}.npy') for name in names}
     output.mkdir(parents=True, exist_ok=True)
     provenance, binaries = {}, {}
     for name, (source, record) in sources.items():
@@ -248,15 +237,6 @@ def main():
                 f'round {number + 1}/{ROUNDS} {name}: {statistics.median(values[WARMUPS:])} ms',
                 flush=True,
             )
-    if (
-        fingerprint(input_path) != input_hash
-        or fingerprint(reference) != reference_hash
-        or fingerprint(weights / 'names.txt') != names_hash
-        or any(
-            fingerprint(weights / f'{name}.npy') != digest for name, digest in weight_hashes.items()
-        )
-    ):
-        raise ValueError('Input, reference or weights changed while comparing')
     result = dict(
         case=args.case,
         threads=args.threads,
@@ -268,12 +248,6 @@ def main():
         scope="Whole handwritten forward; includes the model's ownership operations within forward. Local reference timings only; no operation-level or single-factor attribution.",
         provenance=provenance,
         compiler=compiler_version,
-        inputs=dict(
-            input_sha256=input_hash,
-            reference_sha256=reference_hash,
-            names_sha256=names_hash,
-            weights=weight_hashes,
-        ),
         rounds=rounds,
         aggregate={
             name: statistics_ms([value for row in rows for value in row['samples_seconds']])

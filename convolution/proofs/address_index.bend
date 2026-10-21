@@ -3,17 +3,11 @@ import ../../lib/proofs/storage_shape.bend as Shape
 # Balanced-tree indexing, by tree depth; machine arithmetic is discharged below.
 import Base
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/proofs/natural_addition.bend as Addition
 import ./tree_indexing.bend as TreeIndex
 import ./native_array_model.bend as NativeArrayModel
-import ../../lib/proofs/word_encoding.bend as WordEncoding
 import ./address_step.bend as AddressStep
 import ../../lib/proofs/word_power_of_two.bend as Power
 import ../../lib/proofs/nat_order.bend as Order
-import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
-import ../../lib/proofs/u32_comparison.bend as Comparison
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
-import ../../lib/proofs/word_subtraction.bend as Subtraction
 
 def Goal(+depth: Nat,+tree: Tree.Tree<F32>,+index: U32) -> Type:
   {TreeIndex.index(tree,NativeArrayModel.route(tree,Address.capacity(depth),index)) == U32.to_nat(index) : Nat}

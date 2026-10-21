@@ -31,12 +31,14 @@ def output_width(geometry: BandWindow.Geometry) -> U32:
   BandWindow.Geometry{input,kernel,stride,padding,height,width} = geometry
   width
 
-def windowed(~custom: F32 -> F32,+activation: Activations.Activation,+geometry: BandWindow.Geometry,+channels: U32,+inner: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,
+# The leaf allocates its output whatever rows it packs.
+def packed(~custom: F32 -> F32,+activation: Activations.Activation,+geometry: BandWindow.Geometry,+channels: U32,+inner: U32,+first: U32,+rows: U32,+of: U32,+out_rows: U32,
+  +window: BandWindow.Rows,+above_range: BandWindow.Rows,+below_range: BandWindow.Rows,
   core: Storage.Buffer<F32>,above: Storage.Buffer<F32>,below: Storage.Buffer<F32>,+weights: Buffer.Model<Tile.Tile8>,+bias: Buffer.Model<F32>) ->
-  AllocatedLeaf((channels * (output_rows(window) * output_width(geometry) : U32) : U32),
-    BandPipeline.windowed(~custom,activation,geometry,channels,inner,first,rows,window,core,above,below,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias))):
+  {KernelPipelineBufferShape.footprint(~F32,BandPipeline.packed_window(~custom,activation,geometry,channels,inner,first,rows,of,out_rows,window,above_range,below_range,core,above,below,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias))) ==
+    KernelPipelineBufferShape.footprint(~F32,Tensors.buffer(~F32,0.0,(channels * (out_rows * output_width(geometry) : U32) : U32))) : KernelPipelineBufferShape.Footprint}:
   BandWindow.Geometry{Bands.Geometry{batch,+ci,+height,+width},+kernel,+stride,+padding,+oh,+ow} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{+of,+out_rows},+above_range,+below_range,BandWindow.Rows{+wf,+wr}} = window
+  BandWindow.Rows{+wf,+wr} = window
   +positions = (out_rows * ow : U32)
   %Equal.sym(KernelPipelineBufferShape.Footprint,KernelPipelineBufferShape.footprint(~F32,Tensors.buffer(~F32,0.0,(channels * positions : U32))),KernelPipelineBufferShape.Footprint{Tensors.depth_for((channels * positions : U32)),U32.to_nat((channels * positions : U32))},KernelPipelineBufferShape.allocated(~F32,0.0,(channels * positions : U32))) :
     {KernelPipelineBufferShape.footprint(~F32,Pipeline.blocked(~custom,activation,
@@ -46,6 +48,14 @@ def windowed(~custom: F32 -> F32,+activation: Activations.Activation,+geometry: 
   KernelPipelineBufferShape.blocked_owned(~custom,activation,Pipeline.Work{channels,wr,width,kernel,stride,padding,ow,positions,inner},
     KernelWindow.start(((of - first / height * oh) * ow : U32),stride,ow,(wf - first / height * height : U32)),
     BandWindow.assemble(~F32,0.0,Bands.Geometry{batch,ci,height,width},BandWindow.Rows{wf,wr},BandWindow.Rows{first,rows},above_range,below_range,core,above,below),weights,bias)
+
+def windowed(~custom: F32 -> F32,+activation: Activations.Activation,+geometry: BandWindow.Geometry,+channels: U32,+inner: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,
+  core: Storage.Buffer<F32>,above: Storage.Buffer<F32>,below: Storage.Buffer<F32>,+weights: Buffer.Model<Tile.Tile8>,+bias: Buffer.Model<F32>) ->
+  AllocatedLeaf((channels * (output_rows(window) * output_width(geometry) : U32) : U32),
+    BandPipeline.windowed(~custom,activation,geometry,channels,inner,first,rows,window,core,above,below,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~F32,bias))):
+  BandWindow.RowWindow{BandWindow.Rows{+of,+out_rows},+above_range,+below_range,BandWindow.Rows{+wf,+wr}} = window
+  packed(~custom,activation,geometry,channels,inner,first,rows,of,out_rows,BandPipeline.source_rows(U32.is_zero(wr),geometry,first,of,BandWindow.Rows{wf,wr}),
+    above_range,below_range,core,above,below,weights,bias)
 
 def ReadyFromAllocation(count: U32,-buffer: Storage.Buffer<F32>) -> Type:
   @exact: {KernelPipelineBufferShape.footprint(~F32,buffer) == KernelPipelineBufferShape.footprint(~F32,Tensors.buffer(~F32,0.0,count)) : KernelPipelineBufferShape.Footprint} ->

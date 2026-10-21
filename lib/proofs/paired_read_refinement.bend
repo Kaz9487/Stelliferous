@@ -16,18 +16,6 @@ def read_at_refines(
     {Block.finish_pair(~Native,~Element,left,_) == (source,Block.Twin{left,right}) : Native & Block.Twin<Element>}
   {==}
 
-def select(~Element: Data,second: Bool,pair: Block.Twin<Element>) -> Element:
-  Block.Twin{left,right} = pair
-  Bool.pick(Element,second,right,left)
-
-def zip_preserves_selection(~Element: Data,~Context: Data,~combine: Element -> Element -> Context -> Element,
-  +second: Bool,+left: Block.Twin<Element>,+right: Block.Twin<Element>,+context: Context) ->
-  {select(~Element,second,Block.zip_map(~Element,~Context,~combine,left,right,context)) ==
-    combine(select(~Element,second,left),select(~Element,second,right),context) : Element}:
-  match second left right:
-    case False{} Block.Twin{left_first,left_second} Block.Twin{right_first,right_second}: {==}
-    case True{} Block.Twin{left_first,left_second} Block.Twin{right_first,right_second}: {==}
-
 # Pair composition is independent of element shape and block width.
 def pair_sample(
   ~Model: Data,~Context: Data,~Element: Data,

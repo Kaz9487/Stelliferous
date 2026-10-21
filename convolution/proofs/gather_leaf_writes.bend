@@ -6,7 +6,6 @@ import ../../lib/machine_limits.bend as Machine
 import ../inference.bend as NativeConv
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/kernel_tile.bend as Tile
-import ./conditional_write_coverage.bend as Coverage
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/binary_radix.bend as Radix
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
@@ -17,10 +16,8 @@ import ./prepared_packing_samples.bend as Prepared
 import ./microkernel_leaf_readback.bend as MicroLeaf
 import ./output_values.bend as Values
 import ./reduction_coordinate_bounds.bend as Coordinates
-import ./supported_padded_coordinates.bend as Padded
 import ./gather_output_index.bend as GatherOutputIndex
 import ./gather_copy_coordinates.bend as GatherCopyCoordinates
-import ./gather_write_program.bend as GatherWrites
 
 def output(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<problem>,+offset: U32,+span: U32) -> Tree.Tree<F32>:
   MicroLeaf.leaf_output(problem,storage_contract,offset,span)

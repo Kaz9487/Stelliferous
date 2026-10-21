@@ -12,14 +12,7 @@ import ./u32_full_range.bend as FullRange
 import ./nat_to_u32_bounds.bend as Bounds
 import ../tensor_shape.bend as Shapes
 import ./tensor_shape_refinement.bend as ShapeLaws
-
-def add_bounds(+left: Nat,+left_limit: Nat,+right: Nat,+right_limit: Nat,
-  left_bound: {Nat.is_le(left,left_limit) == True{} : Bool},right_bound: {Nat.is_le(right,right_limit) == True{} : Bool}) ->
-  {Nat.is_le(Nat.add(left,right),Nat.add(left_limit,right_limit)) == True{} : Bool}:
-  Order.transitive(Nat.add(left,right),Nat.add(left_limit,right),Nat.add(left_limit,right_limit),Order.add_le(left,left_limit,right,left_bound),{
-    %Order.commutative(right,left_limit) : {Nat.is_le(_,Nat.add(left_limit,right_limit)) == True{} : Bool}
-    %Order.commutative(right_limit,left_limit) : {Nat.is_le(Nat.add(right,left_limit),_) == True{} : Bool}
-    Order.add_le(right,right_limit,left_limit,right_bound) : {Nat.is_le(Nat.add(left_limit,right),Nat.add(left_limit,right_limit)) == True{} : Bool}})
+import ./encoded_coordinates.bend as Encoding
 
 def address_bounded(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,valid: CursorLaws.Valid(axes)) ->
   {Nat.is_le(CursorModel.address(axes,offset),Nat.add(CursorModel.span(axes),offset)) == True{} : Bool}:
@@ -30,8 +23,8 @@ def address_bounded(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,valid: C
       %Equal.sym(Nat,Nat.add(Nat.add(Nat.mul(Nat.sub(extent,1n),stride),CursorModel.span(tail)),offset),
         Nat.add(Nat.mul(Nat.sub(extent,1n),stride),Nat.add(CursorModel.span(tail),offset)),Addition.associative(Nat.mul(Nat.sub(extent,1n),stride),CursorModel.span(tail),offset)) :
         {Nat.is_le(CursorModel.address(CursorModel.Coordinate{extent,coordinate,stride} <> tail,offset),_) == True{} : Bool}
-      add_bounds(Nat.mul(coordinate,stride),Nat.mul(Nat.sub(extent,1n),stride),CursorModel.address(tail,offset),Nat.add(CursorModel.span(tail),offset),
-        RowMajor.mul_le(coordinate,Nat.sub(extent,1n),stride,ViewBounds.before_last(coordinate,extent,inside)),address_bounded(tail,offset,tail_valid))
+      Encoding.sum_bounds(Nat.mul(coordinate,stride),CursorModel.address(tail,offset),Nat.mul(Nat.sub(extent,1n),stride),Nat.add(CursorModel.span(tail),offset),
+        RowMajor.mul_le(coordinate,Nat.sub(extent,1n),stride,Order.before_last(coordinate,extent,inside)),address_bounded(tail,offset,tail_valid))
 
 def selected_span(+selected: Bool,+extent: Nat,+coordinate: Nat,+stride: Nat,+tail: List<&2,CursorModel.Coordinate>,
   preserved: {CursorModel.span(CursorModel.advance(tail)) == CursorModel.span(tail) : Nat}) ->
@@ -71,7 +64,7 @@ def prepended_bound(+head: Nat,+tail: Nat,+base: Nat,+current: Nat,+result: Nat,
     Equal.trans(Nat,Nat.add(Nat.add(head,tail),base),Nat.add(head,Nat.add(tail,base)),Nat.add(tail,Nat.add(head,base)),
       Addition.associative(head,tail,base),RowMajor.add_swap(head,tail,base))) : {Nat.is_le(result,_) == True{} : Bool}
   Order.transitive(result,Nat.add(tail,current),Nat.add(tail,Nat.add(head,base)),computed,
-    add_bounds(tail,tail,current,Nat.add(head,base),Order.reflexive(tail),selected))
+    Encoding.sum_bounds(tail,current,tail,Nat.add(head,base),Order.reflexive(tail),selected))
 
 def prepared_span(+axes: List<&2,Views.Axis>,+reversed: List<&2,CursorModel.Coordinate>) ->
   {Nat.is_le(CursorModel.span(CursorModel.prepare_axes(axes,reversed)),Nat.add(ViewBounds.last_span(axes),CursorModel.span(reversed))) == True{} : Bool}:

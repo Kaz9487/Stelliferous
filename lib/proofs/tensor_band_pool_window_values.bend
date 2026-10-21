@@ -1,18 +1,14 @@
 # Pool row coordinates: the padded row predicate of one axis, the origin of a
 # window inside its image and the coverage of the rows a window stores.
 import Base
-import ./tensor_band_gather.bend as BandGather
-import ./tensor_band_values.bend as BandValues
 import ./tensor_band_window.bend as TensorBandWindow
 import ./tensor_band_pool_execution.bend as BandPoolExecution
 import ./boolean_logic.bend as Boolean
 import ./bounded_u32_arithmetic.bend as Arithmetic
-import ./nat_division_order.bend as DivisionOrder
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./natural_addition.bend as Addition
 import ./row_major_index.bend as RowMajor
-import ./storage_buffer_model.bend as Buffer
 import ./storage_shape.bend as Shape
 import ./u32_comparison.bend as Comparison
 import ./word_encoding.bend as WordEncoding
@@ -21,16 +17,7 @@ import ../tensor_access.bend as Access
 import ../tensor_band.bend as Bands
 import ../tensor_band_window.bend as BandWindow
 import ../tensor_operations.bend as Operations
-import ../machine_limits.bend as Machine
-import ./encoded_coordinates.bend as Encoded
-import ./machine_limit_bounds.bend as Limits
-import ./nat_division.bend as Division
 import ./nat_extrema.bend as Extrema
-import ./ordered_ranges.bend as Ranges
-import ./sequence_membership.bend as Members
-import ./tensor_band_halo.bend as BandHalo
-import ./tensor_band_shape_refinement.bend as BandShape
-import ./u32_division.bend as U32Division
 import ./u32_extrema.bend as U32Extrema
 import ../tensor_shape.bend as Shapes
 
@@ -139,18 +126,6 @@ def axis_valid(+coordinate: U32,+padding: U32,+extent: U32,+capacity: U32,
   {U32.is_lt((coordinate - padding : U32),extent) == natural_valid(U32.to_nat(coordinate),U32.to_nat(padding),U32.to_nat(extent)) : Bool}:
   axis_decoded(coordinate,padding,extent,capacity,capacity_ok,coordinate_room,extent_padding_room,U32.is_lt((coordinate - padding : U32),extent),{==})
 
-# Adding the window's image-relative start translates a valid padded row.
-def shifted_subtraction(+offset: Nat,+coordinate: Nat,+padding: Nat,ordered: {Nat.is_le(padding,coordinate) == True{} : Bool}) ->
-  {Nat.sub(Nat.add(offset,coordinate),padding) == Nat.add(offset,Nat.sub(coordinate,padding)) : Nat}:
-  match coordinate padding:
-    case +coordinate 0n: Equal.trans(Nat,Nat.sub(Nat.add(offset,coordinate),0n),Nat.add(offset,coordinate),Nat.add(offset,Nat.sub(coordinate,0n)),Order.subtract_zero(Nat.add(offset,coordinate)),
-      Equal.cong(Nat,Nat,value => Nat.add(offset,value),coordinate,Nat.sub(coordinate,0n),Equal.sym(Nat,Nat.sub(coordinate,0n),coordinate,Order.subtract_zero(coordinate))))
-    case 0n 1n+padding: Empty.absurd({Nat.sub(Nat.add(offset,0n),1n+padding) == Nat.add(offset,0n) : Nat},WordEncoding.false_true(ordered))
-    case 1n+ +coordinate 1n+ +padding:
-      %Equal.sym(Nat,Nat.add(offset,1n+coordinate),1n+Nat.add(offset,coordinate),Addition.successor_right(offset,coordinate)) :
-        {Nat.sub(_,1n+padding) == Nat.add(offset,Nat.sub(coordinate,padding)) : Nat}
-      shifted_subtraction(offset,coordinate,padding,ordered)
-
 def local_ordered(+offset: Nat,+coordinate: Nat,+padding: Nat,+global: Nat,
   +global_exact: {global == Nat.add(offset,coordinate) : Nat},global_ordered: {Nat.is_le(padding,global) == True{} : Bool},
   covered: {Nat.is_le(offset,Nat.sub(global,padding)) == True{} : Bool}) -> {Nat.is_le(padding,coordinate) == True{} : Bool}:
@@ -170,7 +145,7 @@ def global_ordered(+offset: Nat,+coordinate: Nat,+padding: Nat,+global: Nat,glob
 def shifted_difference(+offset: Nat,+coordinate: Nat,+padding: Nat,+global: Nat,global_exact: {global == Nat.add(offset,coordinate) : Nat},
   ordered: {Nat.is_le(padding,coordinate) == True{} : Bool}) -> {Nat.sub(global,padding) == Nat.add(offset,Nat.sub(coordinate,padding)) : Nat}:
   Equal.trans(Nat,Nat.sub(global,padding),Nat.sub(Nat.add(offset,coordinate),padding),Nat.add(offset,Nat.sub(coordinate,padding)),
-    Equal.cong(Nat,Nat,value => Nat.sub(value,padding),global,Nat.add(offset,coordinate),global_exact),shifted_subtraction(offset,coordinate,padding,ordered))
+    Equal.cong(Nat,Nat,value => Nat.sub(value,padding),global,Nat.add(offset,coordinate),global_exact),Order.subtract_from_sum(offset,coordinate,padding,ordered))
 
 def rows_forward(+offset: Nat,+coordinate: Nat,+padding: Nat,+global: Nat,+rows: Nat,+height: Nat,
   +global_exact: {global == Nat.add(offset,coordinate) : Nat},span: {Nat.is_le(Nat.add(offset,rows),height) == True{} : Bool},
@@ -290,13 +265,8 @@ def geometry_output_height(geometry: BandWindow.Geometry) -> U32:
   BandWindow.Geometry{input,kernel,stride,padding,output_height,output_width} = geometry
   output_height
 
-def not_true_false(value: Bool,evidence: {Bool.not(value) == True{} : Bool}) -> {value == False{} : Bool}:
-  match value:
-    case False{}: {==}
-    case True{}: Empty.absurd({True{} == False{} : Bool},WordEncoding.false_true(evidence))
-
-# This is tensor_window.band_geometry's current selector. Height zero or an
-# empty spatial axis keeps the dense fallback.
+# The facts the band pool reads from its selector: a shape condition, a legal
+# pool, positive input axes and a nonempty output.
 def selected_pool_geometry(+pool: Access.Pool,+shape_valid: Bool,+out_shape: List<&2,U32>,
   checked: {shape_valid && Operations.pool_geometry(pool) && U32.is_lt(0,pool_height(pool)) && U32.is_lt(0,pool_width(pool)) && Bool.not(Shapes.has_zero(out_shape)) == True{} : Bool}) ->
   {Operations.pool_geometry(pool) == True{} : Bool}:
@@ -323,7 +293,7 @@ def selected_input_width(+pool: Access.Pool,+shape_valid: Bool,+out_shape: List<
 def selected_output_nonempty(+pool: Access.Pool,+shape_valid: Bool,+out_shape: List<&2,U32>,
   checked: {shape_valid && Operations.pool_geometry(pool) && U32.is_lt(0,pool_height(pool)) && U32.is_lt(0,pool_width(pool)) && Bool.not(Shapes.has_zero(out_shape)) == True{} : Bool}) ->
   {Shapes.has_zero(out_shape) == False{} : Bool}:
-  not_true_false(Shapes.has_zero(out_shape),
+  Boolean.not_true(Shapes.has_zero(out_shape),
     Boolean.right((shape_valid && Operations.pool_geometry(pool) && U32.is_lt(0,pool_height(pool)) && U32.is_lt(0,pool_width(pool)) : Bool),Bool.not(Shapes.has_zero(out_shape)),checked))
 
 def remove_left_prefix(+base: U32,+local: U32) -> {((base + local : U32) - base : U32) == local : U32}:

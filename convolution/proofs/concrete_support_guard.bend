@@ -9,7 +9,7 @@ import ./list_array_allocation.bend as ListArrayAllocation
 import ../specification.bend as ConvSpec
 import ../scalar_kernel.bend as ScalarConv
 import ../inference.bend as NativeConv
-import ../../lib/proofs/word_encoding.bend as WordEncoding
+import ../../lib/proofs/nat_order.bend as Order
 
 def scalar(+limits: Machine.Limits,+p: ConvSpec.Problem,h: {ScalarConv.supported_with_limits(limits,
       p) == True{} : Bool}) -> Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>:
@@ -52,43 +52,33 @@ def fast(+limits: Machine.Limits,+p: ConvSpec.Problem,+h: {NativeConv.supports_p
     Boolean.right(ScalarConv.supported_with_limits(limits,p),packed_bound(limits,p),ab),
     Boolean.right(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p),output_bound(limits,p),conditions)}
 
-def positive_mul(+a: Nat,+b: Nat,ha: {Nat.is_lt(0n,a) == True{} : Bool},hb: {Nat.is_lt(0n,b) == True{} : Bool}) -> {Nat.is_lt(0n,Nat.mul(a,
-      b)) == True{} : Bool}:
-  match a b:
-    case 0n b:
-      Empty.absurd({Nat.is_lt(0n,0n) == True{} : Bool},WordEncoding.false_true(ha))
-    case 1n+a 0n:
-      Empty.absurd({Nat.is_lt(0n,Nat.mul(1n+a,0n)) == True{} : Bool},WordEncoding.false_true(hb))
-    case 1n+a 1n+b:
-      {==}
-
 def input_positive(+p: ConvSpec.Problem,valid: Guards.Valid<p>) -> {Nat.is_lt(0n,
     ConvSpec.length(Guards.input(p))) == True{} : Bool}:
   Guards.Valid{h0,h1,h2,h3,h4,h5,h6,h7,h8,h9,h10} = valid
   %Equal.sym(Nat,ConvSpec.length(Guards.input(p)),Nat.mul(Guards.input_channel_count(p),Nat.mul(Guards.height(p),
-        Guards.width(p))),Guards.reflect(ConvSpec.length(Guards.input(p)),
+        Guards.width(p))),Order.equal_of_is_eq(ConvSpec.length(Guards.input(p)),
       Nat.mul(Guards.input_channel_count(p),Nat.mul(Guards.height(p),Guards.width(p))),h8)) : {Nat.is_lt(0n,
       _) == True{} : Bool}
-  positive_mul(Guards.input_channel_count(p),Nat.mul(Guards.height(p),Guards.width(p)),h0,
-    positive_mul(Guards.height(p),Guards.width(p),h2,h3))
+  Order.product_positive(Guards.input_channel_count(p),Nat.mul(Guards.height(p),Guards.width(p)),h0,
+    Order.product_positive(Guards.height(p),Guards.width(p),h2,h3))
 
 def weights_positive(+p: ConvSpec.Problem,valid: Guards.Valid<p>) -> {Nat.is_lt(0n,
     ConvSpec.length(Guards.weights(p))) == True{} : Bool}:
   Guards.Valid{h0,h1,h2,h3,+h4,h5,h6,h7,h8,h9,h10} = valid
   %Equal.sym(Nat,ConvSpec.length(Guards.weights(p)),Nat.mul(Guards.output_channel_count(p),Nat.mul(Guards.input_channel_count(p),
         Nat.mul(Guards.kernel(p),Guards.kernel(p)))),
-    Guards.reflect(ConvSpec.length(Guards.weights(p)),Nat.mul(Guards.output_channel_count(p),
+    Order.equal_of_is_eq(ConvSpec.length(Guards.weights(p)),Nat.mul(Guards.output_channel_count(p),
         Nat.mul(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),Guards.kernel(p)))),h9)) : {Nat.is_lt(0n,
       _) == True{} : Bool}
-  positive_mul(Guards.output_channel_count(p),Nat.mul(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),
-        Guards.kernel(p))),h1,positive_mul(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),
-        Guards.kernel(p)),h0,positive_mul(Guards.kernel(p),Guards.kernel(p),h4,h4)))
+  Order.product_positive(Guards.output_channel_count(p),Nat.mul(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),
+        Guards.kernel(p))),h1,Order.product_positive(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),
+        Guards.kernel(p)),h0,Order.product_positive(Guards.kernel(p),Guards.kernel(p),h4,h4)))
 
 def bias_positive(+p: ConvSpec.Problem,valid: Guards.Valid<p>) -> {Nat.is_lt(0n,
     ConvSpec.length(Guards.bias(p))) == True{} : Bool}:
   Guards.Valid{h0,h1,h2,h3,h4,h5,h6,h7,h8,h9,h10} = valid
   %Equal.sym(Nat,ConvSpec.length(Guards.bias(p)),Guards.output_channel_count(p),
-    Guards.reflect(ConvSpec.length(Guards.bias(p)),Guards.output_channel_count(p),h10)) : {Nat.is_lt(0n,
+    Order.equal_of_is_eq(ConvSpec.length(Guards.bias(p)),Guards.output_channel_count(p),h10)) : {Nat.is_lt(0n,
       _) == True{} : Bool}
   h1
 
@@ -114,7 +104,7 @@ def bias_ready_facts(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards
   ListArrayAllocation.ready(Guards.bias(p),Machine.dimension(limits),Limits.dimension_fits(limits),
     Limits.dimension_allocatable(limits),bias_positive(p,valid),
     %Equal.sym(Nat,ConvSpec.length(Guards.bias(p)),Guards.output_channel_count(p),
-      Guards.reflect(ConvSpec.length(Guards.bias(p)),Guards.output_channel_count(p),v10)) : {Nat.is_le(_,
+      Order.equal_of_is_eq(ConvSpec.length(Guards.bias(p)),Guards.output_channel_count(p),v10)) : {Nat.is_le(_,
         U32.to_nat(Machine.dimension(limits))) == True{} : Bool}
     h1)
 

@@ -81,6 +81,12 @@ def offset_read(~Element: Data,-storage: Array<Element>,context: Traversal.Offse
   Traversal.Offsets{source,destination} = context
   array_sample(~Element,storage,Array.get(Element,storage,(source + index : U32)),Witness.observed(Element,storage,(source + index : U32),evidence))
 
+def strided_read(~Element: Data,-storage: Array<Element>,context: Traversal.Strided,index: U32,
+  evidence: Witness.ArrayWitness<Element,storage>) ->
+  Sample<Array<Element>,Element,storage,Traversal.strided(~Element,storage,context,index)>:
+  Traversal.Strided{base,stride} = context
+  array_sample(~Element,storage,Array.get(Element,storage,(base + index * stride : U32)),Witness.observed(Element,storage,(base + index * stride : U32),evidence))
+
 def first(~Left: Type,~Right: Type,pair: Left & Right) -> Left:
   (left,right) = pair
   left
@@ -285,3 +291,164 @@ def fold(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~ReaderE
       Traversal.State{reader,initial,position,context}),
     fold_run(~Reader,~Element,~Accumulator,~Context,~ReaderEvidence,~read,~combine,~read_preserves,count,reader,
       Traversal.State{reader,initial,position,context},reader_evidence,FoldEvidence{initial,position,context,{==}}))
+
+# The eight reads of a round hand the reader back.
+def read_last(~Reader: Type,~Element: Data,-reader: Reader,-a: Element,-b: Element,-c: Element,-d: Element,-e: Element,-f: Element,-g: Element,
+  -result: Reader & Element,sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_last(~Reader,~Element,a,b,c,d,e,f,g,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_last(~Reader,~Element,a,b,c,d,e,f,g,_)>
+      Sample{Traversal.Eight{a,b,c,d,e,f,g,value},{==}}
+
+def read_seventh(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~read: Reader -> Context -> U32 -> Reader & Element,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,+position: U32,+context: Context,-a: Element,-b: Element,-c: Element,-d: Element,-e: Element,-f: Element,
+  -result: Reader & Element,+reader_evidence: ReaderEvidence(reader),sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_seventh(~Reader,~Element,~Context,~read,position,context,a,b,c,d,e,f,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_seventh(~Reader,~Element,~Context,~read,position,context,a,b,c,d,e,f,_)>
+      read_last(~Reader,~Element,reader,a,b,c,d,e,f,value,read(reader,context,(position + 1 : U32)),read_preserves(reader,context,(position + 1 : U32),reader_evidence))
+
+def read_sixth(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~read: Reader -> Context -> U32 -> Reader & Element,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,+position: U32,+context: Context,-a: Element,-b: Element,-c: Element,-d: Element,-e: Element,
+  -result: Reader & Element,+reader_evidence: ReaderEvidence(reader),sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_sixth(~Reader,~Element,~Context,~read,position,context,a,b,c,d,e,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_sixth(~Reader,~Element,~Context,~read,position,context,a,b,c,d,e,_)>
+      read_seventh(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,reader,(position + 1 : U32),context,a,b,c,d,e,value,
+        read(reader,context,(position + 1 : U32)),reader_evidence,read_preserves(reader,context,(position + 1 : U32),reader_evidence))
+
+def read_fifth(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~read: Reader -> Context -> U32 -> Reader & Element,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,+position: U32,+context: Context,-a: Element,-b: Element,-c: Element,-d: Element,
+  -result: Reader & Element,+reader_evidence: ReaderEvidence(reader),sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_fifth(~Reader,~Element,~Context,~read,position,context,a,b,c,d,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_fifth(~Reader,~Element,~Context,~read,position,context,a,b,c,d,_)>
+      read_sixth(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,reader,(position + 1 : U32),context,a,b,c,d,value,
+        read(reader,context,(position + 1 : U32)),reader_evidence,read_preserves(reader,context,(position + 1 : U32),reader_evidence))
+
+def read_fourth(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~read: Reader -> Context -> U32 -> Reader & Element,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,+position: U32,+context: Context,-a: Element,-b: Element,-c: Element,
+  -result: Reader & Element,+reader_evidence: ReaderEvidence(reader),sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_fourth(~Reader,~Element,~Context,~read,position,context,a,b,c,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_fourth(~Reader,~Element,~Context,~read,position,context,a,b,c,_)>
+      read_fifth(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,reader,(position + 1 : U32),context,a,b,c,value,
+        read(reader,context,(position + 1 : U32)),reader_evidence,read_preserves(reader,context,(position + 1 : U32),reader_evidence))
+
+def read_third(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~read: Reader -> Context -> U32 -> Reader & Element,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,+position: U32,+context: Context,-a: Element,-b: Element,
+  -result: Reader & Element,+reader_evidence: ReaderEvidence(reader),sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_third(~Reader,~Element,~Context,~read,position,context,a,b,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_third(~Reader,~Element,~Context,~read,position,context,a,b,_)>
+      read_fourth(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,reader,(position + 1 : U32),context,a,b,value,
+        read(reader,context,(position + 1 : U32)),reader_evidence,read_preserves(reader,context,(position + 1 : U32),reader_evidence))
+
+def read_second(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~read: Reader -> Context -> U32 -> Reader & Element,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,+position: U32,+context: Context,-a: Element,
+  -result: Reader & Element,+reader_evidence: ReaderEvidence(reader),sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_second(~Reader,~Element,~Context,~read,position,context,a,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_second(~Reader,~Element,~Context,~read,position,context,a,_)>
+      read_third(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,reader,(position + 1 : U32),context,a,value,
+        read(reader,context,(position + 1 : U32)),reader_evidence,read_preserves(reader,context,(position + 1 : U32),reader_evidence))
+
+def read_eight(~Reader: Type,~Element: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~read: Reader -> Context -> U32 -> Reader & Element,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,+position: U32,+context: Context,
+  -result: Reader & Element,+reader_evidence: ReaderEvidence(reader),sample: Sample<Reader,Element,reader,result>) ->
+  Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_eight(~Reader,~Element,~Context,~read,position,context,result)>:
+  match sample:
+    case Sample{value,equation}:
+      %Equal.sym(Reader & Element,result,(reader,value),equation) :
+        Sample<Reader,Traversal.Eight<Element>,reader,Traversal.read_eight(~Reader,~Element,~Context,~read,position,context,_)>
+      read_second(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,reader,(position + 1 : U32),context,value,
+        read(reader,context,(position + 1 : U32)),reader_evidence,read_preserves(reader,context,(position + 1 : U32),reader_evidence))
+
+def round_value(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~combine: Accumulator -> Element -> Accumulator,
+  -reader: Reader,-accumulator: Accumulator,+position: U32,context: Context,
+  -result: Reader & Traversal.Eight<Element>,sample: Sample<Reader,Traversal.Eight<Element>,reader,result>) ->
+  FoldEvidence<Reader,Accumulator,Context,reader,Traversal.round_value(~Reader,~Element,~Accumulator,~Context,~combine,accumulator,position,context,result)>:
+  match sample:
+    case Sample{values,equation}:
+      %Equal.sym(Reader & Traversal.Eight<Element>,result,(reader,values),equation) :
+        FoldEvidence<Reader,Accumulator,Context,reader,Traversal.round_value(~Reader,~Element,~Accumulator,~Context,~combine,accumulator,position,context,_)>
+      FoldEvidence{Traversal.combine_eight(~Element,~Accumulator,~combine,accumulator,values),Traversal.after_eight(position),context,{==}}
+
+def fold_round(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,
+  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) ->
+    Sample<Reader,Element,reader,read(reader,context,index)>,
+  -reader: Reader,-state: Traversal.State<&1,&2,Reader,Accumulator,Context>,+reader_evidence: ReaderEvidence(reader),
+  evidence: FoldEvidence<Reader,Accumulator,Context,reader,state>) ->
+  FoldEvidence<Reader,Accumulator,Context,reader,Traversal.fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine,state)>:
+  match evidence:
+    case FoldEvidence{accumulator,+position,+context,equation}:
+      %Equal.sym(Traversal.State<&1,&2,Reader,Accumulator,Context>,state,Traversal.State{reader,accumulator,position,context},equation) :
+        FoldEvidence<Reader,Accumulator,Context,reader,Traversal.fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine,_)>
+      round_value(~Reader,~Element,~Accumulator,~Context,~combine,reader,accumulator,position,context,
+        Traversal.read_eight(~Reader,~Element,~Context,~read,position,context,read(reader,context,position)),
+        read_eight(~Reader,~Element,~Context,~ReaderEvidence,~read,~read_preserves,reader,position,context,read(reader,context,position),reader_evidence,
+          read_preserves(reader,context,position,reader_evidence)))
+
+def rounds_run(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,
+  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) ->
+    Sample<Reader,Element,reader,read(reader,context,index)>,
+  count: Nat,-reader: Reader,-state: Traversal.State<&1,&2,Reader,Accumulator,Context>,+reader_evidence: ReaderEvidence(reader),
+  evidence: FoldEvidence<Reader,Accumulator,Context,reader,state>) ->
+  FoldEvidence<Reader,Accumulator,Context,reader,
+    Loop.run(~Traversal.State<&1,&2,Reader,Accumulator,Context>,~Traversal.fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine),count,state)>:
+  match count:
+    case 0n: evidence
+    case 1n+rest:
+      rounds_run(~Reader,~Element,~Accumulator,~Context,~ReaderEvidence,~read,~combine,~read_preserves,rest,reader,
+        Traversal.fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine,state),reader_evidence,
+        fold_round(~Reader,~Element,~Accumulator,~Context,~ReaderEvidence,~read,~combine,~read_preserves,reader,state,reader_evidence,evidence))
+
+def rounds(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,
+  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) ->
+    Sample<Reader,Element,reader,read(reader,context,index)>,
+  +count: Nat,-reader: Reader,position: U32,context: Context,-initial: Accumulator,+reader_evidence: ReaderEvidence(reader)) ->
+  FoldEvidence<Reader,Accumulator,Context,reader,
+    Loop.run(~Traversal.State<&1,&2,Reader,Accumulator,Context>,~Traversal.fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.div(count,8n),
+      Loop.run(~Traversal.State<&1,&2,Reader,Accumulator,Context>,~Traversal.fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.mod(count,8n),
+        Traversal.State{reader,initial,position,context}))>:
+  rounds_run(~Reader,~Element,~Accumulator,~Context,~ReaderEvidence,~read,~combine,~read_preserves,Nat.div(count,8n),reader,
+    Loop.run(~Traversal.State<&1,&2,Reader,Accumulator,Context>,~Traversal.fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.mod(count,8n),
+      Traversal.State{reader,initial,position,context}),reader_evidence,
+    fold_run(~Reader,~Element,~Accumulator,~Context,~ReaderEvidence,~read,~combine,~read_preserves,Nat.mod(count,8n),reader,
+      Traversal.State{reader,initial,position,context},reader_evidence,FoldEvidence{initial,position,context,{==}}))
+
+def fold_rounds(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,
+  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) ->
+    Sample<Reader,Element,reader,read(reader,context,index)>,
+  +count: Nat,-reader: Reader,position: U32,context: Context,-initial: Accumulator,+reader_evidence: ReaderEvidence(reader)) ->
+  {first(~Reader,~Accumulator,Traversal.fold_rounds(~Reader,~Element,~Accumulator,~Context,~read,~combine,count,position,reader,initial,context)) == reader : Reader}:
+  fold_finished(~Reader,~Accumulator,~Context,reader,
+    Loop.run(~Traversal.State<&1,&2,Reader,Accumulator,Context>,~Traversal.fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.div(count,8n),
+      Loop.run(~Traversal.State<&1,&2,Reader,Accumulator,Context>,~Traversal.fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.mod(count,8n),
+        Traversal.State{reader,initial,position,context})),
+    rounds(~Reader,~Element,~Accumulator,~Context,~ReaderEvidence,~read,~combine,~read_preserves,count,reader,position,context,initial,reader_evidence))

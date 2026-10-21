@@ -3,18 +3,14 @@ import ../../lib/traversal_partition.bend as Partition
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/write_program.bend as Writes
-import ./gather_blocks.bend as Blocks
+import ../../lib/proofs/kernel_gather_blocks.bend as Blocks
+import ../../lib/proofs/traversal_partition_refinement.bend as PartitionLaws
 
 def ConvResult() -> Data:
   Partition.Tree<&2,Tree.Tree<F32>,U32>
 
 def gather(r: ConvResult(), y: Tree.Tree<F32>, +spatial: U32) -> Tree.Tree<F32>:
-  match r:
-    case Partition.Leaf{x,offset,+span,output_channel_count}:
-      Writes.pure(F32,Blocks.block_writes(output_channel_count,offset,spatial,span,x),y)
-    case Partition.Fork{left,right}:
-      gather(right,gather(left,y,spatial),spatial)
-
+  Partition.gather(~&2,~Tree.Tree<F32>,~PartitionLaws.write_copy(~F32,~Blocks.block_writes),r,y,spatial)
 def finish_leaf(identity: Bool,x: Tree.Tree<F32>,offset: U32,+span: U32,+channels: U32,+spatial: U32) -> Tree.Tree<F32>:
   match identity:
     case True{}:

@@ -393,48 +393,6 @@ def Outside(remaining,channel,region,readback_query):
     case 1n+rest:
       Shape.Both<Interval.Outside<start(region,channel),U32.to_nat(count(region)),U32.to_nat(readback_query)>,Outside(rest,1n+channel,region,readback_query)>
 
-def native_outside(+region: Region,+channel: Nat,+readback_query: U32,+valid: Valid<region>,+inside: {Nat.is_lt(channel,channels(region)) == True{} : Bool},
-  outside: Interval.Outside<start(region,channel),U32.to_nat(count(region)),U32.to_nat(readback_query)>) ->
-  Interval.Outside<Nat.add(U32.to_nat(native_start(region,channel)),0n),U32.to_nat(count(region)),U32.to_nat(readback_query)>:
-  %Equal.sym(Nat,Nat.add(U32.to_nat(native_start(region,channel)),0n),U32.to_nat(native_start(region,channel)),Addition.zero_right(U32.to_nat(native_start(region,channel)))) :
-    Interval.Outside<_,U32.to_nat(count(region)),U32.to_nat(readback_query)>
-  %Equal.sym(Nat,U32.to_nat(native_start(region,channel)),start(region,channel),start_exact(region,channel,valid,inside)) :
-    Interval.Outside<_,U32.to_nat(count(region)),U32.to_nat(readback_query)>
-  outside
-
-def selected_outside(~Element: Data,remaining: Nat,+channel: Nat,+region: Region,+source_stride: U32,+source_start: U32,+input: Tree.Tree<Element>,+readback_query: U32,+previous: Element,+valid: Valid<region>,
-  +room: {Nat.is_le(Nat.add(channel,remaining),channels(region)) == True{} : Bool},outside: Outside(remaining,channel,region,readback_query)) ->
-  {Readback.selected(~Element,writes(~Element,remaining,U32.from_nat(channel),count(region),source_stride,stride(region),source_start,destination(region),input),readback_query,previous) == previous : Element}:
-  match remaining:
-    case 0n: {==}
-    case 1n+ +rest:
-      Shape.Both{here_outside,later_outside} = outside
-      +here = plane_writes(~Element,U32.from_nat(channel),count(region),source_stride,stride(region),source_start,destination(region),input)
-      +later = writes(~Element,rest,(U32.from_nat(channel) + 1 : U32),count(region),source_stride,stride(region),source_start,destination(region),input)
-      +inside = Order.room_index(channel,rest,channels(region),room)
-      %Equal.sym(Element,Readback.selected(~Element,List.append(&2,Writes.Assignment<Element>,here,later),readback_query,previous),
-        Readback.selected(~Element,later,readback_query,Readback.selected(~Element,here,readback_query,previous)),Readback.selected_append(~Element,here,later,readback_query,previous)) : {_ == previous : Element}
-      %Equal.sym(Element,Readback.selected(~Element,here,readback_query,previous),previous,
-        CopyReadback.selected_outside(~Element,U32.to_nat(count(region)),0n,readback_query,input,(source_start + U32.from_nat(channel) * source_stride : U32),native_start(region,channel),capacity(region),
-          readback_capacity_ok(region,valid),copy_room(region,channel,valid,inside),native_outside(region,channel,readback_query,valid,inside,here_outside),previous)) :
-        {Readback.selected(~Element,later,readback_query,_) == previous : Element}
-      %Equal.sym(U32,(U32.from_nat(channel) + 1 : U32),U32.from_nat(1n+channel),Bounds.add_one(U32.from_nat(channel))) :
-        {Readback.selected(~Element,writes(~Element,rest,_,count(region),source_stride,stride(region),source_start,destination(region),input),readback_query,previous) == previous : Element}
-      selected_outside(~Element,rest,1n+channel,region,source_stride,source_start,input,readback_query,previous,valid,Order.advance_room(channel,rest,channels(region),room),later_outside)
-
-def read_outside(~Element: Data,+remaining: Nat,+channel: Nat,+region: Region,+source_stride: U32,+source_start: U32,+input: Tree.Tree<Element>,+output: Tree.Tree<Element>,+readback_query: U32,
-  +depth: Nat,+balanced: Shape.Balanced(Element,depth,output),+depth_ok: {Nat.is_le(depth,30n) == True{} : Bool},
-  +capacity_equal: {Tree.capacity(Element,output) == capacity(region) : U32},+valid: Valid<region>,+query_inside: {U32.is_lt(readback_query,capacity(region)) == True{} : Bool},
-  +room: {Nat.is_le(Nat.add(channel,remaining),channels(region)) == True{} : Bool},+outside: Outside(remaining,channel,region,readback_query)) ->
-  {Tree.read(Element,Writes.pure(Element,writes(~Element,remaining,U32.from_nat(channel),count(region),source_stride,stride(region),source_start,destination(region),input),output),readback_query) == Tree.read(Element,output,readback_query) : Element}:
-  +program = writes(~Element,remaining,U32.from_nat(channel),count(region),source_stride,stride(region),source_start,destination(region),input)
-  Equal.trans(Element,Tree.read(Element,Writes.pure(Element,program,output),readback_query),Readback.selected(~Element,program,readback_query,Tree.read(Element,output,readback_query)),Tree.read(Element,output,readback_query),
-    Readback.program(~Element,program,depth,output,readback_query,balanced,depth_ok,
-      %Equal.sym(U32,Tree.capacity(Element,output),capacity(region),capacity_equal) : {U32.is_lt(readback_query,_) == True{} : Bool} query_inside,
-      %Equal.sym(U32,Tree.capacity(Element,output),capacity(region),capacity_equal) : Readback.Inside(~Element,_,program)
-      writes_inside(~Element,remaining,channel,region,source_stride,source_start,input,valid,room)),
-    selected_outside(~Element,remaining,channel,region,source_stride,source_start,input,readback_query,Tree.read(Element,output,readback_query),valid,room,outside))
-
 def covered(~Element: Data,remaining: Nat,+channel: Nat,target: Nat,+index: Nat,+region: Region,+source_stride: U32,+source_start: U32,+input: Tree.Tree<Element>,
   target_inside: {Nat.is_lt(target,remaining) == True{} : Bool},+index_inside: {Nat.is_lt(index,U32.to_nat(count(region))) == True{} : Bool}) ->
   {Readback.contains(~Element,readback_query(region,Nat.add(channel,target),index),writes(~Element,remaining,U32.from_nat(channel),count(region),source_stride,stride(region),source_start,destination(region),input)) == True{} : Bool}:
@@ -477,14 +435,14 @@ def bounded(+base: U32,+first: U32,+rows: U32,+channels: U32,+height: U32,+width
   +frame = Nat.mul(U32.to_nat(channels),plane)
   +offset = Nat.mul(U32.to_nat(first),U32.to_nat(width))
   +count = Nat.mul(U32.to_nat(rows),U32.to_nat(width))
-  +frame_room = Strided.count_in_stride(U32.to_nat(base),frame,U32.to_nat(capacity),room)
+  +frame_room = Order.drop_left_le(U32.to_nat(base),frame,U32.to_nat(capacity),room)
   +plane_frame = {
     %RowMajor.multiply_commutative(plane,U32.to_nat(channels)) : {Nat.is_le(plane,_) == True{} : Bool}
     RowMajor.product_covers(plane,U32.to_nat(channels),channels_positive) : {Nat.is_le(plane,frame) == True{} : Bool}}
   +plane_room = Order.transitive(plane,frame,U32.to_nat(capacity),plane_frame,frame_room)
   +span = Strided.scaled_span(U32.to_nat(first),U32.to_nat(rows),U32.to_nat(height),U32.to_nat(width),row_span)
   +offset_plane = Order.transitive(offset,Nat.add(offset,count),plane,Order.le_add(offset,count),span)
-  +count_exact = Arithmetic.multiply(rows,width,capacity,capacity_ok,Order.transitive(count,plane,U32.to_nat(capacity),Strided.count_in_stride(offset,count,plane,span),plane_room))
+  +count_exact = Arithmetic.multiply(rows,width,capacity,capacity_ok,Order.transitive(count,plane,U32.to_nat(capacity),Order.drop_left_le(offset,count,plane,span),plane_room))
   +plane_exact = Arithmetic.multiply(height,width,capacity,capacity_ok,plane_room)
   +offset_exact = Arithmetic.multiply(first,width,capacity,capacity_ok,Order.transitive(offset,plane,U32.to_nat(capacity),offset_plane,plane_room))
   +start_exact = {
@@ -536,3 +494,4 @@ def relative_pixel_query(+base: U32,+first: U32,+rows: U32,+channels: U32,+heigh
   Arithmetic.remove_prefix(query,base,RowMajor.index(channel,U32.to_nat(height),U32.to_nat(width),Nat.add(U32.to_nat(first),row),column),capacity,readback_capacity_ok(region,valid),
     pixel_query(base,first,rows,channels,height,width,capacity,channel,row,column,facts,channel_inside,row_inside,column_inside),
     Bounds.strict_le(U32.to_nat(query),U32.to_nat(capacity),Bounds.as_nat_lt(query,capacity,query_word_inside(region,channel,index,valid,channel_inside,inside))))
+

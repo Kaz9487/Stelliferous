@@ -7,7 +7,7 @@ import ../kernel_band_planning.bend as BandPlanning
 import ../kernel_planning.bend as KernelPlanning
 import ../kernel_cost.bend as Cost
 import ../machine_limits.bend as Machine
-import ./tensor_band_dense.bend as BandDense
+import ./tensor_band_from_whole.bend as FromWhole
 import ./tensor_band_plan.bend as BandPlan
 import ./tensor_band_gather.bend as BandGather
 import ./tensor_band_inspection.bend as Inspection
@@ -21,7 +21,7 @@ def layout(selection: BandPlanning.LayoutPlan) -> Bands.Plan:
   layout
 
 def LayoutFacts(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+plan: Bands.Plan) -> Data:
-  Shape.Both<BandDense.Fits(geometry,plan,capacity,Machine.half_word(limits)),BandPlan.Coverage(plan,0n,Inspection.total_rows(geometry))>
+  Shape.Both<FromWhole.Fits(geometry,plan,capacity,Machine.half_word(limits)),BandPlan.Coverage(plan,0n,Inspection.total_rows(geometry))>
 
 def SelectedFacts(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,selection: BandPlanning.LayoutPlan) -> Data:
   LayoutFacts(geometry,limits,capacity,layout(selection))
@@ -32,17 +32,17 @@ def transported(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32
   facts
 
 def image_plan(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+depth: Nat,+domain: BandGather.Domain<geometry,limits,capacity>) ->
-  LayoutFacts(geometry,limits,capacity,BandDense.split_plan(geometry,depth)):
+  LayoutFacts(geometry,limits,capacity,FromWhole.split_plan(geometry,depth)):
   Bands.Geometry{+images,+channels,+height,+width} = geometry
   BandGather.Domain{capacity_ok,cp,+hp,wp,room,allocation_room} = domain
   +geometry = {Bands.Geometry{images,channels,height,width} : Bands.Geometry}
   +row_room = BandGather.rows_room(geometry,limits,capacity,domain)
   +images_room = Order.transitive(U32.to_nat(images),Nat.mul(U32.to_nat(images),U32.to_nat(height)),U32.to_nat(Machine.capacity(limits)),RowMajor.product_covers(U32.to_nat(images),U32.to_nat(height),hp),row_room)
-  Shape.Both{BandDense.image_plan(geometry,limits,depth,capacity,domain),BandPlan.image_coverage(images,height,depth,Machine.capacity(limits),Limits.capacity_fits(limits),images_room,row_room)}
+  Shape.Both{FromWhole.image_plan(geometry,limits,depth,capacity,domain),BandPlan.image_coverage(images,height,depth,Machine.capacity(limits),Limits.capacity_fits(limits),images_room,row_room)}
 
 def cost_layout(+plan: Bands.Plan,+parallel: Bool,+workers: U32,+copies: F32,+wake: F32,+reorder: F32,cost: BandPlanning.Movement) ->
   {layout(BandPlanning.layout_cost(plan,parallel,workers,copies,wake,reorder,cost)) == plan : Bands.Plan}:
-  BandPlanning.Movement{work,span,open,settled,preparation,minimum,leaves} = cost
+  BandPlanning.Movement{work,span,preparation,minimum,leaves} = cost
   {==}
 
 def evaluated_layout(+plan: Bands.Plan,+previous: Bands.Plan,+work: KernelPlanning.Work,+window: BandWindow.Geometry,+workers: U32,config: Cost.Configuration,+cost: BandPlanning.Movement) ->
@@ -50,7 +50,7 @@ def evaluated_layout(+plan: Bands.Plan,+previous: Bands.Plan,+work: KernelPlanni
   Cost.Configuration{+mac,+byte_ns,+operation_ns,+grain,+wake} = config
   +config = {Cost.Configuration{mac,byte_ns,operation_ns,grain,wake} : Cost.Configuration}
   cost_layout(plan,BandPlanning.retained_parallel(window,workers,config,cost),workers,
-    Bool.pick(F32,Bands.same_plan(plan,previous),0.0,BandPlanning.transfer_layout(plan,BandWindow.input_geometry(window),byte_ns)),BandPlanning.wake_cost(window,config),BandPlanning.reorder_cost(work,config),cost)
+    Bool.pick(F32,Bands.same_plan(plan,previous),0.0,BandPlanning.transfer_layout(plan,BandWindow.input_geometry(window),byte_ns)),BandPlanning.wake_cost(config),BandPlanning.reorder_cost(work,config),cost)
 
 def evaluated(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+plan: Bands.Plan,+previous: Bands.Plan,+work: KernelPlanning.Work,+window: BandWindow.Geometry,+workers: U32,+config: Cost.Configuration,+cost: BandPlanning.Movement,
   facts: LayoutFacts(geometry,limits,capacity,plan)) -> SelectedFacts(geometry,limits,capacity,BandPlanning.evaluated(plan,previous,work,window,workers,config,cost)):

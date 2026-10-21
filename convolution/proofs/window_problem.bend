@@ -2,7 +2,6 @@
 # keeps at least one row and the kernel still fits; its contract is the window
 # tree for input and the original owners for weights and bias.
 import Base
-import ./blocked_pipeline_bounds.bend as BlockBounds
 import ../specification.bend as ConvSpec
 import ../inference.bend as NativeConv
 import ../scalar_kernel.bend as ScalarConv
@@ -19,6 +18,7 @@ import ./input_storage.bend as Inputs
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ./window_band_values.bend as WindowBandValues
 import ./window_samples.bend as Samples
+import ../../lib/proofs/encoded_coordinates.bend as Encoding
 
 def band(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat) -> WindowBandValues.Band:
   WindowBandValues.Band{Guards.input(problem),Guards.height(problem),Guards.width(problem),first,rows}
@@ -49,12 +49,6 @@ def valid(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+valid: {ConvSpec.va
   +kernel_fits: {Nat.is_le(Guards.kernel(problem),Nat.add(rows,Nat.mul(2n,Guards.pad(problem)))) == True{} : Bool}) ->
   {ConvSpec.valid(Samples.window(problem,first,rows)) == True{} : Bool}:
   valid_from(problem,first,rows,Guards.valid(problem,valid),rows_positive,kernel_fits)
-
-def multiply_left_le(+factor: Nat,+smaller: Nat,+larger: Nat,+ordered: {Nat.is_le(smaller,larger) == True{} : Bool}) ->
-  {Nat.is_le(Nat.mul(factor,smaller),Nat.mul(factor,larger)) == True{} : Bool}:
-  %RowMajor.multiply_commutative(smaller,factor) : {Nat.is_le(_,Nat.mul(factor,larger)) == True{} : Bool}
-  %RowMajor.multiply_commutative(larger,factor) : {Nat.is_le(Nat.mul(smaller,factor),_) == True{} : Bool}
-  RowMajor.mul_le(smaller,larger,factor,ordered)
 
 def axis_le(+smaller: Nat,+larger: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+stride_positive: {Nat.is_lt(0n,stride) == True{} : Bool},
   +ordered: {Nat.is_le(smaller,larger) == True{} : Bool}) ->
@@ -93,12 +87,12 @@ def supported_from(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Na
   +out_width = ConvSpec.axis_size(width,kernel,stride,padding)
   +axis = axis_le(rows,height,kernel,stride,padding,stride_positive,rows_le)
   +area = RowMajor.mul_le(out_rows,out_height,out_width,axis)
-  +padded = BlockBounds.padded_le(Nat.mul(out_rows,out_width),Nat.mul(out_height,out_width),area)
+  +padded = Encoding.padded_le(Nat.mul(out_rows,out_width),Nat.mul(out_height,out_width),area)
   +input_fits = {%Equal.sym(Nat,ConvSpec.length(values),total,WindowBandValues.length(total,0n,WindowBandValues.Band{input,height,width,first,rows})) :
         {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
       Order.transitive(total,Nat.mul(ci,Nat.mul(height,width)),U32.to_nat(capacity),
-        multiply_left_le(ci,Nat.mul(rows,width),Nat.mul(height,width),RowMajor.mul_le(rows,height,width,rows_le)),
-        %Guards.reflect(ConvSpec.length(input),Nat.mul(ci,Nat.mul(height,width)),input_length) :
+        DivisionOrder.multiply_left_le(ci,Nat.mul(rows,width),Nat.mul(height,width),RowMajor.mul_le(rows,height,width,rows_le)),
+        %Order.equal_of_is_eq(ConvSpec.length(input),Nat.mul(ci,Nat.mul(height,width)),input_length) :
           {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
         input_bound) : {Guards.input_buffer_supported(windowed,dimension,capacity,coordinate) == True{} : Bool}}
   +formula = Boolean.all_hold(Guards.supported_conditions(windowed,dimension,capacity,coordinate),
@@ -106,7 +100,7 @@ def supported_from(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Na
     Shape.Both{Order.transitive(Nat.add(Nat.mul(out_rows,stride),kernel),Nat.add(Nat.mul(out_height,stride),kernel),U32.to_nat(coordinate),
         Order.add_le(Nat.mul(out_rows,stride),Nat.mul(out_height,stride),kernel,RowMajor.mul_le(out_rows,out_height,stride,axis)),vertical_bound),
     Shape.Both{Order.transitive(Nat.mul(co,Nat.mul(out_rows,out_width)),Nat.mul(co,Nat.mul(out_height,out_width)),U32.to_nat(capacity),
-        multiply_left_le(co,Nat.mul(out_rows,out_width),Nat.mul(out_height,out_width),area),output_bound),
+        DivisionOrder.multiply_left_le(co,Nat.mul(out_rows,out_width),Nat.mul(out_height,out_width),area),output_bound),
     Shape.Both{weight_bound,
     Shape.Both{input_fits,
     Shape.Both{padding_bound,Shape.Both{stride_bound,Shape.Both{kernel_bound,Shape.Both{width_bound,

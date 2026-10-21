@@ -3,6 +3,8 @@ import Base
 import ./u32_successor.bend as U32Successor
 import ./u32_comparison.bend as Comparison
 import ./word_encoding.bend as WordEncoding
+import ./natural_addition.bend as Addition
+import ./word_arithmetic.bend as WordArithmetic
 
 def predecessor_strict(+a: Nat,+b: Nat,h: {Nat.is_le(1n+a,b) == True{} : Bool}) -> {Nat.is_lt(a,b) == True{} : Bool}:
   match a b:
@@ -84,3 +86,7 @@ def roundtrip(n,cap,cap_ok,h):
       %previous : {U32.to_nat(U32.inc(U32.from_nat(p))) == 1n+_ : Nat}
       %add_one(U32.from_nat(p)) : {U32.to_nat(_) == 1n+U32.to_nat(U32.from_nat(p)) : Nat}
       U32Successor.successor(U32.from_nat(p))(uint_trans(U32.from_nat(p),cap,2147483648,native_bound(p,cap,previous,small),cap_ok))
+
+def increment_encoded(+position: Nat) -> {(U32.from_nat(position) + 1 : U32) == U32.from_nat(1n+position) : U32}:
+  %Addition.successor_width(position) : {(U32.from_nat(position) + 1 : U32) == U32.from_nat(_) : U32}
+  WordArithmetic.native_add(position,1n)

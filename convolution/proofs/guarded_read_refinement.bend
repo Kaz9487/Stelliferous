@@ -7,8 +7,8 @@ import ./native_array_model.bend as NativeArrayModel
 import ../specification.bend as ConvSpec
 import ./array_tree_refinement.bend as ArrayTreeRefinement
 
-# Exact decoded dense address; NOT yet a theorem that it equals U32.to_nat(i).
-law native_dense:
+# Exact decoded flat address; NOT yet a theorem that it equals U32.to_nat(i).
+law native_flat:
   for +tree: Tree.Tree<F32>
   for +i: U32
   {Array.get(F32,Tree.pack(F32,tree),i) == (Tree.pack(F32,tree),ConvSpec.at(TreeIndex.index(tree,NativeArrayModel.wrapped_route(tree,
@@ -82,7 +82,7 @@ def raw(tree,i):
   %size(tree) : {Array.get.at(F32,i,Array.size(F32,Tree.pack(F32,tree))) == Array.get.at(F32,i,_) : Array<F32> & F32}
   {==}
 
-def native_dense(tree,i):
+def native_flat(tree,i):
   %ArrayTreeRefinement.cat_nil(TreeIndex.flatten(tree)) : {Array.get(F32,Tree.pack(F32,tree),i) == (Tree.pack(F32,tree),
       ConvSpec.at(TreeIndex.index(tree,NativeArrayModel.wrapped_route(tree,i)),_)) : Array<F32> & F32}
   %ArrayTreeRefinement.logical_lookup(tree,NativeArrayModel.wrapped_route(tree,i),Nil{}) : {Array.get(F32,Tree.pack(F32,tree),
@@ -102,7 +102,7 @@ def guard(ok,tree,i):
     case False{}:
       {==}
     case True{}:
-      native_dense(tree,i)
+      native_flat(tree,i)
 
 def bounded(tree,i,logical):
   %guard(U32.is_lt(i,logical) && U32.is_le(logical,Tree.capacity(F32,tree)),tree,i) : {Storage.read_sized(F32,0.0,i,logical,Array.size(F32,

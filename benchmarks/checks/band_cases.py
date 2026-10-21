@@ -61,13 +61,13 @@ def plan_rows(plan: Bands.Plan) -> List<&2,U32>:
 
 def layout_result(geometry: Bands.Geometry,shape: List<&2,U32>,fill: F32,status: T.Status,workers: U32,owners: Bands.Bands(~F32) & Bands.Plan) -> F.Tensor() & List<&2,U32>:
   (bands,plan) = owners
-  (T.Banded{bands,geometry,shape,fill,status,workers},plan_rows(plan))
+  (T.Tensor{bands,geometry,shape,fill,status,workers},plan_rows(plan))
 
+# The plan of a tensor's bands as first row and row count of each band. A
+# whole tensor is the one band [0, 1].
 def observe_layout(tensor: F.Tensor()) -> F.Tensor() & List<&2,U32>:
-  match tensor:
-    case T.Banded{bands,geometry,shape,fill,status,workers}:
-      layout_result(geometry,shape,fill,status,workers,Bands.plan(~F32,bands))
-    case tensor: (tensor,[])
+  T.Tensor{bands,geometry,shape,fill,status,workers} = tensor
+  layout_result(geometry,shape,fill,status,workers,Bands.plan(~F32,bands))
 
 def bits(values: List<&2,F32>) -> List<&2,U32>:
   match values:
@@ -90,19 +90,19 @@ def finish(left: F.Tensor(),right: F.Tensor()) -> F.Tensor():
           F.single(F.sub_scalar(F.mul(left_b,right_b),0.5))),1),5,2,2),
         F.full([3,128,3,3],0.03125),F.full([3],F32.neg(1.0)),2,1,Act.identity()),2)))
 
-def first_operand(dense: Bool) -> F.Tensor():
-  match dense:
+def first_operand(whole: Bool) -> F.Tensor():
+  match whole:
     case False{}: producer(False{})
     case True{}: F.with_workers(F.add_scalar(F.apply_indexed(~input_value,4.0,F.zeros([2,64,33,17])),0.25),4)
 
-def flow(dense: Bool) -> List<&2,List<&2,U32>>:
-  Storage.bind_pair(~F.Tensor(),~List<&2,U32>,~List<&2,List<&2,U32>>,observe_layout(first_operand(dense)),left => left_plan =>
+def flow(whole: Bool) -> List<&2,List<&2,U32>>:
+  Storage.bind_pair(~F.Tensor(),~List<&2,U32>,~List<&2,List<&2,U32>>,observe_layout(first_operand(whole)),left => left_plan =>
     Storage.bind_pair(~F.Tensor(),~List<&2,U32>,~List<&2,List<&2,U32>>,observe_layout(producer(True{})),right => right_plan =>
       Storage.bind_pair(~F.Tensor(),~List<&2,U32>,~List<&2,List<&2,U32>>,observe_layout(finish(left,right)),output => output_plan =>
         [left_plan,right_plan,output_plan,values(F.to_list(output))])))
 
-def padding_flow(dense: Bool,padding: U32) -> List<&2,List<&2,U32>>:
-  Storage.bind_pair(~F.Tensor(),~List<&2,U32>,~List<&2,List<&2,U32>>,observe_layout(first_operand(dense)),input => input_plan =>
+def padding_flow(whole: Bool,padding: U32) -> List<&2,List<&2,U32>>:
+  Storage.bind_pair(~F.Tensor(),~List<&2,U32>,~List<&2,List<&2,U32>>,observe_layout(first_operand(whole)),input => input_plan =>
     Storage.bind_pair(~F.Tensor(),~List<&2,U32>,~List<&2,List<&2,U32>>,
       observe_layout(F.conv2d(input,F.full([1,64,1,1],0.03125),F.full([1],1.0),8,padding,Act.identity())),
       output => output_plan => [input_plan,[],output_plan,values(F.to_list(output))]))
@@ -113,7 +113,8 @@ def empty_batch() -> List<&2,List<&2,U32>>:
     output => output_plan => [[],[],output_plan,values(F.to_list(output))])
 
 def main() -> List<&2,List<&2,List<&2,U32>>>:
-  [flow(False{}),flow(True{}),padding_flow(False{},1),padding_flow(True{},1),padding_flow(False{},2),padding_flow(True{},2),empty_batch()]
+  [flow(False{}),flow(True{}),padding_flow(False{},1),padding_flow(True{},1),padding_flow(False{},2),padding_flow(True{},2),
+    padding_flow(False{},40),padding_flow(True{},40),empty_batch()]
 '''
 
 
@@ -146,8 +147,14 @@ def padding_expected(padding):
         x=image.ravel().tolist(), w=[.03125] * 64, b=[1.]))['bits']]
 
 
+def whole(plan):
+    return plan == [0, 1]
+
+
 def run():
-    references = [expected()] * 2 + [padding_expected(1)] * 2 + [padding_expected(2)] * 2 + [[]]
+    paddings = [1, 1, 2, 2, 40, 40]
+    references = [expected()] * 2 + [padding_expected(padding) for padding in paddings] + [[]]
+    empty = len(references) - 1
     results = []
     for threads in (1, 2, 4, 8):
         process = subprocess.run([str(ROOT / 'out/build/integration/band_layout'), '--threads', str(threads), '--gpu', 'off'],
@@ -158,26 +165,26 @@ def run():
         for index, (left, right, output, actual) in enumerate(cases):
             reference = references[index]
             if index >= 2:
-                if output or right or (index < 6 and bool(left) != (index % 2 == 0)):
-                    raise AssertionError((threads, index, 'expected padding/empty dense fallback', left, output))
+                if whole(output) or right or (index < empty and whole(left) == (index % 2 == 0)):
+                    raise AssertionError((threads, index, 'expected a band output', left, output))
                 if actual != reference:
                     raise AssertionError((threads, index, 'padding/empty mismatch', actual[:10], reference[:10]))
-                results.append(dict(threads=threads, case='empty_batch' if index == 6 else 'padding_ge_kernel',
-                    padding=None if index == 6 else (index - 2) // 2 + 1, banded_input=bool(left), bitwise_equal=True))
+                results.append(dict(threads=threads, case='empty_batch' if index == empty else 'padding_ge_kernel',
+                    padding=None if index == empty else paddings[index - 2], banded_input=None if index == empty else not whole(left), output_plan=output, bitwise_equal=True))
                 continue
-            dense = bool(index)
-            if bool(left) == bool(dense) or not right or not output:
-                raise AssertionError(f'{threads}, dense={dense}: unexpected producer or output layout')
-            if not dense and left == right:
+            whole_first = bool(index)
+            if whole(left) != whole_first or whole(right) or whole(output):
+                raise AssertionError(f'{threads}, whole_first={whole_first}: unexpected producer or output layout')
+            if not whole_first and left == right:
                 raise AssertionError(f'{threads}: fixture did not exercise different operand boundaries: {left}')
             if actual != reference:
                 differences = [(i, a, b) for i, (a, b) in enumerate(zip(actual, reference)) if a != b]
-                raise AssertionError((threads, dense, len(actual), len(reference), differences[:10]))
-            results.append(dict(threads=threads, dense_first=bool(dense), bitwise_equal=True, left_plan=left, right_plan=right, output_plan=output))
+                raise AssertionError((threads, whole_first, len(actual), len(reference), differences[:10]))
+            results.append(dict(threads=threads, whole_first=whole_first, bitwise_equal=True, left_plan=left, right_plan=right, output_plan=output))
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text(json.dumps(dict(cases=results, flow=['public_auto_band_producer', 'different_boundaries', 'binary',
         'apply', 'global_apply_indexed', 'scalar', 'channel_concat', 'halo_pool', 'stride_two_conv', 'upsample', 'gather',
-        'padding_ge_kernel_dense_and_banded', 'empty_batch']), indent=2))
+        'padding_ge_kernel_whole_and_banded', 'empty_batch']), indent=2))
     print('PASS: public band producer and complete tensor flow, threads 1/2/4/8')
 
 

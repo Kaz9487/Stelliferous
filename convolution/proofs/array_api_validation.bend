@@ -3,23 +3,18 @@ import ../../lib/proofs/storage_certificate.bend as Certificate
 import ./native_inference_law.bend as InferenceLaw
 import ./input_storage.bend as Inputs
 import ../shape.bend as ConvShape
-import ../scalar_kernel.bend as ScalarConv
 import ../inference.bend as NativeConv
 import ../matrix_specification.bend as MatrixSpec
-import ../ordered_reference.bend as OrderedReference
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/default_machine_limits.bend as Default
-import ./scalar_inference_refinement.bend as ScalarInferenceRefinement
 import ./convolution_guard_facts.bend as Guards
-import ./concrete_support_guard.bend as Support
-import ./matrix_matches_convolution.bend as Matrix
 import ../../lib/proofs/boolean_logic.bend as Boolean
 import ../specification.bend as ConvSpec
 import ../array_api.bend as ArrayApi
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/storage_buffer.bend as Storage
+import ../../lib/proofs/nat_order.bend as Order
 
 # The API's logical sequences are observations of the caller's actual storage.
 # No canonical repacking or equality of physical capacities is required.
@@ -73,10 +68,10 @@ def machine_support_matches_problem(+limits: Machine.Limits,+shape: ConvSpec.Sha
     NativeConv.supports_packed_with_limits(limits,ConvSpec.Problem{shape,input,weights,bias}) : Bool}:
   ConvSpec.Shape{+input_channel_count,+output_channel_count,+height,+width,+kernel,+stride,+padding} = shape
   Guards.Valid{v0,v1,v2,v3,v4,v5,v6,v7,input_shape,weight_shape,v10} = facts
-  %Guards.reflect(ConvSpec.length(input),Nat.mul(input_channel_count,Nat.mul(height,width)),input_shape) :
+  %Order.equal_of_is_eq(ConvSpec.length(input),Nat.mul(input_channel_count,Nat.mul(height,width)),input_shape) :
     {ConvShape.supports_packed(limits,shape,_,Nat.mul(output_channel_count,Nat.mul(input_channel_count,Nat.mul(kernel,kernel)))) ==
       NativeConv.supports_packed_with_limits(limits,ConvSpec.Problem{shape,input,weights,bias}) : Bool}
-  %Guards.reflect(ConvSpec.length(weights),Nat.mul(output_channel_count,Nat.mul(input_channel_count,Nat.mul(kernel,kernel))),weight_shape) :
+  %Order.equal_of_is_eq(ConvSpec.length(weights),Nat.mul(output_channel_count,Nat.mul(input_channel_count,Nat.mul(kernel,kernel))),weight_shape) :
     {ConvShape.supports_packed(limits,shape,ConvSpec.length(input),_) ==
       NativeConv.supports_packed_with_limits(limits,ConvSpec.Problem{shape,input,weights,bias}) : Bool}
   {==}

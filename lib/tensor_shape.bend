@@ -1,6 +1,5 @@
 # Storage-independent extents. View derives this descriptor from its axes.
 import Base
-import ./machine_limits.bend as Machine
 import ./math_checked_word.bend as CheckedWord
 
 type Shape is Data:
@@ -79,10 +78,6 @@ def with_rank(+extents: List<&2,U32>,rank: Nat) -> List<&2,U32>:
 # extents are equal or one of them is 1.
 def broadcast(+left: List<&2,U32>,+right: List<&2,U32>) -> Maybe<&2,List<&2,U32>>:
   broadcast_same_rank(with_rank(left,List.length(&2,U32,right)),with_rank(right,List.length(&2,U32,left)))
-
-# The extents without one axis.
-def without_axis(+extents: List<&2,U32>,+axis: Nat) -> List<&2,U32>:
-  List.append(&2,U32,List.take(&2,U32,extents,axis),List.drop(&2,U32,extents,1n+axis))
 
 def sum_when(valid: Bool,value: U32) -> Maybe<&2,U32>:
   match valid:

@@ -6,6 +6,136 @@ This file records the notable changes in each version of Stelliferous. The forma
 
 Before 1.0.0, the public API may still change between minor versions.
 
+## [0.0.3] - 2026-10-21
+
+Stelliferous 0.0.3 adds training, and reads PyTorch checkpoints directly in Bend. The main changes are
+
+- Convolution, batch normalization, activation and average pool layers have forward and backward passes, with the mean squared error, cross entropy and SGD. Training gives bit-for-bit the same results with any number of workers.
+- PyTorch `.pt` checkpoints can be read directly in Bend. The YOLOv5n example now runs from the official `yolov5n.pt`.
+- `softmax`, `select`, batch normalization, the losses and the training layers have formal proofs.
+
+This version moves to Bend v2.0.37.
+
+### Upgrade notes
+
+- **`sum_axis`, `mean_axis`, `max_axis` and `min_axis` become `sum_axes`, `mean_axes`, `max_axes` and `min_axes`**
+
+  The new functions take a list of axes. Rewrite `sum_axis(t, a)` as `sum_axes(t, [a])`, and the other three in the same way. Listing an axis twice, or an axis beyond the rank of the tensor, returns a failed result.
+
+- **The numerical results of sums have changed**
+
+  `sum`, `mean`, `sum_axes`, `mean_axes`, the denominator of `softmax` and the mean squared error now add in eight lanes with error compensation (TwoSum) and merge them in a fixed order. The results are more accurate, and still bit-for-bit identical on different machines and with any number of workers.
+
+  The new outputs may differ from 0.0.2 in the last bits. If you used 0.0.2 outputs as a test baseline, regenerate your reference results.
+
+- **The numerical results of `gelu_tanh` have changed**
+
+  `gelu_tanh` is rewritten for accuracy. Over all 2³² FP32 inputs the largest error is now 1.99 ULP, where 0.0.2 reached 15 ULP for inputs between -2 and -0.5. If you used 0.0.2 outputs of `gelu_tanh` as a test baseline, regenerate your reference results.
+
+- **`max_pool2d` returns a failed result for an input of height or width 0**
+
+  0.0.2 returned a result of -∞ in that case. An output with no elements still succeeds.
+
+- **`upsample_nearest` returns a failed input as it is**
+
+  0.0.2 returned the failure with the enlarged shape. It now keeps the shape of the input. The reason of the failure is unchanged.
+
+- **How `load_weights` reports a missing `names.txt`**
+
+  0.0.2 returned empty weights, and `take` then only reported a missing name. Now every call to `take` reports that `names.txt` could not be read.
+
+### Added
+
+- **Training layers**
+
+  The new module `tensor_training.bend`, imported as `Train`, represents each layer as a value. `conv2d_layer`, `batch_norm_layer`, `activation_layer` and `average_pool_layer` create the layers.
+
+  `forward(x, layer)` returns the output, what the backward pass needs, and the layer. `backward(dy, saved, layer)` returns the input gradient and the layer holding its parameter gradients, and `sgd_step(layer, rate)` applies them. `evaluate(x, layer)` runs a layer in inference mode.
+
+  Batch normalization computes as PyTorch's `BatchNorm2d` in training mode, and updates its running statistics with the unbiased variance.
+
+  `examples/training/learning.bend` trains two blocks of convolution, batch normalization and SiLU for 40 steps. For usage, see the [API reference](lib/README.md#training) and [Getting started](docs/getting_started.md).
+
+- **Losses**
+
+  `Train.mse(prediction, target)` and `Train.cross_entropy(logits, target)` return the loss, its gradient and the target. `Train.one_hot(labels, classes)` turns class numbers into the form `cross_entropy` takes.
+
+- **Activation gradients**
+
+  `activate_forward`, `activate_backward` and `activate_derivative`, and `sigmoid_derivative`, `silu_derivative`, `tanh_derivative` and `gelu_tanh_derivative`.
+
+- **Reading PyTorch checkpoints**
+
+  `load_checkpoint(path)` reads a `.pt` file written by `torch.save`. Each state-dict entry becomes one tensor under its PyTorch name. FP16 and BFloat16 values convert to FP32 exactly, FP64 values and integers round to the nearest FP32.
+
+  The 349 tensors of the official `yolov5n-v7.0.pt` read bit-for-bit equal to `torch.load`. Compressed entries and ZIP64 files are not supported yet.
+
+  `weight_names()` lists the names in a set of weights. The YOLOv5n example folds the batch normalizations of the official checkpoint into the convolution weights in Bend.
+
+- **Tensor operations**
+
+  `sqrt(tensor)` and `flip(tensor, axes)`.
+
+### Performance
+
+YOLOv5n single inference on a 640 × 640 input image, on the same test machine.
+
+| Version | 1 thread | 4 threads |
+| ----- | -------: | ------: |
+| 0.0.2 | 115 ms | 44 ms |
+| 0.0.3 | 117 ms | 47 ms |
+
+The two versions were measured alternately on the same machine. Inference is slightly slower than in 0.0.2, by about 2% at one thread and 7% at four threads.
+
+One training epoch of a ResNet-20-shaped network, 390 steps of batch 128 on 32 × 32 images, on the same machine at four threads:
+
+| Library | Time |
+| ----- | -------: |
+| Stelliferous 0.0.3 | 767 s |
+| PyTorch 2.14 | 31.1 s |
+
+Both start from the same weights and reach the same loss. `python run.py training` runs the comparison.
+
+For the full results, see the [performance document](docs/performance.md).
+
+- **Training uses all workers**
+
+  A batch of several images can be split across workers, and convolution weight gradients are split across workers by output channel.
+
+- **Layout operations work on each worker's data**
+
+  `flip`, `transpose`, `slice`, `broadcast_to`, `concat` along any axis and the reductions run on the parts of a tensor that each worker holds, without first gathering the whole tensor. The results are unchanged.
+
+### Formal proofs and numerical accuracy
+
+- **New formal proofs**
+
+  `softmax`, `select`, the activation derivatives, batch normalization, `mse`, `cross_entropy`, the average pool, the forward and backward passes of the convolution layer and `sgd` are proved.
+
+  These proofs establish that every output element equals the value the specification defines. Reading a tensor back is also proved to give the values its contract describes. For details, see the [proofs document](docs/proofs.md).
+
+- **Reorganized proofs**
+
+  Every operation now has one execution path and one proof. The proof of walking over the parts of a tensor is shared by all operations, each operation proves only its own step, and duplicate lemmas were removed. `upsample_nearest` now relies entirely on the shared proof of reading through a view, and the proof files of their own for `upsample_nearest`, `max_pool2d` and `concat` went from 1.6 MB to 0.7 MB.
+
+- **Numerical error test**
+
+  `gelu_tanh` was evaluated on all 2³² FP32 bit patterns, with the correctly rounded result computed by MPFR as the reference. The largest error is 1.99 ULP.
+
+### Known limitations
+
+- Training provides SGD only. The layers of a network are chained by hand, and there is no automatic differentiation yet.
+- `one_hot` has only been tested against PyTorch and has no formal proof yet.
+- The numerical errors come from measurement. There is no formal proof of an error bound.
+- The proofs are verified by the official checker with `python run.py proofs`. `bend --verdict` is not used.
+- Only the FP32 (F32) data type is supported.
+- For convolutions with many weights and few output positions, and for an output width below 6, more workers usually bring no clear performance gain. With a batch size above 1, small images with many channels run slower on four workers. See the [design document](docs/design.md).
+- Inference is still slower than PyTorch, and training about 25 times slower. See the [performance document](docs/performance.md).
+
+### Thanks
+
+Thanks to [@nuxyel](https://github.com/nuxyel) of [bend-ml](https://github.com/nuxyel/bend-ml) for reports on the behaviour of Bend's compiler, now part of the [toolchain rules](docs/toolchain_rules.md).
+
 ## [0.0.2] - 2026-10-10
 
 Stelliferous 0.0.2 adds file reading and writing and model weight loading, and improves YOLOv5n inference performance. The main changes are

@@ -50,23 +50,6 @@ def packed(~Element: Data,+model: Buffer.Model<Element>) ->
     buffers(~Element,length,Array.clone(Element,Tree.pack(Element,tree)),CertificateClone.clone(~Element,Tree.pack(Element,tree),certificate,certificate,certificate)),
     cloned_trees(~Element,tree,length))
 
-def packed_contents(~Element: Data,+model: Buffer.Model<Element>) ->
-  {contents(~Element,Clone.clone(~Element,Buffer.pack(~Element,model))) ==
-    (Buffer.contents(~Element,Buffer.pack(~Element,model)),Buffer.contents(~Element,Buffer.pack(~Element,model))) : Buffer.Content<Element> & Buffer.Content<Element>}:
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,model)),Buffer.content(~Element,model),Buffer.packed_contents(~Element,model)) :
-    {contents(~Element,Clone.clone(~Element,Buffer.pack(~Element,model))) == (_,_) : Buffer.Content<Element> & Buffer.Content<Element>}
-  packed(~Element,model)
-
-def observed(~Element: Data,-input: Storage.Buffer<Element>,observation: Buffer.Observation<Element,input>) ->
-  {contents(~Element,Clone.clone(~Element,input)) == (Buffer.contents(~Element,input),Buffer.contents(~Element,input)) : Buffer.Content<Element> & Buffer.Content<Element>}:
-  Buffer.Observation{+model,equation} = observation
-  %equation : {contents(~Element,Clone.clone(~Element,_)) == (Buffer.contents(~Element,_),Buffer.contents(~Element,_)) : Buffer.Content<Element> & Buffer.Content<Element>}
-  packed_contents(~Element,model)
-
-def clone(~Element: Data,input: Storage.Buffer<Element>) ->
-  {contents(~Element,Clone.clone(~Element,input)) == (Buffer.contents(~Element,input),Buffer.contents(~Element,input)) : Buffer.Content<Element> & Buffer.Content<Element>}:
-  observed(~Element,input,Buffer.observe(~Element,input))
-
 # Observe a real affine pair once, then let induction use canonical models
 # carrying the certificates actually returned by the runtime.
 type Observation<-Element: Data,-owners: Storage.Buffer<Element> & Storage.Buffer<Element>> is Data:

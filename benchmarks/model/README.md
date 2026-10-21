@@ -35,16 +35,16 @@ Groups time by operation kind and output size, reports ownership copies separate
 
 ## Allocations
 
-Counts calls, payload bytes and rounded heap bytes of `blk_new`, `blk_copy`, `blk_node` and `blk_half`, plus generic heap requests. The counts are cumulative and include capacity padding; they are not live bytes or RSS. Timings are discarded. `--models` and `--model-stem` select a model in another folder.
+Counts calls, payload bytes and rounded heap bytes of `blk_new`, `blk_copy`, `blk_node` and `blk_half`, plus generic heap requests. The counts are cumulative and include capacity padding. They are not live bytes or RSS. Timings are discarded. `--models` and `--model-stem` select a model in another folder.
 
 ## Timeline
 
 Records grow, work and wake phases, ring claims by worker, dispatch segments and block-copy bytes.
 
 - A claim says which worker holds a runtime ring, not which CPU ran.
-- Wake, copy and dispatch intervals overlap; do not add them.
+- Wake, copy and dispatch intervals overlap, so do not add them.
 - A dispatch segment includes the C inlined into it.
-- `--event-capacity` sets the trace size (48 bytes per event); the tool fails if the trace overflows.
+- `--event-capacity` sets the trace size (48 bytes per event). The tool fails if the trace overflows.
 
 `timeline_claims.py --kind conv` lists every operation of one kind.
 
@@ -54,4 +54,4 @@ Records grow, work and wake phases, ring claims by worker, dispatch segments and
 
 ## Forward comparison
 
-Measures the hand-written [yolov5n.bend](../../examples/yolov5/yolov5n.bend), not the generated form. Compiles the saved C and the current C with the same flags, requires every layer output to be bitwise equal, then runs five alternating rounds and reports round medians and interquartile ranges. The baseline folder holds a copy of `out/models/yolov5n.c` and its build record; the output folder must be new or empty.
+Measures the hand-written [yolov5n.bend](../../examples/yolov5/yolov5n.bend), not the generated form. Compiles the saved C and the current C with the same flags, requires every layer output to be bitwise equal, then runs five alternating rounds and reports round medians and interquartile ranges. The baseline folder holds a copy of `out/models/yolov5n.c` and its build record. The output folder must be new or empty.

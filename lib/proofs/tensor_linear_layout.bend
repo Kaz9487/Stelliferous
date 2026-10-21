@@ -12,6 +12,7 @@ import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./row_major_index.bend as RowMajor
 import ./word_encoding.bend as WordEncoding
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
 law Layout:
   for axes: List<&2,Views.Axis>
@@ -120,7 +121,7 @@ def prepared_linear(+axes: List<&2,Views.Axis>,+reversed: List<&2,CursorModel.Co
       prepared_linear(tail,Bool.pick(List<&2,CursorModel.Coordinate>,Nat.is_lt(1n,U32.to_nat(extent)),CursorModel.Coordinate{U32.to_nat(extent),0n,U32.to_nat(stride)} <> reversed,reversed),
         Boolean.or_false_right(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty),tail_layout,
         included_linear(U32.to_nat(extent),U32.to_nat(stride),ShapeLaws.elements(Views.axis_extents(tail)),reversed,
-          ContiguousBounds.extent_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)),head,previous))
+          Arithmetic.word_nonzero_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)),head,previous))
 
 def initial_linear(+axes: List<&2,Views.Axis>,+offset: U32,+nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},
   contiguous: {Views.is_contiguous(Views.View{axes,offset}) == True{} : Bool}) -> Linear(CursorModel.prepare_axes(axes,[]),1n):

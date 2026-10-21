@@ -1,16 +1,16 @@
 # The logical value of every output element of a banded convolution: decode
 # the NCHW index, build that image's problem from the input's logical values
 # and apply the activation to its matrix value. Band Values of the output use
-# this function, so "computed on bands" means "the dense result, split".
+# this function, so "computed on bands" means "the row-major result, split".
 import Base
 import ../../lib/proofs/kernel_pipeline_activation.bend as ActivationProofs
 import ../specification.bend as ConvSpec
 import ../../lib/math_activation.bend as Activations
-import ../../lib/proofs/tensor_band_coordinates.bend as BandCoordinates
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/nat_order.bend as Order
 import ./output_values.bend as Values
 import ./band_window_contents.bend as WindowContents
+import ../../lib/proofs/binary_radix.bend as Radix
 
 type Context<-Logical: Data> is Data:
   Context{logical: Logical,activation: Activations.Activation,channels: Nat,outputs: Nat,height: Nat,width: Nat,kernel: Nat,stride: Nat,padding: Nat,
@@ -72,13 +72,13 @@ def decoded(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,
       at_rest(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,Nat.mod(flat,volume)),
       at_rest(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,inner),
       Equal.cong(Nat,F32,value => at_rest(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,value,Nat.mod(flat,volume)),
-        Nat.div(flat,volume),image,BandCoordinates.quotient(image,inner,volume,volume_positive,inner_inside)),
+        Nat.div(flat,volume),image,Radix.quotient(image,inner,volume,volume_positive,inner_inside)),
       Equal.cong(Nat,F32,value => at_rest(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,value),
-        Nat.mod(flat,volume),inner,BandCoordinates.remainder(image,inner,volume,volume_positive,inner_inside))),
+        Nat.mod(flat,volume),inner,Radix.remainder(image,inner,volume,volume_positive,inner_inside))),
     Equal.trans(F32,at_rest(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,inner),
       at_position(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,channel,Nat.mod(inner,area)),
       at_position(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,channel,position),
       Equal.cong(Nat,F32,value => at_position(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,value,Nat.mod(inner,area)),
-        Nat.div(inner,area),channel,BandCoordinates.quotient(channel,position,area,area_positive,position_inside)),
+        Nat.div(inner,area),channel,Radix.quotient(channel,position,area,area_positive,position_inside)),
       Equal.cong(Nat,F32,value => at_position(~custom,~Logical,~original,logical,activation,channels,outputs,height,width,kernel,stride,padding,weights,bias,image,channel,value),
-        Nat.mod(inner,area),position,BandCoordinates.remainder(channel,position,area,area_positive,position_inside))))
+        Nat.mod(inner,area),position,Radix.remainder(channel,position,area,area_positive,position_inside))))

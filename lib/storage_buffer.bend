@@ -20,6 +20,11 @@ def write_at(~Element: Data,+values: List<&2,Element>,+offset: U32,buffer: Buffe
   Buffer{storage,length,certificate} = buffer
   Buffer{Traversal.write_list(~Element,values,offset,storage),length,Certificate.write_list(~Element,values,offset,storage,certificate)}
 
+# One value written at index; the certificate follows the storage.
+def write(~Element: Data,+index: U32,value: Element,buffer: Buffer<Element>) -> Buffer<Element>:
+  Buffer{storage,length,certificate} = buffer
+  Buffer{Array.set(Element,storage,index,value),length,Certificate.set(~Element,index,value,storage,certificate)}
+
 def capacity(~Element: Data,-storage: Array<Element>,certificate: Certificate.Certificate<Element,storage>) -> U32:
   Certificate.Certificate{depth,equation} = certificate
   U32.shln(1,depth)
@@ -75,3 +80,17 @@ def read_sized(~Element: Data,fallback: Element,+index: U32,+logical_length: U32
 
 def read_or(~Element: Data,fallback: Element,storage: Array<Element>,index: U32,logical_length: U32) -> Array<Element> & Element:
   read_sized(Element,fallback,index,logical_length,Array.size(Element,storage))
+
+def read_result(~Element: Data,length: Nat,result: Array<Element> & Element,
+  certificate: Certificate.Certificate<Element,Pair.fst(Array<Element>,Element,result)>) -> Buffer<Element> & Element:
+  (storage,value) = result
+  (Buffer{storage,length,certificate},value)
+
+def read(~Element: Data,buffer: Buffer<Element>,+index: U32) -> Buffer<Element> & Element:
+  Buffer{storage,length,certificate} = buffer
+  read_result(~Element,length,Array.get(Element,storage,index),Certificate.read_kept(~Element,storage,index,certificate))
+
+def read_masked(~Element: Data,fallback: Element,valid: Bool,buffer: Buffer<Element>,index: U32) -> Buffer<Element> & Element:
+  match valid:
+    case False{}: (buffer,fallback)
+    case True{}: read(~Element,buffer,index)

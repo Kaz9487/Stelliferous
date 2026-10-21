@@ -47,6 +47,24 @@ def minimum_right(+left: Nat,+right: Nat) -> {Nat.is_le(Nat.min(left,right),righ
     case 1n+left 0n: {==}
     case 1n+left 1n+right: minimum_right(left,right)
 
+# Consecutive clipped portions cover the clipped sum of their capacities.
+def minimum_commutative(+left: Nat,+right: Nat) -> {Nat.min(left,right) == Nat.min(right,left) : Nat}:
+  match left right:
+    case 0n 0n: {==}
+    case 0n 1n+rest: {==}
+    case 1n+rest 0n: {==}
+    case 1n+ +left 1n+ +right:
+      Equal.cong(Nat,Nat,value => 1n+value,Nat.min(left,right),Nat.min(right,left),minimum_commutative(left,right))
+
+def minimum_split(+whole: Nat,+first: Nat,+second: Nat) ->
+  {Nat.add(Nat.min(whole,first),Nat.min(Nat.sub(whole,Nat.min(whole,first)),second)) == Nat.min(whole,Nat.add(first,second)) : Nat}:
+  match whole first:
+    case 0n 0n: {==}
+    case 0n 1n+rest: {==}
+    case 1n+whole 0n: {==}
+    case 1n+ +whole 1n+ +first:
+      Equal.cong(Nat,Nat,value => 1n+value,Nat.add(Nat.min(whole,first),Nat.min(Nat.sub(whole,Nat.min(whole,first)),second)),Nat.min(whole,Nat.add(first,second)),minimum_split(whole,first,second))
+
 def maximum_left(+left: Nat,+right: Nat) -> {Nat.is_le(left,Nat.max(left,right)) == True{} : Bool}:
   match left right:
     case 0n right: Order.zero_le(right)

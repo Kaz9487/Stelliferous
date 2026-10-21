@@ -8,7 +8,7 @@
 
 [開始使用](docs/getting_started.zh-TW.md) | [API 參考](lib/README.zh-TW.md) | [證明](docs/proofs.zh-TW.md) | [效能](docs/performance.zh-TW.md)
 
-[![Bend](https://img.shields.io/badge/Bend-v2.0.36-7c3aed)](scripts/toolchain.json)
+[![Bend](https://img.shields.io/badge/Bend-v2.0.37-7c3aed)](scripts/toolchain.json)
 [![Proofs](https://img.shields.io/badge/proofs-official%20checker-16a34a)](docs/proofs.zh-TW.md)
 [![Results](https://img.shields.io/badge/results-bit--exact%20across%20threads-0ea5e9)](docs/design.zh-TW.md)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-64748b)](#授權)
@@ -19,18 +19,19 @@
 
 ---
 
-Stelliferous 是基於 Bend 2 的張量函式庫，提供卷積網路需要的運算，目前支援 F32 的運算。
+Stelliferous 是基於 Bend 2 的張量函式庫，提供執行與訓練卷積網路需要的運算，目前支援 F32 的運算。
 
 ## 開始使用
 
 安裝 [Bend](https://github.com/bendlang/bend) 與 Clang，然後從 BendHub 匯入函式庫：
 
 ```python
-import stelliferous@0.0.2.0/tensor_f32.bend as F
-import stelliferous@0.0.2.0/math_activation.bend as Act
+import stelliferous@0.0.3.0/tensor_f32.bend as F
+import stelliferous@0.0.3.0/math_activation.bend as Act
+import stelliferous@0.0.3.0/tensor_training.bend as Train
 ```
 
-套件以官方 Bend v2.0.36 檢查。要執行本庫的證明與效能量測，請見[開始使用](docs/getting_started.zh-TW.md)。
+套件以官方 Bend v2.0.37 檢查。要執行本庫的證明與效能量測，請見[開始使用](docs/getting_started.zh-TW.md)。
 
 ## 範例
 
@@ -38,8 +39,8 @@ import stelliferous@0.0.2.0/math_activation.bend as Act
 
 ```python
 import Base
-import stelliferous@0.0.2.0/tensor_f32.bend as F
-import stelliferous@0.0.2.0/math_activation.bend as Act
+import stelliferous@0.0.3.0/tensor_f32.bend as F
+import stelliferous@0.0.3.0/math_activation.bend as Act
 
 def main() -> List<&2,F32>:
   # 1.0 到 16.0，排成 [batch, channels, height, width]
@@ -63,7 +64,7 @@ bend array_basics.bend -o array_basics
 ./array_basics
 ```
 
-其他：[小型網路](examples/small_network.bend)、[儲存與載入](examples/save_and_load.bend)、[YOLOv5n](examples/yolov5/README.zh-TW.md)。
+其他：[小型網路](examples/small_network.bend)、[儲存與載入](examples/save_and_load.bend)、[訓練](examples/training/learning.bend)、[YOLOv5n](examples/yolov5/README.zh-TW.md)。
 
 ## 證明
 
@@ -83,7 +84,7 @@ law native_inference_matches_matrix:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/performance_dark.svg">
-  <img alt="YOLOv5n inference 時間：1 與 4 執行緒，Stelliferous 0.0.1 為 153.7 與 54.8 毫秒，Stelliferous 0.0.2 為 110 與 43 毫秒，NumPy 126.9 與 113.3 毫秒，PyTorch 49.3 與 14.8 毫秒" src="docs/performance_light.svg" width="720">
+  <img alt="YOLOv5n inference 時間：1 與 4 執行緒，Stelliferous 0.0.3 為 117 與 47 毫秒，Stelliferous 0.0.2 為 115 與 44 毫秒，NumPy 133.7 與 116.3 毫秒，PyTorch 51.1 與 15.2 毫秒" src="docs/performance_light.svg" width="720">
 </picture>
 
 \* 只含模型計算，不包含影像載入、前處理與 NMS。

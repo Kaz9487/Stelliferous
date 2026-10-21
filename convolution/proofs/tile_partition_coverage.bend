@@ -1,19 +1,22 @@
 # Full prepare-tree coverage: concatenating its leaf ranges yields precisely
 # one consecutive sequence. Includes every recursive split and empty leaf.
 import Base
-import ../../lib/traversal_partition.bend as Partition
 import ../../lib/proofs/ordered_ranges.bend as Ranges
 import ./sequence_congruence.bend as Sequences
 import ./tile_layout.bend as TileLayout
-import ./tile_partition_bounds.bend as TilePartitionBounds
+import ../../lib/proofs/kernel_partition_bounds.bend as TilePartitionBounds
 import ../../lib/ordered_matrix.bend as OrderedMatrix
+import ../../lib/proofs/tensor_band_plan.bend as TensorBandPlan
+import ../../lib/proofs/traversal_partition_refinement.bend as PartitionLaws
+
+def part_positions(+context: Unit,+offset: U32,+span: U32,+details: Unit,block: Unit) -> List<&2,Nat>:
+  Ranges.range(U32.to_nat(span),U32.to_nat(offset))
+
+def joined(left: List<&2,Nat>,right: List<&2,Nat>) -> List<&2,Nat>:
+  OrderedMatrix.cat(Nat,left,right)
 
 def positions(t: TileLayout.Layout()) -> List<&2,Nat>:
-  match t:
-    case Partition.Leaf{Unit{},offset,span,Unit{}}:
-      Ranges.range(U32.to_nat(span),U32.to_nat(offset))
-    case Partition.Fork{left,right}:
-      OrderedMatrix.cat(Nat,positions(left),positions(right))
+  PartitionLaws.reduce(~Unit,~Unit,~List<&2,Nat>,~Unit,~part_positions,~joined,Unit{},t)
 
 law split_tiles_cover_range:
   for +depth: Nat
@@ -44,4 +47,4 @@ def split_tiles_cover_range(depth,offset,span,cap,cap_ok,room):
           split_tiles_cover_range(rest,end,rest_span,cap,cap_ok,TilePartitionBounds.right_room(offset,span,cap,cap_ok,room))),
         Ranges.join(U32.to_nat(offset),U32.to_nat(half),U32.to_nat(rest_span),U32.to_nat(end),U32.to_nat(span),
           TilePartitionBounds.offset_exact(offset,span,cap,cap_ok,room),
-          TilePartitionBounds.sum(span,cap,cap_ok,TilePartitionBounds.span_room(offset,span,cap,room))))
+          TilePartitionBounds.sum(span,cap,cap_ok,TensorBandPlan.rows_bound(offset,span,cap,room))))

@@ -3,6 +3,97 @@
 import Base
 import ./traversal_loop.bend as Loop
 
+type Collected<ownership,-Context: Data,-Element: Kind(ownership)> is Kind(ownership):
+  Collected{context: Context,value: Element}
+
+def collect_prepend(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),value: Element,result: Reader & List<ownership,Element>) -> Reader & List<ownership,Element>:
+  (reader,values) = result
+  (reader,value <> values)
+
+def collect_next(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,
+  result: Reader & Collected<ownership,Context,Element>,tail: Reader -> Context -> Reader & List<ownership,Element>) -> Reader & List<ownership,Element>:
+  (reader,Collected{context,value}) = result
+  collect_prepend(~ownership,~Reader,~Element,value,tail(reader,context))
+
+# Values may own arrays; a context transition supplies the next read without
+# indexing a second list or allocating an array of affine elements.
+def collect(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,
+  ~read: Reader -> Context -> Reader & Collected<ownership,Context,Element>,count: Nat,reader: Reader,context: Context) -> Reader & List<ownership,Element>:
+  match count:
+    case 0n: (reader,[])
+    case 1n+rest: collect_next(~ownership,~Reader,~Element,~Context,read(reader,context),reader => context => collect(~ownership,~Reader,~Element,~Context,~read,rest,reader,context))
+
+def collect_list_next(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),result: Reader & Element,
+  tail: Reader -> Reader & List<ownership,Element>) -> Reader & List<ownership,Element>:
+  (reader,value) = result
+  collect_prepend(~ownership,~Reader,~Element,value,tail(reader))
+
+def collect_list(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Key: Data,~Context: Data,
+  ~read: Reader -> Context -> Key -> Reader & Element,keys: List<&2,Key>,reader: Reader,+context: Context) -> Reader & List<ownership,Element>:
+  match keys:
+    case Nil{}: (reader,[])
+    case key <> rest: collect_list_next(~ownership,~Reader,~Element,read(reader,context,key),reader => collect_list(~ownership,~Reader,~Element,~Key,~Context,~read,rest,reader,context))
+
+# The same collections as one loop: the values so far, newest first, beside
+# the reader and the next context, reversed once at the end. No closure is
+# called, so a leaf task that collects stays fork-free.
+type Gathering<reader_kind,ownership,-Reader: Kind(reader_kind),-Element: Kind(ownership),-Context: Data> is Kind(reader_kind <&> ownership):
+  Gathering{reader: Reader,context: Context,values: List<ownership,Element>}
+
+def reversed_onto(~ownership: Quant,~Element: Kind(ownership),values: List<ownership,Element>,tail: List<ownership,Element>) -> List<ownership,Element>:
+  match values:
+    case []: tail
+    case head <> rest: reversed_onto(~ownership,~Element,rest,head <> tail)
+
+def gathered(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,
+  result: Reader & Collected<ownership,Context,Element>,values: List<ownership,Element>) -> Gathering<&1,ownership,Reader,Element,Context>:
+  (reader,Collected{context,value}) = result
+  Gathering{reader,context,value <> values}
+
+def gather_step(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,
+  ~read: Reader -> Context -> Reader & Collected<ownership,Context,Element>,state: Gathering<&1,ownership,Reader,Element,Context>) ->
+  Gathering<&1,ownership,Reader,Element,Context>:
+  Gathering{reader,context,values} = state
+  gathered(~ownership,~Reader,~Element,~Context,read(reader,context),values)
+
+def gathering_result(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,state: Gathering<&1,ownership,Reader,Element,Context>) ->
+  Reader & List<ownership,Element>:
+  Gathering{reader,context,values} = state
+  (reader,reversed_onto(~ownership,~Element,values,[]))
+
+def collect_loop(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,
+  ~read: Reader -> Context -> Reader & Collected<ownership,Context,Element>,count: Nat,reader: Reader,context: Context) -> Reader & List<ownership,Element>:
+  gathering_result(~ownership,~Reader,~Element,~Context,
+    Loop.run(~Gathering<&1,ownership,Reader,Element,Context>,~gather_step(~ownership,~Reader,~Element,~Context,~read),count,Gathering{reader,context,[]}))
+
+# The keys not read yet travel in the context.
+type Keyed<-Key: Data,-Context: Data> is Data:
+  Keyed{keys: List<&2,Key>,context: Context}
+
+def gathered_key(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Key: Data,~Context: Data,
+  result: Reader & Element,rest: List<&2,Key>,context: Context,values: List<ownership,Element>) -> Gathering<&1,ownership,Reader,Element,Keyed<Key,Context>>:
+  (reader,value) = result
+  Gathering{reader,Keyed{rest,context},value <> values}
+
+def key_step(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Key: Data,~Context: Data,
+  ~read: Reader -> Context -> Key -> Reader & Element,keys: List<&2,Key>,reader: Reader,+context: Context,values: List<ownership,Element>) ->
+  Gathering<&1,ownership,Reader,Element,Keyed<Key,Context>>:
+  match keys:
+    case []: Gathering{reader,Keyed{[],context},values}
+    case key <> rest: gathered_key(~ownership,~Reader,~Element,~Key,~Context,read(reader,context,key),rest,context,values)
+
+def gather_key_step(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Key: Data,~Context: Data,
+  ~read: Reader -> Context -> Key -> Reader & Element,state: Gathering<&1,ownership,Reader,Element,Keyed<Key,Context>>) ->
+  Gathering<&1,ownership,Reader,Element,Keyed<Key,Context>>:
+  Gathering{reader,Keyed{keys,context},values} = state
+  key_step(~ownership,~Reader,~Element,~Key,~Context,~read,keys,reader,context,values)
+
+def collect_list_loop(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Key: Data,~Context: Data,
+  ~read: Reader -> Context -> Key -> Reader & Element,+keys: List<&2,Key>,reader: Reader,context: Context) -> Reader & List<ownership,Element>:
+  gathering_result(~ownership,~Reader,~Element,~Keyed<Key,Context>,
+    Loop.run(~Gathering<&1,ownership,Reader,Element,Keyed<Key,Context>>,~gather_key_step(~ownership,~Reader,~Element,~Key,~Context,~read),
+      List.length(&2,Key,keys),Gathering{reader,Keyed{keys,context},[]}))
+
 def write_list(~Element: Data,values: List<&2,Element>,+offset: U32,storage: Array<Element>) -> Array<Element>:
   match values:
     case []: storage
@@ -71,6 +162,14 @@ def source_offset(~Element: Data,input: Array<Element>,context: Offsets,position
   Offsets{source,destination} = context
   Array.get(Element,input,(source + position : U32))
 
+# The values base, base + stride, base + 2 * stride, ... of one line.
+type Strided is Data:
+  Strided{base: U32,stride: U32}
+
+def strided(~Element: Data,input: Array<Element>,context: Strided,position: U32) -> Array<Element> & Element:
+  Strided{base,stride} = context
+  Array.get(Element,input,(base + position * stride : U32))
+
 def copy(~Element: Data,count: Nat,source: U32,destination: U32,input: Array<Element>,target: Array<Element>) -> Array<Element> & Array<Element>:
   finish(~Array<Element>,~Element,~Offsets,
     run(~Array<Element>,~Element,~Offsets,~source_offset(~Element),~destination_offset,count,
@@ -100,6 +199,84 @@ def fold(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,
   finish_fold(~Reader,~Accumulator,~Context,
     Loop.run(~State<&1,&2,Reader,Accumulator,Context>,~fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),
       count,State{reader,initial,position,context}))
+
+# Eight values read one after another, before any of them is combined.
+type Eight<-Element: Data> is Data:
+  Eight{a: Element,b: Element,c: Element,d: Element,e: Element,f: Element,g: Element,h: Element}
+
+def read_last(~Reader: Type,~Element: Data,+a: Element,+b: Element,+c: Element,+d: Element,+e: Element,+f: Element,+g: Element,
+  result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,h) = result
+  (reader,Eight{a,b,c,d,e,f,g,h})
+
+def read_seventh(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
+  +a: Element,+b: Element,+c: Element,+d: Element,+e: Element,+f: Element,result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,g) = result
+  read_last(~Reader,~Element,a,b,c,d,e,f,g,read(reader,context,(position + 1 : U32)))
+
+def read_sixth(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
+  +a: Element,+b: Element,+c: Element,+d: Element,+e: Element,result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,f) = result
+  read_seventh(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,d,e,f,read(reader,context,(position + 1 : U32)))
+
+def read_fifth(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
+  +a: Element,+b: Element,+c: Element,+d: Element,result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,e) = result
+  read_sixth(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,d,e,read(reader,context,(position + 1 : U32)))
+
+def read_fourth(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
+  +a: Element,+b: Element,+c: Element,result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,d) = result
+  read_fifth(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,d,read(reader,context,(position + 1 : U32)))
+
+def read_third(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
+  +a: Element,+b: Element,result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,c) = result
+  read_fourth(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,read(reader,context,(position + 1 : U32)))
+
+def read_second(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
+  +a: Element,result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,b) = result
+  read_third(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,read(reader,context,(position + 1 : U32)))
+
+# The values at position, position + 1, ..., position + 7.
+def read_eight(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
+  result: Reader & Element) -> Reader & Eight<Element>:
+  (reader,a) = result
+  read_second(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,read(reader,context,(position + 1 : U32)))
+
+# The position after eight steps of one.
+def after_eight(+position: U32) -> U32:
+  ((((((((position + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32)
+
+def combine_eight(~Element: Data,~Accumulator: Data,~combine: Accumulator -> Element -> Accumulator,accumulator: Accumulator,values: Eight<Element>) -> Accumulator:
+  Eight{+a,+b,+c,+d,+e,+f,+g,+h} = values
+  combine(combine(combine(combine(combine(combine(combine(combine(accumulator,a),b),c),d),e),f),g),h)
+
+def round_value(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~combine: Accumulator -> Element -> Accumulator,
+  accumulator: Accumulator,+position: U32,+context: Context,result: Reader & Eight<Element>) -> State<&1,&2,Reader,Accumulator,Context>:
+  (reader,values) = result
+  State{reader,combine_eight(~Element,~Accumulator,~combine,accumulator,values),after_eight(position),context}
+
+# Eight fold steps: the same reads and combines, the reads first.
+def fold_round(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,
+  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
+  state: State<&1,&2,Reader,Accumulator,Context>) -> State<&1,&2,Reader,Accumulator,Context>:
+  State{reader,accumulator,+position,+context} = state
+  round_value(~Reader,~Element,~Accumulator,~Context,~combine,accumulator,position,context,
+    read_eight(~Reader,~Element,~Context,~read,position,context,read(reader,context,position)))
+
+# fold with the steps after the first count % 8 taken eight at a time: the
+# same result for every combine. The eight reads of a round come first, so an
+# accumulator of several lanes keeps them in registers.
+def fold_rounds(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,
+  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
+  count: Nat,position: U32,reader: Reader,initial: Accumulator,context: Context) -> Reader & Accumulator:
+  +count = count
+  finish_fold(~Reader,~Accumulator,~Context,
+    Loop.run(~State<&1,&2,Reader,Accumulator,Context>,~fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.div(count,8n),
+      Loop.run(~State<&1,&2,Reader,Accumulator,Context>,~fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.mod(count,8n),
+        State{reader,initial,position,context})))
 
 # Reuse the output owner for each read/write; no second array or clone.
 def mapped_value(~Element: Data,~Context: Data,~map: Context -> Element -> Element,

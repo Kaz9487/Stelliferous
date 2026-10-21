@@ -12,10 +12,10 @@ import ./storage_certificate.bend as Certificate
 import ./u32_comparison.bend as Comparison
 import ./tensor_cursor_refinement.bend as CursorLaws
 import ./tensor_copy_values.bend as CopyValues
+import ./view_writes.bend as ViewWrites
 import ./tensor_count_completion.bend as CountCompletion
-import ./tensor_cursor_bounds.bend as CursorBounds
 import ./tensor_cursor_model.bend as CursorModel
-import ./tensor_dense_contract.bend as Dense
+import ./tensor_contract.bend as Contract
 import ./tensor_gather_values.bend as GatherValues
 import ../traversal_loop.bend as Loop
 import ./sequence_membership.bend as Members
@@ -33,9 +33,13 @@ import ./storage_shape.bend as Shape
 import ../traversal_array.bend as Traversal
 import ./storage_tree_model.bend as Tree
 import ../tensor_view.bend as Views
-import ./traversal_write_bounds.bend as WriteBounds
 import ./write_program.bend as Writes
-import ./word_encoding.bend as WordEncoding
+import ./traversal_batch_refinement.bend as Batch
+import ./storage_copy_refinement.bend as CopyModel
+import ./traversal_array_refinement.bend as ArrayLaws
+import ../tensor_access.bend as Access
+import ./tensor_access_certificate.bend as AccessCertificate
+import ./tensor_cursor_order.bend as CursorOrder
 
 def scatter_writes(~Element: Data,count: Nat,+position: U32,+coordinates: CursorLaws.Coordinates,+input: Tree.Tree<Element>) -> List<&2,Writes.Assignment<Element>>:
   match count:
@@ -44,78 +48,94 @@ def scatter_writes(~Element: Data,count: Nat,+position: U32,+coordinates: Cursor
       Writes.Put{TensorVisit.address(coordinates),Tree.read(Element,input,position)} <>
         scatter_writes(~Element,rest,(position + 1 : U32),CursorLaws.next(coordinates),input)
 
-def scatter_program(~Element: Data,count: Nat,+position: U32,+coordinates: CursorLaws.Coordinates,+input: Tree.Tree<Element>,+output: Tree.Tree<Element>) ->
+def scatter_pair(~Element: Data,count: Nat,+position: U32,+coordinates: CursorLaws.Coordinates,+input: Tree.Tree<Element>,+output: Tree.Tree<Element>) ->
+  {AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~CursorLaws.Coordinates,
+      Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,CursorLaws.Coordinates>,
+        ~Visit.model_spread_step(~Element,~CursorLaws.Coordinates,~TensorVisit.address,~CursorLaws.next),
+        count,Traversal.State{input,output,position,coordinates})) ==
+    AccessLaws.ModelResult{input,Writes.pure(Element,scatter_writes(~Element,count,position,coordinates,input),output)} : AccessLaws.ModelResult<Tree.Tree<Element>,Element>}:
+  match count:
+    case 0n: {==}
+    case 1n+rest:
+      scatter_pair(~Element,rest,(position + 1 : U32),CursorLaws.next(coordinates),input,
+        Tree.write(Element,output,TensorVisit.address(coordinates),Tree.read(Element,input,position)))
+
+def scatter_program(~Element: Data,+count: Nat,+position: U32,+coordinates: CursorLaws.Coordinates,+input: Tree.Tree<Element>,+output: Tree.Tree<Element>) ->
   {CopyValues.output_tree(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~CursorLaws.Coordinates,
       Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,CursorLaws.Coordinates>,
         ~Visit.model_spread_step(~Element,~CursorLaws.Coordinates,~TensorVisit.address,~CursorLaws.next),
         count,Traversal.State{input,output,position,coordinates}))) ==
     Writes.pure(Element,scatter_writes(~Element,count,position,coordinates,input),output) : Tree.Tree<Element>}:
-  match count:
-    case 0n: {==}
-    case 1n+rest:
-      scatter_program(~Element,rest,(position + 1 : U32),CursorLaws.next(coordinates),input,
-        Tree.write(Element,output,TensorVisit.address(coordinates),Tree.read(Element,input,position)))
+  Equal.cong(AccessLaws.ModelResult<Tree.Tree<Element>,Element>,Tree.Tree<Element>,CopyValues.output_tree(~Element),
+    AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~CursorLaws.Coordinates,Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,CursorLaws.Coordinates>,~Visit.model_spread_step(~Element,~CursorLaws.Coordinates,~TensorVisit.address,~CursorLaws.next),count,Traversal.State{input,output,position,coordinates})),
+    AccessLaws.ModelResult{input,Writes.pure(Element,scatter_writes(~Element,count,position,coordinates,input),output)},scatter_pair(~Element,count,position,coordinates,input,output))
 
-# The element a storage index holds after count elements of the part, read
-# from position on, went to the addresses of the coordinates: the element of
-# the last coordinates at the index, or previous.
-def scattered(~Element: Data,~Part: Data,~part_value: Part -> U32 -> Element,count: Nat,+position: U32,+coordinates: CursorLaws.Coordinates,+part: Part,previous: Element,+query: U32) -> Element:
-  match count:
-    case 0n: previous
-    case 1n+rest:
-      scattered(~Element,~Part,~part_value,rest,(position + 1 : U32),CursorLaws.next(coordinates),part,
-        Bool.pick(Element,U32.is_eq(TensorVisit.address(coordinates),query),part_value(part,position),previous),query)
+# The receipt observes the owners returned by the common certified operator.
+def counted(~Element: Data,+count: Nat,+target: Views.View,+source: U32,input: Buffer.Model<Element>,output: Buffer.Model<Element>) -> CopyModel.ActualOwners<Element>:
+  CopyModel.actual_model(~Element,Operations.scatter_counted(~Element,count,target,source,Buffer.pack(~Element,input),Buffer.pack(~Element,output)))
 
-def writes_logical(~Element: Data,~Part: Data,~part_value: Part -> U32 -> Element,count: Nat,+position: Nat,+coordinates: CursorLaws.Coordinates,+part: Part,+input: Tree.Tree<Element>,+length: Nat,+query: U32,+previous: Element,
-  +values: Dense.Values(~Element,~Part,~part_value,part,Buffer.Content{input,length}),
-  +room: {Nat.is_le(Nat.add(position,count),length) == True{} : Bool}) ->
-  {Readback.selected(~Element,scatter_writes(~Element,count,U32.from_nat(position),coordinates,input),query,previous) ==
-    scattered(~Element,~Part,~part_value,count,U32.from_nat(position),coordinates,part,previous,query) : Element}:
+# The source element and the part element at a position.
+def stored(~Element: Data,+input: Tree.Tree<Element>,+position: Nat) -> Element:
+  Tree.read(Element,input,U32.from_nat(position))
+def logical(~Element: Data,~Part: Data,~part_value: Part -> U32 -> Element,+part: Part,+position: Nat) -> Element:
+  part_value(part,U32.from_nat(position))
+
+# The run of a scatter writes the source through the target view: the
+# coordinates after position steps address the view element at position.
+def view_writes_at(~Element: Data,count: Nat,+position: Nat,+axes: List<&2,CursorModel.Coordinate>,+valid: CursorLaws.Valid(axes),
+  +target_axes: List<&2,Views.Axis>,+offset: U32,+input: Tree.Tree<Element>,
+  +placed: {axes == CursorOrder.iterate(position,CursorModel.prepare_axes(target_axes,[])) : List<&2,CursorModel.Coordinate>}) ->
+  {scatter_writes(~Element,count,U32.from_nat(position),CursorLaws.Coordinates{axes,U32.to_nat(offset),valid},input) ==
+    ViewWrites.writes_from(~Element,~Tree.Tree<Element>,~stored(~Element),count,position,Views.View{target_axes,offset},input) : List<&2,Writes.Assignment<Element>>}:
   match count:
     case 0n: {==}
     case 1n+ +rest:
-      %Equal.sym(Element,Tree.read(Element,input,U32.from_nat(position)),part_value(part,U32.from_nat(position)),
-        Dense.read(~Element,~Part,~part_value,part,Buffer.Content{input,length},position,values,Order.room_index(position,rest,length,room))) :
-        {Readback.selected(~Element,scatter_writes(~Element,rest,(U32.from_nat(position) + 1 : U32),CursorLaws.next(coordinates),input),query,
-            Bool.pick(Element,U32.is_eq(TensorVisit.address(coordinates),query),_,previous)) ==
-          scattered(~Element,~Part,~part_value,rest,(U32.from_nat(position) + 1 : U32),CursorLaws.next(coordinates),part,
-            Bool.pick(Element,U32.is_eq(TensorVisit.address(coordinates),query),part_value(part,U32.from_nat(position)),previous),query) : Element}
-      %Equal.sym(U32,(U32.from_nat(position) + 1 : U32),U32.from_nat(1n+position),WriteBounds.increment_encoded(position)) :
-        {Readback.selected(~Element,scatter_writes(~Element,rest,_,CursorLaws.next(coordinates),input),query,
-            Bool.pick(Element,U32.is_eq(TensorVisit.address(coordinates),query),part_value(part,U32.from_nat(position)),previous)) ==
-          scattered(~Element,~Part,~part_value,rest,_,CursorLaws.next(coordinates),part,
-            Bool.pick(Element,U32.is_eq(TensorVisit.address(coordinates),query),part_value(part,U32.from_nat(position)),previous),query) : Element}
-      writes_logical(~Element,~Part,~part_value,rest,1n+position,CursorLaws.next(coordinates),part,input,length,query,
-        Bool.pick(Element,U32.is_eq(TensorVisit.address(coordinates),query),part_value(part,U32.from_nat(position)),previous),values,
-        Order.advance_room(position,rest,length,room))
-
-# Every address of the coordinates lies below the logical length, so every
-# store lies inside the storage.
-def inside_axes(~Element: Data,count: Nat,+position: U32,+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,+valid: CursorLaws.Valid(axes),+input: Tree.Tree<Element>,+length: U32,+capacity: U32,
-  +bound: {Nat.is_lt(Nat.add(CursorModel.span(axes),offset),U32.to_nat(length)) == True{} : Bool},
-  +room: {Nat.is_le(U32.to_nat(length),U32.to_nat(capacity)) == True{} : Bool}) ->
-  Readback.Inside(~Element,capacity,scatter_writes(~Element,count,position,CursorLaws.Coordinates{axes,offset,valid},input)):
-  match count:
-    case 0n: Unit{}
-    case 1n+rest:
-      Shape.Both{
-        %Equal.sym(Bool,U32.is_lt(U32.from_nat(CursorModel.address(axes,offset)),capacity),
-          Nat.is_lt(U32.to_nat(U32.from_nat(CursorModel.address(axes,offset))),U32.to_nat(capacity)),
-          Comparison.lt(U32.from_nat(CursorModel.address(axes,offset)),capacity)) : {_ == True{} : Bool}
-        Bounds.nat_trans(U32.to_nat(U32.from_nat(CursorModel.address(axes,offset))),U32.to_nat(length),U32.to_nat(capacity),
-          CursorBounds.read_inside(axes,offset,length,valid,bound),room),
-        inside_axes(~Element,rest,(position + 1 : U32),CursorModel.advance(axes),offset,CursorLaws.advance_valid(axes,valid),input,length,capacity,
-          %Equal.sym(Nat,CursorModel.span(CursorModel.advance(axes)),CursorModel.span(axes),CursorBounds.advance_span(axes)) :
-            {Nat.is_lt(Nat.add(_,offset),U32.to_nat(length)) == True{} : Bool}
-          bound,room)}
-
-def initial_inside(~Element: Data,+count: Nat,+target: Views.View,+input: Tree.Tree<Element>,+length: U32,+capacity: U32,
-  fits: {Views.fits_nonempty(False{},target,length) == True{} : Bool},
-  +room: {Nat.is_le(U32.to_nat(length),U32.to_nat(capacity)) == True{} : Bool}) ->
-  Readback.Inside(~Element,capacity,scatter_writes(~Element,count,0,CursorLaws.initial(target),input)):
+      +start = CursorModel.prepare_axes(target_axes,[])
+      +head = {Writes.Put{CopyValues.address(Views.View{target_axes,offset},position),stored(~Element,input,position)} : Writes.Assignment<Element>}
+      +later = ViewWrites.writes_from(~Element,~Tree.Tree<Element>,~stored(~Element),rest,1n+position,Views.View{target_axes,offset},input)
+      +next = Equal.trans(List<&2,CursorModel.Coordinate>,CursorModel.advance(axes),CursorModel.advance(CursorOrder.iterate(position,start)),CursorOrder.iterate(1n+position,start),
+        Equal.cong(List<&2,CursorModel.Coordinate>,List<&2,CursorModel.Coordinate>,CursorModel.advance,axes,CursorOrder.iterate(position,start),placed),
+        CursorOrder.advance_iterate(position,start))
+      %Equal.sym(List<&2,CursorModel.Coordinate>,axes,CursorOrder.iterate(position,start),placed) :
+        {Writes.Put{U32.from_nat(CursorModel.address(_,U32.to_nat(offset))),stored(~Element,input,position)} <>
+          scatter_writes(~Element,rest,(U32.from_nat(position) + 1 : U32),CursorLaws.next(CursorLaws.Coordinates{axes,U32.to_nat(offset),valid}),input) ==
+          head <> later : List<&2,Writes.Assignment<Element>>}
+      %Equal.sym(U32,(U32.from_nat(position) + 1 : U32),U32.from_nat(1n+position),Bounds.increment_encoded(position)) :
+        {head <> scatter_writes(~Element,rest,_,CursorLaws.next(CursorLaws.Coordinates{axes,U32.to_nat(offset),valid}),input) == head <> later : List<&2,Writes.Assignment<Element>>}
+      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,tail => head <> tail,
+        scatter_writes(~Element,rest,U32.from_nat(1n+position),CursorLaws.next(CursorLaws.Coordinates{axes,U32.to_nat(offset),valid}),input),later,
+        view_writes_at(~Element,rest,1n+position,CursorModel.advance(axes),CursorLaws.advance_valid(axes,valid),target_axes,offset,input,next))
+def view_writes(~Element: Data,count: Nat,+target: Views.View,+input: Tree.Tree<Element>) ->
+  {scatter_writes(~Element,count,0,CursorLaws.initial(target),input) ==
+    ViewWrites.writes(~Element,~Tree.Tree<Element>,~stored(~Element),count,target,input) : List<&2,Writes.Assignment<Element>>}:
   Views.View{+axes,+offset} = target
-  inside_axes(~Element,count,0,CursorModel.prepare_axes(axes,[]),U32.to_nat(offset),CursorLaws.prepared_valid(axes,[],Unit{}),input,length,capacity,
-    CursorBounds.fits_bound(axes,offset,length,fits),room)
+  view_writes_at(~Element,count,0n,CursorModel.prepare_axes(axes,[]),CursorLaws.prepared_valid(axes,[],Unit{}),axes,offset,input,{==})
+
+# The element a storage index holds after count elements of the part went
+# through the target view: the element of the last write at the index, or
+# previous.
+def scattered(~Element: Data,~Part: Data,~part_value: Part -> U32 -> Element,count: Nat,+target: Views.View,+part: Part,previous: Element,+query: U32) -> Element:
+  Readback.selected(~Element,ViewWrites.writes(~Element,~Part,~logical(~Element,~Part,~part_value),count,target,part),query,previous)
+
+# The source and the part agree below the source length, so they write the
+# same elements.
+def logical_writes(~Element: Data,~Part: Data,~part_value: Part -> U32 -> Element,count: Nat,+position: Nat,+target: Views.View,+part: Part,+input: Tree.Tree<Element>,+length: Nat,
+  +values: Contract.Values(~Element,~Part,~part_value,part,Buffer.Content{input,length}),
+  +room: {Nat.is_le(Nat.add(position,count),length) == True{} : Bool}) ->
+  {ViewWrites.writes_from(~Element,~Tree.Tree<Element>,~stored(~Element),count,position,target,input) ==
+    ViewWrites.writes_from(~Element,~Part,~logical(~Element,~Part,~part_value),count,position,target,part) : List<&2,Writes.Assignment<Element>>}:
+  match count:
+    case 0n: {==}
+    case 1n+ +rest:
+      +address = CopyValues.address(target,position)
+      +later = ViewWrites.writes_from(~Element,~Part,~logical(~Element,~Part,~part_value),rest,1n+position,target,part)
+      %Equal.sym(Element,Tree.read(Element,input,U32.from_nat(position)),part_value(part,U32.from_nat(position)),
+        Contract.read(~Element,~Part,~part_value,part,Buffer.Content{input,length},position,values,Order.room_index(position,rest,length,room))) :
+        {Writes.Put{address,_} <> ViewWrites.writes_from(~Element,~Tree.Tree<Element>,~stored(~Element),rest,1n+position,target,input) ==
+          Writes.Put{address,part_value(part,U32.from_nat(position))} <> later : List<&2,Writes.Assignment<Element>>}
+      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,tail => Writes.Put{address,part_value(part,U32.from_nat(position))} <> tail,
+        ViewWrites.writes_from(~Element,~Tree.Tree<Element>,~stored(~Element),rest,1n+position,target,input),later,
+        logical_writes(~Element,~Part,~part_value,rest,1n+position,target,part,input,length,values,Order.advance_room(position,rest,length,room)))
 
 # A view with a positive count has no zero extent; one with count zero stores
 # nothing.
@@ -123,11 +143,11 @@ def counted_inside(~Element: Data,count: Nat,+target: Views.View,+input: Tree.Tr
   exact: {ShapeLaws.elements(Views.axis_extents_of(target)) == count : Nat},
   fits: {Views.fits(target,length) == True{} : Bool},
   +room: {Nat.is_le(U32.to_nat(length),U32.to_nat(capacity)) == True{} : Bool}) ->
-  Readback.Inside(~Element,capacity,scatter_writes(~Element,count,0,CursorLaws.initial(target),input)):
+  Readback.Inside(~Element,capacity,ViewWrites.writes(~Element,~Tree.Tree<Element>,~stored(~Element),count,target,input)):
   match count:
     case 0n: Unit{}
     case 1n+ +rest:
-      initial_inside(~Element,1n+rest,target,input,length,capacity,
+      ViewWrites.inside_from(~Element,~Tree.Tree<Element>,~stored(~Element),1n+rest,0n,target,input,length,capacity,
         %CountCompletion.positive_not_zero(Views.axis_extents_of(target),
           %Equal.sym(Nat,ShapeLaws.elements(Views.axis_extents_of(target)),1n+rest,exact) : {Nat.is_lt(0n,_) == True{} : Bool}
           {==}) : {Views.fits_nonempty(_,target,length) == True{} : Bool}
@@ -141,7 +161,7 @@ type Scatter<-Before: Data,-Part: Data> is Data:
 def value(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -> Element,~part_value: Part -> U32 -> Element,context: Scatter<Before,Part>,query: U32) -> Element:
   Scatter{before,part,target,count} = context
   +query = query
-  scattered(~Element,~Part,~part_value,count,0,CursorLaws.initial(target),part,before_value(before,query),query)
+  scattered(~Element,~Part,~part_value,count,target,part,before_value(before,query),query)
 
 def scatter_content(~Element: Data,+count: U32,+target: Views.View,input: Buffer.Content<Element>,output: Buffer.Content<Element>) -> Buffer.Content<Element>:
   Buffer.Content{input,input_length} = input
@@ -151,13 +171,13 @@ def scatter_content(~Element: Data,+count: U32,+target: Views.View,input: Buffer
 # One index of the scatter program.
 def cell(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -> Element,~part_value: Part -> U32 -> Element,+before: Before,+part: Part,+target: Views.View,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+count: U32,+index: Nat,
   ready: Buffer.Sized<Element,output>,
-  +part_values: Dense.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
-  before_values: Dense.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
+  +part_values: Contract.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
+  before_values: Contract.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
   +count_room: {Nat.is_le(U32.to_nat(count),Buffer.length(~Element,input)) == True{} : Bool},
   exact: {ShapeLaws.elements(Views.axis_extents_of(target)) == U32.to_nat(count) : Nat},
   fits: {Views.fits(target,U32.from_nat(Buffer.length(~Element,output))) == True{} : Bool},
   +inside: {Nat.is_lt(index,Buffer.length(~Element,output)) == True{} : Bool}) ->
-  Dense.At(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,target,U32.to_nat(count)},
+  Contract.At(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,target,U32.to_nat(count)},
     scatter_content(~Element,count,target,Buffer.content(~Element,input),Buffer.content(~Element,output)),index):
   Buffer.Model{+input_tree,+input_length,+input_certificate} = input
   Buffer.Model{+output_tree,+output_length,+output_certificate} = output
@@ -166,7 +186,7 @@ def cell(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -
   +capacity = Tree.capacity(Element,output_tree)
   +capacity_ok = Buffer.capacity_bound(~Element,output,depth_ok)
   +query = U32.from_nat(index)
-  +writes = scatter_writes(~Element,U32.to_nat(count),0,CursorLaws.initial(target),input_tree)
+  +writes = ViewWrites.writes(~Element,~Tree.Tree<Element>,~stored(~Element),U32.to_nat(count),target,input_tree)
   +index_room = Bounds.nat_trans(index,output_length,U32.to_nat(capacity),inside,room)
   +query_word = {
     %Equal.sym(Bool,U32.is_lt(query,capacity),Nat.is_lt(U32.to_nat(query),U32.to_nat(capacity)),Comparison.lt(query,capacity)) : {_ == True{} : Bool}
@@ -177,27 +197,32 @@ def cell(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(output_length)),output_length,Bounds.roundtrip(output_length,capacity,capacity_ok,room)) :
       {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
     room : {Nat.is_le(U32.to_nat(U32.from_nat(output_length)),U32.to_nat(capacity)) == True{} : Bool}}
+  +scattered_value = scattered(~Element,~Part,~part_value,U32.to_nat(count),target,part,before_value(before,query),query)
+  %Equal.sym(List<&2,Writes.Assignment<Element>>,scatter_writes(~Element,U32.to_nat(count),0,CursorLaws.initial(target),input_tree),writes,
+    view_writes(~Element,U32.to_nat(count),target,input_tree)) :
+    {Tree.read(Element,Writes.pure(Element,_,output_tree),query) == scattered_value : Element}
   Equal.trans(Element,Tree.read(Element,Writes.pure(Element,writes,output_tree),query),
-    Readback.selected(~Element,writes,query,Tree.read(Element,output_tree,query)),
-    scattered(~Element,~Part,~part_value,U32.to_nat(count),0,CursorLaws.initial(target),part,before_value(before,query),query),
+    Readback.selected(~Element,writes,query,Tree.read(Element,output_tree,query)),scattered_value,
     Readback.program(~Element,writes,Buffer.depth(~Element,output),output_tree,query,Buffer.balanced(~Element,output),depth_ok,query_word,
       counted_inside(~Element,U32.to_nat(count),target,input_tree,U32.from_nat(output_length),capacity,exact,fits,length_room)),
     %Equal.sym(Element,Tree.read(Element,output_tree,query),before_value(before,query),
-      Dense.read(~Element,~Before,~before_value,before,Buffer.Content{output_tree,output_length},index,before_values,inside)) :
-      {Readback.selected(~Element,writes,query,_) ==
-        scattered(~Element,~Part,~part_value,U32.to_nat(count),0,CursorLaws.initial(target),part,before_value(before,query),query) : Element}
-    writes_logical(~Element,~Part,~part_value,U32.to_nat(count),0n,CursorLaws.initial(target),part,input_tree,input_length,query,before_value(before,query),part_values,count_room))
+      Contract.read(~Element,~Before,~before_value,before,Buffer.Content{output_tree,output_length},index,before_values,inside)) :
+      {Readback.selected(~Element,writes,query,_) == scattered_value : Element}
+    %Equal.sym(List<&2,Writes.Assignment<Element>>,writes,ViewWrites.writes(~Element,~Part,~logical(~Element,~Part,~part_value),U32.to_nat(count),target,part),
+      logical_writes(~Element,~Part,~part_value,U32.to_nat(count),0n,target,part,input_tree,input_length,part_values,count_room)) :
+      {Readback.selected(~Element,_,query,before_value(before,query)) == scattered_value : Element}
+    {==})
 
 # Every index of the scatter program.
 def cells_range(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -> Element,~part_value: Part -> U32 -> Element,remaining: Nat,+position: Nat,+before: Before,+part: Part,+target_axes: List<&2,Views.Axis>,+target_offset: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+count: U32,
   +ready: Buffer.Sized<Element,output>,
-  +part_values: Dense.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
-  +before_values: Dense.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
+  +part_values: Contract.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
+  +before_values: Contract.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
   +count_room: {Nat.is_le(U32.to_nat(count),Buffer.length(~Element,input)) == True{} : Bool},
   +exact: {ShapeLaws.elements(Views.axis_extents(target_axes)) == U32.to_nat(count) : Nat},
   +fits: {Views.fits(Views.View{target_axes,target_offset},U32.from_nat(Buffer.length(~Element,output))) == True{} : Bool},
   +room: {Nat.is_le(Nat.add(position,remaining),Buffer.length(~Element,output)) == True{} : Bool}) ->
-  Members.All(Nat,{index => Dense.At(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,Views.View{target_axes,target_offset},U32.to_nat(count)},scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(remaining,position)):
+  Members.All(Nat,{index => Contract.At(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,Views.View{target_axes,target_offset},U32.to_nat(count)},scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(remaining,position)):
   match remaining:
     case 0n: Unit{}
     case 1n+ +rest:
@@ -219,27 +244,27 @@ def program_ready(~Element: Data,+count: U32,+target: Views.View,+input: Buffer.
 
 def program_values(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -> Element,~part_value: Part -> U32 -> Element,+before: Before,+part: Part,+target_axes: List<&2,Views.Axis>,+target_offset: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+count: U32,
   +ready: Buffer.Sized<Element,output>,
-  +part_values: Dense.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
-  +before_values: Dense.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
+  +part_values: Contract.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
+  +before_values: Contract.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
   +count_room: {Nat.is_le(U32.to_nat(count),Buffer.length(~Element,input)) == True{} : Bool},
   +exact: {ShapeLaws.elements(Views.axis_extents(target_axes)) == U32.to_nat(count) : Nat},
   +fits: {Views.fits(Views.View{target_axes,target_offset},U32.from_nat(Buffer.length(~Element,output))) == True{} : Bool}) ->
-  Dense.Values(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,Views.View{target_axes,target_offset},U32.to_nat(count)},scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output))):
+  Contract.Values(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,Views.View{target_axes,target_offset},U32.to_nat(count)},scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output))):
   %Equal.sym(Nat,Buffer.content_length(~Element,scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output))),Buffer.length(~Element,output),program_length(~Element,count,Views.View{target_axes,target_offset},input,output)) :
-    Members.All(Nat,{index => Dense.At(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,Views.View{target_axes,target_offset},U32.to_nat(count)},scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(_,0n))
+    Members.All(Nat,{index => Contract.At(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,Views.View{target_axes,target_offset},U32.to_nat(count)},scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output)),index) : Nat -> Data},Ranges.range(_,0n))
   cells_range(~Element,~Before,~Part,~before_value,~part_value,Buffer.length(~Element,output),0n,before,part,target_axes,target_offset,input,output,count,ready,part_values,before_values,count_room,exact,fits,Order.reflexive(Buffer.length(~Element,output)))
 
 def program_facts(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -> Element,~part_value: Part -> U32 -> Element,+before: Before,+part: Part,+target_axes: List<&2,Views.Axis>,+target_offset: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+count: U32,+target_shape: List<&2,U32>,
   +ready: Buffer.Sized<Element,output>,
-  +part_values: Dense.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
-  +before_values: Dense.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
+  +part_values: Contract.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
+  +before_values: Contract.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
   +count_room: {Nat.is_le(U32.to_nat(count),Buffer.length(~Element,input)) == True{} : Bool},
   +exact: {ShapeLaws.elements(Views.axis_extents(target_axes)) == U32.to_nat(count) : Nat},
   +fits: {Views.fits(Views.View{target_axes,target_offset},U32.from_nat(Buffer.length(~Element,output))) == True{} : Bool},
   length_exact: {Buffer.length(~Element,output) == ShapeLaws.elements(target_shape) : Nat}) ->
   GatherValues.Facts(~Element,~Scatter<Before,Part>,~value(~Element,~Before,~Part,~before_value,~part_value),Scatter{before,part,Views.View{target_axes,target_offset},U32.to_nat(count)},target_shape,scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output))):
   Shape.Both{
-    Dense.WellFormed{
+    Contract.WellFormed{
       Equal.trans(Nat,Buffer.content_length(~Element,scatter_content(~Element,count,Views.View{target_axes,target_offset},Buffer.content(~Element,input),Buffer.content(~Element,output))),Buffer.length(~Element,output),ShapeLaws.elements(target_shape),
         program_length(~Element,count,Views.View{target_axes,target_offset},input,output),length_exact),
       program_ready(~Element,count,Views.View{target_axes,target_offset},input,output,ready)},
@@ -316,8 +341,8 @@ def guarded(~Element: Data,+source: Views.View,+target: Views.View,+input: Buffe
 
 def guarded_facts(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -> Element,~part_value: Part -> U32 -> Element,+before: Before,+part: Part,+target_axes: List<&2,Views.Axis>,+target_offset: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+count: U32,+source_axes: List<&2,Views.Axis>,+target_shape: List<&2,U32>,
   +ready: Buffer.Sized<Element,output>,
-  +part_values: Dense.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
-  +before_values: Dense.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
+  +part_values: Contract.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
+  +before_values: Contract.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
   +source_exact: {ShapeLaws.elements(Views.axis_extents(source_axes)) == Buffer.length(~Element,input) : Nat},
   +exact: {ShapeLaws.elements(Views.axis_extents(target_axes)) == U32.to_nat(count) : Nat},
   +length_exact: {Buffer.length(~Element,output) == ShapeLaws.elements(target_shape) : Nat},
@@ -345,8 +370,8 @@ def guarded_facts(~Element: Data,~Before: Data,~Part: Data,~before_value: Before
 # The storage content of the target after an accepted scatter of the part.
 def modeled_facts(~Element: Data,~Before: Data,~Part: Data,~before_value: Before -> U32 -> Element,~part_value: Part -> U32 -> Element,+before: Before,+part: Part,+target_axes: List<&2,Views.Axis>,+target_offset: U32,+input: Buffer.Model<Element>,+output: Buffer.Model<Element>,+count: U32,+source_axes: List<&2,Views.Axis>,+target_shape: List<&2,U32>,
   +ready: Buffer.Sized<Element,output>,
-  +part_values: Dense.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
-  +before_values: Dense.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
+  +part_values: Contract.Values(~Element,~Part,~part_value,part,Buffer.content(~Element,input)),
+  +before_values: Contract.Values(~Element,~Before,~before_value,before,Buffer.content(~Element,output)),
   +source_exact: {ShapeLaws.elements(Views.axis_extents(source_axes)) == Buffer.length(~Element,input) : Nat},
   +exact: {ShapeLaws.elements(Views.axis_extents(target_axes)) == U32.to_nat(count) : Nat},
   +length_exact: {Buffer.length(~Element,output) == ShapeLaws.elements(target_shape) : Nat},

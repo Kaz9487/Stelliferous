@@ -115,3 +115,11 @@ def unique(+a: Nat,+b: Nat,+q: Nat,+r: Nat,e: {a == Nat.add(Nat.mul(q,b),r) : Na
   bounded: {Nat.is_lt(r,b) == True{} : Bool}) -> {Nat.divmod(a,b) == (q,r) : Nat & Nat}:
   %Equal.sym(Nat,a,Nat.add(Nat.mul(q,b),r),e) : {Nat.divmod(_,b) == (q,r) : Nat & Nat}
   quotient_remainder(q,r,b,positive,bounded)
+
+def exact_quotient(+quotient: Nat,+divisor: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) ->
+  {Nat.div(Nat.mul(quotient,divisor),divisor) == quotient : Nat}:
+  %Addition.zero_right(Nat.mul(quotient,divisor)) :
+    {Nat.div(_,divisor) == quotient : Nat}
+  %Equal.sym(Nat & Nat,Nat.divmod(Nat.add(Nat.mul(quotient,divisor),0n),divisor),(quotient,0n),
+    quotient_remainder(quotient,0n,divisor,positive,positive)) : {Pair.fst(Nat,Nat,_) == quotient : Nat}
+  {==}

@@ -1,5 +1,5 @@
 # Band map: the in-place traversal of every leaf, the values it leaves, and the
-# public Banded invariant that unary calls preserve.
+# public band invariant that unary calls preserve.
 import Base
 import ./tensor_band_gather.bend as BandGather
 import ./tensor_band_model.bend as Model
@@ -16,9 +16,6 @@ import ./tensor_band_values.bend as BandValues
 import ./traversal_map_readback.bend as MapReadback
 import ../tensor_band_schedule.bend as BandSchedule
 import ../machine_limits.bend as Machine
-import ./nat_order.bend as Order
-import ./ordered_ranges.bend as Ranges
-import ./sequence_membership.bend as Members
 import ./storage_certificate.bend as Certificate
 import ./storage_refinement.bend as StorageLaws
 import ./tensor_band_each.bend as Each
@@ -29,7 +26,6 @@ import ./traversal_array_refinement.bend as ArrayLaws
 import ../tensor.bend as Tensors
 import ../traversal_array.bend as Traversal
 import ../traversal_loop.bend as Loop
-import ../traversal_partition.bend as Partition
 
 # Every band-local map has the common ordered in-place traversal semantics.
 # Fork selection changes ownership scheduling, not the content model.
@@ -89,20 +85,19 @@ def contents_of_owner(~Element: Data,buffer: Storage.Buffer<Element>) ->
   {==}
 
 # A lawful mapper over a whole band is a band leaf.
-def whole(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw(~Element,~operation,~mapper),+context: Unit,+input: Buffer.Model<Element>) ->
-  {Buffer.contents(~Element,Bands.map_whole_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),context,Buffer.pack(~Element,input))) ==
-    leaf_model(~Element,~Unit,~Access.apply_element(~Element,~operation),context,input) : Buffer.Content<Element>}:
-  Unit{} = context
+def whole(~Element: Data,~Operation: Data,~operation: Operation -> Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> @+context: Operation -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw_context(~Element,~Operation,~operation,~mapper),+context: Operation,+input: Buffer.Model<Element>) ->
+  {Buffer.contents(~Element,Bands.map_whole_context(~Element,~Operation,~mapper,context,Buffer.pack(~Element,input))) ==
+    leaf_model(~Element,~Operation,~operation,context,input) : Buffer.Content<Element>}:
   Buffer.Model{+tree,+length,+certificate} = input
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,mapper(length,0,Storage.Buffer{Tree.pack(Element,tree),length,certificate})),
-    owner_content(~Element,OperationLaws.observe_owner(~Element,mapper(length,0,Storage.Buffer{Tree.pack(Element,tree),length,certificate}))),
-    contents_of_owner(~Element,mapper(length,0,Storage.Buffer{Tree.pack(Element,tree),length,certificate}))) :
-    {_ == leaf_model(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},Buffer.Model{tree,length,certificate}) : Buffer.Content<Element>}
-  %Equal.sym(OperationLaws.Owner<&1,Array<Element>>,OperationLaws.observe_owner(~Element,mapper(length,0,Storage.Buffer{Tree.pack(Element,tree),length,certificate})),
-    OperationLaws.Owner{Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),length,0,Unit{},Tree.pack(Element,tree)),length},
-    lawful(length,0,tree,length,certificate)) :
-    {owner_content(~Element,_) == leaf_model(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},Buffer.Model{tree,length,certificate}) : Buffer.Content<Element>}
-  refinement_leaf(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},Buffer.Model{tree,length,certificate})
+  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,mapper(length,0,context,Storage.Buffer{Tree.pack(Element,tree),length,certificate})),
+    owner_content(~Element,OperationLaws.observe_owner(~Element,mapper(length,0,context,Storage.Buffer{Tree.pack(Element,tree),length,certificate}))),
+    contents_of_owner(~Element,mapper(length,0,context,Storage.Buffer{Tree.pack(Element,tree),length,certificate}))) :
+    {_ == leaf_model(~Element,~Operation,~operation,context,Buffer.Model{tree,length,certificate}) : Buffer.Content<Element>}
+  %Equal.sym(OperationLaws.Owner<&1,Array<Element>>,OperationLaws.observe_owner(~Element,mapper(length,0,context,Storage.Buffer{Tree.pack(Element,tree),length,certificate})),
+    OperationLaws.Owner{Traversal.map_in_place(~Element,~Operation,~operation,length,0,context,Tree.pack(Element,tree)),length},
+    lawful(length,0,context,tree,length,certificate)) :
+    {owner_content(~Element,_) == leaf_model(~Element,~Operation,~operation,context,Buffer.Model{tree,length,certificate}) : Buffer.Content<Element>}
+  refinement_leaf(~Element,~Operation,~operation,context,Buffer.Model{tree,length,certificate})
 
 def band(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,~leaf: @+context: Context -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~rule: LeafRule(~Element,~Context,~operation,~leaf),
   +context: Context,+first: U32,+rows: U32,+input: Buffer.Model<Element>) ->
@@ -112,27 +107,27 @@ def band(~Element: Data,~Context: Data,~operation: Context -> Element -> Element
     Buffer.contents(~Element,leaf(context,Buffer.pack(~Element,input))),leaf_model(~Element,~Context,~operation,context,input),
     rule(context,input))
 
-# The band map on the plan of its own bands, in either mode.
+# The band map on the plan of its own bands, run in parallel or not.
 def map(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,~leaf: @+context: Context -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~rule: LeafRule(~Element,~Context,~operation,~leaf),
-  +parallel: Bool,+geometry: Bands.Geometry,+context: Context,+bands: Model.Model<Element>) ->
-  {Model.contents(~Element,Bands.map_with(~Element,~Context,~leaf,Model.layout(~Element,bands),parallel,geometry,context,Model.pack(~Element,bands))) == model(~Element,~Context,~operation,context,bands) : Model.Content<Element>}:
+  +parallel: Bool,+context: Context,+bands: Model.Model<Element>) ->
+  {Model.contents(~Element,Bands.map_with(~Element,~Context,~leaf,Model.layout(~Element,bands),parallel,context,Model.pack(~Element,bands))) == model(~Element,~Context,~operation,context,bands) : Model.Content<Element>}:
   Each.mapped(~Element,~Context,~Bands.map_band(~Element,~Context,~leaf),~band_model(~Element,~Context,~operation),~band(~Element,~Context,~operation,~leaf,~rule),
-    bands,parallel && Bands.same_image(geometry,Model.layout(~Element,bands)),parallel,geometry,context)
+    bands,parallel,context)
 
-def refinement_scheduled_map(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw(~Element,~operation,~mapper),+operations: F32,+geometry: Bands.Geometry,+workers: U32,+bands: Model.Model<Element>) ->
-  {Model.contents(~Element,BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands))) ==
-    model(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},bands) : Model.Content<Element>}:
+def refinement_scheduled_map(~Element: Data,~Operation: Data,~operation: Operation -> Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> @+context: Operation -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw_context(~Element,~Operation,~operation,~mapper),+scope: Operation,+operations: F32,+geometry: Bands.Geometry,+workers: U32,+bands: Model.Model<Element>) ->
+  {Model.contents(~Element,BandSchedule.map_context(~Element,~Operation,~mapper,scope,geometry,workers,operations,Model.pack(~Element,bands))) ==
+    model(~Element,~Operation,~operation,scope,bands) : Model.Content<Element>}:
   %Equal.sym(Bands.Bands(~Element) & Bands.Plan,Bands.plan(~Element,Model.pack(~Element,bands)),(Model.pack(~Element,bands),Model.layout(~Element,bands)),Model.plan(~Element,bands)) :
-    {Model.contents(~Element,BandSchedule.mapped_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,_)) == model(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},bands) : Model.Content<Element>}
-  map(~Element,~Unit,~Access.apply_element(~Element,~operation),~Bands.map_whole_context(~Element,~Unit,~Operations.without_context(~Element,~mapper)),~whole(~Element,~operation,~mapper,~lawful),
-    BandSchedule.parallel(geometry,workers,8.0,operations,Model.layout(~Element,bands)),geometry,Unit{},bands)
+    {Model.contents(~Element,BandSchedule.mapped_context(~Element,~Operation,~mapper,scope,geometry,workers,operations,_)) == model(~Element,~Operation,~operation,scope,bands) : Model.Content<Element>}
+  map(~Element,~Operation,~operation,~Bands.map_whole_context(~Element,~Operation,~mapper),~whole(~Element,~Operation,~operation,~mapper,~lawful),
+    BandSchedule.parallel(geometry,workers,8.0,operations,Model.layout(~Element,bands)),scope,bands)
 
 def refinement_scheduled_scalar(~Element: Data,~operation: Element -> Element -> Element,+operations: F32,+geometry: Bands.Geometry,+workers: U32,+value: Element,+bands: Model.Model<Element>) ->
   {Model.contents(~Element,BandSchedule.scalar(~Element,~operation,geometry,workers,operations,value,Model.pack(~Element,bands))) ==
     model(~Element,~Element,~Bands.scalar_value(~Element,~operation),value,bands) : Model.Content<Element>}:
   %Equal.sym(Bands.Bands(~Element) & Bands.Plan,Bands.plan(~Element,Model.pack(~Element,bands)),(Model.pack(~Element,bands),Model.layout(~Element,bands)),Model.plan(~Element,bands)) :
     {Model.contents(~Element,BandSchedule.scalar_planned(~Element,~operation,geometry,workers,operations,value,_)) == model(~Element,~Element,~Bands.scalar_value(~Element,~operation),value,bands) : Model.Content<Element>}
-  map(~Element,~Element,~Bands.scalar_value(~Element,~operation),~Bands.map_leaf(~Element,~Element,~Bands.scalar_value(~Element,~operation)),~refinement_leaf(~Element,~Element,~Bands.scalar_value(~Element,~operation)),BandSchedule.parallel(geometry,workers,8.0,operations,Model.layout(~Element,bands)),geometry,value,bands)
+  map(~Element,~Element,~Bands.scalar_value(~Element,~operation),~Bands.map_leaf(~Element,~Element,~Bands.scalar_value(~Element,~operation)),~refinement_leaf(~Element,~Element,~Bands.scalar_value(~Element,~operation)),BandSchedule.parallel(geometry,workers,8.0,operations,Model.layout(~Element,bands)),value,bands)
 
 # Band maps preserve the common logical content relation. The static operation
 # may be arbitrary: no floating-point algebra or reassociation is used.
@@ -152,32 +147,46 @@ def leaf_content_ready(~Element: Data,~Context: Data,~operation: Context -> Elem
     %Equal.sym(U32,Tree.capacity(Element,refinement_values(~Element,~Context,~operation,length,context,tree)),Tree.capacity(Element,tree),MapReadback.capacity(~Element,~Context,~operation,length,0,context,tree)) :
       {Nat.is_le(length,U32.to_nat(_)) == True{} : Bool} room}
 
+def band_ready(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+context: Context,+first: U32,+rows: U32,+input: Buffer.Model<Element>,+ready: Buffer.Sized<Element,input>) ->
+  Buffer.ContentReady<Element,leaf_model(~Element,~Context,~operation,context,input)>:
+  leaf_content_ready(~Element,~Context,~operation,context,input,ready)
+
 def modeled_ready(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+context: Context,bands: Model.Model<Element>,ready: Model.Ready(~Element,bands)) ->
   Model.ContentReady(~Element,model(~Element,~Context,~operation,context,bands)):
-  match bands:
-    case Model.Leaf{input,first,rows}: leaf_content_ready(~Element,~Context,~operation,context,input,ready)
-    case Model.Fork{+left,+right}:
-      Shape.Both{left_ready,right_ready} = ready
-      Shape.Both{modeled_ready(~Element,~Context,~operation,context,left,left_ready),modeled_ready(~Element,~Context,~operation,context,right,right_ready)}
+  Each.map_ready_zero(~Element,~Context,~band_model(~Element,~Context,~operation),~Context,~Each.own(~Context),~Model.always(~Element,~Context,~Model.ready_band(~Element)),
+    ~band_ready(~Element,~Context,~operation),context,bands,ready)
 
-def modeled_shape(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+context: Context,+geometry: Bands.Geometry,bands: Model.Model<Element>,
+# What the rules of one band need beside the context of the operation.
+type Placed<-Context: Data> is Data:
+  Placed{context: Context,geometry: Bands.Geometry}
+
+def placed_context(~Context: Data,+scope: Placed<Context>) -> Context:
+  Placed{context,geometry} = scope
+  context
+
+def placed_fields(~Element: Data,~Context: Data,+scope: Placed<Context>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  Placed{context,geometry} = scope
+  BandShape.band_fields(~Element,geometry)
+
+def band_shape(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+scope: Placed<Context>,+first: U32,+rows: U32,+input: Buffer.Model<Element>,
+  +metadata: placed_fields(~Element,~Context,scope,first,rows,Buffer.content(~Element,input))) ->
+  placed_fields(~Element,~Context,scope,first,rows,leaf_model(~Element,~Context,~operation,placed_context(~Context,scope),input)):
+  Placed{+context,+geometry} = scope
+  Buffer.Model{tree,length,certificate} = input
+  metadata
+
+def modeled_shape(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+context: Context,+geometry: Bands.Geometry,+bands: Model.Model<Element>,
   metadata: BandShape.Contents(~Element,geometry,Model.content(~Element,bands))) -> BandShape.Contents(~Element,geometry,model(~Element,~Context,~operation,context,bands)):
-  match bands:
-    case Model.Leaf{Buffer.Model{tree,length,certificate},first,rows}: metadata
-    case Model.Fork{+left,+right}:
-      Shape.Both{left_metadata,right_metadata} = metadata
-      Shape.Both{modeled_shape(~Element,~Context,~operation,context,geometry,left,left_metadata),modeled_shape(~Element,~Context,~operation,context,geometry,right,right_metadata)}
+  Each.map_one(~Element,~Context,~band_model(~Element,~Context,~operation),~Placed<Context>,~placed_context(~Context),~placed_fields(~Element,~Context),~placed_fields(~Element,~Context),
+    ~band_shape(~Element,~Context,~operation),Placed{context,geometry},bands,metadata)
+
+def band_layout(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+context: Context,+first: U32,+rows: U32,+input: Buffer.Model<Element>) ->
+  {Model.content_layout(~Element,band_model(~Element,~Context,~operation,context,first,rows,input)) == Bands.Rows{first,rows} : Bands.Plan}:
+  {==}
 
 def modeled_layout(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+context: Context,bands: Model.Model<Element>) ->
   {Model.content_layout(~Element,model(~Element,~Context,~operation,context,bands)) == Model.layout(~Element,bands) : Bands.Plan}:
-  match bands:
-    case Model.Leaf{Buffer.Model{tree,length,certificate},first,rows}: {==}
-    case Model.Fork{+left,+right}:
-      %modeled_layout(~Element,~Context,~operation,context,left) :
-        {Bands.Split{Model.content_layout(~Element,model(~Element,~Context,~operation,context,left)),Model.content_layout(~Element,model(~Element,~Context,~operation,context,right))} == Bands.Split{_,Model.layout(~Element,right)} : Bands.Plan}
-      %modeled_layout(~Element,~Context,~operation,context,right) :
-        {Bands.Split{Model.content_layout(~Element,model(~Element,~Context,~operation,context,left)),Model.content_layout(~Element,model(~Element,~Context,~operation,context,right))} == Bands.Split{Model.content_layout(~Element,model(~Element,~Context,~operation,context,left)),_} : Bands.Plan}
-      {==}
+  Each.mapped_layout(~Element,~Context,~band_model(~Element,~Context,~operation),~band_layout(~Element,~Context,~operation),context,bands)
 
 def modeled_well_formed(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+context: Context,+geometry: Bands.Geometry,+bands: Model.Model<Element>,
   evidence: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>) -> BandShape.WellFormed<Element,geometry,model(~Element,~Context,~operation,context,bands)>:
@@ -186,12 +195,12 @@ def modeled_well_formed(~Element: Data,~Context: Data,~operation: Context -> Ele
     %Equal.sym(Bands.Plan,Model.content_layout(~Element,model(~Element,~Context,~operation,context,bands)),Model.layout(~Element,bands),modeled_layout(~Element,~Context,~operation,context,bands)) : BandPlan.Coverage(_,0n,Inspection.total_rows(geometry))
     %Equal.sym(Bands.Plan,Model.layout(~Element,bands),Model.content_layout(~Element,Model.content(~Element,bands)),Model.layout_matches_content(~Element,bands)) : BandPlan.Coverage(_,0n,Inspection.total_rows(geometry)) coverage}
 
-def scheduled_map_well_formed(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw(~Element,~operation,~mapper),+operations: F32,+geometry: Bands.Geometry,+workers: U32,+bands: Model.Model<Element>,
+def scheduled_map_well_formed_context(~Element: Data,~Operation: Data,~operation: Operation -> Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> @+context: Operation -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw_context(~Element,~Operation,~operation,~mapper),+scope: Operation,+operations: F32,+geometry: Bands.Geometry,+workers: U32,+bands: Model.Model<Element>,
   evidence: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>) ->
-  BandShape.WellFormed<Element,geometry,Model.contents(~Element,BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands)))>:
-  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands))),
-    model(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},bands),refinement_scheduled_map(~Element,~operation,~mapper,~lawful,operations,geometry,workers,bands)) : BandShape.WellFormed<Element,geometry,_>
-  modeled_well_formed(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},geometry,bands,evidence)
+  BandShape.WellFormed<Element,geometry,Model.contents(~Element,BandSchedule.map_context(~Element,~Operation,~mapper,scope,geometry,workers,operations,Model.pack(~Element,bands)))>:
+  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandSchedule.map_context(~Element,~Operation,~mapper,scope,geometry,workers,operations,Model.pack(~Element,bands))),
+    model(~Element,~Operation,~operation,scope,bands),refinement_scheduled_map(~Element,~Operation,~operation,~mapper,~lawful,scope,operations,geometry,workers,bands)) : BandShape.WellFormed<Element,geometry,_>
+  modeled_well_formed(~Element,~Operation,~operation,scope,geometry,bands,evidence)
 
 def scheduled_scalar_well_formed(~Element: Data,~operation: Element -> Element -> Element,+operations: F32,+scalar: Element,+geometry: Bands.Geometry,+workers: U32,+bands: Model.Model<Element>,
   evidence: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>) ->
@@ -220,29 +229,30 @@ def mapped_cell(~Element: Data,~Operation: Data,~Logical: Data,~operation: Opera
       Equal.cong(Element,Element,element => operation(operation_context,element),Tree.read(Element,Buffer.tree(~Element,input),U32.from_nat(position)),original(logical_context,pixel),equal))}
 
 # What one leaf supplies to every cell of its output.
-type LeafCells<-Element: Data,-Operation: Data,-Logical: Data,-original: Logical -> U32 -> Element> is Data:
-  LeafCells{operation_context: Operation,logical_context: Logical,geometry: Bands.Geometry,first: U32,rows: U32,input: Buffer.Model<Element>,ready: Buffer.Sized<Element,input>,
-    values: BandValues.Leaf(~Element,~Logical,~original,logical_context,geometry,first,rows,Buffer.tree(~Element,input),Buffer.length(~Element,input))}
+type CellScope<-Element: Data,-Operation: Data,-Logical: Data,-original: Logical -> U32 -> Element> is Data:
+  CellScope{operation_context: Operation,logical_context: Logical,geometry: Bands.Geometry,first: U32,rows: U32,input: Buffer.Model<Element>,ready: Buffer.Sized<Element,input>,values: BandValues.Leaf(~Element,~Logical,~original,logical_context,geometry,first,rows,Buffer.tree(~Element,input),Buffer.length(~Element,input))}
 
-def cells_geometry(~Element: Data,~Operation: Data,~Logical: Data,~original: Logical -> U32 -> Element,evidence: LeafCells<Element,Operation,Logical,original>) -> Bands.Geometry:
-  LeafCells{operation_context,logical_context,geometry,first,rows,input,ready,values} = evidence
-  geometry
+def cell_channels(~Element: Data,~Operation: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Operation,Logical,original>) -> Nat:
+  CellScope{operation_context,logical_context,geometry,first,rows,input,ready,values} = scope
+  BandValues.channels(geometry)
 
-def cells_rows(~Element: Data,~Operation: Data,~Logical: Data,~original: Logical -> U32 -> Element,evidence: LeafCells<Element,Operation,Logical,original>) -> U32:
-  LeafCells{operation_context,logical_context,geometry,first,rows,input,ready,values} = evidence
-  rows
+def cell_rows(~Element: Data,~Operation: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Operation,Logical,original>) -> Nat:
+  CellScope{operation_context,logical_context,geometry,first,rows,input,ready,values} = scope
+  U32.to_nat(rows)
 
-def Cell(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~original: Logical -> U32 -> Element,+evidence: LeafCells<Element,Operation,Logical,original>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
-  LeafCells{+operation_context,logical_context,geometry,first,rows,+input,ready,values} = evidence
+def cell_width(~Element: Data,~Operation: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Operation,Logical,original>) -> Nat:
+  CellScope{operation_context,logical_context,geometry,first,rows,input,ready,values} = scope
+  BandValues.width(geometry)
+
+def Cell(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Operation,Logical,original>,+channel: Nat,+row: Nat,+column: Nat) -> Data:
+  CellScope{operation_context,logical_context,geometry,first,rows,input,ready,values} = scope
   BandValues.At(~Element,~Context<Operation,Logical>,~value(~Element,~Operation,~Logical,~operation,~original),Context{operation_context,logical_context},geometry,first,rows,
     Buffer.content_tree(~Element,leaf_model(~Element,~Operation,~operation,operation_context,input)),Buffer.content_length(~Element,leaf_model(~Element,~Operation,~operation,operation_context,input)),channel,row,column)
 
-def leaf_cell(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~original: Logical -> U32 -> Element,+evidence: LeafCells<Element,Operation,Logical,original>,+channel: Nat,+row: Nat,+column: Nat,
-  channel_inside: {Nat.is_lt(channel,BandValues.channels(cells_geometry(~Element,~Operation,~Logical,~original,evidence))) == True{} : Bool},
-  row_inside: {Nat.is_lt(row,U32.to_nat(cells_rows(~Element,~Operation,~Logical,~original,evidence))) == True{} : Bool},
-  column_inside: {Nat.is_lt(column,BandValues.width(cells_geometry(~Element,~Operation,~Logical,~original,evidence))) == True{} : Bool}) ->
-  Cell(~Element,~Operation,~Logical,~operation,~original,evidence,channel,row,column):
-  LeafCells{+operation_context,+logical_context,+geometry,+first,+rows,+input,ready,values} = evidence
+def leaf_cell(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~original: Logical -> U32 -> Element,+scope: CellScope<Element,Operation,Logical,original>,+channel: Nat,+row: Nat,+column: Nat,
+  +channel_inside: {Nat.is_lt(channel,cell_channels(~Element,~Operation,~Logical,~original,scope)) == True{} : Bool},+row_inside: {Nat.is_lt(row,cell_rows(~Element,~Operation,~Logical,~original,scope)) == True{} : Bool},+column_inside: {Nat.is_lt(column,cell_width(~Element,~Operation,~Logical,~original,scope)) == True{} : Bool}) ->
+  Cell(~Element,~Operation,~Logical,~operation,~original,scope,channel,row,column):
+  CellScope{+operation_context,+logical_context,+geometry,+first,+rows,+input,+ready,+values} = scope
   mapped_cell(~Element,~Operation,~Logical,~operation,~original,operation_context,logical_context,geometry,first,rows,input,channel,row,column,ready,
     BandValues.leaf_cell(~Element,~Logical,~original,logical_context,geometry,first,rows,Buffer.tree(~Element,input),Buffer.length(~Element,input),channel,row,column,values,channel_inside,row_inside,column_inside))
 
@@ -252,32 +262,47 @@ def semantics_leaf(~Element: Data,~Operation: Data,~Logical: Data,~operation: Op
   BandValues.Values(~Element,~Context<Operation,Logical>,~value(~Element,~Operation,~Logical,~operation,~original),Context{operation_context,logical_context},geometry,
     Model.RowBand{leaf_model(~Element,~Operation,~operation,operation_context,input),first,rows}):
   Buffer.Model{+tree,+length,+certificate} = input
-  BandValues.cells(~LeafCells<Element,Operation,Logical,original>,~Cell(~Element,~Operation,~Logical,~operation,~original),~cells_geometry(~Element,~Operation,~Logical,~original),~cells_rows(~Element,~Operation,~Logical,~original),~leaf_cell(~Element,~Operation,~Logical,~operation,~original),
-    LeafCells{operation_context,logical_context,geometry,first,rows,Buffer.Model{tree,length,certificate},ready,values})
+  BandValues.table(~CellScope<Element,Operation,Logical,original>,~Cell(~Element,~Operation,~Logical,~operation,~original),~cell_channels(~Element,~Operation,~Logical,~original),~cell_rows(~Element,~Operation,~Logical,~original),~cell_width(~Element,~Operation,~Logical,~original),~leaf_cell(~Element,~Operation,~Logical,~operation,~original),CellScope{operation_context,logical_context,geometry,first,rows,Buffer.Model{tree,length,certificate},ready,values})
+
+type Valued<-Operation: Data,-Logical: Data> is Data:
+  Valued{operation_context: Operation,logical_context: Logical,geometry: Bands.Geometry}
+
+def valued_context(~Operation: Data,~Logical: Data,+scope: Valued<Operation,Logical>) -> Operation:
+  Valued{operation_context,logical_context,geometry} = scope
+  operation_context
+
+def valued_before(~Element: Data,~Operation: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Valued<Operation,Logical>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  Valued{operation_context,logical_context,geometry} = scope
+  BandValues.band_values(~Element,~Logical,~original,logical_context,geometry)
+
+def valued_after(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~original: Logical -> U32 -> Element,+scope: Valued<Operation,Logical>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  Valued{operation_context,logical_context,geometry} = scope
+  BandValues.band_values(~Element,~Context<Operation,Logical>,~value(~Element,~Operation,~Logical,~operation,~original),Context{operation_context,logical_context},geometry)
+
+def band_semantics(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~original: Logical -> U32 -> Element,+scope: Valued<Operation,Logical>,+first: U32,+rows: U32,+input: Buffer.Model<Element>,+ready: Buffer.Sized<Element,input>,
+  +values: valued_before(~Element,~Operation,~Logical,~original,scope,first,rows,Buffer.content(~Element,input))) ->
+  valued_after(~Element,~Operation,~Logical,~operation,~original,scope,first,rows,leaf_model(~Element,~Operation,~operation,valued_context(~Operation,~Logical,scope),input)):
+  Valued{+operation_context,+logical_context,+geometry} = scope
+  semantics_leaf(~Element,~Operation,~Logical,~operation,~original,operation_context,logical_context,geometry,first,rows,input,ready,values)
 
 def modeled(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~original: Logical -> U32 -> Element,
-  +operation_context: Operation,+logical_context: Logical,+geometry: Bands.Geometry,bands: Model.Model<Element>,ready: Model.Ready(~Element,bands),
+  +operation_context: Operation,+logical_context: Logical,+geometry: Bands.Geometry,+bands: Model.Model<Element>,ready: Model.Ready(~Element,bands),
   values: BandValues.Values(~Element,~Logical,~original,logical_context,geometry,Model.content(~Element,bands))) ->
   BandValues.Values(~Element,~Context<Operation,Logical>,~value(~Element,~Operation,~Logical,~operation,~original),Context{operation_context,logical_context},geometry,
     model(~Element,~Operation,~operation,operation_context,bands)):
-  match bands:
-    case Model.Leaf{input,first,rows}:
-      semantics_leaf(~Element,~Operation,~Logical,~operation,~original,operation_context,logical_context,geometry,first,rows,input,ready,values)
-    case Model.Fork{+left,+right}:
-      Shape.Both{left_ready,right_ready} = ready
-      Shape.Both{left_values,right_values} = values
-      Shape.Both{modeled(~Element,~Operation,~Logical,~operation,~original,operation_context,logical_context,geometry,left,left_ready,left_values),
-        modeled(~Element,~Operation,~Logical,~operation,~original,operation_context,logical_context,geometry,right,right_ready,right_values)}
+  Each.map_ready_one(~Element,~Operation,~band_model(~Element,~Operation,~operation),~Valued<Operation,Logical>,~valued_context(~Operation,~Logical),
+    ~valued_before(~Element,~Operation,~Logical,~original),~valued_after(~Element,~Operation,~Logical,~operation,~original),
+    ~band_semantics(~Element,~Operation,~Logical,~operation,~original),Valued{operation_context,logical_context,geometry},bands,ready,values)
 
-def semantics_scheduled_map(~Element: Data,~Logical: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw(~Element,~operation,~mapper),~original: Logical -> U32 -> Element,+operations: F32,
+def semantics_scheduled_map(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> @+context: Operation -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw_context(~Element,~Operation,~operation,~mapper),~original: Logical -> U32 -> Element,+scope: Operation,+operations: F32,
   +logical_context: Logical,+geometry: Bands.Geometry,+workers: U32,+bands: Model.Model<Element>,ready: Model.Ready(~Element,bands),
   values: BandValues.Values(~Element,~Logical,~original,logical_context,geometry,Model.content(~Element,bands))) ->
-  BandValues.Values(~Element,~Context<Unit,Logical>,~value(~Element,~Unit,~Logical,~Access.apply_element(~Element,~operation),~original),Context{Unit{},logical_context},geometry,
-    Model.contents(~Element,BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands)))):
-  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands))),
-    model(~Element,~Unit,~Access.apply_element(~Element,~operation),Unit{},bands),refinement_scheduled_map(~Element,~operation,~mapper,~lawful,operations,geometry,workers,bands)) :
-    BandValues.Values(~Element,~Context<Unit,Logical>,~value(~Element,~Unit,~Logical,~Access.apply_element(~Element,~operation),~original),Context{Unit{},logical_context},geometry,_)
-  modeled(~Element,~Unit,~Logical,~Access.apply_element(~Element,~operation),~original,Unit{},logical_context,geometry,bands,ready,values)
+  BandValues.Values(~Element,~Context<Operation,Logical>,~value(~Element,~Operation,~Logical,~operation,~original),Context{scope,logical_context},geometry,
+    Model.contents(~Element,BandSchedule.map_context(~Element,~Operation,~mapper,scope,geometry,workers,operations,Model.pack(~Element,bands)))):
+  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandSchedule.map_context(~Element,~Operation,~mapper,scope,geometry,workers,operations,Model.pack(~Element,bands))),
+    model(~Element,~Operation,~operation,scope,bands),refinement_scheduled_map(~Element,~Operation,~operation,~mapper,~lawful,scope,operations,geometry,workers,bands)) :
+    BandValues.Values(~Element,~Context<Operation,Logical>,~value(~Element,~Operation,~Logical,~operation,~original),Context{scope,logical_context},geometry,_)
+  modeled(~Element,~Operation,~Logical,~operation,~original,scope,logical_context,geometry,bands,ready,values)
 
 def semantics_scheduled_scalar(~Element: Data,~Logical: Data,~operation: Element -> Element -> Element,~original: Logical -> U32 -> Element,+operations: F32,
   +scalar: Element,+logical_context: Logical,+geometry: Bands.Geometry,+workers: U32,+bands: Model.Model<Element>,ready: Model.Ready(~Element,bands),
@@ -288,21 +313,6 @@ def semantics_scheduled_scalar(~Element: Data,~Logical: Data,~operation: Element
     model(~Element,~Element,~Bands.scalar_value(~Element,~operation),scalar,bands),refinement_scheduled_scalar(~Element,~operation,operations,geometry,workers,scalar,bands)) :
     BandValues.Values(~Element,~Context<Element,Logical>,~value(~Element,~Element,~Logical,~Bands.scalar_value(~Element,~operation),~original),Context{scalar,logical_context},geometry,_)
   modeled(~Element,~Element,~Logical,~Bands.scalar_value(~Element,~operation),~original,scalar,logical_context,geometry,bands,ready,values)
-
-def gathered_map(~Element: Data,~Logical: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw(~Element,~operation,~mapper),~original: Logical -> U32 -> Element,+operations: F32,
-  +logical_context: Logical,+geometry: Bands.Geometry,+limits: Machine.Limits,+workers: U32,+bands: Model.Model<Element>,+result: Buffer.Model<Element>,
-  domain: BandGather.Domain<geometry,limits,Tree.capacity(Element,Buffer.tree(~Element,result))>,
-  +well_formed: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>,values: BandValues.Values(~Element,~Logical,~original,logical_context,geometry,Model.content(~Element,bands)),
-  +image: Nat,+channel: Nat,+row: Nat,+column: Nat,inside: BandGather.Inside(geometry,image,channel,row,column),
-  depth_ok: {Nat.is_le(Buffer.depth(~Element,result),30n) == True{} : Bool}) ->
-  {Buffer.value(~Element,U32.from_nat(BandGather.point(geometry,image,channel,row,column)),
-    Buffer.contents(~Element,Bands.gather(~Element,geometry,BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands)),Buffer.pack(~Element,result)))) ==
-    operation(original(logical_context,U32.from_nat(BandGather.point(geometry,image,channel,row,column)))) : Element}:
-  BandShape.WellFormed{metadata,ready,coverage} = well_formed
-  BandGather.observed_value(~Element,~Context<Unit,Logical>,~value(~Element,~Unit,~Logical,~Access.apply_element(~Element,~operation),~original),Context{Unit{},logical_context},geometry,limits,
-    BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands)),Model.observe(~Element,BandSchedule.map_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},geometry,workers,operations,Model.pack(~Element,bands))),result,domain,
-    scheduled_map_well_formed(~Element,~operation,~mapper,~lawful,operations,geometry,workers,bands,well_formed),
-    semantics_scheduled_map(~Element,~Logical,~operation,~mapper,~lawful,~original,operations,logical_context,geometry,workers,bands,Model.ready(~Element,bands,ready),values),image,channel,row,column,inside,depth_ok)
 
 def gathered_scalar(~Element: Data,~Logical: Data,~operation: Element -> Element -> Element,~original: Logical -> U32 -> Element,+operations: F32,
   +scalar: Element,+logical_context: Logical,+geometry: Bands.Geometry,+limits: Machine.Limits,+workers: U32,+bands: Model.Model<Element>,+result: Buffer.Model<Element>,
@@ -319,8 +329,8 @@ def gathered_scalar(~Element: Data,~Logical: Data,~operation: Element -> Element
     scheduled_scalar_well_formed(~Element,~operation,operations,scalar,geometry,workers,bands,well_formed),
     semantics_scheduled_scalar(~Element,~Logical,~operation,~original,operations,scalar,logical_context,geometry,workers,bands,Model.ready(~Element,bands,ready),values),image,channel,row,column,inside,depth_ok)
 
-# Public Banded unary calls preserve the representation invariant and the
-# shared logical values. Dense and failed inputs have their own API contracts.
+# Public unary calls preserve the band invariant and the shared logical
+# values. Failed inputs have their own API contracts.
 # The positive-width receipt selects the unchanged band indexed schedule; the
 # indexed operation also needs the gather domain, which keeps the native index
 # of every pixel within the machine word.
@@ -331,7 +341,7 @@ def indexed_width_guard(geometry: Bands.Geometry) ->
 
 def indexed_selected(~Element: Data,~operation: U32 -> Element -> Element,+operations: F32,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,bands: Bands.Bands(~Element),
   width_positive: {BandShape.width_positive(geometry) == True{} : Bool}) ->
-  {Tensors.apply_indexed(~Element,~operation,operations,Tensors.Banded{bands,geometry,shape,fill,Tensors.Usable{},workers}) ==
+  {Tensors.apply_indexed(~Element,~operation,operations,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Usable{},workers}) ==
     Tensors.apply_indexed_positive(~Element,~operation,True{},operations,bands,geometry,shape,fill,workers) : Tensors.Tensor<Element>}:
   %Equal.sym(Bool,Tensors.indexed_width_positive(geometry),True{},
     Equal.trans(Bool,Tensors.indexed_width_positive(geometry),BandShape.width_positive(geometry),True{},indexed_width_guard(geometry),width_positive)) :
@@ -341,30 +351,28 @@ def indexed_selected(~Element: Data,~operation: U32 -> Element -> Element,+opera
 
 def WellFormed(~Element: Data,tensor: Tensors.Tensor<Element>) -> Data:
   match tensor:
-    case Tensors.Banded{bands,geometry,shape,fill,status,workers}: BandShape.WellFormed<Element,geometry,Model.contents(~Element,bands)>
-    case Tensors.Tensor{storage,shape,fill,status,workers}: Empty
+    case Tensors.Tensor{bands,geometry,shape,fill,status,workers}: BandShape.WellFormed<Element,geometry,Model.contents(~Element,bands)>
 
 def LogicalValues(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,tensor: Tensors.Tensor<Element>) -> Data:
   match tensor:
-    case Tensors.Banded{bands,geometry,shape,fill,status,workers}: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.contents(~Element,bands))
-    case Tensors.Tensor{storage,shape,fill,status,workers}: Empty
+    case Tensors.Tensor{bands,geometry,shape,fill,status,workers}: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.contents(~Element,bands))
 
-def apply_ready(~Element: Data,~Logical: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw(~Element,~operation,~mapper),~original: Logical -> U32 -> Element,+name: String,+operations: F32,
+def apply_ready(~Element: Data,~Operation: Data,~Logical: Data,~operation: Operation -> Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> @+context: Operation -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: OperationLaws.MapLaw_context(~Element,~Operation,~operation,~mapper),~original: Logical -> U32 -> Element,+scope: Operation,+operations: F32,
   +logical: Logical,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+bands: Model.Model<Element>,
   +well_formed: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>,values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,bands))) ->
-  Shape.Both<WellFormed(~Element,Tensors.apply(~Element,~mapper,name,operations,Tensors.Banded{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers})),
-    LogicalValues(~Element,~Context<Unit,Logical>,~value(~Element,~Unit,~Logical,~Access.apply_element(~Element,~operation),~original),Context{Unit{},logical},
-      Tensors.apply(~Element,~mapper,name,operations,Tensors.Banded{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers}))>:
+  Shape.Both<WellFormed(~Element,Tensors.apply_context(~Element,~Operation,~mapper,scope,operations,Tensors.Tensor{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers})),
+    LogicalValues(~Element,~Context<Operation,Logical>,~value(~Element,~Operation,~Logical,~operation,~original),Context{scope,logical},
+      Tensors.apply_context(~Element,~Operation,~mapper,scope,operations,Tensors.Tensor{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers}))>:
   BandShape.WellFormed{metadata,ready,coverage} = well_formed
-  Shape.Both{scheduled_map_well_formed(~Element,~operation,~mapper,~lawful,operations,geometry,workers,bands,well_formed),
-    semantics_scheduled_map(~Element,~Logical,~operation,~mapper,~lawful,~original,operations,logical,geometry,workers,bands,Model.ready(~Element,bands,ready),values)}
+  Shape.Both{scheduled_map_well_formed_context(~Element,~Operation,~operation,~mapper,~lawful,scope,operations,geometry,workers,bands,well_formed),
+    semantics_scheduled_map(~Element,~Operation,~Logical,~operation,~mapper,~lawful,~original,scope,operations,logical,geometry,workers,bands,Model.ready(~Element,bands,ready),values)}
 
 def scalar_ready(~Element: Data,~Logical: Data,~operation: Element -> Element -> Element,~original: Logical -> U32 -> Element,+operations: F32,
-  +logical: Logical,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+bands: Model.Model<Element>,+scalar: Element,+name: String,
+  +logical: Logical,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+bands: Model.Model<Element>,+scalar: Element,
   +well_formed: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>,values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,bands))) ->
-  Shape.Both<WellFormed(~Element,Tensors.combine_scalar(~Element,~operation,name,operations,Tensors.Banded{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers},scalar)),
+  Shape.Both<WellFormed(~Element,Tensors.combine_scalar(~Element,~operation,operations,Tensors.Tensor{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers},scalar)),
     LogicalValues(~Element,~Context<Element,Logical>,~value(~Element,~Element,~Logical,~Bands.scalar_value(~Element,~operation),~original),Context{scalar,logical},
-      Tensors.combine_scalar(~Element,~operation,name,operations,Tensors.Banded{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers},scalar))>:
+      Tensors.combine_scalar(~Element,~operation,operations,Tensors.Tensor{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers},scalar))>:
   BandShape.WellFormed{metadata,ready,coverage} = well_formed
   Shape.Both{scheduled_scalar_well_formed(~Element,~operation,operations,scalar,geometry,workers,bands,well_formed),
     semantics_scheduled_scalar(~Element,~Logical,~operation,~original,operations,scalar,logical,geometry,workers,bands,Model.ready(~Element,bands,ready),values)}
@@ -374,10 +382,10 @@ def indexed_ready(~Element: Data,~Logical: Data,~operation: U32 -> Element -> El
   domain: BandGather.Domain<geometry,limits,capacity>,
   +width_positive: {BandShape.width_positive(geometry) == True{} : Bool},+well_formed: BandShape.WellFormed<Element,geometry,Model.content(~Element,bands)>,
   values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.content(~Element,bands))) ->
-  Shape.Both<WellFormed(~Element,Tensors.apply_indexed(~Element,~operation,operations,Tensors.Banded{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers})),
+  Shape.Both<WellFormed(~Element,Tensors.apply_indexed(~Element,~operation,operations,Tensors.Tensor{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers})),
     LogicalValues(~Element,~Logical,~BandIndexed.value(~Element,~Logical,~operation,~original),logical,
-      Tensors.apply_indexed(~Element,~operation,operations,Tensors.Banded{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers}))>:
-  %Equal.sym(Tensors.Tensor<Element>,Tensors.apply_indexed(~Element,~operation,operations,Tensors.Banded{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers}),
+      Tensors.apply_indexed(~Element,~operation,operations,Tensors.Tensor{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers}))>:
+  %Equal.sym(Tensors.Tensor<Element>,Tensors.apply_indexed(~Element,~operation,operations,Tensors.Tensor{Model.pack(~Element,bands),geometry,shape,fill,Tensors.Usable{},workers}),
     Tensors.apply_indexed_positive(~Element,~operation,True{},operations,Model.pack(~Element,bands),geometry,shape,fill,workers),
     indexed_selected(~Element,~operation,operations,geometry,shape,fill,workers,Model.pack(~Element,bands),width_positive)) :
     Shape.Both<WellFormed(~Element,_),LogicalValues(~Element,~Logical,~BandIndexed.value(~Element,~Logical,~operation,~original),logical,_)>
@@ -385,17 +393,18 @@ def indexed_ready(~Element: Data,~Logical: Data,~operation: U32 -> Element -> El
     BandIndexed.scheduled_values(~Element,~Logical,~operation,~original,operations,logical,geometry,limits,capacity,workers,fill,bands,domain,width_positive,well_formed,values)}
 
 # Sticky failure does not apply an operation or discard the band layout.
-def apply_failed(~Element: Data,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,+name: String,+operations: F32,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+problem: Tensors.Problem,bands: Bands.Bands(~Element)) ->
-  {Tensors.apply(~Element,~mapper,name,operations,Tensors.Banded{bands,geometry,shape,fill,Tensors.Failed{problem},workers}) ==
-    Tensors.Banded{bands,geometry,shape,fill,Tensors.Failed{problem},workers} : Tensors.Tensor<Element>}:
+def apply_failed(~Element: Data,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,+operations: F32,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+problem: Tensors.Problem,bands: Bands.Bands(~Element)) ->
+  {Tensors.apply(~Element,~mapper,operations,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers}) ==
+    Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers} : Tensors.Tensor<Element>}:
   {==}
 
 def indexed_failed(~Element: Data,~operation: U32 -> Element -> Element,+operations: F32,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+problem: Tensors.Problem,bands: Bands.Bands(~Element)) ->
-  {Tensors.apply_indexed(~Element,~operation,operations,Tensors.Banded{bands,geometry,shape,fill,Tensors.Failed{problem},workers}) ==
-    Tensors.Banded{bands,geometry,shape,fill,Tensors.Failed{problem},workers} : Tensors.Tensor<Element>}:
+  {Tensors.apply_indexed(~Element,~operation,operations,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers}) ==
+    Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers} : Tensors.Tensor<Element>}:
   {==}
 
-def scalar_failed(~Element: Data,~operation: Element -> Element -> Element,+operations: F32,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+problem: Tensors.Problem,+scalar: Element,+name: String,bands: Bands.Bands(~Element)) ->
-  {Tensors.combine_scalar(~Element,~operation,name,operations,Tensors.Banded{bands,geometry,shape,fill,Tensors.Failed{problem},workers},scalar) ==
-    Tensors.Banded{bands,geometry,shape,fill,Tensors.Failed{problem},workers} : Tensors.Tensor<Element>}:
+def scalar_failed(~Element: Data,~operation: Element -> Element -> Element,+operations: F32,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: Element,+workers: U32,+problem: Tensors.Problem,+scalar: Element,bands: Bands.Bands(~Element)) ->
+  {Tensors.combine_scalar(~Element,~operation,operations,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers},scalar) ==
+    Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers} : Tensors.Tensor<Element>}:
   {==}
+

@@ -2,21 +2,11 @@
 import Base
 import ../specification.bend as ConvSpec
 import ../../lib/machine_limits.bend as Machine
-import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/nat_order.bend as Order
-import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/binary_radix.bend as Radix
-import ../../lib/proofs/u32_comparison.bend as Comparison
-import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ./convolution_guard_facts.bend as Guards
 import ./concrete_support_guard.bend as Support
-import ./supported_padded_coordinates.bend as Padded
-import ./reduction_coordinate_bounds.bend as Coordinates
-import ./packed_output_bounds.bend as Output
-import ./gather_output_index.bend as GatherOutputIndex
-import ./gather_write_program.bend as GatherWrites
 
 type Geometry<-limits: Machine.Limits,-problem: ConvSpec.Problem,-offset: U32,-span: U32> is Data:
   Geometry{valid: Guards.Valid<problem>,supported: Support.FastSupported<limits,problem>,

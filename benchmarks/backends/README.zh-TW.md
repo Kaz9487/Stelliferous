@@ -15,9 +15,9 @@ python run.py backends --cuda     # 另外執行手寫的 C 與 CUDA 程式
 
 - 每個後端在同一個 process 內做兩次暖機、七個樣本。
 - 計時：配置、packing、kernel、gather 與解碼。不計時：載入、編譯、前處理、診斷輸出與 NMS。
-- Bend 執行的是[範例程式](../../examples/yolov5/yolov5n.bend)。每次計時的 forward 前先複製影像與權重；allocator 與 worker 保持存活。它的時鐘以毫秒計。
+- Bend 執行的是[範例程式](../../examples/yolov5/yolov5n.bend)。每次計時的 forward 前先複製影像與權重。allocator 與 worker 保持存活。它的時鐘以毫秒計。
 - 沒有固定 CPU affinity 與頻率。GPU 計時在讀取時鐘前先同步。
-- 數值驗證另外執行；缺少結果就視為失敗。
+- 數值驗證另外執行，缺少結果就視為失敗。
 
 ## 設定
 
@@ -40,5 +40,5 @@ python -m pip install --target out/python_packages threadpoolctl
 | [bench_numpy.py](bench_numpy.py)、[bench_torch.py](bench_torch.py)、[run_bend.sh](run_bend.sh) | 執行單一後端並取樣 |
 | [run_cpu.sh](run_cpu.sh) | 選擇 CPU 案例並記錄環境 |
 | [run_cuda.sh](run_cuda.sh)、[probe_cuda.py](probe_cuda.py) | CUDA 能力檢查與 CUDA 後端 |
-| [validate.py](validate.py) | 數值門檻；`--backends` 指定哪些結果必須存在 |
+| [validate.py](validate.py) | 數值門檻。`--backends` 指定哪些結果必須存在 |
 | [write_report.py](write_report.py) | 報告，兩種語言 |

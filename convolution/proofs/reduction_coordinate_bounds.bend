@@ -5,7 +5,6 @@ import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import Base
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ./convolution_guard_facts.bend as Guards
-import ./concrete_support_guard.bend as Support
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./supported_padded_coordinates.bend as Padded
 import ./native_weight_refinement.bend as NativeWeightRefinement
@@ -13,9 +12,9 @@ import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
-import ../../lib/proofs/word_encoding.bend as WordEncoding
 import ../../lib/proofs/binary_radix.bend as Radix
 import ../specification.bend as ConvSpec
+import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 
 def inner(+p: ConvSpec.Problem) -> Nat:
   Nat.mul(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),Guards.kernel(p)))
@@ -25,8 +24,8 @@ def inner_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid
   Machine.coordinate(limits)>) -> {Nat.is_le(inner(p),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
   Guards.Valid{v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10} = valid
   Order.transitive(inner(p),Nat.mul(Guards.output_channel_count(p),inner(p)),U32.to_nat(Machine.capacity(limits)),
-    Padded.product_has_right(Guards.output_channel_count(p),inner(p),v1),
-    %Guards.reflect(ConvSpec.length(Guards.weights(p)),Nat.mul(Guards.output_channel_count(p),inner(p)),
+    DivisionOrder.le_multiple(Guards.output_channel_count(p),inner(p),v1),
+    %Order.equal_of_is_eq(ConvSpec.length(Guards.weights(p)),Nat.mul(Guards.output_channel_count(p),inner(p)),
       v9) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     NativeWeightRefinement.weights_bound(limits,p,support))
 
@@ -36,7 +35,7 @@ def square_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Val
     U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
   Guards.Valid{v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10} = valid
   Order.transitive(Nat.mul(Guards.kernel(p),Guards.kernel(p)),inner(p),
-    U32.to_nat(Machine.capacity(limits)),Padded.product_has_right(Guards.input_channel_count(p),
+    U32.to_nat(Machine.capacity(limits)),DivisionOrder.le_multiple(Guards.input_channel_count(p),
       Nat.mul(Guards.kernel(p),Guards.kernel(p)),v0),inner_bound(limits,p,valid,support))
 
 def square_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid<p>,
@@ -44,8 +43,8 @@ def square_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Vali
   Machine.coordinate(limits)>) -> {U32.to_nat((U32.from_nat(Guards.kernel(p)) *
     U32.from_nat(Guards.kernel(p)) : U32)) == Nat.mul(Guards.kernel(p),Guards.kernel(p)) : Nat}:
   Encoded.product(Guards.kernel(p),Guards.kernel(p),Machine.capacity(limits),
-    Limits.capacity_fits(limits),NativeWeightRefinement.dimension(limits,Guards.kernel(p),
-      SupportedCoordinateBounds.kernel_bound(limits,p,support)),NativeWeightRefinement.dimension(limits,Guards.kernel(p),
+    Limits.capacity_fits(limits),Limits.dimension_capacity(limits,Guards.kernel(p),
+      SupportedCoordinateBounds.kernel_bound(limits,p,support)),Limits.dimension_capacity(limits,Guards.kernel(p),
       SupportedCoordinateBounds.kernel_bound(limits,p,support)),square_bound(limits,p,valid,support))
 
 def kernel_positive(+p: ConvSpec.Problem,valid: Guards.Valid<p>) -> {Nat.is_lt(0n,Guards.kernel(p)) == True{} : Bool}:
@@ -63,7 +62,7 @@ def width_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid
   ConvSpec.Problem{shape,xs,ws,bs} = p
   ConvSpec.Shape{input_channel_count,output_channel_count,h,w,k,stride,pad} = shape
   Order.transitive(ConvSpec.out_width(p),Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)),U32.to_nat(Machine.capacity(limits)),
-    Padded.product_has_right(ConvSpec.out_height(p),ConvSpec.out_width(p),{==}),
+    DivisionOrder.le_multiple(ConvSpec.out_height(p),ConvSpec.out_width(p),{==}),
     Padded.spatial_bound_facts(limits,p,valid,support))
 
 def width_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid<p>,
@@ -98,8 +97,8 @@ def position_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,+output_row_inde
 
 def inner_positive(+p: ConvSpec.Problem,valid: Guards.Valid<p>) -> {Nat.is_lt(0n,inner(p)) == True{} : Bool}:
   Guards.Valid{channels,outputs,height,width,+kernel,stride,padding,extent,input,weights,bias} = valid
-  Support.positive_mul(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),Guards.kernel(p)),
-    channels,Support.positive_mul(Guards.kernel(p),Guards.kernel(p),kernel,kernel))
+  Order.product_positive(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),Guards.kernel(p)),
+    channels,Order.product_positive(Guards.kernel(p),Guards.kernel(p),kernel,kernel))
 
 def native_inner(+p: ConvSpec.Problem) -> U32:
   (U32.from_nat(Guards.input_channel_count(p)) * U32.from_nat(Guards.kernel(p)) * U32.from_nat(Guards.kernel(p)) : U32)
@@ -117,8 +116,8 @@ def inner_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Vali
       %Equal.sym(Nat,Nat.mul(Nat.mul(channels,kernel),kernel),inner(p),RowMajor.assoc(channels,kernel,kernel)) : {Nat.is_le(_,
           U32.to_nat(upper)) == True{} : Bool}
       inner_bound(limits,p,valid,support))
-  +encoded_product = Encoded.product(channels,kernel,upper,upper_ok,NativeWeightRefinement.dimension(limits,channels,
-      SupportedCoordinateBounds.ci_bound(limits,p,support)),NativeWeightRefinement.dimension(limits,kernel,
+  +encoded_product = Encoded.product(channels,kernel,upper,upper_ok,Limits.dimension_capacity(limits,channels,
+      SupportedCoordinateBounds.ci_bound(limits,p,support)),Limits.dimension_capacity(limits,kernel,
       SupportedCoordinateBounds.kernel_bound(limits,p,support)),product_bound)
   %RowMajor.assoc(channels,kernel,kernel) : {U32.to_nat(native_inner(p)) == _ : Nat}
   %encoded_product : {U32.to_nat(native_inner(p)) == Nat.mul(_,kernel) : Nat}
@@ -153,7 +152,7 @@ def decode_reduction(+limits: Machine.Limits,+problem: ConvSpec.Problem,+index: 
   +native_kernel = U32.from_nat(kernel)
   +positive = kernel_positive(problem,valid)
   +kernel_exact = SupportedCoordinateBounds.kernel_exact(limits,problem,supported)
-  +kernel_double = Limits.double_bound(limits,kernel,NativeWeightRefinement.dimension(limits,kernel,SupportedCoordinateBounds.kernel_bound(limits,problem,supported)))
+  +kernel_double = Limits.double_bound(limits,kernel,Limits.dimension_capacity(limits,kernel,SupportedCoordinateBounds.kernel_bound(limits,problem,supported)))
   +half_word = Machine.half_word(limits)
   +half_word_fits = Limits.half_word_fits(limits)
   +row_quotient = Radix.quotient_word(index,native_kernel,Nat.add(Nat.mul(input_channel,kernel),kernel_row),kernel_column,kernel,
@@ -163,7 +162,7 @@ def decode_reduction(+limits: Machine.Limits,+problem: ConvSpec.Problem,+index: 
   DecodedReduction{
     Encoded.encoding((index / (native_kernel * native_kernel) : U32),input_channel,
       Radix.quotient_word(index,(native_kernel * native_kernel : U32),input_channel,Nat.add(Nat.mul(kernel_row,kernel),kernel_column),Nat.mul(kernel,kernel),
-        half_word,half_word_fits,channel_index,square_exact(limits,problem,valid,supported),Support.positive_mul(kernel,kernel,positive,positive),
+        half_word,half_word_fits,channel_index,square_exact(limits,problem,valid,supported),Order.product_positive(kernel,kernel,positive,positive),
         RowMajor.radix(kernel_row,kernel,kernel_column,kernel,row_inside,column_inside),Limits.double_bound(limits,Nat.mul(kernel,kernel),square_bound(limits,problem,valid,supported)))),
     Encoded.encoding((index / native_kernel % native_kernel : U32),kernel_row,
       Radix.remainder_word((index / native_kernel : U32),native_kernel,input_channel,kernel_row,kernel,half_word,half_word_fits,

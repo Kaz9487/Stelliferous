@@ -13,12 +13,15 @@
 | `python run.py layout` | 原始碼配置、檔名、import、連結、凍結檔雜湊 |
 | `python run.py integration` | 原生卷積案例，1、2、4、8 執行緒，逐位元比對 |
 | `python run.py api` | 只用 `F` 寫成的程式，1 與 4 執行緒，與 NumPy 逐位元比對 |
+| `python run.py gradients` | 卷積的梯度、損失、一步訓練，以及兩層網路學習 teacher 輸出的 40 步訓練，1、2、4、8 個工作者，與 `gradient_reference.py`、`training_reference.py` 逐位元比對。40 步與經過 cross entropy 和平均池化的分類器 5 步也與 PyTorch 比對到捨入誤差 |
 | `python run.py model --case bus_640 --threads 4` | YOLOv5n：產生、編譯、執行，與 PyTorch 比對 |
+| `python run.py checkpoint` | 在 Bend 裡載入官方 `.pt` checkpoint，每個張量與 `torch.load` 逐位元比對 |
 | `python run.py benchmark` | 卷積運算的計時 |
+| `python run.py training --threads 4` | ResNet-20 形狀的網路訓練一個 epoch（390 步、batch 128）的時間，Stelliferous 與 PyTorch 各一次 |
 | `python run.py backends` | YOLOv5n 在 NumPy、Stelliferous 與 PyTorch 上的 forward 時間 |
 | `python run.py summary` | 列出已記錄的結果哪些通過，不重新執行 |
 
-檢查單一 Bend 檔；先掃描檢查器會拒絕的寫法：
+檢查單一 Bend 檔，先掃描檢查器會拒絕的寫法：
 
 ```sh
 python -B scripts/toolchain_rules/lint.py FILE_OR_DIR ...
@@ -37,8 +40,8 @@ python -B scripts/toolchain_rules/verify.py
 
 | 資料夾 | 內容 |
 |---|---|
-| `lib/` | 函式庫；`lib/proofs/` 是它的證明。不 import 其他資料夾 |
-| `convolution/` | 凍結的規格、參考實作與已證明的 Array 引擎；`convolution/proofs/` |
+| `lib/` | 函式庫。`lib/proofs/` 是它的證明。不 import 其他資料夾 |
+| `convolution/` | 凍結的規格、參考實作與已證明的 Array 引擎，證明在 `convolution/proofs/` |
 | `examples/` | 使用公開 API 的程式 |
 | `benchmarks/` | 數值檢查與計時流程 |
 | `scripts/` | 檢查器入口、配置與稽核工具、工具鏈規則 |
@@ -57,10 +60,10 @@ python -B scripts/toolchain_rules/verify.py
 - 帶前提的引理，只有在前提被解除的地方才算結果。
 - 不測試已證明的定律。數值檢查是使用公開 API 的程式。
 - 規劃器的常數不針對單一機器調整。
-- 檔案與函式用 snake_case，型別與 import 別名用 PascalCase；每個被 import 的檔案只用一個別名。
+- 檔案與函式用 snake_case，型別與 import 別名用 PascalCase。每個被 import 的檔案只用一個別名。
 - 文件以英文撰寫，並附 `.zh-TW.md`。文字檔使用 LF。
 
-Python 用 `ruff format`，C 用 `clang-format`；版本在 [requirements-dev.txt](../requirements-dev.txt)。
+Python 用 `ruff format`，C 用 `clang-format`，版本在 [requirements-dev.txt](../requirements-dev.txt)。
 
 ## 貢獻
 

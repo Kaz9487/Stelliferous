@@ -1,5 +1,10 @@
-# Raw little-endian FP32 files and NumPy .npy files through the official File effects.
+# Raw little-endian FP32 files and NumPy .npy files through the official File
+# effects, and the reader that other formats share: a byte range of an open
+# file, decoded element by element, written straight into a tensor's storage.
 import Base
+import ./storage_bytes.bend as Bytes
+import ./storage_element_format.bend as Formats
+import ./math_fp32.bend as Fp32
 import ./storage_buffer.bend as Buffers
 import ./tensor.bend as Tensors
 import ./tensor_layout.bend as Layout
@@ -13,108 +18,145 @@ def Read() -> Type:
 def Written() -> Type:
   File & Result<&1,&1,U32 & String,Unit>
 
-# Values per File effect.
+def Sized() -> Type:
+  File & Result<&1,&1,U32 & String,U32>
+
+# FP32 values per File effect; a read takes four times as many bytes.
 def chunk() -> U32:
   16384
 
-# An FP32 value and its 32 bits are the same word.
+def chunk_bytes() -> U32:
+  (chunk() * 4 : U32)
 
-def from_bits(word: U32) -> F32:
-  U32{bits} = word
-  F32{bits}
+# Reading: bytes gather into elements, least significant first. The values of
+# one read are written into the buffer before the next read, so no list
+# outgrows a read.
 
-def to_bits(value: F32) -> U32:
-  F32{bits} = value
-  U32{bits}
-
-# Reading: bytes gather into words, least significant first. The values of one
-# read are written into the buffer before the next read, so no list outgrows a read.
+# An element in progress: its first four bytes, the bytes above them, the
+# weight of the next byte within its word, and how many bytes arrived.
+type Partial is Data:
+  Partial{low: U32,high: U32,weight: U32,filled: U32}
 
 type Words is Data:
-  Words{values: List<&2,F32>,count: U32,word: U32,weight: U32}
+  Words{values: List<&2,F32>,count: U32,partial: Partial}
 
-# The buffer of the tensor, the values found so far, and a word in progress.
+# The buffer of the tensor, the values found so far, and an element in progress.
 type Target is Type:
-  Target{buffer: Buffers.Buffer<F32>,found: U32,word: U32,weight: U32}
+  Target{buffer: Buffers.Buffer<F32>,found: U32,partial: Partial}
 
 type Reading is Type:
-  More{file: File,target: Target}
+  More{file: File,position: U32,remaining: U32,target: Target}
   End{file: File,target: Target,complete: Bool}
 
 type Outcome is Type:
-  Outcome{target: Target,complete: Bool}
+  Outcome{file: File,target: Target,complete: Bool}
 
-def gather(full: Bool,values: List<&2,F32>,+count: U32,+word: U32,+weight: U32) -> Words:
-  match full:
-    case False{}: Words{values,count,word,(weight * 256 : U32)}
-    case True{}: Words{from_bits(word) <> values,(count + 1 : U32),0,1}
+def fresh_partial() -> Partial:
+  Partial{0,0,1,0}
 
-def push(+byte: U32,words: Words) -> Words:
-  Words{values,+count,+word,+weight} = words
-  gather(U32.is_eq(weight,16777216),values,count,(word + byte * weight : U32),weight)
+def gathered(lower: Bool,done: Bool,wrap: Bool,+byte: U32,format: Formats.Format,values: List<&2,F32>,+count: U32,+low: U32,+high: U32,+weight: U32,+filled: U32) -> Words:
+  match lower done wrap:
+    case True{} True{} wrap: Words{Formats.widen(format,(low + byte * weight : U32),high) <> values,(count + 1 : U32),fresh_partial()}
+    case False{} True{} wrap: Words{Formats.widen(format,low,(high + byte * weight : U32)) <> values,(count + 1 : U32),fresh_partial()}
+    case True{} False{} True{}: Words{values,count,Partial{(low + byte * weight : U32),high,1,filled}}
+    case True{} False{} False{}: Words{values,count,Partial{(low + byte * weight : U32),high,(weight * 256 : U32),filled}}
+    case False{} False{} wrap: Words{values,count,Partial{low,(high + byte * weight : U32),(weight * 256 : U32),filled}}
 
-def trickle(bytes: List<&2,U32>,words: Words) -> Words:
+def push(+byte: U32,+format: Formats.Format,words: Words) -> Words:
+  Words{values,+count,partial} = words
+  Partial{+low,+high,+weight,+filled} = partial
+  gathered(U32.is_lt(filled,4),U32.is_eq((filled + 1 : U32),Formats.width(format)),U32.is_eq(weight,16777216),byte,format,values,count,low,high,weight,(filled + 1 : U32))
+
+def trickle(bytes: List<&2,U32>,+format: Formats.Format,words: Words) -> Words:
   match bytes:
     case []: words
-    case byte <> rest: trickle(rest,push(byte,words))
+    case byte <> rest: trickle(rest,format,push(byte,format,words))
 
-# Four bytes at a time while the bytes are whole words; the values are newest first.
-def quads(bytes: List<&2,U32>,values: List<&2,F32>,+count: U32) -> Words:
+# Whole elements at a time while the bytes allow; the values are newest first.
+def pairs(bytes: List<&2,U32>,+format: Formats.Format,values: List<&2,F32>,+count: U32) -> Words:
+  match bytes:
+    case Con{first,Con{second,rest}}:
+      pairs(rest,format,Formats.widen(format,(first + second * 256 : U32),0) <> values,(count + 1 : U32))
+    case rest: trickle(rest,format,Words{values,count,fresh_partial()})
+
+def quads(bytes: List<&2,U32>,+format: Formats.Format,values: List<&2,F32>,+count: U32) -> Words:
   match bytes:
     case Con{first,Con{second,Con{third,Con{fourth,rest}}}}:
-      quads(rest,from_bits((first + second * 256 + third * 65536 + fourth * 16777216 : U32)) <> values,(count + 1 : U32))
-    case rest: trickle(rest,Words{values,count,0,1})
+      quads(rest,format,Formats.widen(format,(first + second * 256 + third * 65536 + fourth * 16777216 : U32),0) <> values,(count + 1 : U32))
+    case rest: trickle(rest,format,Words{values,count,fresh_partial()})
 
-def words(whole: Bool,bytes: List<&2,U32>,+word: U32,+weight: U32) -> Words:
+def octets(bytes: List<&2,U32>,+format: Formats.Format,values: List<&2,F32>,+count: U32) -> Words:
+  match bytes:
+    case Con{first,Con{second,Con{third,Con{fourth,Con{fifth,Con{sixth,Con{seventh,Con{eighth,rest}}}}}}}}:
+      octets(rest,format,Formats.widen(format,(first + second * 256 + third * 65536 + fourth * 16777216 : U32),
+        (fifth + sixth * 256 + seventh * 65536 + eighth * 16777216 : U32)) <> values,(count + 1 : U32))
+    case rest: trickle(rest,format,Words{values,count,fresh_partial()})
+
+def by_width(+width: U32,bytes: List<&2,U32>,+format: Formats.Format) -> Words:
+  match width:
+    case 2: pairs(bytes,format,[],0)
+    case 4: quads(bytes,format,[],0)
+    case 8: octets(bytes,format,[],0)
+    case _: trickle(bytes,format,Words{[],0,fresh_partial()})
+
+def words(whole: Bool,bytes: List<&2,U32>,+format: Formats.Format,partial: Partial) -> Words:
   match whole:
-    case True{}: quads(bytes,[],0)
-    case False{}: trickle(bytes,Words{[],0,word,weight})
+    case True{}: by_width(Formats.width(format),bytes,format)
+    case False{}: trickle(bytes,format,Words{[],0,partial})
 
 # Values beyond the count of the shape are counted and not written.
 def placed(read: Words,buffer: Buffers.Buffer<F32>,+found: U32,+count: U32) -> Target:
-  Words{values,+added,+word,+weight} = read
+  Words{values,+added,partial} = read
   Target{Buffers.write_at(~F32,List.take(&2,F32,List.reverse(&2,F32,values),U32.to_nat((count - U32.min(found,count) : U32))),U32.min(found,count),buffer),
-    (found + added : U32),word,weight}
+    (found + added : U32),partial}
 
-def fill(bytes: List<&2,U32>,target: Target,+count: U32) -> Target:
-  Target{buffer,+found,+word,+weight} = target
-  placed(words(U32.is_eq(weight,1),bytes,word,weight),buffer,found,count)
+def fill(bytes: List<&2,U32>,target: Target,+format: Formats.Format,+count: U32) -> Target:
+  Target{buffer,+found,partial} = target
+  Partial{low,high,weight,+filled} = partial
+  placed(words(U32.is_zero(filled),bytes,format,Partial{low,high,weight,filled}),buffer,found,count)
 
-def absorbed(bytes: List<&2,U32>,file: File,target: Target,+count: U32) -> Reading:
+def ranged(exhausted: Bool,file: File,+position: U32,+remaining: U32,target: Target) -> Reading:
+  match exhausted:
+    case True{}: End{file,target,True{}}
+    case False{}: More{file,position,remaining,target}
+
+# A read that ends early leaves the count short, which the count check reports.
+def absorbed(bytes: List<&2,U32>,file: File,+position: U32,+remaining: U32,target: Target,+format: Formats.Format,+count: U32) -> Reading:
   match bytes:
     case []: End{file,target,True{}}
-    case byte <> rest: More{file,fill(byte <> rest,target,count)}
+    case Con{+byte,+rest}:
+      +length = U32.min(U32.from_nat(List.length(&2,U32,byte <> rest)),remaining)
+      ranged(U32.is_eq(length,remaining),file,(position + length : U32),(remaining - length : U32),fill(byte <> rest,target,format,count))
 
-def received(result: Result<&1,&1,U32 & String,List<&2,U32>>,file: File,target: Target,+count: U32) -> Reading:
+def received(result: Result<&1,&1,U32 & String,List<&2,U32>>,file: File,+position: U32,+remaining: U32,target: Target,+format: Formats.Format,+count: U32) -> Reading:
   match result:
     case Fail{error}: End{file,target,False{}}
-    case Done{bytes}: absorbed(bytes,file,target,count)
+    case Done{bytes}: absorbed(bytes,file,position,remaining,target,format,count)
 
-def taken(read: Read(),target: Target,+count: U32) -> Reading:
+def taken(read: Read(),+position: U32,+remaining: U32,target: Target,+format: Formats.Format,+count: U32) -> Reading:
   (file,result) = read
-  received(result,file,target,count)
+  received(result,file,position,remaining,target,format,count)
 
-def closed(file: File,target: Target,complete: Bool) -> IO(Outcome):
-  do IO<Outcome>:
-    File.close(file)
-    IO.pure(Outcome,Outcome{target,complete})
-
-# A file longer than its shape stops at the fuel and fails the count.
-def read_all(fuel: Nat,reading: Reading,+count: U32) -> IO(Outcome):
+def read_all(fuel: Nat,reading: Reading,+format: Formats.Format,+count: U32) -> IO(Outcome):
   match fuel reading:
-    case 0n More{file,target}: closed(file,target,True{})
-    case 0n End{file,target,complete}: closed(file,target,complete)
-    case 1n+rest End{file,target,complete}: closed(file,target,complete)
-    case 1n+rest More{file,target}:
+    case 0n More{file,position,remaining,target}: IO.pure(Outcome,Outcome{file,target,False{}})
+    case 0n End{file,target,complete}: IO.pure(Outcome,Outcome{file,target,complete})
+    case 1n+rest End{file,target,complete}: IO.pure(Outcome,Outcome{file,target,complete})
+    case 1n+rest More{file,+position,+remaining,target}:
       do IO<Outcome>:
-        read : Read() <- File.read_bytes(file,(chunk() * 4 : U32))
-        read_all(rest,taken(read,target,count),count)
+        read : Read() <- File.read_at(file,position,U32.min(remaining,chunk_bytes()))
+        read_all(rest,taken(read,position,remaining,target,format,count),format,count)
 
 def fresh(+count: U32) -> Target:
-  Target{Tensors.buffer(~F32,0.0,count),0,0,1}
+  Target{Tensors.buffer(~F32,0.0,count),0,fresh_partial()}
 
-def fuel(+count: U32) -> Nat:
-  U32.to_nat((count / chunk() + 2 : U32))
+def fuel(+length: U32) -> Nat:
+  U32.to_nat((length / chunk_bytes() + 2 : U32))
+
+# The elements stored from the position on, as many bytes as the count of the
+# format takes; the file stays open.
+def read_range(file: File,+position: U32,+length: U32,+format: Formats.Format,+count: U32) -> IO(Outcome):
+  read_all(fuel(length),ranged(U32.is_zero(length),file,position,length,fresh(count)),format,count)
 
 def fault(operation: String,path: String,detail: String,shape: List<&2,U32>) -> Tensor():
   Tensors.failed(~F32,operation,Tensors.FileFault{path,detail},shape,0.0,1)
@@ -126,29 +168,84 @@ def sized(matches: Bool,operation: String,path: String,+shape: List<&2,U32>,buff
 
 def whole(aligned: Bool,operation: String,path: String,+shape: List<&2,U32>,buffer: Buffers.Buffer<F32>,+found: U32,+count: U32) -> Tensor():
   match aligned:
-    case False{}: fault(operation,path,"is not a whole number of FP32 values",shape)
+    case False{}: fault(operation,path,"holds a partial element",shape)
     case True{}: sized(U32.is_eq(found,count),operation,path,shape,buffer)
 
 def aligned(operation: String,path: String,+shape: List<&2,U32>,target: Target,+count: U32) -> Tensor():
-  Target{buffer,+found,word,+weight} = target
-  whole(U32.is_eq(weight,1),operation,path,shape,buffer,found,count)
+  Target{buffer,+found,partial} = target
+  Partial{low,high,weight,+filled} = partial
+  whole(U32.is_zero(filled),operation,path,shape,buffer,found,count)
 
 def checked(complete: Bool,operation: String,path: String,+shape: List<&2,U32>,target: Target,+count: U32) -> Tensor():
   match complete:
     case False{}: fault(operation,path,"cannot be read",shape)
     case True{}: aligned(operation,path,shape,target,count)
 
-def loaded(operation: String,path: String,+shape: List<&2,U32>,outcome: Outcome,+count: U32) -> Tensor():
-  Outcome{target,complete} = outcome
-  checked(complete,operation,path,shape,target,count)
+def decoded(operation: String,path: String,+shape: List<&2,U32>,outcome: Outcome,+count: U32) -> File & Tensor():
+  Outcome{file,target,complete} = outcome
+  (file,checked(complete,operation,path,shape,target,count))
 
-def opened(result: Result<&1,&1,U32 & String,File>,path: String,+shape: List<&2,U32>,+count: U32) -> IO(Tensor()):
+def ranged_count(fits: Bool,file: File,operation: String,path: String,+shape: List<&2,U32>,+position: U32,+length: U32,+format: Formats.Format,+count: U32) -> IO(File & Tensor()):
+  match fits:
+    case False{}: IO.pure(File & Tensor(),(file,fault(operation,path,"holds a tensor beyond the machine capacity",shape)))
+    case True{}:
+      do IO<File & Tensor()>:
+        outcome : Outcome <- read_range(file,position,length,format,count)
+        IO.pure(File & Tensor(),decoded(operation,path,shape,outcome,count))
+
+def ranged_shape(count: Maybe<&2,U32>,file: File,operation: String,path: String,+shape: List<&2,U32>,+position: U32,+format: Formats.Format) -> IO(File & Tensor()):
+  match count:
+    case None{}: IO.pure(File & Tensor(),(file,Tensors.failed(~F32,operation,Tensors.InvalidShape{shape},shape,0.0,1)))
+    case Some{+count}:
+      +length = (count * Formats.width(format) : U32)
+      ranged_count(U32.is_eq((length / Formats.width(format) : U32),count),file,operation,path,shape,position,length,format,count)
+
+# The tensor of the shape whose elements of the format start at the position
+# of an open file, which stays open.
+def load_range(file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+format: Formats.Format) -> IO(File & Tensor()):
+  ranged_shape(Tensors.count_of(shape),file,operation,path,shape,position,format)
+
+def closed(pair: File & Tensor()) -> IO(Tensor()):
+  (file,tensor) = pair
+  do IO<Tensor()>:
+    File.close(file)
+    IO.pure(Tensor(),tensor)
+
+def refused(file: File,tensor: Tensor()) -> IO(Tensor()):
+  do IO<Tensor()>:
+    File.close(file)
+    IO.pure(Tensor(),tensor)
+
+# A raw file holds exactly the bytes of its shape: a size that is not a whole
+# number of values, or another number of them, is refused before reading.
+def measured(aligned: Bool,matches: Bool,file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+  match aligned matches:
+    case False{} matches: refused(file,fault(operation,path,"is not a whole number of FP32 values",shape))
+    case True{} False{}: refused(file,fault(operation,path,"does not hold the values of the shape",shape))
+    case True{} True{}:
+      do IO<Tensor()>:
+        pair : File & Tensor() <- load_range(file,operation,path,shape,position,Formats.Fp32{})
+        closed(pair)
+
+def with_size(result: Result<&1,&1,U32 & String,U32>,file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+  match result:
+    case Fail{error}: refused(file,fault(operation,path,"cannot be measured",shape))
+    case Done{+size}:
+      measured(U32.is_zero(((size - U32.min(size,position)) % 4 : U32)),U32.is_le(position,size) && U32.is_eq(((size - U32.min(size,position)) / 4 : U32),count),file,operation,path,shape,position,count)
+
+def sized_file(sized: Sized(),operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+  (file,result) = sized
+  with_size(result,file,operation,path,shape,position,count)
+
+def fp32_values(file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+  do IO<Tensor()>:
+    sized : Sized() <- File.size(file)
+    sized_file(sized,operation,path,shape,position,count)
+
+def opened(result: Result<&1,&1,U32 & String,File>,+path: String,+shape: List<&2,U32>,+count: U32) -> IO(Tensor()):
   match result:
     case Fail{error}: IO.pure(Tensor(),fault("load",path,"cannot be opened",shape))
-    case Done{file}:
-      do IO<Tensor()>:
-        outcome : Outcome <- read_all(fuel(count),More{file,fresh(count)},count)
-        IO.pure(Tensor(),loaded("load",path,shape,outcome,count))
+    case Done{file}: fp32_values(file,"load",path,shape,0,count)
 
 def counted(count: Maybe<&2,U32>,+path: String,+shape: List<&2,U32>) -> IO(Tensor()):
   match count:
@@ -165,40 +262,24 @@ def load(+path: String,+shape: List<&2,U32>) -> IO(Tensor()):
 # The NumPy .npy header: magic, version, header length, then a text such as
 # {'descr': '<f4', 'fortran_order': False, 'shape': (16, 3, 6, 6), }
 
+# The shape and the position of the first value.
 type Header is Data:
-  Header{shape: List<&2,U32>,data: List<&2,U32>}
-
-def codes(text: String) -> List<&2,U32>:
-  match text:
-    case SNil{}: []
-    case SCon{head,tail}: Char.to_u32(head) <> codes(tail)
+  Header{shape: List<&2,U32>,data: U32}
 
 def magic() -> List<&2,U32>:
   [147,78,85,77,80,89]
 
-def starts(pattern: List<&2,U32>,bytes: List<&2,U32>) -> Bool:
-  match pattern bytes:
-    case Nil{} bytes: True{}
-    case Con{first,rest} Nil{}: False{}
-    case Con{first,rest} Con{byte,more}: U32.is_eq(first,byte) && starts(rest,more)
-
-def at(bytes: List<&2,U32>,index: Nat) -> U32:
-  match bytes index:
-    case Nil{} index: 0
-    case Con{byte,rest} 0n: byte
-    case Con{byte,rest} 1n+before: at(rest,before)
-
 def contains(text: List<&2,U32>,+pattern: List<&2,U32>) -> Bool:
   match text:
     case Nil{}: False{}
-    case Con{+byte,+rest}: starts(pattern,byte <> rest) || contains(rest,pattern)
+    case Con{+byte,+rest}: Bytes.starts(pattern,byte <> rest) || contains(rest,pattern)
 
 # The text after the first occurrence of the pattern.
 def after(text: List<&2,U32>,+pattern: List<&2,U32>) -> Maybe<&2,List<&2,U32>>:
   match text:
     case Nil{}: None{}
     case Con{+byte,+rest}:
-      Bool.pick(Maybe<&2,List<&2,U32>>,starts(pattern,byte <> rest),Some{List.drop(&2,U32,byte <> rest,List.length(&2,U32,pattern))},after(rest,pattern))
+      Bool.pick(Maybe<&2,List<&2,U32>>,Bytes.starts(pattern,byte <> rest),Some{List.drop(&2,U32,byte <> rest,List.length(&2,U32,pattern))},after(rest,pattern))
 
 def pushed(digits: Bool,current: U32,shape: List<&2,U32>) -> List<&2,U32>:
   match digits:
@@ -221,50 +302,42 @@ def extents(text: List<&2,U32>,+current: U32,digits: Bool,valid: Bool,shape: Lis
         case 32: extents(rest,current,digits,valid,shape)
         case _: extents(rest,(current * 10 + byte - 48 : U32),True{},valid && U32.is_le(48,byte) && U32.is_le(byte,57),shape)
 
-def shaped(shape: Maybe<&2,List<&2,U32>>,data: List<&2,U32>) -> Maybe<&2,Header>:
+def shaped(shape: Maybe<&2,List<&2,U32>>,+data: U32) -> Maybe<&2,Header>:
   match shape:
     case None{}: None{}
     case Some{shape}: Some{Header{shape,data}}
 
-def typed(supported: Bool,text: Maybe<&2,List<&2,U32>>,data: List<&2,U32>) -> Maybe<&2,Header>:
+def typed(supported: Bool,text: Maybe<&2,List<&2,U32>>,+data: U32) -> Maybe<&2,Header>:
   match supported text:
     case False{} text: None{}
     case True{} None{}: None{}
     case True{} Some{text}: shaped(extents(text,0,False{},True{},[]),data)
 
-def described(+text: List<&2,U32>,+length: Nat,data: List<&2,U32>) -> Maybe<&2,Header>:
-  typed(Nat.is_eq(List.length(&2,U32,text),length) && contains(text,codes("'descr': '<f4'")) && contains(text,codes("'fortran_order': False")),
-    after(text,codes("'shape': (")),data)
+def described(+text: List<&2,U32>,+length: Nat,+data: U32) -> Maybe<&2,Header>:
+  typed(Nat.is_eq(List.length(&2,U32,text),length) && contains(text,Bytes.codes("'descr': '<f4'")) && contains(text,Bytes.codes("'fortran_order': False")),
+    after(text,Bytes.codes("'shape': (")),data)
 
-def region(+bytes: List<&2,U32>,+length: Nat) -> Maybe<&2,Header>:
-  described(List.take(&2,U32,bytes,length),length,List.drop(&2,U32,bytes,length))
+def region(+bytes: List<&2,U32>,+prefix: U32,+length: U32) -> Maybe<&2,Header>:
+  described(List.take(&2,U32,List.drop(&2,U32,bytes,U32.to_nat(prefix)),U32.to_nat(length)),U32.to_nat(length),(prefix + length : U32))
 
 # Version 1 has a two-byte header length; later versions have four bytes.
 def versioned(major: U32,+bytes: List<&2,U32>) -> Maybe<&2,Header>:
   match major:
-    case 1: region(List.drop(&2,U32,bytes,10n),U32.to_nat((at(bytes,8n) + at(bytes,9n) * 256 : U32)))
-    case _: region(List.drop(&2,U32,bytes,12n),U32.to_nat((at(bytes,8n) + at(bytes,9n) * 256 + at(bytes,10n) * 65536 + at(bytes,11n) * 16777216 : U32)))
+    case 1: region(bytes,10,Bytes.u16_at(bytes,8n))
+    case _: region(bytes,12,Bytes.u32_at(bytes,8n))
 
 def marked(valid: Bool,+bytes: List<&2,U32>) -> Maybe<&2,Header>:
   match valid:
     case False{}: None{}
-    case True{}: versioned(at(bytes,6n),bytes)
+    case True{}: versioned(Bytes.at(bytes,6n),bytes)
 
 def header(+bytes: List<&2,U32>) -> Maybe<&2,Header>:
-  marked(starts(magic(),bytes),bytes)
+  marked(Bytes.starts(magic(),bytes),bytes)
 
-def refused(file: File,tensor: Tensor()) -> IO(Tensor()):
-  do IO<Tensor()>:
-    File.close(file)
-    IO.pure(Tensor(),tensor)
-
-def npy_counted(count: Maybe<&2,U32>,+shape: List<&2,U32>,data: List<&2,U32>,file: File,+path: String) -> IO(Tensor()):
+def npy_counted(count: Maybe<&2,U32>,+shape: List<&2,U32>,+data: U32,file: File,+path: String) -> IO(Tensor()):
   match count:
     case None{}: refused(file,Tensors.failed(~F32,"load_npy",Tensors.InvalidShape{shape},shape,0.0,1))
-    case Some{+count}:
-      do IO<Tensor()>:
-        outcome : Outcome <- read_all(fuel(count),More{file,fill(data,fresh(count),count)},count)
-        IO.pure(Tensor(),loaded("load_npy",path,shape,outcome,count))
+    case Some{+count}: fp32_values(file,"load_npy",path,shape,data,count)
 
 def npy_parsed(parsed: Maybe<&2,Header>,file: File,+path: String) -> IO(Tensor()):
   match parsed:
@@ -285,7 +358,7 @@ def npy_opened(result: Result<&1,&1,U32 & String,File>,+path: String) -> IO(Tens
     case Fail{error}: IO.pure(Tensor(),fault("load_npy",path,"cannot be opened",[]))
     case Done{file}:
       do IO<Tensor()>:
-        read : Read() <- File.read_bytes(file,(chunk() * 4 : U32))
+        read : Read() <- File.read_at(file,0,chunk_bytes())
         npy_headed(read,path)
 
 # An FP32 array saved by NumPy, with its shape.
@@ -307,7 +380,7 @@ def encode(count: Nat,values: List<&2,F32>) -> List<&2,U32>:
   match count values:
     case 0n values: []
     case 1n+rest Nil{}: []
-    case 1n+rest Con{value,more}: bytes(to_bits(value),encode(rest,more))
+    case 1n+rest Con{value,more}: bytes(Fp32.to_bits(value),encode(rest,more))
 
 # The cursor retains the array; only the current chunk becomes a list.
 def read_chunk(count: Nat,+offset: U32,storage: Array<F32>,values: List<&2,F32>) -> Array<F32> & List<&2,F32>:
@@ -410,7 +483,7 @@ def framed(+text: List<&2,U32>,+length: U32) -> List<&2,U32>:
   List.append(&2,U32,magic(),1 <> 0 <> (total % 256 : U32) <> (total / 256 : U32) <> List.append(&2,U32,text,spaces(U32.to_nat(padding))))
 
 def npy_header(shape: List<&2,U32>) -> List<&2,U32>:
-  +text = codes("{'descr': '<f4', 'fortran_order': False, 'shape': " ++ tuple(shape) ++ ", }")
+  +text = Bytes.codes("{'descr': '<f4', 'fortran_order': False, 'shape': " ++ tuple(shape) ++ ", }")
   framed(text,U32.from_nat(List.length(&2,U32,text)))
 
 def npy_saving(+path: String,pair: Tensor() & Tensor(),+shape: List<&2,U32>) -> IO(Tensor()):

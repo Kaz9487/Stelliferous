@@ -4,7 +4,6 @@ import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/natural_addition.bend as Addition
 import ../specification.bend as ConvSpec
 import ./tree_indexing.bend as TreeIndex
-import ./native_array_model.bend as NativeArrayModel
 
 law length_cat:
   for +xs: List<&2,F32>

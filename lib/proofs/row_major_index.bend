@@ -5,6 +5,7 @@ import ./nat_to_u32_bounds.bend as Bounds
 import ./natural_addition.bend as Addition
 import ./nat_division.bend as Division
 import ./word_encoding.bend as WordEncoding
+import ./boolean_logic.bend as Boolean
 
 def multiply_zero_right(+value: Nat) -> {Nat.mul(value,0n) == 0n : Nat}:
   match value:
@@ -122,6 +123,33 @@ def multiply_lt(+left: Nat,+right: Nat,+factor: Nat,ordered: {Nat.is_lt(left,rig
   {Nat.is_lt(Nat.mul(left,factor),Nat.mul(right,factor)) == True{} : Bool}:
   %Addition.zero_right(Nat.mul(left,factor)) : {Nat.is_lt(_,Nat.mul(right,factor)) == True{} : Bool}
   radix(left,right,0n,factor,ordered,positive)
+
+def cancel_multiply_le(+left: Nat,+right: Nat,+factor: Nat,+positive: {Nat.is_lt(0n,factor) == True{} : Bool},
+  ordered: {Nat.is_le(Nat.mul(left,factor),Nat.mul(right,factor)) == True{} : Bool}) -> {Nat.is_le(left,right) == True{} : Bool}:
+  match left right:
+    case 0n right: Order.zero_le(right)
+    case 1n+ +left 0n:
+      Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(
+        %Order.zero_below(Nat.mul(1n+left,factor),ordered) : {Nat.is_lt(0n,_) == True{} : Bool}
+        Order.product_positive(1n+left,factor,{==},positive)))
+    case 1n+ +left 1n+ +right:
+      cancel_multiply_le(left,right,factor,positive,Order.cancel_offset_le(factor,Nat.mul(left,factor),Nat.mul(right,factor),ordered))
+
+def same_remainder_le(+left: Nat,+right: Nat,+factor: Nat,+remainder: Nat,+positive: {Nat.is_lt(0n,factor) == True{} : Bool}) ->
+  {Nat.is_le(Nat.add(Nat.mul(left,factor),remainder),Nat.add(Nat.mul(right,factor),remainder)) == Nat.is_le(left,right) : Bool}:
+  Boolean.equivalent(Nat.is_le(Nat.add(Nat.mul(left,factor),remainder),Nat.add(Nat.mul(right,factor),remainder)),Nat.is_le(left,right),
+    ordered => cancel_multiply_le(left,right,factor,positive,Order.cancel_offset_le(remainder,Nat.mul(left,factor),Nat.mul(right,factor),
+      %Order.commutative(Nat.mul(left,factor),remainder) : {Nat.is_le(_,Nat.add(remainder,Nat.mul(right,factor))) == True{} : Bool}
+      %Order.commutative(Nat.mul(right,factor),remainder) : {Nat.is_le(Nat.add(Nat.mul(left,factor),remainder),_) == True{} : Bool} ordered)),
+    ordered => Order.add_le(Nat.mul(left,factor),Nat.mul(right,factor),remainder,mul_le(left,right,factor,ordered)))
+
+def same_remainder_lt(+left: Nat,+right: Nat,+factor: Nat,+remainder: Nat,+positive: {Nat.is_lt(0n,factor) == True{} : Bool}) ->
+  {Nat.is_lt(Nat.add(Nat.mul(left,factor),remainder),Nat.add(Nat.mul(right,factor),remainder)) == Nat.is_lt(left,right) : Bool}:
+  Boolean.equivalent(Nat.is_lt(Nat.add(Nat.mul(left,factor),remainder),Nat.add(Nat.mul(right,factor),remainder)),Nat.is_lt(left,right),
+    ordered => cancel_multiply_lt(left,right,factor,Order.cancel_offset_lt(remainder,Nat.mul(left,factor),Nat.mul(right,factor),
+      %Order.commutative(Nat.mul(left,factor),remainder) : {Nat.is_lt(_,Nat.add(remainder,Nat.mul(right,factor))) == True{} : Bool}
+      %Order.commutative(Nat.mul(right,factor),remainder) : {Nat.is_lt(Nat.add(Nat.mul(left,factor),remainder),_) == True{} : Bool} ordered)),
+    ordered => Order.add_lt(Nat.mul(left,factor),Nat.mul(right,factor),remainder,multiply_lt(left,right,factor,ordered,positive)))
 
 def index(+input_channel_index: Nat,+height: Nat,+width: Nat,+iy: Nat,+ix: Nat) -> Nat:
   Nat.add(Nat.mul(input_channel_index,Nat.mul(height,width)),Nat.add(Nat.mul(iy,width),ix))

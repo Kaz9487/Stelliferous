@@ -2,8 +2,8 @@
 # Operations consume their arguments; a failure travels with the result and
 # is reported where the value is read.
 import Base
-import stelliferous@0.0.2.0/tensor_f32.bend as F
-import stelliferous@0.0.2.0/math_activation.bend as Act
+import stelliferous@0.0.3.0/tensor_f32.bend as F
+import stelliferous@0.0.3.0/math_activation.bend as Act
 
 # A 4x4 image of 1 .. 16 through a 3x3 convolution of ones with ReLU, then
 # 2x2 max pooling: [54, 63, 90, 99].

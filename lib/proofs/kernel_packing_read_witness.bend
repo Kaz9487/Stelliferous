@@ -61,13 +61,10 @@ def address(-input: Array<F32>,address: PackingSamples.PixelAddress,evidence: fa
   PackingSamples.PixelAddress{+index,inside} = address
   masked(input,inside,Array.get(F32,input,index),Witness.observed(F32,input,index,evidence))
 
-def crossing_read(-input: Array<F32>,context: PackingSamples.PixelBlock,index: Nat,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.read_block_pixel(input,context,index)>:
-  address(input,PackingSamples.pixel_address(context,index),evidence)
+def window_read(-input: Array<F32>,context: PackingSamples.WindowPixelBlock,index: Nat,evidence: family(input)) ->
+  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.read_window_pixel(input,context,index)>:
+  address(input,PackingSamples.window_pixel_address(context,index),evidence)
 
-def first(-input: Array<F32>,+position: U32,+reduction: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+output_width: U32,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.pixel(input,position,reduction,height,width,kernel,stride,padding,output_width)>:
-  +row = (position / output_width * stride + reduction / kernel % kernel - padding : U32)
-  +column = (position % output_width * stride + reduction % kernel - padding : U32)
-  +index = (reduction / (kernel * kernel) * height * width + row * width + column : U32)
-  masked(input,U32.is_lt(row,height) && U32.is_lt(column,width),Array.get(F32,input,index),Witness.observed(F32,input,index,evidence))
+def window_first(-input: Array<F32>,+position: U32,+reduction: U32,+base: U32,+height: U32,+width: U32,+tap_rows: U32,+tap_columns: U32,+stride: U32,+row_origin: U32,+column_origin: U32,+output_width: U32,evidence: family(input)) ->
+  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.window_pixel(input,position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width)>:
+  window_read(input,PackingSamples.window_pixel_block(position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width),0n,evidence)

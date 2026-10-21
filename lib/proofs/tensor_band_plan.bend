@@ -4,9 +4,7 @@ import Base
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./nat_to_u32_bounds.bend as Bounds
-import ./tensor_band_coordinates.bend as BandCoordinates
 import ./row_major_index.bend as RowMajor
-import ./word_encoding.bend as WordEncoding
 import ../tensor_band.bend as Bands
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./nat_division_order.bend as DivisionOrder
@@ -49,6 +47,16 @@ def Located(plan,row):
   match plan:
     case Bands.Rows{first,rows}: LeafLocation<first,rows,row>
     case Bands.Split{left,right}: Either<&2,&2,Located(left,row),Located(right,row)>
+
+# A covered plan starts at its first row.
+def coverage_first(plan: Bands.Plan,+first: Nat,+rows: Nat,coverage: Coverage(plan,first,rows)) -> {U32.to_nat(Bands.first(plan)) == first : Nat}:
+  match plan:
+    case Bands.Rows{native_first,native_rows}:
+      LeafCoverage{first_equal,rows_equal} = coverage
+      first_equal
+    case Bands.Split{+left,right}:
+      ForkCoverage{+left_rows,right_rows,rows_equal,left_coverage,right_coverage} = coverage
+      coverage_first(left,first,left_rows,left_coverage)
 
 def locate_branch(+left: Bands.Plan,+right: Bands.Plan,+first: Nat,+left_rows: Nat,+right_rows: Nat,+position: Nat,choose_left: Bool,
   +choice: {Nat.is_lt(position,left_rows) == choose_left : Bool},inside: {Nat.is_lt(position,Nat.add(left_rows,right_rows)) == True{} : Bool},
@@ -123,6 +131,72 @@ def refinement_row_plan(depth: Nat,+split: Bool,+first: U32,+rows: U32,+capacity
         refinement_row_plan(rest,U32.is_lt(1,half),first,half,capacity,capacity_ok,left_room),
         %next_exact : Coverage(Bands.row_plan(rest,U32.is_lt(1,remainder),next,remainder),_,U32.to_nat(remainder))
         refinement_row_plan(rest,U32.is_lt(1,remainder),next,remainder,capacity,capacity_ok,right_room)}
+
+# The first half of a unit plan is a whole number of units no larger than the count.
+def unit_half_bound(+unit: U32,+count: U32,+capacity: U32,+capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
+  +divisor_cap: U32,+divisor_cap_ok: {U32.is_le(divisor_cap,2147483648) == True{} : Bool},
+  +divisor_bound: {Nat.is_le(Nat.double(U32.to_nat((unit * 2 : U32))),U32.to_nat(divisor_cap)) == True{} : Bool},
+  +doubled: {U32.to_nat((unit * 2 : U32)) == Nat.mul(U32.to_nat(unit),2n) : Nat},
+  +positive: {Nat.is_lt(0n,U32.to_nat((unit * 2 : U32))) == True{} : Bool},
+  +inside: {Nat.is_le(U32.to_nat(count),U32.to_nat(capacity)) == True{} : Bool}) ->
+  {Nat.is_le(U32.to_nat((count / (unit * 2) * unit : U32)),U32.to_nat(count)) == True{} : Bool}:
+  +divisor = (unit * 2 : U32)
+  +word_quotient = (count / divisor : U32)
+  +quotient = Nat.div(U32.to_nat(count),U32.to_nat(divisor))
+  +product = Nat.mul(quotient,U32.to_nat(unit))
+  +quotient_exact = U32Division.divide(count,divisor,divisor_cap,divisor_cap_ok,divisor_bound,positive)
+  +below = {
+    %Equal.sym(Nat,U32.to_nat(count),Nat.add(Nat.mul(quotient,U32.to_nat(divisor)),Nat.mod(U32.to_nat(count),U32.to_nat(divisor))),
+        Radix.division_identity(count,U32.to_nat(divisor),positive)) :
+      {Nat.is_le(product,_) == True{} : Bool}
+    Order.transitive(product,Nat.mul(quotient,U32.to_nat(divisor)),Nat.add(Nat.mul(quotient,U32.to_nat(divisor)),Nat.mod(U32.to_nat(count),U32.to_nat(divisor))),
+      %Equal.sym(Nat,U32.to_nat(divisor),Nat.mul(U32.to_nat(unit),2n),doubled) : {Nat.is_le(product,Nat.mul(quotient,_)) == True{} : Bool}
+      %RowMajor.assoc(quotient,U32.to_nat(unit),2n) : {Nat.is_le(product,_) == True{} : Bool}
+      RowMajor.product_covers(product,2n,{==}),
+      Order.le_add(Nat.mul(quotient,U32.to_nat(divisor)),Nat.mod(U32.to_nat(count),U32.to_nat(divisor)))) :
+    {Nat.is_le(product,U32.to_nat(count)) == True{} : Bool}}
+  +exact = {
+    %quotient_exact : {U32.to_nat((word_quotient * unit : U32)) == Nat.mul(_,U32.to_nat(unit)) : Nat}
+    Arithmetic.multiply(word_quotient,unit,capacity,capacity_ok,
+      %Equal.sym(Nat,U32.to_nat(word_quotient),quotient,quotient_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(unit)),U32.to_nat(capacity)) == True{} : Bool}
+      Order.transitive(product,U32.to_nat(count),U32.to_nat(capacity),below,inside)) :
+    {U32.to_nat((word_quotient * unit : U32)) == product : Nat}}
+  %Equal.sym(Nat,U32.to_nat((word_quotient * unit : U32)),product,exact) : {Nat.is_le(_,U32.to_nat(count)) == True{} : Bool}
+  below
+
+def refinement_unit_plan(depth: Nat,+unit: U32,+first: U32,+count: U32,+capacity: U32,+capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
+  +divisor_cap: U32,+divisor_cap_ok: {U32.is_le(divisor_cap,2147483648) == True{} : Bool},
+  +divisor_bound: {Nat.is_le(Nat.double(U32.to_nat((unit * 2 : U32))),U32.to_nat(divisor_cap)) == True{} : Bool},
+  +doubled: {U32.to_nat((unit * 2 : U32)) == Nat.mul(U32.to_nat(unit),2n) : Nat},
+  +positive: {Nat.is_lt(0n,U32.to_nat((unit * 2 : U32))) == True{} : Bool},
+  +room: {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(count)),U32.to_nat(capacity)) == True{} : Bool}) ->
+  Coverage(Bands.unit_plan(depth,unit,first,count),U32.to_nat(first),U32.to_nat(count)):
+  match depth:
+    case 0n: LeafCoverage{{==},{==}}
+    case 1n+ +rest:
+      +half = (count / (unit * 2) * unit : U32)
+      +remainder = (count - half : U32)
+      +next = (first + half : U32)
+      +half_inside = unit_half_bound(unit,count,capacity,capacity_ok,divisor_cap,divisor_cap_ok,divisor_bound,doubled,positive,rows_bound(first,count,capacity,room))
+      +left_room = Order.transitive(Nat.add(U32.to_nat(first),U32.to_nat(half)),Nat.add(U32.to_nat(first),U32.to_nat(count)),U32.to_nat(capacity),
+        Order.offset_le(U32.to_nat(first),U32.to_nat(half),U32.to_nat(count),half_inside),room)
+      +next_exact = Arithmetic.add(first,half,capacity,capacity_ok,left_room)
+      +remainder_exact = Arithmetic.subtract(count,half,capacity,capacity_ok,half_inside,
+        Order.transitive(Nat.sub(U32.to_nat(count),U32.to_nat(half)),U32.to_nat(count),U32.to_nat(capacity),Order.sub_le(U32.to_nat(count),U32.to_nat(half)),rows_bound(first,count,capacity,room)))
+      +joined = {
+        %Equal.sym(Nat,U32.to_nat(remainder),Nat.sub(U32.to_nat(count),U32.to_nat(half)),remainder_exact) : {Nat.add(U32.to_nat(half),_) == U32.to_nat(count) : Nat}
+        Order.restore_shift(U32.to_nat(half),U32.to_nat(count),half_inside) : {Nat.add(U32.to_nat(half),U32.to_nat(remainder)) == U32.to_nat(count) : Nat}}
+      +right_room = {
+        %Equal.sym(Nat,U32.to_nat(next),Nat.add(U32.to_nat(first),U32.to_nat(half)),next_exact) : {Nat.is_le(Nat.add(_,U32.to_nat(remainder)),U32.to_nat(capacity)) == True{} : Bool}
+        %Equal.sym(Nat,Nat.add(Nat.add(U32.to_nat(first),U32.to_nat(half)),U32.to_nat(remainder)),Nat.add(U32.to_nat(first),Nat.add(U32.to_nat(half),U32.to_nat(remainder))),
+          Addition.associative(U32.to_nat(first),U32.to_nat(half),U32.to_nat(remainder))) : {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
+        %Equal.sym(Nat,Nat.add(U32.to_nat(half),U32.to_nat(remainder)),U32.to_nat(count),joined) : {Nat.is_le(Nat.add(U32.to_nat(first),_),U32.to_nat(capacity)) == True{} : Bool}
+        room : {Nat.is_le(Nat.add(U32.to_nat(next),U32.to_nat(remainder)),U32.to_nat(capacity)) == True{} : Bool}}
+      ForkCoverage{U32.to_nat(half),U32.to_nat(remainder),
+        Equal.sym(Nat,Nat.add(U32.to_nat(half),U32.to_nat(remainder)),U32.to_nat(count),joined),
+        refinement_unit_plan(rest,unit,first,half,capacity,capacity_ok,divisor_cap,divisor_cap_ok,divisor_bound,doubled,positive,left_room),
+        %next_exact : Coverage(Bands.unit_plan(rest,unit,next,remainder),_,U32.to_nat(remainder))
+        refinement_unit_plan(rest,unit,next,remainder,capacity,capacity_ok,divisor_cap,divisor_cap_ok,divisor_bound,doubled,positive,right_room)}
 
 def image_first(count: Nat,image: U32,height: U32) -> Nat:
   match count:
@@ -259,7 +333,7 @@ def local_span(+first: U32,+rows: U32,+image: Nat,+height: Nat,+height_positive:
   +remainder = {
     %Order.restore_shift(base,U32.to_nat(first),lower) :
       {Nat.mod(_,height) == offset : Nat}
-    BandCoordinates.remainder(image,offset,height,height_positive,inside) : {Nat.mod(U32.to_nat(first),height) == offset : Nat}}
+    Radix.remainder(image,offset,height,height_positive,inside) : {Nat.mod(U32.to_nat(first),height) == offset : Nat}}
   %Equal.sym(Nat,Nat.mod(U32.to_nat(first),height),offset,remainder) : {Nat.is_le(Nat.add(_,U32.to_nat(rows)),height) == True{} : Bool} span
 
 def total_rows(+first: U32,+rows: U32,+image: Nat,+images: Nat,+height: Nat,inside: {Nat.is_lt(image,images) == True{} : Bool},
@@ -391,18 +465,13 @@ def monotone(+height: Nat,+output_height: Nat,+stride: Nat,+first: Nat,+end: Nat
   compared(height,output_height,stride,first,end,height_positive,stride_positive,ordered,
     Order.upper_bound_cases(Nat.div(first,height),Nat.div(end,height),DivisionOrder.quotient_le(first,end,height,height_positive,ordered)))
 
-def zero_bound(+value: Nat,bounded: {Nat.is_le(value,0n) == True{} : Bool}) -> {value == 0n : Nat}:
-  match value:
-    case 0n: {==}
-    case 1n+rest: Empty.absurd({1n+rest == 0n : Nat},WordEncoding.false_true(bounded))
-
 def minimum_zero(+value: Nat) -> {Nat.min(value,0n) == 0n : Nat}:
   match value:
     case 0n: {==}
     case 1n+rest: {==}
 
 def local_zero(+output_height: Nat,+stride: Nat,+positive: {Nat.is_lt(0n,stride) == True{} : Bool}) -> {local(output_height,0n,stride) == 0n : Nat}:
-  %Equal.sym(Nat,Ceiling.ceiling(0n,stride),0n,zero_bound(Ceiling.ceiling(0n,stride),Ceiling.minimal(0n,stride,0n,positive,{==}))) : {Nat.min(output_height,_) == 0n : Nat}
+  %Equal.sym(Nat,Ceiling.ceiling(0n,stride),0n,Order.zero_below(Ceiling.ceiling(0n,stride),Ceiling.minimal(0n,stride,0n,positive,{==}))) : {Nat.min(output_height,_) == 0n : Nat}
   minimum_zero(output_height)
 
 def image_end(+images: Nat,+height: Nat,+output_height: Nat,+stride: Nat,+height_positive: {Nat.is_lt(0n,height) == True{} : Bool},
@@ -410,10 +479,10 @@ def image_end(+images: Nat,+height: Nat,+output_height: Nat,+stride: Nat,+height
   {output_boundaries_boundary(height,output_height,stride,Nat.mul(images,height)) == Nat.mul(images,output_height) : Nat}:
   +quotient = {
     %Addition.zero_right(Nat.mul(images,height)) : {Nat.div(_,height) == images : Nat}
-    BandCoordinates.quotient(images,0n,height,height_positive,height_positive) : {Nat.div(Nat.mul(images,height),height) == images : Nat}}
+    Radix.quotient(images,0n,height,height_positive,height_positive) : {Nat.div(Nat.mul(images,height),height) == images : Nat}}
   +remainder = {
     %Addition.zero_right(Nat.mul(images,height)) : {Nat.mod(_,height) == 0n : Nat}
-    BandCoordinates.remainder(images,0n,height,height_positive,height_positive) : {Nat.mod(Nat.mul(images,height),height) == 0n : Nat}}
+    Radix.remainder(images,0n,height,height_positive,height_positive) : {Nat.mod(Nat.mul(images,height),height) == 0n : Nat}}
   %Equal.sym(Nat,Nat.div(Nat.mul(images,height),height),images,quotient) :
     {Nat.add(Nat.mul(_,output_height),local(output_height,Nat.mod(Nat.mul(images,height),height),stride)) == Nat.mul(images,output_height) : Nat}
   %Equal.sym(Nat,Nat.mod(Nat.mul(images,height),height),0n,remainder) :
@@ -426,9 +495,9 @@ def in_image(+height: Nat,+output_height: Nat,+stride: Nat,+image: Nat,+row: Nat
   +height_positive: {Nat.is_lt(0n,height) == True{} : Bool},+inside: {Nat.is_lt(row,height) == True{} : Bool}) ->
   {output_boundaries_boundary(height,output_height,stride,Nat.add(Nat.mul(image,height),row)) == Nat.add(Nat.mul(image,output_height),local(output_height,row,stride)) : Nat}:
   +position = Nat.add(Nat.mul(image,height),row)
-  %Equal.sym(Nat,Nat.div(position,height),image,BandCoordinates.quotient(image,row,height,height_positive,inside)) :
+  %Equal.sym(Nat,Nat.div(position,height),image,Radix.quotient(image,row,height,height_positive,inside)) :
     {Nat.add(Nat.mul(_,output_height),local(output_height,Nat.mod(position,height),stride)) == Nat.add(Nat.mul(image,output_height),local(output_height,row,stride)) : Nat}
-  %Equal.sym(Nat,Nat.mod(position,height),row,BandCoordinates.remainder(image,row,height,height_positive,inside)) :
+  %Equal.sym(Nat,Nat.mod(position,height),row,Radix.remainder(image,row,height,height_positive,inside)) :
     {Nat.add(Nat.mul(image,output_height),local(output_height,_,stride)) == Nat.add(Nat.mul(image,output_height),local(output_height,row,stride)) : Nat}
   {==}
 
@@ -592,14 +661,6 @@ def output_coverage(+images: Nat,+height: Nat,+output_height: Nat,+stride: Nat,+
     image_end(0n,height,output_height,stride,height_positive,stride_positive),
     image_end(images,height,output_height,stride,height_positive,stride_positive))
 
-# A mapped interval remains image-local, including a zero interval at the
-# next image boundary. This lemma separates row geometry from stored values.
-def subtract_below(+value: Nat,+amount: Nat,inside: {Nat.is_le(value,amount) == True{} : Bool}) -> {Nat.sub(value,amount) == 0n : Nat}:
-  match value amount:
-    case 0n amount: Order.zero_subtract(amount)
-    case 1n+value 0n: Empty.absurd({Nat.sub(1n+value,0n) == 0n : Nat},WordEncoding.false_true(inside))
-    case 1n+ +value 1n+ +amount: subtract_below(value,amount,inside)
-
 def span_case(+height: Nat,+image: Nat,+begin: Nat,+end: Nat,+first: Nat,+rows: Nat,
   +height_positive: {Nat.is_lt(0n,height) == True{} : Bool},
   +ordered: {Nat.is_le(begin,end) == True{} : Bool},+end_inside: {Nat.is_le(end,height) == True{} : Bool},
@@ -608,7 +669,7 @@ def span_case(+height: Nat,+image: Nat,+begin: Nat,+end: Nat,+first: Nat,+rows: 
   match bounds:
     case Order.Before{+inside}:
       %Equal.sym(Nat,first,Nat.add(Nat.mul(image,height),begin),first_exact) : {Nat.is_le(Nat.add(Nat.mod(_,height),rows),height) == True{} : Bool}
-      %Equal.sym(Nat,Nat.mod(Nat.add(Nat.mul(image,height),begin),height),begin,BandCoordinates.remainder(image,begin,height,height_positive,inside)) :
+      %Equal.sym(Nat,Nat.mod(Nat.add(Nat.mul(image,height),begin),height),begin,Radix.remainder(image,begin,height,height_positive,inside)) :
         {Nat.is_le(Nat.add(_,rows),height) == True{} : Bool}
       %Equal.sym(Nat,rows,Nat.sub(end,begin),rows_exact) : {Nat.is_le(Nat.add(begin,_),height) == True{} : Bool}
       %Equal.sym(Nat,Nat.add(begin,Nat.sub(end,begin)),end,Order.restore_shift(begin,end,ordered)) : {Nat.is_le(_,height) == True{} : Bool}
@@ -616,7 +677,7 @@ def span_case(+height: Nat,+image: Nat,+begin: Nat,+end: Nat,+first: Nat,+rows: 
     case Order.At{+same}:
       +difference_zero = {
         %Equal.sym(Nat,begin,height,same) : {Nat.sub(end,_) == 0n : Nat}
-        subtract_below(end,height,end_inside) : {Nat.sub(end,begin) == 0n : Nat}}
+        Order.subtract_below(end,height,end_inside) : {Nat.sub(end,begin) == 0n : Nat}}
       %Equal.sym(Nat,rows,0n,Equal.trans(Nat,rows,Nat.sub(end,begin),0n,rows_exact,difference_zero)) : {Nat.is_le(Nat.add(Nat.mod(first,height),_),height) == True{} : Bool}
       %Equal.sym(Nat,Nat.add(Nat.mod(first,height),0n),Nat.mod(first,height),Addition.zero_right(Nat.mod(first,height))) : {Nat.is_le(_,height) == True{} : Bool}
       Bounds.strict_le(Nat.mod(first,height),height,DivisionOrder.remainder_small(first,height,height_positive))

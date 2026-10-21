@@ -1,6 +1,5 @@
-# The actual selected band pool branch has a nonempty output shape. Decode
-# its shape/count before allocating each native output window. Empty output
-# shapes use tensor_window's existing dense fallback.
+# The band pool runs on the planes of a shape with a nonempty output. Decode
+# its shape and count before allocating each output window.
 import Base
 import ../tensor.bend as Tensors
 import ../tensor_window.bend as Window
@@ -19,12 +18,9 @@ import ./tensor_band_pool_execution.bend as BandPoolExecution
 import ./tensor_band_pool_window_values.bend as BandPoolWindowValues
 import ./tensor_allocation_depth.bend as Depth
 import ./machine_limit_bounds.bend as Limits
-import ./storage_buffer_model.bend as Buffer
-import ./u32_comparison.bend as Comparison
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./boolean_logic.bend as Boolean
-import ./word_encoding.bend as WordEncoding
 import ./nat_to_u32_bounds.bend as Bounds
 import ./row_major_index.bend as RowMajor
 import ./encoded_coordinates.bend as Encoded
@@ -33,6 +29,8 @@ import ./tensor_band_inspection.bend as Inspection
 import ./tensor_band_window.bend as TensorBandWindow
 import ./tensor_band_plan.bend as BandPlan
 import ./tensor_pool_scalar_bounds.bend as Scalar
+import ./nat_division_order.bend as DivisionOrder
+import ./tensor_count_completion.bend as CountCompletion
 
 def pool(geometry: BandWindow.Geometry) -> Access.Pool:
   BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
@@ -51,12 +49,12 @@ def output_shape(+shape: List<&2,U32>,geometry: BandWindow.Geometry) -> List<&2,
   List.append(&2,U32,List.take(&2,U32,shape,Nat.sub(List.length(&2,U32,shape),2n)),[output_height,output_width])
 
 def enabled(+shape: List<&2,U32>,+geometry: BandWindow.Geometry) -> Bool:
-  Window.band_shape(shape,BandWindow.input_geometry(geometry)) && Operations.pool_geometry(pool(geometry)) &&
+  BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) && Operations.pool_geometry(pool(geometry)) &&
     U32.is_lt(0,BandPoolWindowValues.pool_height(pool(geometry))) && U32.is_lt(0,BandPoolWindowValues.pool_width(pool(geometry))) && Bool.not(Shapes.has_zero(output_shape(shape,geometry)))
 
 def selected_shape(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {enabled(shape,geometry) == True{} : Bool}) ->
-  {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}:
-  +shape_ok = Window.band_shape(shape,BandWindow.input_geometry(geometry))
+  {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}:
+  +shape_ok = BandCount.planes_rows(shape,BandWindow.input_geometry(geometry))
   +pool_ok = Operations.pool_geometry(pool(geometry))
   +height_ok = U32.is_lt(0,BandPoolWindowValues.pool_height(pool(geometry)))
   +width_ok = U32.is_lt(0,BandPoolWindowValues.pool_width(pool(geometry)))
@@ -65,76 +63,45 @@ def selected_shape(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected:
     Boolean.left((shape_ok && pool_ok && height_ok : Bool),width_ok,
       Boolean.left((shape_ok && pool_ok && height_ok && width_ok : Bool),output_ok,selected))))
 
-def natural_nonzero_positive(value: Nat,nonzero: {Nat.is_eq(value,0n) == False{} : Bool}) -> {Nat.is_lt(0n,value) == True{} : Bool}:
-  match value:
-    case 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(Equal.sym(Bool,True{},False{},nonzero)))
-    case 1n+rest: {==}
-
-def native_nonzero_positive(+value: U32,nonzero: {U32.is_zero(value) == False{} : Bool}) -> {Nat.is_lt(0n,U32.to_nat(value)) == True{} : Bool}:
-  natural_nonzero_positive(U32.to_nat(value),Equal.trans(Bool,Nat.is_eq(U32.to_nat(value),0n),U32.is_zero(value),False{},
-    Equal.sym(Bool,U32.is_zero(value),Nat.is_eq(U32.to_nat(value),0n),Comparison.eq(value,0)),nonzero))
-
 type Positive<-geometry: BandWindow.Geometry> is Data:
   Positive{images: {Nat.is_lt(0n,U32.to_nat(BandPoolExecution.images(geometry))) == True{} : Bool},
     channels: {BandGather.channels_positive(BandPoolExecution.allocation_guards_output_geometry(geometry)) == True{} : Bool},
     height: {BandGather.height_positive(BandPoolExecution.allocation_guards_output_geometry(geometry)) == True{} : Bool},
     width: {BandGather.width_positive(BandPoolExecution.allocation_guards_output_geometry(geometry)) == True{} : Bool}}
 
-# band_shape admits CHW and NCHW. Decode their actual leading dimensions;
-# the selector's has_zero check supplies positivity of every output extent.
+# The planes of the shape and a nonempty output make every output extent
+# positive.
 def output_positive_geometry(+geometry: BandWindow.Geometry,+shape: List<&2,U32>,
-  +shape_valid: {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
+  +shape_valid: {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
   +nonempty: {Shapes.has_zero(output_shape(shape,geometry)) == False{} : Bool}) -> Positive<geometry>:
   BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},kernel,stride,padding,+output_height,+output_width} = geometry
-  match shape:
-    case Con{+c,Con{+h,Con{+w,Nil{}}}}:
-      +pair = Boolean.left((U32.is_eq(images,1) && U32.is_eq(c,channels) : Bool),U32.is_eq(h,height),
-        Boolean.left((U32.is_eq(images,1) && U32.is_eq(c,channels) && U32.is_eq(h,height) : Bool),U32.is_eq(w,width),shape_valid))
-      +images_equal = ShapeLaws.native_equal(images,1,Boolean.left(U32.is_eq(images,1),U32.is_eq(c,channels),pair))
-      +channels_equal = ShapeLaws.native_equal(c,channels,Boolean.right(U32.is_eq(images,1),U32.is_eq(c,channels),pair))
-      +tail = Boolean.or_false_right(U32.is_zero(c),Shapes.has_zero([output_height,output_width]),nonempty)
-      +last = Boolean.or_false_right(U32.is_zero(output_height),Shapes.has_zero([output_width]),tail)
-      Positive{
-        %Equal.sym(U32,images,1,images_equal) : {Nat.is_lt(0n,U32.to_nat(_)) == True{} : Bool} {==},
-        %channels_equal : {Nat.is_lt(0n,U32.to_nat(_)) == True{} : Bool}
-        native_nonzero_positive(c,Boolean.or_false_left(U32.is_zero(c),Shapes.has_zero([output_height,output_width]),nonempty)),
-        native_nonzero_positive(output_height,Boolean.or_false_left(U32.is_zero(output_height),Shapes.has_zero([output_width]),tail)),
-        native_nonzero_positive(output_width,Boolean.or_false_left(U32.is_zero(output_width),Shapes.has_zero([]),last))}
-    case Con{+n,Con{+c,Con{+h,Con{+w,Nil{}}}}}:
-      +pair = Boolean.left((U32.is_eq(n,images) && U32.is_eq(c,channels) : Bool),U32.is_eq(h,height),
-        Boolean.left((U32.is_eq(n,images) && U32.is_eq(c,channels) && U32.is_eq(h,height) : Bool),U32.is_eq(w,width),shape_valid))
-      +images_equal = ShapeLaws.native_equal(n,images,Boolean.left(U32.is_eq(n,images),U32.is_eq(c,channels),pair))
-      +channels_equal = ShapeLaws.native_equal(c,channels,Boolean.right(U32.is_eq(n,images),U32.is_eq(c,channels),pair))
-      +tail = Boolean.or_false_right(U32.is_zero(n),Shapes.has_zero([c,output_height,output_width]),nonempty)
-      +spatial = Boolean.or_false_right(U32.is_zero(c),Shapes.has_zero([output_height,output_width]),tail)
-      +last = Boolean.or_false_right(U32.is_zero(output_height),Shapes.has_zero([output_width]),spatial)
-      Positive{
-        %images_equal : {Nat.is_lt(0n,U32.to_nat(_)) == True{} : Bool}
-        native_nonzero_positive(n,Boolean.or_false_left(U32.is_zero(n),Shapes.has_zero([c,output_height,output_width]),nonempty)),
-        %channels_equal : {Nat.is_lt(0n,U32.to_nat(_)) == True{} : Bool}
-        native_nonzero_positive(c,Boolean.or_false_left(U32.is_zero(c),Shapes.has_zero([output_height,output_width]),tail)),
-        native_nonzero_positive(output_height,Boolean.or_false_left(U32.is_zero(output_height),Shapes.has_zero([output_width]),spatial)),
-        native_nonzero_positive(output_width,Boolean.or_false_left(U32.is_zero(output_width),Shapes.has_zero([]),last))}
-    case Nil{}: Empty.absurd(Positive<geometry>,WordEncoding.false_true(shape_valid))
-    case Con{a,Nil{}}: Empty.absurd(Positive<geometry>,WordEncoding.false_true(shape_valid))
-    case Con{a,Con{b,Nil{}}}: Empty.absurd(Positive<geometry>,WordEncoding.false_true(shape_valid))
-    case Con{a,Con{b,Con{c,Con{d,Con{e,rest}}}}}: Empty.absurd(Positive<geometry>,WordEncoding.false_true(shape_valid))
+  +plane = Nat.mul(U32.to_nat(output_height),U32.to_nat(output_width))
+  +cells = {
+    %BandCount.planes_elements(shape,images,channels,height,width,output_height,output_width,BandCount.decoded_planes(shape,images,channels,height,width,shape_valid)) :
+      {Nat.is_lt(0n,_) == True{} : Bool}
+    CountCompletion.positive_elements(output_shape(shape,geometry),nonempty) :
+    {Nat.is_lt(0n,BandGather.elements(Bands.Geometry{images,channels,output_height,output_width})) == True{} : Bool}}
+  +rest = DivisionOrder.right_factor_positive(U32.to_nat(images),Nat.mul(U32.to_nat(channels),plane),cells)
+  +spatial = DivisionOrder.right_factor_positive(U32.to_nat(channels),plane,rest)
+  Positive{RowMajor.left_factor_positive(U32.to_nat(images),Nat.mul(U32.to_nat(channels),plane),cells),
+    RowMajor.left_factor_positive(U32.to_nat(channels),plane,rest),
+    RowMajor.left_factor_positive(U32.to_nat(output_height),U32.to_nat(output_width),spatial),
+    DivisionOrder.right_factor_positive(U32.to_nat(output_height),U32.to_nat(output_width),spatial)}
 
 def output_positive(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,
-  +shape_valid: {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
+  +shape_valid: {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
   +nonempty: {Shapes.has_zero(output_shape(shape,geometry)) == False{} : Bool}) -> Positive<geometry>:
   output_positive_geometry(geometry,shape,shape_valid,nonempty)
 
 def positive_from_selector(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+selected: {enabled(shape,geometry) == True{} : Bool}) -> Positive<geometry>:
   output_positive(shape,geometry,selected_shape(shape,geometry,selected),
-    BandPoolWindowValues.selected_output_nonempty(pool(geometry),Window.band_shape(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected))
+    BandPoolWindowValues.selected_output_nonempty(pool(geometry),BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected))
 
-def three_elements(+channels: U32,+height: U32,+width: U32) ->
-  {ShapeLaws.elements([channels,height,width]) == BandGather.elements(Bands.Geometry{1,channels,height,width}) : Nat}:
-  +elements = Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(height),U32.to_nat(width)))
-  Equal.trans(Nat,ShapeLaws.elements([channels,height,width]),elements,BandGather.elements(Bands.Geometry{1,channels,height,width}),
-    Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(height),value)),Nat.mul(U32.to_nat(width),1n),U32.to_nat(width),ShapeLaws.times_one(U32.to_nat(width))),
-    Equal.sym(Nat,BandGather.elements(Bands.Geometry{1,channels,height,width}),elements,Addition.zero_right(elements)))
+# The shape holds the cells of the input geometry.
+def input_elements(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {enabled(shape,geometry) == True{} : Bool}) ->
+  {ShapeLaws.elements(shape) == BandGather.elements(BandWindow.input_geometry(geometry)) : Nat}:
+  BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},kernel,stride,padding,output_height,output_width} = geometry
+  BandCount.planes_coherent(shape,images,channels,height,width,BandCount.decoded_planes(shape,images,channels,height,width,selected_shape(shape,geometry,selected)))
 
 # A shape whose last two axes are replaced, and the geometry it describes.
 def replaced_shape(+shape: List<&2,U32>,rows: U32,columns: U32) -> List<&2,U32>:
@@ -144,42 +111,22 @@ def replaced_geometry(input: Bands.Geometry,rows: U32,columns: U32) -> Bands.Geo
   Bands.Geometry{images,channels,height,width} = input
   Bands.Geometry{images,channels,rows,columns}
 
-def replaced_elements(+input: Bands.Geometry,+shape: List<&2,U32>,+output_height: U32,+output_width: U32,+shape_valid: {Window.band_shape(shape,input) == True{} : Bool}) ->
+def replaced_elements(+input: Bands.Geometry,+shape: List<&2,U32>,+output_height: U32,+output_width: U32,+shape_valid: {BandCount.planes_rows(shape,input) == True{} : Bool}) ->
   {ShapeLaws.elements(replaced_shape(shape,output_height,output_width)) == BandGather.elements(replaced_geometry(input,output_height,output_width)) : Nat}:
   Bands.Geometry{+images,+channels,+height,+width} = input
-  match shape:
-    case Con{+c,Con{+h,Con{+w,Nil{}}}}:
-      +pair = Boolean.left((U32.is_eq(images,1) && U32.is_eq(c,channels) : Bool),U32.is_eq(h,height),
-        Boolean.left((U32.is_eq(images,1) && U32.is_eq(c,channels) && U32.is_eq(h,height) : Bool),U32.is_eq(w,width),shape_valid))
-      %Equal.sym(U32,images,1,ShapeLaws.native_equal(images,1,Boolean.left(U32.is_eq(images,1),U32.is_eq(c,channels),pair))) :
-        {ShapeLaws.elements([c,output_height,output_width]) == BandGather.elements(Bands.Geometry{_,channels,output_height,output_width}) : Nat}
-      %Equal.sym(U32,c,channels,ShapeLaws.native_equal(c,channels,Boolean.right(U32.is_eq(images,1),U32.is_eq(c,channels),pair))) :
-        {ShapeLaws.elements([_,output_height,output_width]) == BandGather.elements(Bands.Geometry{1,channels,output_height,output_width}) : Nat}
-      three_elements(channels,output_height,output_width)
-    case Con{+n,Con{+c,Con{+h,Con{+w,Nil{}}}}}:
-      +pair = Boolean.left((U32.is_eq(n,images) && U32.is_eq(c,channels) : Bool),U32.is_eq(h,height),
-        Boolean.left((U32.is_eq(n,images) && U32.is_eq(c,channels) && U32.is_eq(h,height) : Bool),U32.is_eq(w,width),shape_valid))
-      %Equal.sym(U32,n,images,ShapeLaws.native_equal(n,images,Boolean.left(U32.is_eq(n,images),U32.is_eq(c,channels),pair))) :
-        {ShapeLaws.elements([_,c,output_height,output_width]) == BandGather.elements(Bands.Geometry{images,channels,output_height,output_width}) : Nat}
-      %Equal.sym(U32,c,channels,ShapeLaws.native_equal(c,channels,Boolean.right(U32.is_eq(n,images),U32.is_eq(c,channels),pair))) :
-        {ShapeLaws.elements([images,_,output_height,output_width]) == BandGather.elements(Bands.Geometry{images,channels,output_height,output_width}) : Nat}
-      BandCount.domain_elements(Bands.Geometry{images,channels,output_height,output_width})
-    case Nil{}: Empty.absurd({ShapeLaws.elements(replaced_shape(shape,output_height,output_width)) == BandGather.elements(replaced_geometry(input,output_height,output_width)) : Nat},WordEncoding.false_true(shape_valid))
-    case Con{a,Nil{}}: Empty.absurd({ShapeLaws.elements(replaced_shape(shape,output_height,output_width)) == BandGather.elements(replaced_geometry(input,output_height,output_width)) : Nat},WordEncoding.false_true(shape_valid))
-    case Con{a,Con{b,Nil{}}}: Empty.absurd({ShapeLaws.elements(replaced_shape(shape,output_height,output_width)) == BandGather.elements(replaced_geometry(input,output_height,output_width)) : Nat},WordEncoding.false_true(shape_valid))
-    case Con{a,Con{b,Con{c,Con{d,Con{e,rest}}}}}: Empty.absurd({ShapeLaws.elements(replaced_shape(shape,output_height,output_width)) == BandGather.elements(replaced_geometry(input,output_height,output_width)) : Nat},WordEncoding.false_true(shape_valid))
+  BandCount.planes_elements(shape,images,channels,height,width,output_height,output_width,BandCount.decoded_planes(shape,images,channels,height,width,shape_valid))
 
-def count_shape_elements_geometry(+geometry: BandWindow.Geometry,+shape: List<&2,U32>,+shape_valid: {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}) ->
+def count_shape_elements_geometry(+geometry: BandWindow.Geometry,+shape: List<&2,U32>,+shape_valid: {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}) ->
   {ShapeLaws.elements(output_shape(shape,geometry)) == BandGather.elements(BandPoolExecution.allocation_guards_output_geometry(geometry)) : Nat}:
   BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},kernel,stride,padding,+output_height,+output_width} = geometry
   replaced_elements(Bands.Geometry{images,channels,height,width},shape,output_height,output_width,shape_valid)
 
-def count_shape_elements(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+shape_valid: {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}) ->
+def count_shape_elements(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+shape_valid: {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}) ->
   {ShapeLaws.elements(output_shape(shape,geometry)) == BandGather.elements(BandPoolExecution.allocation_guards_output_geometry(geometry)) : Nat}:
   count_shape_elements_geometry(geometry,shape,shape_valid)
 
 def output_count(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+count: U32,
-  shape_valid: {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
+  shape_valid: {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
   counted: {Tensors.count_of(output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>}) -> Count.Count<BandGather.elements(BandPoolExecution.allocation_guards_output_geometry(geometry)),count>:
   %count_shape_elements(shape,geometry,shape_valid) : Count.Count<_,count>
   Count.count_of(output_shape(shape,geometry),count,counted)
@@ -331,11 +278,11 @@ def source_fit(+geometry: BandWindow.Geometry,+first: U32,+rows: U32,+length: Na
 
 def selected_legal(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {enabled(shape,geometry) == True{} : Bool}) ->
   {Operations.pool_geometry(pool(geometry)) == True{} : Bool}:
-  BandPoolWindowValues.selected_pool_geometry(pool(geometry),Window.band_shape(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected)
+  BandPoolWindowValues.selected_pool_geometry(pool(geometry),BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected)
 
 def selected_height(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {enabled(shape,geometry) == True{} : Bool}) ->
   {Nat.is_lt(0n,U32.to_nat(BandPoolWindowValues.pool_height(pool(geometry)))) == True{} : Bool}:
-  BandPoolWindowValues.selected_input_height(pool(geometry),Window.band_shape(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected)
+  BandPoolWindowValues.selected_input_height(pool(geometry),BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected)
 
 def selected_stride(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {enabled(shape,geometry) == True{} : Bool}) ->
   {Nat.is_lt(0n,U32.to_nat(BandPoolWindowValues.pool_stride(pool(geometry)))) == True{} : Bool}:
@@ -344,7 +291,7 @@ def selected_stride(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected
 
 def selected_width(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {enabled(shape,geometry) == True{} : Bool}) ->
   {Nat.is_lt(0n,U32.to_nat(BandPoolWindowValues.pool_width(pool(geometry)))) == True{} : Bool}:
-  BandPoolWindowValues.selected_input_width(pool(geometry),Window.band_shape(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected)
+  BandPoolWindowValues.selected_input_width(pool(geometry),BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)),output_shape(shape,geometry),selected)
 
 def selected_height_room(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {enabled(shape,geometry) == True{} : Bool}) ->
   {Nat.is_le(U32.to_nat(BandPoolWindowValues.pool_height(pool(geometry))),U32.to_nat(Machine.capacity(Scalar.limits(machine)))) == True{} : Bool}:
@@ -359,13 +306,13 @@ def selected_stride_room(+machine: Scalar.Observation,+shape: List<&2,U32>,+geom
 # The planes swept along the columns, [..,height,output_width], are counted
 # by the selector like the output. Their count bounds every address of the
 # column-swept image.
-def planes_elements(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+shape_valid: {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}) ->
+def planes_elements(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+shape_valid: {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool}) ->
   {ShapeLaws.elements(Window.middle_shape(shape,pool(geometry))) == BandGather.elements(BandPoolExecution.planes_geometry(geometry)) : Nat}:
   BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},kernel,stride,padding,output_height,+output_width} = geometry
   replaced_elements(Bands.Geometry{images,channels,height,width},shape,height,output_width,shape_valid)
 
 def planes_count(+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+planes: U32,
-  shape_valid: {Window.band_shape(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
+  shape_valid: {BandCount.planes_rows(shape,BandWindow.input_geometry(geometry)) == True{} : Bool},
   counted: {Tensors.count_of(Window.middle_shape(shape,pool(geometry))) == Some{planes} : Maybe<&2,U32>}) -> Count.Count<BandGather.elements(BandPoolExecution.planes_geometry(geometry)),planes>:
   %planes_elements(shape,geometry,shape_valid) : Count.Count<_,planes>
   Count.count_of(Window.middle_shape(shape,pool(geometry)),planes,counted)
@@ -431,7 +378,7 @@ def mapped_difference_local(+height: U32,+output_height: U32,+stride: U32,+first
   +finish = U32.to_nat(TensorBandWindow.output_end(height,output_height,stride,first,rows))
   %Equal.sym(Nat,BandPlan.output_boundaries_boundary(U32.to_nat(height),U32.to_nat(output_height),U32.to_nat(stride),Nat.add(U32.to_nat(first),U32.to_nat(rows))),Nat.add(base,finish),end_exact) : {Nat.sub(_,BandPlan.output_boundaries_boundary(U32.to_nat(height),U32.to_nat(output_height),U32.to_nat(stride),U32.to_nat(first))) == Nat.sub(finish,begin) : Nat}
   %Equal.sym(Nat,BandPlan.output_boundaries_boundary(U32.to_nat(height),U32.to_nat(output_height),U32.to_nat(stride),U32.to_nat(first)),Nat.add(base,begin),begin_exact) : {Nat.sub(Nat.add(base,finish),_) == Nat.sub(finish,begin) : Nat}
-  TensorBandWindow.common_offset(base,finish,begin)
+  RowMajor.subtract_common_prefix(base,finish,begin)
 
 # Metadata is obtained from the source core's actual bounds, rather than from
 # a positive output-row premise. This includes empty output leaves.

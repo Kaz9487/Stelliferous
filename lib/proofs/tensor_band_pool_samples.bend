@@ -13,24 +13,28 @@ import ../tensor_band.bend as Bands
 import ../tensor_band_window.bend as BandWindow
 import ../tensor_band_pool.bend as BandPool
 import ../tensor_window.bend as Window
+import ../storage_buffer.bend as Storage
 import ../machine_limits.bend as Machine
 import ../default_machine_limits.bend as Default
 import ./tensor_band_pool_execution.bend as BandPoolExecution
 import ./tensor_band_pool_window_values.bend as BandPoolWindowValues
 import ./tensor_band_pool_output_domain.bend as OutputDomain
 import ./tensor_pool_scalar_bounds.bend as Scalar
-import ./tensor_pool_scalar_envelope.bend as ScalarEnvelope
 import ./tensor_band_gather.bend as BandGather
 import ./tensor_band_shape_refinement.bend as BandShape
 import ./tensor_band_model.bend as Model
 import ./tensor_band_values.bend as BandValues
 import ./tensor_sweep_values.bend as Sweeps
-import ./tensor_band_sweep_values.bend as BandSweeps
 import ./encoded_coordinates.bend as Encoded
 import ./tensor_band_plan.bend as BandPlan
 import ./tensor_band_halo.bend as BandHalo
+import ./tensor_band_window_apply.bend as TensorBandWindowApply
+import ./tensor_band_each.bend as Each
+import ./tensor_contract.bend as Contract
+import ./tensor_gather_values.bend as GatherValues
+import ./tensor_copy_values.bend as CopyValues
+import ./tensor_operations_refinement.bend as OperationsLaws
 import ./tensor_band_window.bend as TensorBandWindow
-import ./tensor_band_coordinates.bend as BandCoordinates
 import ./storage_buffer_model.bend as Buffer
 import ./storage_shape.bend as Shape
 import ./machine_limit_bounds.bend as Limits
@@ -38,15 +42,13 @@ import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./natural_addition.bend as Addition
 import ./row_major_index.bend as RowMajor
-import ./nat_division_order.bend as DivisionOrder
 import ./boolean_logic.bend as Boolean
 import ./word_encoding.bend as WordEncoding
 import ./u32_comparison.bend as Comparison
 import ./u32_division.bend as U32Division
 import ./bounded_u32_arithmetic.bend as Arithmetic
-import ./tensor_band_dense.bend as BandDense
+import ./tensor_band_from_whole.bend as FromWhole
 import ./tensor_band_inspection.bend as Inspection
-import ./strided_range_bounds.bend as Strided
 import ./sequence_membership.bend as Members
 import ./ordered_ranges.bend as Ranges
 import ./storage_tree_model.bend as Tree
@@ -54,18 +56,8 @@ import ./storage_certificate.bend as Certificate
 import ./storage_witness.bend as Witness
 import ./tensor_allocation_depth.bend as Depth
 import ./tensor_band_count.bend as BandCount
-import ./tensor_band_range.bend as BandRange
-import ./write_program.bend as Writes
-import ./checked_word_refinement.bend as Checked
 import ./tensor_global_shape_count.bend as Global
-
-def positive_difference_order(+begin: Nat,+finish: Nat,positive: {Nat.is_lt(0n,Nat.sub(finish,begin)) == True{} : Bool}) ->
-  {Nat.is_lt(begin,finish) == True{} : Bool}:
-  match begin finish:
-    case 0n 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(positive))
-    case 0n 1n+finish: {==}
-    case 1n+begin 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(positive))
-    case 1n+ +begin 1n+ +finish: positive_difference_order(begin,finish,positive)
+import ./binary_radix.bend as Radix
 
 type OutputInterval<-geometry: BandWindow.Geometry,-first: U32,-rows: U32> is Data:
   OutputInterval{
@@ -120,15 +112,15 @@ def interval_from_mapping(+machine: Scalar.Observation,+shape: List<&2,U32>,+geo
     TensorBandWindow.rows_mapped(height,output_height,stride,first,rows,capacity,Limits.capacity_fits(Scalar.limits(machine)),ohr,TensorBandWindow.LocalMapping{begin_shift,end_shift,ordered}))
   +rows_exact = Equal.trans(Nat,U32.to_nat(out_rows),Nat.sub(mapped_end,mapped_begin),Nat.sub(finish,begin),rows_mapped,
     OutputDomain.mapped_difference_local(height,output_height,stride,first,rows,TensorBandWindow.LocalMapping{begin_shift,end_shift,ordered}))
-  +before = positive_difference_order(begin,finish,
+  +before = Order.difference_positive(begin,finish,
     %rows_exact : {Nat.is_lt(0n,_) == True{} : Bool} positive)
   +begin_inside = Bounds.nat_trans(begin,finish,U32.to_nat(output_height),before,
     TensorBandWindow.end_below(output_height,(first % height + rows : U32),stride,U32.is_eq((first % height + rows : U32),height)))
   OutputInterval{first_exact,rows_exact,before,
     Equal.trans(Nat,Nat.div(U32.to_nat(out_first),U32.to_nat(output_height)),Nat.div(Nat.add(Nat.mul(image,U32.to_nat(output_height)),begin),U32.to_nat(output_height)),image,
-      Equal.cong(Nat,Nat,value => Nat.div(value,U32.to_nat(output_height)),U32.to_nat(out_first),Nat.add(Nat.mul(image,U32.to_nat(output_height)),begin),first_exact),BandCoordinates.quotient(image,begin,U32.to_nat(output_height),ohp,begin_inside)),
+      Equal.cong(Nat,Nat,value => Nat.div(value,U32.to_nat(output_height)),U32.to_nat(out_first),Nat.add(Nat.mul(image,U32.to_nat(output_height)),begin),first_exact),Radix.quotient(image,begin,U32.to_nat(output_height),ohp,begin_inside)),
     Equal.trans(Nat,Nat.mod(U32.to_nat(out_first),U32.to_nat(output_height)),Nat.mod(Nat.add(Nat.mul(image,U32.to_nat(output_height)),begin),U32.to_nat(output_height)),begin,
-      Equal.cong(Nat,Nat,value => Nat.mod(value,U32.to_nat(output_height)),U32.to_nat(out_first),Nat.add(Nat.mul(image,U32.to_nat(output_height)),begin),first_exact),BandCoordinates.remainder(image,begin,U32.to_nat(output_height),ohp,begin_inside))}
+      Equal.cong(Nat,Nat,value => Nat.mod(value,U32.to_nat(output_height)),U32.to_nat(out_first),Nat.add(Nat.mul(image,U32.to_nat(output_height)),begin),first_exact),Radix.remainder(image,begin,U32.to_nat(output_height),ohp,begin_inside))}
 
 def needed_first(+geometry: BandWindow.Geometry,+first: U32) -> U32:
   BandWindow.start(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),TensorBandWindow.output_first(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),first),
@@ -194,7 +186,7 @@ type WindowRange<-machine: Scalar.Observation,-geometry: BandWindow.Geometry,-fi
     first_exact: {U32.to_nat(BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows))) == Nat.add(
       Nat.mul(Nat.div(U32.to_nat(first),U32.to_nat(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)))),U32.to_nat(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)))),U32.to_nat(needed_first(geometry,first))) : Nat},
     rows_exact: {U32.to_nat(BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows))) == Nat.sub(U32.to_nat(needed_end(geometry,first,rows)),U32.to_nat(needed_first(geometry,first))) : Nat},
-    target: BandDense.LeafFacts<BandWindow.input_geometry(geometry),BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),Machine.capacity(Scalar.limits(machine)),Machine.half_word(Scalar.limits(machine))>}
+    target: FromWhole.LeafFacts<BandWindow.input_geometry(geometry),BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),Machine.capacity(Scalar.limits(machine)),Machine.half_word(Scalar.limits(machine))>}
 
 # The stored rows of a window with output rows: its first row and its count
 # in the coordinates of the image of the leaf. The image is inside the batch
@@ -209,7 +201,7 @@ def window_range(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: Ba
   +core_image = Nat.div(U32.to_nat(first),U32.to_nat(height))
   +core_image_inside = {
     %Addition.zero_right(U32.to_nat(first)) : {Nat.is_lt(Nat.div(_,U32.to_nat(height)),U32.to_nat(images)) == True{} : Bool}
-    BandSweeps.image_below(U32.to_nat(first),U32.to_nat(rows),0n,U32.to_nat(images),U32.to_nat(height),OutputDomain.selected_height(shape,geometry,selected),positive,rows_fit) : {Nat.is_lt(core_image,U32.to_nat(images)) == True{} : Bool}}
+    BandValues.image_below(U32.to_nat(first),U32.to_nat(rows),0n,U32.to_nat(images),U32.to_nat(height),OutputDomain.selected_height(shape,geometry,selected),positive,rows_fit) : {Nat.is_lt(core_image,U32.to_nat(images)) == True{} : Bool}}
   +native_image = (first / height : U32)
   +native_image_exact = U32Division.divide(first,height,Machine.half_word(Scalar.limits(machine)),Limits.half_word_fits(Scalar.limits(machine)),
     Limits.double_bound(Scalar.limits(machine),U32.to_nat(height),OutputDomain.selected_height_room(machine,shape,geometry,selected)),OutputDomain.selected_height(shape,geometry,selected))
@@ -250,10 +242,10 @@ def window_range(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: Ba
       TensorBandWindow.subtract_clipped(end_full,start_full,Machine.capacity(Scalar.limits(machine)),Limits.capacity_fits(Scalar.limits(machine)),end_room,start_room),
       %Equal.sym(Nat,U32.to_nat(end_full),Nat.add(base,U32.to_nat(end)),ee) : {Nat.sub(_,U32.to_nat(start_full)) == Nat.sub(U32.to_nat(end),U32.to_nat(start)) : Nat}
       %Equal.sym(Nat,U32.to_nat(start_full),Nat.add(base,U32.to_nat(start)),se) : {Nat.sub(Nat.add(base,U32.to_nat(end)),_) == Nat.sub(U32.to_nat(end),U32.to_nat(start)) : Nat}
-      TensorBandWindow.common_offset(base,U32.to_nat(end),U32.to_nat(start))))
+      RowMajor.subtract_common_prefix(base,U32.to_nat(end),U32.to_nat(start))))
   WindowRange{window_first_exact,window_rows_exact,
-    %Equal.sym(U32,BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows)),start_full,input_first_native(geometry,first,rows)) : BandDense.LeafFacts<BandWindow.input_geometry(geometry),_,BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),Machine.capacity(Scalar.limits(machine)),Machine.half_word(Scalar.limits(machine))>
-    %Equal.sym(U32,BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),BandWindow.subtract_clipped(end_full,start_full),input_rows_active(geometry,first,rows,active)) : BandDense.LeafFacts<BandWindow.input_geometry(geometry),start_full,_,Machine.capacity(Scalar.limits(machine)),Machine.half_word(Scalar.limits(machine))>
+    %Equal.sym(U32,BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows)),start_full,input_first_native(geometry,first,rows)) : FromWhole.LeafFacts<BandWindow.input_geometry(geometry),_,BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),Machine.capacity(Scalar.limits(machine)),Machine.half_word(Scalar.limits(machine))>
+    %Equal.sym(U32,BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),BandWindow.subtract_clipped(end_full,start_full),input_rows_active(geometry,first,rows,active)) : FromWhole.LeafFacts<BandWindow.input_geometry(geometry),start_full,_,Machine.capacity(Scalar.limits(machine)),Machine.half_word(Scalar.limits(machine))>
     TensorBandWindow.image_range(images,channels,height,width,native_image,start,end,Scalar.limits(machine),Machine.capacity(Scalar.limits(machine)),domain,native_image_inside,start_inside,end_inside)}
 
 def padding_room(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool}) ->
@@ -300,21 +292,12 @@ def kernel_room(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: Ban
 def stored_rows_bound(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+first: U32,+rows: U32,+selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},range: WindowRange<machine,geometry,first,rows>) ->
   {Nat.is_le(U32.to_nat(BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows))),U32.to_nat(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)))) == True{} : Bool}:
   BandWindow.Geometry{Bands.Geometry{images,channels,+height,width},kernel,stride,padding,output_height,output_width} = geometry
-  WindowRange{first_exact,rows_exact,BandDense.LeafFacts{allocation,contents,BandShape.Fields{local,rows_fit,length_exact}}} = range
+  WindowRange{first_exact,rows_exact,FromWhole.LeafFacts{allocation,contents,BandShape.Fields{local,rows_fit,length_exact}}} = range
   +window_first = BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows))
   +window_rows = BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows))
-  Strided.count_in_stride(Nat.mod(U32.to_nat(window_first),U32.to_nat(height)),U32.to_nat(window_rows),U32.to_nat(height),
+  Order.drop_left_le(Nat.mod(U32.to_nat(window_first),U32.to_nat(height)),U32.to_nat(window_rows),U32.to_nat(height),
     Inspection.local_span(height,window_first,window_rows,Machine.half_word(Scalar.limits(machine)),Limits.half_word_fits(Scalar.limits(machine)),OutputDomain.selected_height(shape,geometry,selected),
       Limits.double_bound(Scalar.limits(machine),U32.to_nat(height),OutputDomain.selected_height_room(machine,shape,geometry,selected)),local))
-
-def words_equal(+left: U32,+right: U32,exact: {U32.to_nat(left) == U32.to_nat(right) : Nat}) -> {left == right : U32}:
-  Equal.trans(U32,left,U32.from_nat(U32.to_nat(left)),right,
-    Equal.sym(U32,U32.from_nat(U32.to_nat(left)),left,Arithmetic.native_roundtrip(left)),
-    Equal.trans(U32,U32.from_nat(U32.to_nat(left)),U32.from_nat(U32.to_nat(right)),right,Equal.cong(Nat,U32,U32.from_nat,U32.to_nat(left),U32.to_nat(right),exact),Arithmetic.native_roundtrip(right)))
-
-def native_zero(+value: U32,zero: {U32.is_zero(value) == True{} : Bool}) -> {value == 0 : U32}:
-  words_equal(value,0,Order.equal_of_is_eq(U32.to_nat(value),0n,
-    Equal.trans(Bool,Nat.is_eq(U32.to_nat(value),0n),U32.is_zero(value),True{},Equal.sym(Bool,U32.is_zero(value),Nat.is_eq(U32.to_nat(value),0n),Comparison.eq(value,0)),zero)))
 
 # The rows a window leaf reads. For every output row of the leaf and every
 # tap, the row of the assembled window is valid exactly when the row of the
@@ -326,20 +309,20 @@ def output_finish(+geometry: BandWindow.Geometry,+first: U32,+rows: U32) -> U32:
   TensorBandWindow.output_end(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),first,rows)
 
 def TapAt(+geometry: BandWindow.Geometry,+first: U32,+window: BandWindow.RowWindow,+image: Nat,+local: U32,+global: U32,+tap: U32) -> Data:
-  BandSweeps.RowTap(BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),image,local,global,tap)
+  BandPoolExecution.RowTap(BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),image,local,global,tap)
 
 def TapsAt(+geometry: BandWindow.Geometry,+first: U32,+window: BandWindow.RowWindow,+image: Nat,+local: U32,+global: U32,remaining: Nat,+tap: U32) -> Data:
-  BandSweeps.RowTaps(BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),image,local,global,remaining,tap)
+  BandPoolExecution.RowTaps(BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),image,local,global,remaining,tap)
 
 def RowAt(+geometry: BandWindow.Geometry,+first: U32,+window: BandWindow.RowWindow,+row: Nat) -> Data:
-  BandSweeps.RowTapsAt(BandPoolWindowValues.pool_kernel(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.output_first(window),row)
+  BandPoolExecution.RowTapsAt(BandPoolWindowValues.pool_kernel(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.output_first(window),row)
 
 def RowsOf(+geometry: BandWindow.Geometry,+first: U32,+window: BandWindow.RowWindow) -> Data:
-  BandSweeps.RowFacts(BandPoolWindowValues.pool_kernel(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.output_first(window),BandPoolWindowValues.output_rows(window))
+  BandPoolExecution.RowFacts(BandPoolWindowValues.pool_kernel(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,window),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.output_first(window),BandPoolWindowValues.output_rows(window))
 
 def RoomsOf(+machine: Scalar.Observation,+geometry: BandWindow.Geometry,+window: BandWindow.RowWindow) -> Data:
-  BandSweeps.Rooms<BandPoolExecution.images(geometry),OutputDomain.channels(geometry),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_width(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),OutputDomain.output_width(geometry),
-    BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolWindowValues.output_first(window),BandPoolWindowValues.output_rows(window),Scalar.limits(machine)>
+  BandPoolExecution.Rooms<BandPoolExecution.images(geometry),OutputDomain.channels(geometry),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_width(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),OutputDomain.output_width(geometry),
+    BandPoolWindowValues.window_rows(window),BandPoolWindowValues.output_first(window),BandPoolWindowValues.output_rows(window),Scalar.limits(machine)>
 
 def interval_first(+geometry: BandWindow.Geometry,+first: U32,+rows: U32,interval: OutputInterval<geometry,first,rows>) ->
   {U32.to_nat(BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows))) == Nat.add(Nat.mul(Nat.div(U32.to_nat(first),U32.to_nat(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)))),U32.to_nat(BandPoolWindowValues.geometry_output_height(geometry))),U32.to_nat(output_begin(geometry,first))) : Nat}:
@@ -360,13 +343,6 @@ def leaf_fit(+geometry: Bands.Geometry,+first: U32,+rows: U32,+length: Nat,metad
   {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),Nat.mul(U32.to_nat(BandPoolWindowValues.geometry_images(geometry)),U32.to_nat(BandPoolWindowValues.geometry_height(geometry)))) == True{} : Bool}:
   Bands.Geometry{images,channels,height,width} = geometry
   BandShape.Fields{local,rows_fit,length_exact} = metadata
-  rows_fit
-
-def window_range_fit(+machine: Scalar.Observation,+geometry: BandWindow.Geometry,+first: U32,+rows: U32,range: WindowRange<machine,geometry,first,rows>) ->
-  {Nat.is_le(Nat.add(U32.to_nat(BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows))),U32.to_nat(BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)))),
-    Nat.mul(U32.to_nat(BandPoolExecution.images(geometry)),U32.to_nat(BandPoolWindowValues.pool_height(OutputDomain.pool(geometry))))) == True{} : Bool}:
-  BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
-  WindowRange{first_exact,rows_exact,BandDense.LeafFacts{allocation,contents,BandShape.Fields{local,rows_fit,length_exact}}} = range
   rows_fit
 
 def finish_below(+geometry: BandWindow.Geometry,+first: U32,+rows: U32) ->
@@ -515,7 +491,7 @@ def shifted_row_tap(+stride: U32,+padding: U32,+origin: U32,+window_first: U32,+
   coverage: Boolean.When(BandPoolWindowValues.natural_valid(U32.to_nat((global * stride + 0 + tap : U32)),U32.to_nat(padding),U32.to_nat(height)),
     TensorBandWindow.Contains(start,Nat.add(start,U32.to_nat(window_rows)),Nat.sub(U32.to_nat((global * stride + 0 + tap : U32)),U32.to_nat(padding)))),
   +first_exact: {U32.to_nat(window_first) == Nat.add(Nat.mul(image,U32.to_nat(height)),start) : Nat}) ->
-  BandSweeps.RowTap(stride,padding,origin,window_first,window_rows,height,image,local,global,tap):
+  BandPoolExecution.RowTap(stride,padding,origin,window_first,window_rows,height,image,local,global,tap):
   +same = BandPoolWindowValues.native_rows_same(start,(local * stride + origin + tap : U32),padding,(global * stride + 0 + tap : U32),window_rows,height,capacity,capacity_ok,
     local_room,global_room,rows_padding_room,height_padding_room,shifted,span,coverage)
   Shape.Both{same,row_located(stride,padding,origin,window_first,window_rows,height,image,local,global,tap,start,capacity,capacity_ok,local_room,global_room,rows_padding_room,height_padding_room,shifted,first_exact,same,
@@ -645,10 +621,10 @@ def row_at(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWind
     Addition.associative(Nat.mul(image,output_height),begin,row))
   +image_exact = Equal.trans(Nat,Nat.div(Nat.add(output_first,row),output_height),Nat.div(Nat.add(Nat.mul(image,output_height),global_row),output_height),image,
     Equal.cong(Nat,Nat,value => Nat.div(value,output_height),Nat.add(output_first,row),Nat.add(Nat.mul(image,output_height),global_row),located),
-    BandCoordinates.quotient(image,global_row,output_height,positive,inside))
+    Radix.quotient(image,global_row,output_height,positive,inside))
   +row_exact = Equal.trans(Nat,Nat.mod(Nat.add(output_first,row),output_height),Nat.mod(Nat.add(Nat.mul(image,output_height),global_row),output_height),global_row,
     Equal.cong(Nat,Nat,value => Nat.mod(value,output_height),Nat.add(output_first,row),Nat.add(Nat.mul(image,output_height),global_row),located),
-    BandCoordinates.remainder(image,global_row,output_height,positive,inside))
+    Radix.remainder(image,global_row,output_height,positive,inside))
   %Equal.sym(Nat,Nat.div(Nat.add(output_first,row),output_height),image,image_exact) :
     TapsAt(geometry,first,window,_,U32.from_nat(row),U32.from_nat(Nat.mod(Nat.add(output_first,row),output_height)),kernel,0)
   %Equal.sym(Nat,Nat.mod(Nat.add(output_first,row),output_height),global_row,row_exact) :
@@ -659,7 +635,7 @@ def window_rows_from(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   +interval: OutputInterval<geometry,first,rows>,+range: WindowRange<machine,geometry,first,rows>,
   +room: {Nat.is_le(Nat.add(start,remaining),U32.to_nat(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows)))) == True{} : Bool}) ->
-  Members.All(Nat,{row => BandSweeps.RowTapsAt(BandPoolWindowValues.pool_kernel(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,BandWindow.window(geometry,first,rows)),BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),row) : Nat -> Data},
+  Members.All(Nat,{row => BandPoolExecution.RowTapsAt(BandPoolWindowValues.pool_kernel(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_stride(OutputDomain.pool(geometry)),BandPoolWindowValues.pool_padding(OutputDomain.pool(geometry)),BandPoolExecution.window_origin(geometry,first,BandWindow.window(geometry,first,rows)),BandPoolWindowValues.window_first(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.window_rows(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.pool_height(OutputDomain.pool(geometry)),BandPoolWindowValues.geometry_output_height(geometry),BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),row) : Nat -> Data},
     Ranges.range(remaining,start)):
   match remaining:
     case 0n: Unit{}
@@ -733,14 +709,6 @@ def middle_count_cells(+machine: Scalar.Observation,+shape: List<&2,U32>,+geomet
   {U32.to_nat(BandPoolExecution.middle_count(geometry,BandWindow.window(geometry,first,rows))) == BandPoolExecution.middle_cells(geometry,BandWindow.window(geometry,first,rows)) : Nat}:
   middle_cells_from(machine,geometry,first,rows,OutputDomain.positive_from_selector(shape,geometry,selected),OutputDomain.planes_domain(machine,shape,geometry,planes,selected,planes_counted),rows_bound)
 
-# The bounds of a window leaf: the stored rows and the output rows lie in the
-# images, and the input, the planes and the output fit the capacity, whole
-# and per leaf.
-def machine_room(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,domain: BandGather.Domain<geometry,limits,capacity>) ->
-  {Nat.is_le(BandGather.elements(geometry),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
-  BandGather.Domain{capacity_ok,channels_positive,height_positive,width_positive,room,allocation_room} = domain
-  room
-
 def positive_images(+geometry: BandWindow.Geometry,positive: OutputDomain.Positive<geometry>) -> {Nat.is_lt(0n,U32.to_nat(BandPoolExecution.images(geometry))) == True{} : Bool}:
   OutputDomain.Positive{images_positive,channels_positive,height_positive,width_positive} = positive
   images_positive
@@ -757,13 +725,12 @@ def window_rooms(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: Ba
   +output_rows = BandPoolWindowValues.output_rows(window)
   +images_positive = positive_images(geometry,OutputDomain.positive_from_selector(shape,geometry,selected))
   +rows_bound = stored_rows_bound(machine,shape,geometry,first,rows,selected,range)
-  +input_room = machine_room(BandWindow.input_geometry(geometry),limits,capacity,input_domain)
-  +planes_room = machine_room(BandPoolExecution.planes_geometry(geometry),limits,capacity,OutputDomain.planes_domain(machine,shape,geometry,planes,selected,planes_counted))
-  +output_room = machine_room(BandPoolExecution.allocation_guards_output_geometry(geometry),limits,capacity,OutputDomain.from_selector(machine,shape,geometry,count,selected,counted))
-  BandSweeps.Rooms{window_range_fit(machine,geometry,first,rows,range),
+  +input_room = BandCount.room(BandWindow.input_geometry(geometry),limits,capacity,input_domain)
+  +planes_room = BandCount.room(BandPoolExecution.planes_geometry(geometry),limits,capacity,OutputDomain.planes_domain(machine,shape,geometry,planes,selected,planes_counted))
+  +output_room = BandCount.room(BandPoolExecution.allocation_guards_output_geometry(geometry),limits,capacity,OutputDomain.from_selector(machine,shape,geometry,count,selected,counted))
+  BandPoolExecution.Rooms{
     leaf_fit(BandPoolExecution.allocation_guards_output_geometry(geometry),BandPoolWindowValues.output_first(window),output_rows,U32.to_nat(BandPoolExecution.window_count(geometry,window)),
       OutputDomain.owner_metadata(machine,shape,geometry,count,first,rows,length,selected,counted,source)),
-    OutputDomain.selected_height(shape,geometry,selected),
     OutputDomain.positive_height(geometry,OutputDomain.positive_from_selector(shape,geometry,selected)),
     input_room,planes_room,output_room,
     Order.transitive(Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(window_rows),U32.to_nat(width))),BandGather.elements(BandWindow.input_geometry(geometry)),U32.to_nat(capacity),
@@ -885,31 +852,6 @@ def output_mapping(geometry: BandWindow.Geometry) -> BandPlan.Mapping:
   BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
   BandPlan.Mapping{U32.to_nat(height),U32.to_nat(output_height),U32.to_nat(stride)}
 
-def word_from_decoded(+word: U32,+natural: Nat,exact: {U32.to_nat(word) == natural : Nat}) -> {word == U32.from_nat(natural) : U32}:
-  Equal.trans(U32,word,U32.from_nat(U32.to_nat(word)),U32.from_nat(natural),Equal.sym(U32,U32.from_nat(U32.to_nat(word)),word,Arithmetic.native_roundtrip(word)),Equal.cong(Nat,U32,U32.from_nat,U32.to_nat(word),natural,exact))
-
-def window_begin_decoded(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+count: U32,+first: U32,+rows: U32,+length: Nat,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  +metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,length)) ->
-  {U32.to_nat(BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows))) == BandPlan.mapping(output_mapping(geometry),U32.to_nat(first)) : Nat}:
-  BandWindow.Geometry{Bands.Geometry{+images,channels,+height,width},kernel,+stride,padding,+output_height,output_width} = geometry
-  +capacity = Machine.capacity(Scalar.limits(machine))
-  +half = Machine.half_word(Scalar.limits(machine))
-  +hp = OutputDomain.selected_height(shape,geometry,selected)
-  +sp = OutputDomain.selected_stride(shape,geometry,selected)
-  +hr = OutputDomain.selected_height_room(machine,shape,geometry,selected)
-  +output_domain = OutputDomain.from_selector(machine,shape,geometry,count,selected,counted)
-  +output_room = BandGather.rows_room(BandPoolExecution.values_output_geometry(geometry),Scalar.limits(machine),capacity,output_domain)
-  +end = Nat.add(U32.to_nat(first),U32.to_nat(rows))
-  +mapped_end = BandPlan.mapping(output_mapping(geometry),end)
-  +mapped_begin = BandPlan.mapping(output_mapping(geometry),U32.to_nat(first))
-  +begin_room = Order.transitive(mapped_begin,mapped_end,U32.to_nat(capacity),BandPlan.monotone(U32.to_nat(height),U32.to_nat(output_height),U32.to_nat(stride),U32.to_nat(first),end,hp,sp,Order.le_add(U32.to_nat(first),U32.to_nat(rows))),
-    Order.transitive(mapped_end,Nat.mul(U32.to_nat(images),U32.to_nat(output_height)),U32.to_nat(capacity),OutputDomain.mapped_end_inside(geometry,first,rows,hp,sp,OutputDomain.source_fit(geometry,first,rows,length,metadata)),output_room))
-  Equal.trans(Nat,U32.to_nat(BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows))),U32.to_nat((first / height * output_height + TensorBandWindow.output_first(height,output_height,stride,first) : U32)),mapped_begin,
-    Equal.cong(U32,Nat,U32.to_nat,BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),(first / height * output_height + TensorBandWindow.output_first(height,output_height,stride,first) : U32),OutputDomain.window_first(geometry,first,rows)),
-    TensorBandWindow.first_global(height,output_height,stride,first,capacity,half,Limits.capacity_fits(Scalar.limits(machine)),Limits.half_word_fits(Scalar.limits(machine)),hp,sp,Limits.double_bound(Scalar.limits(machine),U32.to_nat(height),hr),
-      Limits.double_bound(Scalar.limits(machine),U32.to_nat(stride),OutputDomain.selected_stride_room(machine,shape,geometry,selected)),hr,begin_room))
-
 def window_rows_decoded(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+count: U32,+first: U32,+rows: U32,+length: Nat,
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,length)) ->
@@ -921,134 +863,6 @@ def window_rows_decoded(+machine: Scalar.Observation,+shape: List<&2,U32>,+geome
     TensorBandWindow.rows_mapped(height,output_height,stride,first,rows,Machine.capacity(Scalar.limits(machine)),Limits.capacity_fits(Scalar.limits(machine)),
       OutputDomain.output_height_room(machine,geometry,OutputDomain.positive_from_selector(shape,geometry,selected),OutputDomain.from_selector(machine,shape,geometry,count,selected,counted)),OutputDomain.mapping(machine,shape,geometry,first,rows,length,selected,metadata)))
 
-def mapped_leaf(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+count: U32,+first: U32,+rows: U32,+length: Nat,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  +metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,length)) ->
-  {Bands.Rows{BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows))} == BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Bands.Rows{first,rows}) : Bands.Plan}:
-  +begin = BandPlan.mapping(output_mapping(geometry),U32.to_nat(first))
-  +difference = Nat.sub(BandPlan.mapping(output_mapping(geometry),Nat.add(U32.to_nat(first),U32.to_nat(rows))),begin)
-  %word_from_decoded(BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),begin,window_begin_decoded(machine,shape,geometry,count,first,rows,length,selected,counted,metadata)) :
-    {Bands.Rows{BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows))} == Bands.Rows{_,U32.from_nat(difference)} : Bands.Plan}
-  %word_from_decoded(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows)),difference,window_rows_decoded(machine,shape,geometry,count,first,rows,length,selected,counted,metadata)) :
-    {Bands.Rows{BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows))} == Bands.Rows{BandPoolWindowValues.output_first(BandWindow.window(geometry,first,rows)),_} : Bands.Plan}
-  {==}
-
-def row_content_metadata(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+content: Buffer.Content<Element>,
-  metadata: BandShape.Leaf(geometry,first,rows,Buffer.content_length(~Element,content))) ->
-  BandShape.Contents(~Element,geometry,Model.RowBand{content,first,rows}):
-  Buffer.Content{tree,length} = content
-  metadata
-
-# The pooled leaf has the length of its output destination.
-def pooled_length(~Element: Data,~operation: Element -> Element -> Element,+pool: Access.Pool,+pad: Element,+origin: U32,+channels: U32,
-  +input: Buffer.Content<Element>,+middle: Buffer.Content<Element>,+output: Buffer.Content<Element>) ->
-  {Buffer.content_length(~Element,BandPoolExecution.pooled_model(~Element,~operation,pool,pad,origin,channels,input,middle,output)) == Buffer.content_length(~Element,output) : Nat}:
-  Access.Pool{height,width,kernel,stride,padding,out_height,out_width} = pool
-  Buffer.Content{input_tree,input_length} = input
-  Buffer.Content{middle_tree,middle_length} = middle
-  Buffer.Content{output_tree,output_length} = output
-  {==}
-
-def output_leaf_metadata(~Element: Data,~operation: Element -> Element -> Element,+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+count: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+above: Buffer.Content<Element>,+below: Buffer.Content<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,Buffer.content_length(~Element,core)),window_exact: {BandWindow.window(geometry,first,rows) == window : BandWindow.RowWindow}) ->
-  BandShape.Contents(~Element,BandPoolExecution.values_output_geometry(geometry),BandPoolExecution.refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)):
-  BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},+above_range,+below_range,BandWindow.Rows{+window_first,+window_rows}} = window
-  +middle_count = (channels * window_rows * output_width : U32)
-  +local_count = (channels * output_rows * output_width : U32)
-  +pool = {Access.Pool{window_rows,width,kernel,stride,padding,output_rows,output_width} : Access.Pool}
-  +origin = ((output_first - first / height * output_height) * stride + first / height * height - window_first : U32)
-  +input = TensorBandWindow.assembly_content(~Element,BandWindow.input_geometry(geometry),fill,BandWindow.Rows{window_first,window_rows},BandWindow.Rows{first,rows},above_range,below_range,core,above,below)
-  +middle = {Buffer.Content{Tree.fresh(Element,Tensors.depth_for(middle_count),fill),U32.to_nat(middle_count)} : Buffer.Content<Element>}
-  +output = {Buffer.Content{Tree.fresh(Element,Tensors.depth_for(local_count),fill),U32.to_nat(local_count)} : Buffer.Content<Element>}
-  row_content_metadata(~Element,BandPoolExecution.values_output_geometry(geometry),output_first,output_rows,
-    BandPoolExecution.pooled_model(~Element,~operation,pool,pad,origin,channels,input,middle,output),
-    %Equal.sym(Nat,Buffer.content_length(~Element,BandPoolExecution.pooled_model(~Element,~operation,pool,pad,origin,channels,input,middle,output)),U32.to_nat(local_count),
-      pooled_length(~Element,~operation,pool,pad,origin,channels,input,middle,output)) : BandShape.Leaf(BandPoolExecution.values_output_geometry(geometry),output_first,output_rows,_)
-    %window_exact : BandShape.Leaf(BandPoolExecution.values_output_geometry(geometry),BandPoolWindowValues.output_first(_),BandPoolWindowValues.output_rows(_),U32.to_nat(BandPoolExecution.window_count(geometry,_)))
-    OutputDomain.owner_metadata(machine,shape,geometry,count,first,rows,Buffer.content_length(~Element,core),selected,counted,metadata))
-
-type OutputOwnership<-Element: Data,-geometry: BandWindow.Geometry,-content: Model.Content<Element>,-mapped: Bands.Plan> is Data:
-  OutputOwnership{metadata: BandShape.Contents(~Element,BandPoolExecution.values_output_geometry(geometry),content),ready: Model.ContentReady(~Element,content),
-    layout: {Model.content_layout(~Element,content) == mapped : Bands.Plan}}
-
-def ownership_leaf(~Element: Data,~operation: Element -> Element -> Element,+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+count: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+global_source: Model.Content<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  +metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,Buffer.content_length(~Element,core)),+window_exact: {BandWindow.window(geometry,first,rows) == window : BandWindow.RowWindow}) ->
-  OutputOwnership<Element,geometry,
-    BandPoolExecution.execution_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Bands.Rows{first,rows},Model.RowBand{core,first,rows},BandHalo.leaf_model(~Element,BandWindow.input_geometry(geometry),pad,first,rows,window,global_source)),
-    BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Bands.Rows{first,rows})>:
-  BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{output_first,output_rows},+above_rows,+below_rows,BandWindow.Rows{window_first,window_rows}} = window
-  +above = BandHalo.extract_refinement_result(~Element,BandWindow.input_geometry(geometry),pad,above_rows,global_source)
-  +below = BandHalo.extract_refinement_result(~Element,BandWindow.input_geometry(geometry),pad,below_rows,global_source)
-  OutputOwnership{
-    output_leaf_metadata(~Element,~operation,machine,shape,geometry,pad,fill,count,first,rows,window,core,above,below,selected,counted,metadata,window_exact),
-    %window_exact : Model.ContentReady(~Element,BandPoolExecution.refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,_,core,above,below))
-      BandPoolExecution.modeled_ready(~Element,~operation,geometry,pad,fill,first,rows,BandWindow.window(geometry,first,rows),core,above,below,OutputDomain.allocation_ready(machine,shape,geometry,count,first,rows,selected,counted)),
-    %window_exact : {Bands.Rows{BandPoolWindowValues.output_first(_),BandPoolWindowValues.output_rows(_)} == BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Bands.Rows{first,rows}) : Bands.Plan}
-      mapped_leaf(machine,shape,geometry,count,first,rows,Buffer.content_length(~Element,core),selected,counted,metadata)}
-
-def ownership_join(~Element: Data,+geometry: BandWindow.Geometry,+left: Model.Content<Element>,+right: Model.Content<Element>,+left_plan: Bands.Plan,+right_plan: Bands.Plan,
-  left_facts: OutputOwnership<Element,geometry,left,left_plan>,right_facts: OutputOwnership<Element,geometry,right,right_plan>) ->
-  OutputOwnership<Element,geometry,Model.Joined{left,right},Bands.Split{left_plan,right_plan}>:
-  OutputOwnership{left_metadata,left_ready,+left_layout} = left_facts
-  OutputOwnership{right_metadata,right_ready,+right_layout} = right_facts
-  OutputOwnership{Shape.Both{left_metadata,right_metadata},Shape.Both{left_ready,right_ready},
-    %left_layout : {Bands.Split{Model.content_layout(~Element,left),Model.content_layout(~Element,right)} == Bands.Split{_,right_plan} : Bands.Plan}
-    %right_layout : {Bands.Split{Model.content_layout(~Element,left),Model.content_layout(~Element,right)} == Bands.Split{Model.content_layout(~Element,left),_} : Bands.Plan}
-    {==}}
-
-def ownership_tree(~Element: Data,~operation: Element -> Element -> Element,+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+count: U32,+global_source: Model.Content<Element>,+cores: Model.Content<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  metadata: BandShape.Contents(~Element,BandWindow.input_geometry(geometry),cores)) ->
-  OutputOwnership<Element,geometry,
-    BandPoolExecution.execution_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.content_layout(~Element,cores),cores,BandHalo.model(~Element,geometry,pad,Model.content_layout(~Element,cores),global_source)),
-    BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Model.content_layout(~Element,cores))>:
-  match cores:
-    case Model.RowBand{+core,+first,+rows}:
-      Buffer.Content{tree,length} = core
-      ownership_leaf(~Element,~operation,machine,shape,geometry,pad,fill,workers,count,first,rows,BandWindow.window(geometry,first,rows),core,global_source,selected,counted,metadata,{==})
-    case Model.Joined{+left,+right}:
-      Shape.Both{left_metadata,right_metadata} = metadata
-      ownership_join(~Element,geometry,
-        BandPoolExecution.execution_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.content_layout(~Element,left),left,BandHalo.model(~Element,geometry,pad,Model.content_layout(~Element,left),global_source)),
-        BandPoolExecution.execution_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.content_layout(~Element,right),right,BandHalo.model(~Element,geometry,pad,Model.content_layout(~Element,right),global_source)),
-        BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Model.content_layout(~Element,left)),BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Model.content_layout(~Element,right)),
-        ownership_tree(~Element,~operation,machine,shape,geometry,pad,fill,workers,count,global_source,left,selected,counted,left_metadata),ownership_tree(~Element,~operation,machine,shape,geometry,pad,fill,workers,count,global_source,right,selected,counted,right_metadata))
-
-def ownership_well_formed(~Element: Data,+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+count: U32,+source: Model.Content<Element>,+output: Model.Content<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  source_coverage: BandPlan.Coverage(Model.content_layout(~Element,source),0n,Inspection.total_rows(BandWindow.input_geometry(geometry))),
-  ownership: OutputOwnership<Element,geometry,output,BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Model.content_layout(~Element,source))>) ->
-  BandShape.WellFormed<Element,BandPoolExecution.values_output_geometry(geometry),output>:
-  BandWindow.Geometry{Bands.Geometry{+images,channels,+height,width},kernel,+stride,padding,+output_height,output_width} = geometry
-  OutputOwnership{metadata,ready,+layout_exact} = ownership
-  +output_domain = OutputDomain.from_selector(machine,shape,geometry,count,selected,counted)
-  BandShape.WellFormed{metadata,ready,
-    %Equal.sym(Bands.Plan,Model.content_layout(~Element,output),BandPlan.mapped(~BandPlan.Mapping,~BandPlan.mapping,output_mapping(geometry),Model.content_layout(~Element,source)),layout_exact) : BandPlan.Coverage(_,0n,Inspection.total_rows(BandPoolExecution.values_output_geometry(geometry)))
-    BandPlan.output_coverage(U32.to_nat(images),U32.to_nat(height),U32.to_nat(output_height),U32.to_nat(stride),Model.content_layout(~Element,source),Machine.capacity(Scalar.limits(machine)),Limits.capacity_fits(Scalar.limits(machine)),
-      OutputDomain.selected_height(shape,geometry,selected),OutputDomain.selected_stride(shape,geometry,selected),BandGather.rows_room(BandPoolExecution.values_output_geometry(geometry),Scalar.limits(machine),Machine.capacity(Scalar.limits(machine)),output_domain),source_coverage)}
-
-def modeled_well_formed(~Element: Data,~operation: Element -> Element -> Element,+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+count: U32,+source: Model.Content<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),source>) ->
-  BandShape.WellFormed<Element,BandPoolExecution.values_output_geometry(geometry),BandPoolExecution.planned_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.content_layout(~Element,source),source)>:
-  BandShape.WellFormed{metadata,ready,coverage} = well_formed
-  ownership_well_formed(~Element,machine,shape,geometry,count,source,BandPoolExecution.planned_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.content_layout(~Element,source),source),selected,counted,coverage,
-    ownership_tree(~Element,~operation,machine,shape,geometry,pad,fill,workers,count,source,source,selected,counted,metadata))
-
-def execute_well_formed(~Element: Data,~operation: Element -> Element -> Element,+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+count: U32,+source: Model.Model<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>) ->
-  BandShape.WellFormed<Element,BandPoolExecution.values_output_geometry(geometry),Model.contents(~Element,BandPool.execute(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.pack(~Element,source)))>:
-  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandPool.execute(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.pack(~Element,source))),
-    BandPoolExecution.planned_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.layout(~Element,source),Model.content(~Element,source)),BandPoolExecution.execution_execute(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},source)) : BandShape.WellFormed<Element,BandPoolExecution.values_output_geometry(geometry),_>
-  %Equal.sym(Bands.Plan,Model.layout(~Element,source),Model.content_layout(~Element,Model.content(~Element,source)),Model.layout_matches_content(~Element,source)) :
-    BandShape.WellFormed<Element,BandPoolExecution.values_output_geometry(geometry),BandPoolExecution.planned_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},_,Model.content(~Element,source))>
-  modeled_well_formed(~Element,~operation,machine,shape,geometry,pad,fill,workers,count,Model.content(~Element,source),selected,counted,well_formed)
-
 def subtract_self(+value: Nat) -> {Nat.sub(value,value) == 0n : Nat}:
   %Addition.zero_right(value) : {Nat.sub(_,value) == 0n : Nat}
   Order.subtract_shift(value,0n)
@@ -1057,31 +871,25 @@ def zero_source_output_rows(+machine: Scalar.Observation,+shape: List<&2,U32>,+g
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,0,length)) -> {BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,0)) == 0 : U32}:
   +begin = BandPlan.mapping(output_mapping(geometry),U32.to_nat(first))
-  words_equal(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,0)),0,
+  Arithmetic.to_nat_injective(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,0)),0,
     Equal.trans(Nat,U32.to_nat(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,0))),Nat.sub(BandPlan.mapping(output_mapping(geometry),Nat.add(U32.to_nat(first),0n)),begin),0n,
       window_rows_decoded(machine,shape,geometry,count,first,0,length,selected,counted,metadata),
       %Equal.sym(Nat,Nat.add(U32.to_nat(first),0n),U32.to_nat(first),Addition.zero_right(U32.to_nat(first))) : {Nat.sub(BandPlan.mapping(output_mapping(geometry),_),begin) == 0n : Nat}
       subtract_self(begin)))
 
-def output_cells_zero(+geometry: BandWindow.Geometry,+window: BandWindow.RowWindow,zero: {BandPoolWindowValues.output_rows(window) == 0 : U32}) -> {BandPoolExecution.window_cells(geometry,window) == 0n : Nat}:
-  BandWindow.Geometry{Bands.Geometry{images,+channels,height,width},kernel,stride,padding,output_height,+output_width} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{first,+rows},above,below,input} = window
-  %Equal.sym(U32,rows,0,zero) : {Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(_),U32.to_nat(output_width))) == 0n : Nat}
-  RowMajor.multiply_zero_right(U32.to_nat(channels))
-
-def zero_leaf_receipt(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+limits: Machine.Limits,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+source: Model.Content<Element>,
-  zero: {BandPoolExecution.window_cells(geometry,window) == 0n : Nat}) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},limits,Bands.Rows{first,rows},Model.RowBand{core,first,rows},BandHalo.leaf_model(~Element,BandWindow.input_geometry(geometry),pad,first,rows,window,source)):
-  BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
-  BandWindow.RowWindow{output,above_range,below_range,input_range} = window
+# A band without output rows needs nothing of its window.
+def zero_leaf_receipt(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+limits: Machine.Limits,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+source: Model.Content<Element>,
+  zero: {BandPoolWindowValues.output_rows(window) == 0 : U32}) ->
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,limits,first,rows,core,BandHalo.seen_model(~Element,BandWindow.input_geometry(geometry),pad,window,source)):
+  BandWindow.RowWindow{BandWindow.Rows{output_first,output_rows},above_range,below_range,input_range} = window
   Inl{zero}
 
-def zero_source_leaf_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+count: U32,+first: U32,+core: Buffer.Content<Element>,+source: Model.Content<Element>,
+def zero_source_leaf_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+count: U32,+first: U32,+core: Buffer.Content<Element>,+source: Model.Content<Element>,
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,0,Buffer.content_length(~Element,core))) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Bands.Rows{first,0},Model.RowBand{core,first,0},BandHalo.leaf_model(~Element,BandWindow.input_geometry(geometry),pad,first,0,BandWindow.window(geometry,first,0),source)):
-  zero_leaf_receipt(~Element,~Logical,~original,logical,geometry,pad,fill,workers,Scalar.limits(machine),first,0,BandWindow.window(geometry,first,0),core,source,
-    output_cells_zero(geometry,BandWindow.window(geometry,first,0),zero_source_output_rows(machine,shape,geometry,count,first,Buffer.content_length(~Element,core),selected,counted,metadata)))
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,0,core,BandHalo.seen_model(~Element,BandWindow.input_geometry(geometry),pad,BandWindow.window(geometry,first,0),source)):
+  zero_leaf_receipt(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,0,BandWindow.window(geometry,first,0),core,source,
+    zero_source_output_rows(machine,shape,geometry,count,first,Buffer.content_length(~Element,core),selected,counted,metadata))
 
 def core_range_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: Bands.Geometry,+first: U32,+rows: U32,+core: Buffer.Content<Element>,
   metadata: BandShape.Leaf(geometry,first,rows,Buffer.content_length(~Element,core)),ready: Buffer.ContentReady<Element,core>,values: BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.RowBand{core,first,rows})) ->
@@ -1116,14 +924,14 @@ def window_leaf_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 ->
         Shape.Both{
           %window_exact : {U32.to_nat(BandPoolExecution.window_count(geometry,_)) == BandPoolExecution.window_cells(geometry,_) : Nat}
           window_count_cells(machine,shape,geometry,count,first,rows,selected,counted),
-          Shape.Both{BandPoolExecution.assembled_values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),BandPoolWindowValues.window_first(window),BandPoolWindowValues.window_rows(window),BandPoolExecution.assembled_input(~Element,geometry,fill,first,rows,window,core,above,below),assembled),
+          Shape.Both{assembled,
             Shape.Both{
               %window_exact : RoomsOf(machine,geometry,_)
               window_rooms(machine,shape,geometry,planes,count,first,rows,length,selected,planes_counted,counted,domain,metadata,range),
               %window_exact : RowsOf(geometry,first,_)
               window_row_facts(machine,shape,geometry,count,first,rows,selected,counted,interval,range)}}}}}}
 
-def nonzero_leaf(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+global_source: Model.Content<Element>,
+def nonzero_leaf(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+planes: U32,+count: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+global_source: Model.Content<Element>,
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   +domain: BandGather.Domain<BandWindow.input_geometry(geometry),Scalar.limits(machine),Machine.capacity(Scalar.limits(machine))>,
   +core_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),BandWindow.Rows{first,rows},core),
@@ -1131,8 +939,7 @@ def nonzero_leaf(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Elem
   +positive: {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool},
   +output_positive: {Nat.is_lt(0n,U32.to_nat(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows)))) == True{} : Bool},
   +window_exact: {BandWindow.window(geometry,first,rows) == window : BandWindow.RowWindow}) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Bands.Rows{first,rows},Model.RowBand{core,first,rows},
-    BandHalo.leaf_model(~Element,BandWindow.input_geometry(geometry),pad,first,rows,window,global_source)):
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,rows,core,BandHalo.seen_model(~Element,BandWindow.input_geometry(geometry),pad,window,global_source)):
   BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},kernel,stride,padding,output_height,output_width} = geometry
   BandWindow.RowWindow{BandWindow.Rows{output_first,output_rows},+above_rows,+below_rows,BandWindow.Rows{window_first,window_rows}} = window
   Shape.Both{+above_values,+below_values} = halo_values
@@ -1148,36 +955,35 @@ def nonzero_leaf(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Elem
 
 # A leaf with source rows may still have no output row; the native test of
 # its output rows chooses between the empty leaf and the two sweeps.
-def planned_leaf(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+global_source: Model.Content<Element>,
+def planned_leaf(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+planes: U32,+count: U32,+first: U32,+rows: U32,+window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+global_source: Model.Content<Element>,
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   +domain: BandGather.Domain<BandWindow.input_geometry(geometry),Scalar.limits(machine),Machine.capacity(Scalar.limits(machine))>,
   +core_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),BandWindow.Rows{first,rows},core),
   halo_values: BandHalo.TreeValues(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),BandHalo.leaf_model(~Element,BandWindow.input_geometry(geometry),pad,first,rows,window,global_source)),
   +positive: {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool},+window_exact: {BandWindow.window(geometry,first,rows) == window : BandWindow.RowWindow},
   choice: Bool,+choice_exact: {U32.is_zero(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows))) == choice : Bool}) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Bands.Rows{first,rows},Model.RowBand{core,first,rows},
-    BandHalo.leaf_model(~Element,BandWindow.input_geometry(geometry),pad,first,rows,window,global_source)):
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,rows,core,BandHalo.seen_model(~Element,BandWindow.input_geometry(geometry),pad,window,global_source)):
   match choice:
     case True{}:
-      zero_leaf_receipt(~Element,~Logical,~original,logical,geometry,pad,fill,workers,Scalar.limits(machine),first,rows,window,core,global_source,
-        %window_exact : {BandPoolExecution.window_cells(geometry,_) == 0n : Nat}
-        output_cells_zero(geometry,BandWindow.window(geometry,first,rows),native_zero(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows)),choice_exact)))
+      zero_leaf_receipt(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,rows,window,core,global_source,
+        %window_exact : {BandPoolWindowValues.output_rows(_) == 0 : U32}
+        Arithmetic.word_zero(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows)),choice_exact))
     case False{}:
-      nonzero_leaf(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,first,rows,window,core,global_source,selected,planes_counted,counted,domain,core_values,halo_values,positive,
-        OutputDomain.native_nonzero_positive(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows)),choice_exact),window_exact)
+      nonzero_leaf(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,planes,count,first,rows,window,core,global_source,selected,planes_counted,counted,domain,core_values,halo_values,positive,
+        Arithmetic.word_nonzero_positive(BandPoolWindowValues.output_rows(BandWindow.window(geometry,first,rows)),choice_exact),window_exact)
 
-def normal_nonempty_leaf_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+first: U32,+rows: U32,+core: Buffer.Content<Element>,+source: Model.Model<Element>,
+def normal_nonempty_leaf_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+planes: U32,+count: U32,+first: U32,+rows: U32,+core: Buffer.Content<Element>,+source: Model.Model<Element>,
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   +domain: BandGather.Domain<BandWindow.input_geometry(geometry),Scalar.limits(machine),Machine.capacity(Scalar.limits(machine))>,
   well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,global_values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),
   +metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,Buffer.content_length(~Element,core)),ready: Buffer.ContentReady<Element,core>,
   values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.RowBand{core,first,rows}),+positive: {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool}) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Bands.Rows{first,rows},Model.RowBand{core,first,rows},BandHalo.model(~Element,geometry,pad,Bands.Rows{first,rows},Model.content(~Element,source))):
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,rows,core,BandHalo.band_model(~Element,BandHalo.Extraction{geometry,pad,Model.content(~Element,source)},first,rows)):
   BandWindow.Geometry{Bands.Geometry{+images,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} = geometry
   +window = BandWindow.window(geometry,first,rows)
   +halo_values = BandHalo.leaf(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),pad,first,rows,window,source,Scalar.limits(machine),Machine.capacity(Scalar.limits(machine)),domain,well_formed,global_values,
     TensorBandWindow.nonempty_window(images,channels,height,width,kernel,stride,padding,output_height,output_width,first,rows,Buffer.content_length(~Element,core),Scalar.limits(machine),Machine.capacity(Scalar.limits(machine)),domain,metadata,positive))
-  planned_leaf(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,first,rows,window,core,Model.content(~Element,source),selected,planes_counted,counted,domain,
+  planned_leaf(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,planes,count,first,rows,window,core,Model.content(~Element,source),selected,planes_counted,counted,domain,
     core_range_values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),first,rows,core,metadata,ready,values),halo_values,positive,{==},U32.is_zero(BandPoolWindowValues.output_rows(window)),{==})
 
 # The actual selector makes both source axes positive. The normal global
@@ -1197,7 +1003,8 @@ def normal_source_from_count(+machine: Scalar.Observation,+shape: List<&2,U32>,+
   BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
   NormalSource{
     %Equal.sym(Machine.Limits,Scalar.limits(machine),Default.limits(),Scalar.actual_limits(machine)) : BandGather.Domain<BandWindow.input_geometry(geometry),_,Machine.capacity(_)>
-    Global.domain(shape,BandWindow.input_geometry(geometry),counted,OutputDomain.selected_shape(shape,geometry,selected),
+    Global.domain(shape,BandWindow.input_geometry(geometry),counted,
+    OutputDomain.input_elements(shape,geometry,selected),
     input_channels_positive(geometry,OutputDomain.positive_from_selector(shape,geometry,selected)),OutputDomain.selected_height(shape,geometry,selected),
     OutputDomain.selected_width(shape,geometry,selected))}
 
@@ -1205,66 +1012,259 @@ def source_envelope(+machine: Scalar.Observation,+shape: List<&2,U32>,+geometry:
   selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool}) -> SourceEnvelope<machine,geometry>:
   normal_source_from_count(machine,shape,geometry,counted,selected)
 
-def nonempty_leaf_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+first: U32,+rows: U32,+core: Buffer.Content<Element>,+source: Model.Model<Element>,
+def nonempty_leaf_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+planes: U32,+count: U32,+first: U32,+rows: U32,+core: Buffer.Content<Element>,+source: Model.Model<Element>,
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,global_values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),
   metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,Buffer.content_length(~Element,core)),ready: Buffer.ContentReady<Element,core>,
   values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.RowBand{core,first,rows}),positive: {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool},envelope: SourceEnvelope<machine,geometry>) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Bands.Rows{first,rows},Model.RowBand{core,first,rows},BandHalo.model(~Element,geometry,pad,Bands.Rows{first,rows},Model.content(~Element,source))):
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,rows,core,BandHalo.band_model(~Element,BandHalo.Extraction{geometry,pad,Model.content(~Element,source)},first,rows)):
   match envelope:
     case NormalSource{domain}:
-      normal_nonempty_leaf_facts(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,first,rows,core,source,selected,planes_counted,counted,domain,well_formed,global_values,metadata,ready,values,positive)
+      normal_nonempty_leaf_facts(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,planes,count,first,rows,core,source,selected,planes_counted,counted,domain,well_formed,global_values,metadata,ready,values,positive)
 
-def leaf_facts_choice(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+first: U32,+rows: U32,+core: Buffer.Content<Element>,+source: Model.Model<Element>,
+def leaf_facts_choice(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+planes: U32,+count: U32,+first: U32,+rows: U32,+core: Buffer.Content<Element>,+source: Model.Model<Element>,
   +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
   well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,global_values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),
   metadata: BandShape.Leaf(BandWindow.input_geometry(geometry),first,rows,Buffer.content_length(~Element,core)),ready: Buffer.ContentReady<Element,core>,
   values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.RowBand{core,first,rows}),envelope: SourceEnvelope<machine,geometry>,
   choice: Bool,+choice_exact: {U32.is_zero(rows) == choice : Bool}) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Bands.Rows{first,rows},Model.RowBand{core,first,rows},BandHalo.model(~Element,geometry,pad,Bands.Rows{first,rows},Model.content(~Element,source))):
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,rows,core,BandHalo.band_model(~Element,BandHalo.Extraction{geometry,pad,Model.content(~Element,source)},first,rows)):
   match choice:
     case True{}:
-      +zero = native_zero(rows,choice_exact)
-      %Equal.sym(U32,rows,0,zero) : BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Bands.Rows{first,_},Model.RowBand{core,first,_},BandHalo.model(~Element,geometry,pad,Bands.Rows{first,_},Model.content(~Element,source)))
-      zero_source_leaf_facts(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,count,first,core,Model.content(~Element,source),selected,counted,
+      +zero = Arithmetic.word_zero(rows,choice_exact)
+      %Equal.sym(U32,rows,0,zero) : BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,_,core,
+        BandHalo.band_model(~Element,BandHalo.Extraction{geometry,pad,Model.content(~Element,source)},first,_))
+      zero_source_leaf_facts(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,count,first,core,Model.content(~Element,source),selected,counted,
         %zero : BandShape.Leaf(BandWindow.input_geometry(geometry),first,_,Buffer.content_length(~Element,core)) metadata)
     case False{}:
-      nonempty_leaf_facts(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,first,rows,core,source,selected,planes_counted,counted,well_formed,global_values,metadata,ready,values,OutputDomain.native_nonzero_positive(rows,choice_exact),envelope)
+      nonempty_leaf_facts(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,planes,count,first,rows,core,source,selected,planes_counted,counted,well_formed,global_values,metadata,ready,values,Arithmetic.word_nonzero_positive(rows,choice_exact),envelope)
 
-def tree_facts_all(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+source: Model.Model<Element>,+cores: Model.Content<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},+planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},+counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  +well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,+global_values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),
-  metadata: BandShape.Contents(~Element,BandWindow.input_geometry(geometry),cores),ready: Model.ContentReady(~Element,cores),
-  values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),cores),+envelope: SourceEnvelope<machine,geometry>) ->
-  BandPoolExecution.TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Model.content_layout(~Element,cores),cores,BandHalo.model(~Element,geometry,pad,Model.content_layout(~Element,cores),Model.content(~Element,source))):
-  match cores:
-    case Model.RowBand{+core,+first,+rows}:
-      Buffer.Content{tree,length} = core
-      leaf_facts_choice(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,first,rows,core,source,selected,planes_counted,counted,well_formed,global_values,metadata,ready,values,envelope,U32.is_zero(rows),{==})
-    case Model.Joined{+left,+right}:
-      Shape.Both{left_metadata,right_metadata} = metadata
-      Shape.Both{left_ready,right_ready} = ready
-      Shape.Both{left_values,right_values} = values
-      Shape.Both{tree_facts_all(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,source,left,selected,planes_counted,counted,well_formed,global_values,left_metadata,left_ready,left_values,envelope),
-        tree_facts_all(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,source,right,selected,planes_counted,counted,well_formed,global_values,right_metadata,right_ready,right_values,envelope)}
+# ---- The band pool, band by band ----
 
-def planned_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+source: Model.Model<Element>,
-  selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  +well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,+values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),envelope: SourceEnvelope<machine,geometry>) ->
-  BandPoolExecution.PlannedFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),Model.layout(~Element,source),Model.content(~Element,source)):
-  BandShape.WellFormed{metadata,ready,coverage} = well_formed
-  %Equal.sym(Bands.Plan,Model.layout(~Element,source),Model.content_layout(~Element,Model.content(~Element,source)),Model.layout_matches_content(~Element,source)) :
-    BandPoolExecution.PlannedFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),_,Model.content(~Element,source))
-  tree_facts_all(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,source,Model.content(~Element,source),selected,planes_counted,counted,well_formed,values,metadata,ready,values,envelope)
+# What the band pool of one call reads: the input with its values, the pool,
+# and what the selector of the call computed.
+type Scope<-Element: Data,-Logical: Data,-original: Logical -> U32 -> Element> is Data:
+  Scope{machine: Scalar.Observation,logical: Logical,shape: List<&2,U32>,geometry: BandWindow.Geometry,pad: Element,fill: Element,workers: U32,planes: U32,count: U32,
+    source: Model.Model<Element>,selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},
+    planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},
+    counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
+    well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,
+    values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),
+    envelope: SourceEnvelope<machine,geometry>}
 
-# Every output cell of the executed band pool holds the two-sweep pool of its
-# pixel over the whole logical input. The planes swept along the columns and
-# the output are both counted by the selector; the input by its Normal state.
-def execute_values_all(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+machine: Scalar.Observation,+logical: Logical,+shape: List<&2,U32>,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+workers: U32,+planes: U32,+count: U32,+source: Model.Model<Element>,
-  +selected: {OutputDomain.enabled(shape,geometry) == True{} : Bool},planes_counted: {Tensors.count_of(Window.middle_shape(shape,OutputDomain.pool(geometry))) == Some{planes} : Maybe<&2,U32>},counted: {Tensors.count_of(OutputDomain.output_shape(shape,geometry)) == Some{count} : Maybe<&2,U32>},
-  well_formed: BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>,values: BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.content(~Element,source)),input_counted: Global.Counted<shape>) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),
-    BandPoolExecution.global_context(~Element,~Logical,logical,geometry,pad),BandPoolExecution.values_output_geometry(geometry),
-    Model.contents(~Element,BandPool.execute(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},Model.pack(~Element,source)))):
-  BandPoolExecution.values_execute(~Element,~Logical,~original,~operation,logical,BandPool.Context{geometry,pad,fill,workers},Scalar.limits(machine),source,
-    planned_facts(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,source_envelope(machine,shape,geometry,input_counted,selected)))
+def pool_context(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>) -> BandPool.Context<Element>:
+  Scope{machine,logical,shape,+geometry,+pad,+fill,+workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} = scope
+  BandPool.Context{geometry,pad,fill,workers}
+
+def scope_source(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>) -> Model.Model<Element>:
+  Scope{machine,logical,shape,geometry,pad,fill,workers,planes,count,+source,selected,planes_counted,counted,well_formed,values,envelope} = scope
+  source
+
+# The halo of a band is read from the whole input, with pad outside it.
+def extraction(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>) -> BandHalo.Extraction<Element>:
+  Scope{machine,logical,shape,+geometry,+pad,fill,workers,planes,count,+source,selected,planes_counted,counted,well_formed,values,envelope} = scope
+  BandHalo.Extraction{geometry,pad,Model.content(~Element,source)}
+
+def input_fields(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  Scope{machine,logical,shape,+geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} = scope
+  BandShape.band_fields(~Element,BandWindow.input_geometry(geometry))
+
+def input_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  Scope{machine,+logical,shape,+geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} = scope
+  BandValues.band_values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry))
+
+# A band of the input: its fields, ready, and its values.
+def Input(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  Model.Both(~Element,~Scope<Element,Logical,original>,
+    ~Model.Both(~Element,~Scope<Element,Logical,original>,~input_fields(~Element,~Logical,~original),~Model.always(~Element,~Scope<Element,Logical,original>,~Model.ready_band(~Element))),
+    ~input_values(~Element,~Logical,~original),scope)
+
+def Facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>,+first: U32,+rows: U32,+core: Buffer.Content<Element>,+halo: BandHalo.Seen<Element>) -> Data:
+  Scope{+machine,+logical,shape,+geometry,+pad,+fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} = scope
+  BandPoolExecution.BandFacts(~Element,~Logical,~original,logical,geometry,pad,fill,Scalar.limits(machine),first,rows,core,halo)
+
+# Every cell of an output band holds the pool of its pixel over the whole
+# logical input.
+def OutputValues(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+scope: Scope<Element,Logical,original>) ->
+  @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  Scope{machine,+logical,shape,+geometry,+pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} = scope
+  BandValues.band_values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),
+    BandPoolExecution.global_context(~Element,~Logical,logical,geometry,pad),BandPoolExecution.values_output_geometry(geometry))
+
+# The facts of a band and its halo, from the facts of the band.
+def band_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+scope: Scope<Element,Logical,original>,+first: U32,+rows: U32,+core: Buffer.Content<Element>,
+  fact: Input(~Element,~Logical,~original,scope,first,rows,core)) ->
+  Facts(~Element,~Logical,~original,scope,first,rows,core,BandHalo.band_model(~Element,extraction(~Element,~Logical,~original,scope),first,rows)):
+  Scope{+machine,+logical,+shape,+geometry,+pad,+fill,workers,+planes,+count,+source,+selected,+planes_counted,+counted,+well_formed,+values,+envelope} = scope
+  Shape.Both{Shape.Both{metadata,ready},core_values} = fact
+  leaf_facts_choice(~Element,~Logical,~original,machine,logical,shape,geometry,pad,fill,planes,count,first,rows,core,source,selected,planes_counted,counted,well_formed,values,
+    metadata,ready,core_values,envelope,U32.is_zero(rows),{==})
+
+def halo_output_rows(~Element: Data,halo: BandHalo.Owned<Element>) -> U32:
+  BandHalo.Owned{above,below,window} = halo
+  TensorBandWindow.output_rows(window)
+
+# The rows a window band reads, assembled into one buffer.
+def window_input(~Element: Data,+fill: Element,+geometry: Bands.Geometry,+stored: BandWindow.Rows,+core_range: BandWindow.Rows,+above_range: BandWindow.Rows,+below_range: BandWindow.Rows,
+  +core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>) -> Storage.Buffer<Element>:
+  BandWindow.assemble(~Element,fill,geometry,stored,core_range,above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))
+
+# The pool of a window, with its assembled rows observed as a model.
+def window_band(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+machine: Scalar.Observation,+logical: Logical,+pad: Element,+fill: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+out_height: U32,+out_width: U32,
+  +first: U32,+rows: U32,+output_first: U32,+output_rows: U32,+above_range: BandWindow.Rows,+below_range: BandWindow.Rows,+window_first: U32,+window_rows: U32,
+  +core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>,
+  observation: Buffer.Observation<Element,BandWindow.assemble(~Element,fill,Bands.Geometry{batch,channels,height,width},BandWindow.Rows{window_first,window_rows},BandWindow.Rows{first,rows},above_range,below_range,
+    Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))>,
+  facts: BandPoolExecution.WindowFacts(~Element,~Logical,~original,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width},pad,fill,first,rows,
+    BandWindow.RowWindow{BandWindow.Rows{output_first,output_rows},above_range,below_range,BandWindow.Rows{window_first,window_rows}},
+    Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below),Scalar.limits(machine)),
+  accepted: {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,
+    BandWindow.assemble(~Element,fill,Bands.Geometry{batch,channels,height,width},BandWindow.Rows{window_first,window_rows},BandWindow.Rows{first,rows},above_range,below_range,
+      Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)),
+    Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},((output_first - first / height * out_height) * stride + first / height * height - window_first : U32),channels,
+    Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))))) == True{} : Bool}) ->
+  BandPoolExecution.Pooled(~Element,~Logical,~original,~operation,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width},pad,output_first,output_rows,
+    CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,
+      BandWindow.assemble(~Element,fill,Bands.Geometry{batch,channels,height,width},BandWindow.Rows{window_first,window_rows},BandWindow.Rows{first,rows},above_range,below_range,
+        Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)),
+      Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},((output_first - first / height * out_height) * stride + first / height * height - window_first : U32),channels,
+      Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32)))))):
+  Buffer.Observation{+model,+equation} = observation
+  Shape.Both{middle_allocation,Shape.Both{allocation,Shape.Both{+middle_exact,Shape.Both{+count_exact,Shape.Both{range_values,Shape.Both{rooms,+row_facts}}}}}} = facts
+  +geometry = {Bands.Geometry{batch,channels,height,width} : Bands.Geometry}
+  +window = {BandWindow.Rows{window_first,window_rows} : BandWindow.Rows}
+  +pool = {Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width} : Access.Pool}
+  +origin = ((output_first - first / height * out_height) * stride + first / height * height - window_first : U32)
+  %equation : BandPoolExecution.Pooled(~Element,~Logical,~original,~operation,logical,BandWindow.Geometry{geometry,kernel,stride,padding,out_height,out_width},pad,output_first,output_rows,
+    CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,_,pool,origin,channels,
+      Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))))))
+  BandPoolExecution.window_output(~Element,~Logical,~original,~operation,logical,pad,fill,batch,channels,height,width,kernel,stride,padding,out_height,out_width,
+    window_first,window_rows,output_first,output_rows,origin,Scalar.limits(machine),Scalar.actual_limits(machine),model,
+    %Buffer.packed_contents(~Element,model) : BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,window,_)
+    %Equal.sym(Storage.Buffer<Element>,Buffer.pack(~Element,model),window_input(~Element,fill,geometry,window,BandWindow.Rows{first,rows},above_range,below_range,core,above,below),equation) :
+      BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,window,Buffer.contents(~Element,_))
+    %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,window_input(~Element,fill,geometry,window,BandWindow.Rows{first,rows},above_range,below_range,core,above,below)),
+      TensorBandWindow.assembly_content(~Element,geometry,fill,window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below)),
+      TensorBandWindow.assemble_contents(~Element,geometry,fill,window,BandWindow.Rows{first,rows},above_range,below_range,core,above,below)) :
+      BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,window,_)
+    range_values,
+    middle_allocation,allocation,middle_exact,count_exact,rooms,row_facts,
+    %Equal.sym(Storage.Buffer<Element>,Buffer.pack(~Element,model),window_input(~Element,fill,geometry,window,BandWindow.Rows{first,rows},above_range,below_range,core,above,below),equation) :
+      {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,_,pool,origin,channels,
+        Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))))) == True{} : Bool}
+    accepted)
+
+# One band through its checked pool, by the native test of its output rows.
+def band_chosen(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
+  +scope: Scope<Element,Logical,original>,+first: U32,+rows: U32,+core: Buffer.Model<Element>,+halo: BandHalo.Owned<Element>,
+  choice: Bool,+choice_exact: {U32.is_eq(halo_output_rows(~Element,halo),0) == choice : Bool},
+  fact: Facts(~Element,~Logical,~original,scope,first,rows,Buffer.content(~Element,core),BandHalo.owned_content(~Element,halo)),
+  accepted: {Each.usable(~Element,Each.checked(~Element,BandPool.leaf(~Element,~operation,pool_context(~Element,~Logical,~original,scope),first,rows,Buffer.pack(~Element,core),BandHalo.pack_owned(~Element,halo)))) == True{} : Bool}) ->
+  Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),
+    Model.contents(~Element,Each.made(~Element,Each.checked(~Element,BandPool.leaf(~Element,~operation,pool_context(~Element,~Logical,~original,scope),first,rows,Buffer.pack(~Element,core),BandHalo.pack_owned(~Element,halo)))))):
+  Scope{+machine,+logical,+shape,+geometry,+pad,+fill,+workers,+planes,+count,+source,+selected,+planes_counted,+counted,+well_formed,+values,+envelope} = scope
+  BandWindow.Geometry{Bands.Geometry{+batch,+channels,+height,+width},+kernel,+stride,+padding,+out_height,+out_width} = geometry
+  BandHalo.Owned{+above,+below,+window} = halo
+  BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},+above_range,+below_range,BandWindow.Rows{+window_first,+window_rows}} = window
+  match choice:
+    case True{}:
+      +geometry = {BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width} : BandWindow.Geometry}
+      +scope = {Scope{machine,logical,shape,geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} : Scope<Element,Logical,original>}
+      +stored = {BandWindow.Rows{window_first,window_rows} : BandWindow.Rows}
+      +origin = ((output_first - first / height * out_height) * stride + first / height * height - window_first : U32)
+      %Equal.sym(Bool,U32.is_eq(output_rows,0),True{},choice_exact) :
+        Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),Model.contents(~Element,Each.made(~Element,Each.checked(~Element,
+          BandPool.pooled(~Element,~operation,_,Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},pad,fill,origin,channels,output_first,
+            window_input(~Element,fill,Bands.Geometry{batch,channels,height,width},stored,BandWindow.Rows{first,rows},above_range,below_range,core,above,below))))))
+      BandPoolExecution.empty_band(~Element,~Logical,~original,~operation,logical,geometry,pad,output_first,Buffer.contents(~Element,Tensors.buffer(~Element,fill,0)),Contract.empty_ready(~Element,fill))
+    case False{}:
+      match fact:
+        case Inl{+zero}:
+          +geometry = {BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width} : BandWindow.Geometry}
+          +scope = {Scope{machine,logical,shape,geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} : Scope<Element,Logical,original>}
+          +stored = {BandWindow.Rows{window_first,window_rows} : BandWindow.Rows}
+          +origin = ((output_first - first / height * out_height) * stride + first / height * height - window_first : U32)
+          Empty.absurd(Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),Model.contents(~Element,Each.made(~Element,Each.checked(~Element,
+              BandPool.pooled(~Element,~operation,U32.is_eq(output_rows,0),Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},pad,fill,origin,channels,output_first,
+                window_input(~Element,fill,Bands.Geometry{batch,channels,height,width},stored,BandWindow.Rows{first,rows},above_range,below_range,core,above,below)))))),
+            WordEncoding.false_true(Equal.sym(Bool,True{},False{},%zero : {U32.is_eq(_,0) == False{} : Bool} choice_exact)))
+        case Inr{window_facts}:
+          +geometry = {BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width} : BandWindow.Geometry}
+          +scope = {Scope{machine,logical,shape,geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} : Scope<Element,Logical,original>}
+          +stored = {BandWindow.Rows{window_first,window_rows} : BandWindow.Rows}
+          +pool = {Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width} : Access.Pool}
+          +origin = ((output_first - first / height * out_height) * stride + first / height * height - window_first : U32)
+          %Equal.sym(Bool,U32.is_eq(output_rows,0),False{},choice_exact) :
+            Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),Model.contents(~Element,Each.made(~Element,Each.checked(~Element,
+              BandPool.pooled(~Element,~operation,_,pool,pad,fill,origin,channels,output_first,window_input(~Element,fill,Bands.Geometry{batch,channels,height,width},stored,BandWindow.Rows{first,rows},above_range,below_range,core,above,below))))))
+          BandPoolExecution.checked_outcome(~Element,~Scope<Element,Logical,original>,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation)),
+            scope,output_first,output_rows,
+            Operations.pool(~Element,~operation,pad,window_input(~Element,fill,Bands.Geometry{batch,channels,height,width},stored,BandWindow.Rows{first,rows},above_range,below_range,core,above,below),
+              pool,origin,channels,Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))),
+            %choice_exact :
+              {Each.usable(~Element,Each.checked(~Element,BandPool.pooled(~Element,~operation,_,pool,pad,fill,origin,channels,output_first,window_input(~Element,fill,Bands.Geometry{batch,channels,height,width},stored,BandWindow.Rows{first,rows},above_range,below_range,core,above,below)))) == True{} : Bool}
+            accepted,
+            usable => window_band(~Element,~Logical,~original,~operation,machine,logical,pad,fill,batch,channels,height,width,kernel,stride,padding,out_height,out_width,
+              first,rows,output_first,output_rows,above_range,below_range,window_first,window_rows,core,above,below,Buffer.observe(~Element,window_input(~Element,fill,Bands.Geometry{batch,channels,height,width},stored,BandWindow.Rows{first,rows},above_range,below_range,core,above,below)),window_facts,usable))
+
+# One band through its checked pool: a usable call leaves a ready band that
+# holds the pool of every pixel.
+def band_output(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
+  +scope: Scope<Element,Logical,original>,+first: U32,+rows: U32,+core: Buffer.Model<Element>,+halo: BandHalo.Owned<Element>,
+  fact: Facts(~Element,~Logical,~original,scope,first,rows,Buffer.content(~Element,core),BandHalo.owned_content(~Element,halo)),
+  accepted: {Each.usable(~Element,Each.checked(~Element,BandPool.leaf(~Element,~operation,pool_context(~Element,~Logical,~original,scope),first,rows,Buffer.pack(~Element,core),BandHalo.pack_owned(~Element,halo)))) == True{} : Bool}) ->
+  Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),
+    Model.contents(~Element,Each.made(~Element,Each.checked(~Element,BandPool.leaf(~Element,~operation,pool_context(~Element,~Logical,~original,scope),first,rows,Buffer.pack(~Element,core),BandHalo.pack_owned(~Element,halo)))))):
+  band_chosen(~Element,~Logical,~original,~operation,scope,first,rows,core,halo,U32.is_eq(halo_output_rows(~Element,halo),0),{==},fact,accepted)
+
+# Every band of the window apply on the prepared cores and halos.
+def prepared_all(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,
+  +scope: Scope<Element,Logical,original>,+layout: Bands.Plan,owners: Bands.Bands(~Element) & BandWindow.Halos(~Element),
+  facts: TensorBandWindowApply.Prepared(~Element,~Scope<Element,Logical,original>,~Facts(~Element,~Logical,~original),scope,layout,BandHalo.refinement_contents(~Element,owners)),
+  accepted: {Each.usable(~Element,BandPool.prepared(~Element,~operation,pool_context(~Element,~Logical,~original,scope),layout,owners)) == True{} : Bool}) ->
+  Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),
+    Model.contents(~Element,Each.made(~Element,BandPool.prepared(~Element,~operation,pool_context(~Element,~Logical,~original,scope),layout,owners)))):
+  Scope{+machine,+logical,+shape,+geometry,+pad,+fill,+workers,+planes,+count,+source,+selected,+planes_counted,+counted,+well_formed,+values,+envelope} = scope
+  (cores,halos) = owners
+  +scope = {Scope{machine,logical,shape,geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} : Scope<Element,Logical,original>}
+  +enabled = BandPool.parallel(geometry,workers,BandPool.plan_size(layout,geometry))
+  TensorBandWindowApply.observed_all(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),~Scope<Element,Logical,original>,~pool_context(~Element,~Logical,~original),
+    ~Facts(~Element,~Logical,~original),~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation)),~band_output(~Element,~Logical,~original,~operation),
+    scope,layout,enabled,cores,halos,
+    Model.observe(~Element,cores),BandHalo.observe_owners(~Element,halos),facts,accepted)
+
+# Every band of the band pool holds the pool of its pixels when every band
+# call was usable.
+def executed(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+scope: Scope<Element,Logical,original>,
+  accepted: {Each.usable(~Element,BandPool.execute(~Element,~operation,pool_context(~Element,~Logical,~original,scope),Model.pack(~Element,scope_source(~Element,~Logical,~original,scope)))) == True{} : Bool}) ->
+  Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),
+    Model.contents(~Element,Each.made(~Element,BandPool.execute(~Element,~operation,pool_context(~Element,~Logical,~original,scope),Model.pack(~Element,scope_source(~Element,~Logical,~original,scope)))))):
+  Scope{+machine,+logical,+shape,+geometry,+pad,+fill,+workers,+planes,+count,+source,+selected,+planes_counted,+counted,+well_formed,+values,+envelope} = scope
+  BandShape.WellFormed{+metadata,+ready,+coverage} = well_formed
+  +well_formed = {BandShape.WellFormed{metadata,ready,coverage} : BandShape.WellFormed<Element,BandWindow.input_geometry(geometry),Model.content(~Element,source)>}
+  +scope = {Scope{machine,logical,shape,geometry,pad,fill,workers,planes,count,source,selected,planes_counted,counted,well_formed,values,envelope} : Scope<Element,Logical,original>}
+  +context = {BandPool.Context{geometry,pad,fill,workers} : BandPool.Context<Element>}
+  +content = Model.content(~Element,source)
+  +layout = Model.layout(~Element,source)
+  +input = Model.content_both(~Element,~Scope<Element,Logical,original>,
+    ~Model.Both(~Element,~Scope<Element,Logical,original>,~input_fields(~Element,~Logical,~original),~Model.always(~Element,~Scope<Element,Logical,original>,~Model.ready_band(~Element))),
+    ~input_values(~Element,~Logical,~original),scope,content,
+    Model.content_both(~Element,~Scope<Element,Logical,original>,~input_fields(~Element,~Logical,~original),~Model.always(~Element,~Scope<Element,Logical,original>,~Model.ready_band(~Element)),scope,content,metadata,ready),values)
+  +halos = TensorBandWindowApply.halo_all(~Element,~Scope<Element,Logical,original>,~Input(~Element,~Logical,~original),~Facts(~Element,~Logical,~original),~extraction(~Element,~Logical,~original),
+    ~band_facts(~Element,~Logical,~original),scope,content,input)
+  %Equal.sym(Bands.Bands(~Element) & Bands.Plan,Bands.plan(~Element,Model.pack(~Element,source)),(Model.pack(~Element,source),layout),Model.plan(~Element,source)) :
+    Model.ContentAll(~Element,~Global.Made(~Element,~Scope<Element,Logical,original>,~OutputValues(~Element,~Logical,~original,~operation),scope),
+      Model.contents(~Element,Each.made(~Element,BandPool.planned(~Element,~operation,context,_))))
+  prepared_all(~Element,~Logical,~original,~operation,scope,layout,BandWindow.prepare(~Element,geometry,pad,layout,Model.pack(~Element,source)),
+    %Equal.sym(BandHalo.Content<Element>,BandHalo.refinement_contents(~Element,BandWindow.prepare(~Element,geometry,pad,layout,Model.pack(~Element,source))),
+      BandHalo.Content{Model.contents(~Element,Model.pack(~Element,source)),BandHalo.model(~Element,geometry,pad,layout,Model.contents(~Element,Model.pack(~Element,source)))},
+      BandHalo.prepare(~Element,geometry,pad,layout,Model.pack(~Element,source))) :
+      TensorBandWindowApply.Prepared(~Element,~Scope<Element,Logical,original>,~Facts(~Element,~Logical,~original),scope,layout,_)
+    %Equal.sym(Model.Content<Element>,Model.contents(~Element,Model.pack(~Element,source)),content,Model.packed_contents(~Element,source)) :
+      TensorBandWindowApply.Prepared(~Element,~Scope<Element,Logical,original>,~Facts(~Element,~Logical,~original),scope,layout,BandHalo.Content{_,BandHalo.model(~Element,geometry,pad,layout,_)})
+    Shape.Both{Model.layout_matches_content(~Element,source),
+      %Equal.sym(Bands.Plan,layout,Model.content_layout(~Element,content),Model.layout_matches_content(~Element,source)) :
+        TensorBandWindowApply.HaloAll(~Element,~Scope<Element,Logical,original>,~Facts(~Element,~Logical,~original),scope,content,BandHalo.model(~Element,geometry,pad,_,content))
+      halos},
+    %Model.plan(~Element,source) : {Each.usable(~Element,BandPool.planned(~Element,~operation,context,_)) == True{} : Bool} accepted)

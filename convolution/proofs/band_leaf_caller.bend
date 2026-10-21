@@ -4,7 +4,6 @@ import Base
 import ../specification.bend as ConvSpec
 import ../inference.bend as NativeConv
 import ../../lib/kernel_shape.bend as KernelShape
-import ../../lib/tensor_convolution.bend as TensorConvolution
 import ../../lib/tensor_band.bend as Bands
 import ../../lib/tensor_band_window.bend as BandWindow
 import ../../lib/kernel_tile.bend as Tile
@@ -20,6 +19,7 @@ import ../../lib/proofs/kernel_weights_refinement.bend as WeightsLaws
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./band_leaf_values.bend as LeafValues
 import ./band_caller_guards.bend as Caller
+import ../../lib/proofs/tensor_band_model.bend as Model
 
 def input_geometry(+images: U32,dimensions: KernelShape.Dimensions) -> Bands.Geometry:
   KernelShape.Dimensions{ci,co,height,width,kernel,stride,padding} = dimensions
@@ -43,14 +43,13 @@ def active_with_bounds(~custom: F32 -> F32,~Logical: Data,~original: Logical -> 
   +outputs_positive: {Nat.is_lt(0n,co) == True{} : Bool},+stride_positive: {Nat.is_lt(0n,stride) == True{} : Bool},
   +valid: {ConvSpec.valid(Caller.problem(~Logical,~original,logical,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding},weights,bias,U32.to_nat((first / U32.from_nat(h) : U32)))) == True{} : Bool},
   +supported: {NativeConv.supports_packed_with_limits(limits,Caller.problem(~Logical,~original,logical,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding},weights,bias,U32.to_nat((first / U32.from_nat(h) : U32)))) == True{} : Bool},
-  +padding_small: {Nat.is_lt(padding,kernel) == True{} : Bool},
   +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
   +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,+weight_model: Buffer.Model<Tile.Tile8>,+bias_model: Buffer.Model<F32>,
   +weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == expected_weights(~Logical,~original,logical,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding},weights,bias,first,weight_evidence) : Tree.Tree<Tile.Tile8>},
   +bias_exact: {Buffer.tree(~F32,bias_model) == StorageLaws.sequence_storage(F32,ConvSpec.length(bias),bias,bias_evidence) : Tree.Tree<F32>},
   +core_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding}),BandWindow.Rows{first,rows},Buffer.content(~F32,core)),
   +halo_values: BandHalo.TreeValues(~F32,~Logical,~original,logical,input_geometry(images,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding}),
-    BandHalo.Leaf{Buffer.content(~F32,above),Buffer.content(~F32,below),BandWindow.window(LeafValues.geometry(images,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding}),first,rows),first,rows}),
+    Model.Piece{BandHalo.Seen{Buffer.content(~F32,above),Buffer.content(~F32,below),BandWindow.window(LeafValues.geometry(images,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding}),first,rows)},first,rows}),
   +guard: {LeafValues.active(KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding},first,rows) == True{} : Bool}) ->
   LeafValues.WindowValues(~custom,~Logical,~original,logical,activation,images,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding},weights,bias,first,rows,
     BandWindow.window(LeafValues.geometry(images,KernelShape.Dimensions{ci,co,h,width,kernel,stride,padding}),first,rows),core,above,below,weight_model,bias_model):
@@ -64,9 +63,9 @@ def active_with_bounds(~custom: F32 -> F32,~Logical: Data,~original: Logical -> 
     LeafValues.WindowValues(~custom,~Logical,~original,logical,activation,images,dimensions,weights,bias,first,rows,_,core,above,below,weight_model,bias_model)
   LeafValues.leaf_when(~custom,~Logical,~original,True{},logical,activation,limits,ci,co,h,width,kernel,stride,padding,weights,bias,images,capacity,domain,first,rows,core_geometry,
     channels_word,outputs_word,height_word,width_word,kernel_word,stride_word,padding_word,output_height_word,output_width_word,
-    stride_room,coordinate_room,height_room,padding_room,output_room,outputs_positive,stride_positive,valid,supported,padding_small,weight_evidence,bias_evidence,
+    stride_room,coordinate_room,height_room,padding_room,output_room,outputs_positive,stride_positive,valid,supported,weight_evidence,bias_evidence,
     weight_model,weight_exact,bias_model,bias_exact,core,above,below,core_values,
-    %window_equal : BandHalo.TreeValues(~F32,~Logical,~original,logical,input_geometry(images,dimensions),BandHalo.Leaf{Buffer.content(~F32,above),Buffer.content(~F32,below),_,first,rows})
+    %window_equal : BandHalo.TreeValues(~F32,~Logical,~original,logical,input_geometry(images,dimensions),Model.Piece{BandHalo.Seen{Buffer.content(~F32,above),Buffer.content(~F32,below),_},first,rows})
     halo_values,guard)
 
 def active_checked(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+limits: Machine.Limits,+images: U32,+dimensions: KernelShape.Dimensions,
@@ -75,13 +74,12 @@ def active_checked(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 
   +valid: {KernelShape.valid(dimensions,Caller.input_length(dimensions),ConvSpec.length(weights),ConvSpec.length(bias)) == True{} : Bool},
   +supported: {KernelShape.supports_packed(limits,dimensions,Caller.input_length(dimensions),ConvSpec.length(weights)) == True{} : Bool},
   +output_room: {Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
-  eligible: {TensorConvolution.uses_band_windows(TensorConvolution.Geometry{images,True{},dimensions}) == True{} : Bool},
   +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
   +core: Buffer.Model<F32>,+above: Buffer.Model<F32>,+below: Buffer.Model<F32>,+weight_model: Buffer.Model<Tile.Tile8>,+bias_model: Buffer.Model<F32>,
   weight_exact: {Buffer.tree(~Tile.Tile8,weight_model) == expected_weights(~Logical,~original,logical,dimensions,weights,bias,first,weight_evidence) : Tree.Tree<Tile.Tile8>},
   bias_exact: {Buffer.tree(~F32,bias_model) == StorageLaws.sequence_storage(F32,ConvSpec.length(bias),bias,bias_evidence) : Tree.Tree<F32>},
   core_values: BandHalo.RangeValues(~F32,~Logical,~original,logical,input_geometry(images,dimensions),BandWindow.Rows{first,rows},Buffer.content(~F32,core)),
-  halo_values: BandHalo.TreeValues(~F32,~Logical,~original,logical,input_geometry(images,dimensions),BandHalo.Leaf{Buffer.content(~F32,above),Buffer.content(~F32,below),BandWindow.window(LeafValues.geometry(images,dimensions),first,rows),first,rows}),
+  halo_values: BandHalo.TreeValues(~F32,~Logical,~original,logical,input_geometry(images,dimensions),Model.Piece{BandHalo.Seen{Buffer.content(~F32,above),Buffer.content(~F32,below),BandWindow.window(LeafValues.geometry(images,dimensions),first,rows)},first,rows}),
   guard: {LeafValues.active(dimensions,first,rows) == True{} : Bool}) ->
   LeafValues.WindowValues(~custom,~Logical,~original,logical,activation,images,dimensions,weights,bias,first,rows,BandWindow.window(LeafValues.geometry(images,dimensions),first,rows),core,above,below,weight_model,bias_model):
   KernelShape.Dimensions{+ci,+co,+h,+width,+kernel,+stride,+padding} = dimensions
@@ -92,4 +90,4 @@ def active_checked(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 
   +packed = Caller.supported(~Logical,~original,logical,limits,dimensions,weights,bias,image,supported)
   active_with_bounds(~custom,~Logical,~original,logical,activation,limits,images,ci,co,h,width,kernel,stride,padding,weights,bias,first,rows,capacity,domain,core_geometry,
     Caller.words(limits,problem,checked,packed),Caller.room(limits,images,problem,packed,output_room),Caller.outputs_positive(problem,checked),Caller.stride_positive(problem,checked),
-    checked,packed,Caller.padding_small(images,True{},ci,co,h,width,kernel,stride,padding,eligible),weight_evidence,bias_evidence,core,above,below,weight_model,bias_model,weight_exact,bias_exact,core_values,halo_values,guard)
+    checked,packed,weight_evidence,bias_evidence,core,above,below,weight_model,bias_model,weight_exact,bias_exact,core_values,halo_values,guard)

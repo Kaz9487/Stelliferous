@@ -4,7 +4,7 @@
 
 範例使用 [Ultralytics YOLOv5 v7.0](https://github.com/ultralytics/yolov5/tree/v7.0) 官方 COCO 預訓練 YOLOv5n 與範例圖片。checkpoint 檔名包含上游版本。
 
-YOLOv5 v7.0 的儲存庫以 [GPL-3.0](https://github.com/ultralytics/yolov5/blob/v7.0/LICENSE) 發布。上游授權全文保留於 [LICENSE.yolov5](LICENSE.yolov5)。這些素材保留原授權與權利歸屬；本專案自己的授權（MIT 或 Apache-2.0）適用於原創程式碼。
+YOLOv5 v7.0 的儲存庫以 [GPL-3.0](https://github.com/ultralytics/yolov5/blob/v7.0/LICENSE) 發布。上游授權全文保留於 [LICENSE.yolov5](LICENSE.yolov5)。這些素材保留原授權與權利歸屬。本專案自己的授權（MIT 或 Apache-2.0）適用於原創程式碼。
 
 | 檔案 | 上游來源 | SHA-256 |
 |---|---|---|

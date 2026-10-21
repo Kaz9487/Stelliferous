@@ -12,6 +12,7 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../specification.bend as ConvSpec
 import ../scalar_kernel.bend as ScalarConv
 import ../../lib/kernel_spatial_packing.bend as Packing
+import ../../lib/proofs/nat_order.bend as Order
 
 def logical(+xs: List<&2,F32>,+input_channel_index: Nat,+h: Nat,+w: Nat,+padded_row: Nat,+padded_column: Nat,+pad: Nat) -> F32:
   ConvSpec.sample_if((Nat.is_le(pad,padded_row) && Nat.is_lt(padded_row,Nat.add(pad,h))) && (Nat.is_le(pad,padded_column) && Nat.is_lt(padded_column,Nat.add(pad,w))),
@@ -76,7 +77,7 @@ def input_shape(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid
     SupportedCoordinateBounds.width_exact(limits,p,
       support)) : {ConvSpec.length(Guards.input(p)) == Nat.mul(Guards.input_channel_count(p),
       Nat.mul(Guards.height(p),_)) : Nat}
-  Guards.reflect(ConvSpec.length(Guards.input(p)),Nat.mul(Guards.input_channel_count(p),
+  Order.equal_of_is_eq(ConvSpec.length(Guards.input(p)),Nat.mul(Guards.input_channel_count(p),
       Nat.mul(Guards.height(p),Guards.width(p))),v8)
 
 def width_positive(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Valid<p>,

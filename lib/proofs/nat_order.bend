@@ -4,6 +4,7 @@ import ./natural_addition.bend as Addition
 import ./u32_comparison.bend as Comparison
 import ./nat_to_u32_bounds.bend as Bounds
 import ./word_encoding.bend as WordEncoding
+import ./nat_division.bend as Division
 
 def not_below(+lower: Nat,+value: Nat,room: {Nat.is_le(lower,value) == True{} : Bool}) -> {Nat.is_lt(value,lower) == False{} : Bool}:
   match lower value:
@@ -78,6 +79,12 @@ def split_at_element(+total: Nat,+index: Nat,inside: {Nat.is_lt(index,total) == 
       Empty.absurd({Nat.add(1n+index,1n) == 0n : Nat},WordEncoding.false_true(inside))
     case 1n+ +rest 1n+ +index:
       Equal.cong(Nat,Nat,n => 1n+n,Nat.add(index,1n+Nat.sub(rest,1n+index)),rest,split_at_element(rest,index,inside))
+
+# No number is below zero.
+def below_zero(+value: Nat,below: {Nat.is_lt(value,0n) == True{} : Bool}) -> Empty:
+  match value:
+    case 0n: WordEncoding.false_true(below)
+    case 1n+rest: WordEncoding.false_true(below)
 
 type UpperBound<-value: Nat,-limit: Nat> is Data:
   Before{inside: {Nat.is_lt(value,limit) == True{} : Bool}}
@@ -373,3 +380,146 @@ def antisymmetric(+left: Nat,+right: Nat,forward: {Nat.is_le(left,right) == True
     case 1n+left 0n: Empty.absurd({1n+left == 0n : Nat},WordEncoding.false_true(forward))
     case 1n+ +left 1n+ +right:
       Equal.cong(Nat,Nat,value => 1n+value,left,right,antisymmetric(left,right,forward,backward))
+
+# Additive complements describe reflected digits without subtraction premises.
+def below_sum(+value: Nat,+more: Nat) -> {Nat.is_lt(value,Nat.add(value,1n+more)) == True{} : Bool}:
+  match value:
+    case 0n: {==}
+    case 1n+ +rest: below_sum(rest,more)
+
+def below_complement(+value: Nat,+more: Nat,+total: Nat,place: {Nat.add(value,1n+more) == total : Nat}) -> {Nat.is_lt(value,total) == True{} : Bool}:
+  %place : {Nat.is_lt(value,_) == True{} : Bool}
+  below_sum(value,more)
+
+def subtract_one_complement(+left: Nat,+right: Nat) -> {Nat.sub(Nat.add(left,1n+right),1n) == Nat.add(left,right) : Nat}:
+  Equal.trans(Nat,Nat.sub(Nat.add(left,1n+right),1n),Nat.sub(1n+Nat.add(left,right),1n),Nat.add(left,right),
+    Equal.cong(Nat,Nat,value => Nat.sub(value,1n),Nat.add(left,1n+right),1n+Nat.add(left,right),Addition.successor_right(left,right)),subtract_zero(Nat.add(left,right)))
+
+def reflected_complement(+digit: Nat,+reflected: Nat,+extent: Nat,place: {Nat.add(digit,1n+reflected) == extent : Nat}) ->
+  {Nat.sub(Nat.sub(extent,1n),digit) == reflected : Nat}:
+  Equal.trans(Nat,Nat.sub(Nat.sub(extent,1n),digit),Nat.sub(Nat.add(digit,reflected),digit),reflected,
+    Equal.cong(Nat,Nat,value => Nat.sub(value,digit),Nat.sub(extent,1n),Nat.add(digit,reflected),
+      Equal.trans(Nat,Nat.sub(extent,1n),Nat.sub(Nat.add(digit,1n+reflected),1n),Nat.add(digit,reflected),
+        Equal.cong(Nat,Nat,value => Nat.sub(value,1n),extent,Nat.add(digit,1n+reflected),Equal.sym(Nat,Nat.add(digit,1n+reflected),extent,place)),subtract_one_complement(digit,reflected))),subtract_shift(digit,reflected))
+
+# Truncated subtraction is adjoint to addition for non-strict bounds.
+def subtraction_le(+end: Nat,+offset: Nat,+value: Nat) ->
+  {Nat.is_le(Nat.sub(end,offset),value) == Nat.is_le(end,Nat.add(offset,value)) : Bool}:
+  match end offset:
+    case 0n 0n: {==}
+    case 0n 1n+rest: zero_le(value)
+    case 1n+rest 0n: {==}
+    case 1n+rest 1n+offset: subtraction_le(rest,offset,value)
+
+# The strict counterpart includes offsets beyond the endpoint.
+def subtraction_lt(+end: Nat,+offset: Nat,+value: Nat) ->
+  {Nat.is_lt(value,Nat.sub(end,offset)) == Nat.is_lt(Nat.add(offset,value),end) : Bool}:
+  match end offset:
+    case 0n 0n: {==}
+    case 0n 1n+rest: not_below(0n,value,zero_le(value))
+    case 1n+rest 0n: {==}
+    case 1n+rest 1n+offset: subtraction_lt(rest,offset,value)
+
+def strict_complement(+left: Nat,+right: Nat) ->
+  {Nat.is_lt(left,right) == Bool.not(Nat.is_le(right,left)) : Bool}:
+  match left right:
+    case 0n 0n: {==}
+    case 0n 1n+rest: {==}
+    case 1n+rest 0n: {==}
+    case 1n+left 1n+right: strict_complement(left,right)
+
+def drop_left_le(+offset: Nat,+count: Nat,+stride: Nat,span: {Nat.is_le(Nat.add(offset,count),stride) == True{} : Bool}) ->
+  {Nat.is_le(count,stride) == True{} : Bool}:
+  transitive(count,Nat.add(offset,count),stride,
+    %commutative(count,offset) : {Nat.is_le(count,_) == True{} : Bool}
+    le_add(count,offset),span)
+
+# Adding the window's image-relative start translates a valid padded row.
+def subtract_from_sum(+offset: Nat,+coordinate: Nat,+padding: Nat,ordered: {Nat.is_le(padding,coordinate) == True{} : Bool}) ->
+  {Nat.sub(Nat.add(offset,coordinate),padding) == Nat.add(offset,Nat.sub(coordinate,padding)) : Nat}:
+  match coordinate padding:
+    case +coordinate 0n: Equal.trans(Nat,Nat.sub(Nat.add(offset,coordinate),0n),Nat.add(offset,coordinate),Nat.add(offset,Nat.sub(coordinate,0n)),subtract_zero(Nat.add(offset,coordinate)),
+      Equal.cong(Nat,Nat,value => Nat.add(offset,value),coordinate,Nat.sub(coordinate,0n),Equal.sym(Nat,Nat.sub(coordinate,0n),coordinate,subtract_zero(coordinate))))
+    case 0n 1n+padding: Empty.absurd({Nat.sub(Nat.add(offset,0n),1n+padding) == Nat.add(offset,0n) : Nat},WordEncoding.false_true(ordered))
+    case 1n+ +coordinate 1n+ +padding:
+      %Equal.sym(Nat,Nat.add(offset,1n+coordinate),1n+Nat.add(offset,coordinate),Addition.successor_right(offset,coordinate)) :
+        {Nat.sub(_,1n+padding) == Nat.add(offset,Nat.sub(coordinate,padding)) : Nat}
+      subtract_from_sum(offset,coordinate,padding,ordered)
+
+def le_offset(+offset: Nat,+left: Nat,+right: Nat) -> {Nat.is_le(Nat.add(offset,left),Nat.add(offset,right)) == Nat.is_le(left,right) : Bool}:
+  match offset:
+    case 0n: {==}
+    case 1n+ +rest: le_offset(rest,left,right)
+
+def lt_offset(+offset: Nat,+left: Nat,+right: Nat) -> {Nat.is_lt(Nat.add(offset,left),Nat.add(offset,right)) == Nat.is_lt(left,right) : Bool}:
+  match offset:
+    case 0n: {==}
+    case 1n+ +rest: lt_offset(rest,left,right)
+
+# A mapped interval remains image-local, including a zero interval at the
+# next image boundary. This lemma separates row geometry from stored values.
+def subtract_below(+value: Nat,+amount: Nat,inside: {Nat.is_le(value,amount) == True{} : Bool}) -> {Nat.sub(value,amount) == 0n : Nat}:
+  match value amount:
+    case 0n amount: zero_subtract(amount)
+    case 1n+value 0n: Empty.absurd({Nat.sub(1n+value,0n) == 0n : Nat},WordEncoding.false_true(inside))
+    case 1n+ +value 1n+ +amount: subtract_below(value,amount,inside)
+
+def product_positive(+left: Nat,+right: Nat,left_positive: {Nat.is_lt(0n,left) == True{} : Bool},right_positive: {Nat.is_lt(0n,right) == True{} : Bool}) ->
+  {Nat.is_lt(0n,Nat.mul(left,right)) == True{} : Bool}:
+  match left right:
+    case 0n right: Empty.absurd({Nat.is_lt(0n,Nat.mul(0n,right)) == True{} : Bool},WordEncoding.false_true(left_positive))
+    case 1n+left 0n: Empty.absurd({Nat.is_lt(0n,Nat.mul(1n+left,0n)) == True{} : Bool},WordEncoding.false_true(right_positive))
+    case 1n+left 1n+right: {==}
+
+def not_less(+left: Nat,+right: Nat,order: {Nat.is_lt(left,right) == False{} : Bool}) -> {Nat.is_le(right,left) == True{} : Bool}:
+  match left right:
+    case left 0n: zero_le(left)
+    case 0n 1n+right: Empty.absurd({Nat.is_le(1n+right,0n) == True{} : Bool},WordEncoding.false_true(Equal.sym(Bool,True{},False{},order)))
+    case 1n+left 1n+right: not_less(left,right,order)
+
+def positive_bound(+value: Nat,+limit: Nat,inside: {Nat.is_lt(value,limit) == True{} : Bool}) -> {Nat.is_lt(0n,limit) == True{} : Bool}:
+  le_lt_trans(0n,value,limit,zero_le(value),inside)
+
+def nonzero_positive(+value: Nat,nonzero: {Nat.is_eq(value,0n) == False{} : Bool}) -> {Nat.is_lt(0n,value) == True{} : Bool}:
+  match value:
+    case 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(Equal.sym(Bool,True{},False{},nonzero)))
+    case 1n+rest: {==}
+
+def zero_below(+value: Nat,bounded: {Nat.is_le(value,0n) == True{} : Bool}) -> {value == 0n : Nat}:
+  match value:
+    case 0n: {==}
+    case 1n+rest: Empty.absurd({1n+rest == 0n : Nat},WordEncoding.false_true(bounded))
+
+def positive_one(+length: Nat,positive: {Nat.is_lt(0n,length) == True{} : Bool}) -> {Nat.is_le(1n,length) == True{} : Bool}:
+  strict_follow(0n,length,positive)
+
+def last_below(+length: Nat,positive: {Nat.is_lt(0n,length) == True{} : Bool}) ->
+  {Nat.is_lt(Nat.sub(length,1n),length) == True{} : Bool}:
+  %positive_has_last(length,positive) : {Nat.is_lt(Nat.sub(length,1n),_) == True{} : Bool}
+  lt_succ(Nat.sub(length,1n),Nat.sub(length,1n),reflexive(Nat.sub(length,1n)))
+
+def twice(+value: Nat) -> {Nat.mul(2n,value) == Nat.add(value,value) : Nat}:
+  Equal.cong(Nat,Nat,tail => Nat.add(value,tail),Nat.add(value,0n),value,Addition.zero_right(value))
+
+def times_one(+value: Nat) -> {Nat.mul(value,1n) == value : Nat}:
+  match value:
+    case 0n: {==}
+    case 1n+ +rest:
+      Equal.cong(Nat,Nat,value => 1n+value,Nat.mul(rest,1n),rest,times_one(rest))
+
+def before_last(+offset: Nat,+length: Nat,inside: {Nat.is_lt(offset,length) == True{} : Bool}) ->
+  {Nat.is_le(offset,Nat.sub(length,1n)) == True{} : Bool}:
+  match length:
+    case 0n:
+      Empty.absurd({Nat.is_le(offset,0n) == True{} : Bool},WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(offset,0n),True{},Equal.sym(Bool,Nat.is_lt(offset,0n),False{},Division.lt_zero(offset)),inside)))
+    case 1n+ +last:
+      %Equal.sym(Nat,Nat.sub(last,0n),last,subtract_zero(last)) : {Nat.is_le(offset,_) == True{} : Bool}
+      Division.lt_succ_le(offset,last,inside)
+
+def difference_positive(+begin: Nat,+finish: Nat,positive: {Nat.is_lt(0n,Nat.sub(finish,begin)) == True{} : Bool}) ->
+  {Nat.is_lt(begin,finish) == True{} : Bool}:
+  match begin finish:
+    case 0n 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(positive))
+    case 0n 1n+finish: {==}
+    case 1n+begin 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(positive))
+    case 1n+ +begin 1n+ +finish: difference_positive(begin,finish,positive)

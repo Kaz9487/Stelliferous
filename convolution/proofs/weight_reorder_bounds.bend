@@ -37,7 +37,7 @@ def padded_rows_bound(+limits: Machine.Limits,+problem: ConvSpec.Problem,+suppor
     {Nat.is_le(Nat.add(Guards.output_channel_count(problem),7n),_) == True{} : Bool}
   %Addition.double(capacity) : {Nat.is_le(Nat.add(Guards.output_channel_count(problem),7n),_) == True{} : Bool}
   Encoded.sum_bounds(Guards.output_channel_count(problem),7n,capacity,capacity,
-    NativeWeightRefinement.dimension(limits,Guards.output_channel_count(problem),SupportedCoordinateBounds.co_bound(limits,problem,Padded.scalar(limits,problem,supported))),
+    Limits.dimension_capacity(limits,Guards.output_channel_count(problem),SupportedCoordinateBounds.co_bound(limits,problem,Padded.scalar(limits,problem,supported))),
     Bounds.as_nat_le(7,Machine.capacity(limits),Limits.seven_within_capacity(limits)))
 
 def blocks_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+supported: Support.FastSupported<limits,problem>) ->
@@ -60,7 +60,7 @@ def elements_bound(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Gu
   Order.transitive(Nat.mul(Geometry.blocks(Guards.output_channel_count(problem)),Coordinates.inner(problem)),Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),
     U32.to_nat(Machine.capacity(limits)),RowMajor.mul_le(Geometry.blocks(Guards.output_channel_count(problem)),Guards.output_channel_count(problem),Coordinates.inner(problem),
       Geometry.count_bound(Guards.output_channel_count(problem))),
-    %Guards.reflect(ConvSpec.length(Guards.weights(problem)),Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),v9) :
+    %Order.equal_of_is_eq(ConvSpec.length(Guards.weights(problem)),Nat.mul(Guards.output_channel_count(problem),Coordinates.inner(problem)),v9) :
       {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     NativeWeightRefinement.weights_bound(limits,problem,Padded.scalar(limits,problem,supported)))
 
@@ -82,9 +82,9 @@ def count_positive(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Gu
   Guards.Valid{v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10} = valid
   %Equal.sym(Nat,U32.to_nat(count(problem)),Nat.mul(Geometry.blocks(Guards.output_channel_count(problem)),Coordinates.inner(problem)),count_exact(limits,problem,valid,supported)) :
     {Nat.is_lt(0n,_) == True{} : Bool}
-  Support.positive_mul(Geometry.blocks(Guards.output_channel_count(problem)),Coordinates.inner(problem),Geometry.contains_row(Guards.output_channel_count(problem),0n,v1),
-    Support.positive_mul(Guards.input_channel_count(problem),Nat.mul(Guards.kernel(problem),Guards.kernel(problem)),v0,
-      Support.positive_mul(Guards.kernel(problem),Guards.kernel(problem),v4,v4)))
+  Order.product_positive(Geometry.blocks(Guards.output_channel_count(problem)),Coordinates.inner(problem),Geometry.contains_row(Guards.output_channel_count(problem),0n,v1),
+    Order.product_positive(Guards.input_channel_count(problem),Nat.mul(Guards.kernel(problem),Guards.kernel(problem)),v0,
+      Order.product_positive(Guards.kernel(problem),Guards.kernel(problem),v4,v4)))
 
 def Ready(+problem: ConvSpec.Problem) -> Data:
   Shape.Both<{Nat.is_le(Tensors.depth_for(count(problem)),30n) == True{} : Bool},

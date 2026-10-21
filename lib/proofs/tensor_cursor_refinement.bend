@@ -10,13 +10,13 @@ import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
 import ./word_arithmetic.bend as WordArithmetic
 import ./word_subtraction.bend as Subtraction
-import ./row_major_index.bend as RowMajor
 import ./nat_to_u32_bounds.bend as Bounds
 import ../tensor_view.bend as Views
 import ./u32_comparison.bend as Comparison
 import ./u32_full_range.bend as FullRange
 import ./word_multiplication.bend as Multiplication
 import ./bounded_u32_arithmetic.bend as Arithmetic
+import ./nat_division_order.bend as DivisionOrder
 
 law Valid:
   for axes: List<&2,CursorModel.Coordinate>
@@ -50,27 +50,10 @@ def represent(+axes: List<&2,CursorModel.Coordinate>,offset: Nat) -> Cursor.Curs
 def placed(~Value: Data,~represent: List<&2,CursorModel.Coordinate> -> Value,+axes: List<&2,CursorModel.Coordinate>,offset: Nat) -> Value & U32:
   (represent(axes),U32.from_nat(CursorModel.address(axes,offset)))
 
-def subtract_prefix(+prefix: Nat,+value: Nat) -> {Nat.sub(Nat.add(prefix,value),prefix) == value : Nat}:
-  match prefix:
-    case 0n: Order.subtract_zero(value)
-    case 1n+rest: subtract_prefix(rest,value)
-
-def subtract_suffix(+value: Nat,+suffix: Nat) -> {Nat.sub(Nat.add(value,suffix),suffix) == value : Nat}:
-  %Equal.sym(Nat,Nat.add(value,suffix),Nat.add(suffix,value),Order.commutative(value,suffix)) : {Nat.sub(_,suffix) == value : Nat}
-  subtract_prefix(suffix,value)
-
 def less_reflexive(+value: Nat) -> {Nat.is_lt(value,value) == False{} : Bool}:
   match value:
     case 0n: {==}
     case 1n+rest: less_reflexive(rest)
-
-def remaining_positive(+extent: Nat,+coordinate: Nat,inside: {Nat.is_lt(coordinate,extent) == True{} : Bool}) ->
-  {Nat.is_lt(0n,Nat.sub(extent,coordinate)) == True{} : Bool}:
-  match extent coordinate:
-    case 0n 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(inside))
-    case 0n 1n+coordinate: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(inside))
-    case 1n+extent 0n: {==}
-    case 1n+extent 1n+coordinate: remaining_positive(extent,coordinate,inside)
 
 def coordinate_room(+remaining: Nat,+coordinate: Nat) ->
   {Nat.is_lt(1n+coordinate,Nat.add(2n+remaining,coordinate)) == True{} : Bool}:
@@ -99,7 +82,7 @@ def reset_outer(+extent: Nat,+stride: Nat,+tail: List<&2,CursorModel.Coordinate>
 def head_outer(+remaining: Nat,+coordinate: Nat,+stride: Nat,+tail: List<&2,CursorModel.Coordinate>) ->
   {represent_outer(CursorModel.Coordinate{Nat.add(remaining,coordinate),coordinate,stride} <> tail) ==
     Cursor.Axis{Nat.add(remaining,coordinate),remaining,U32.from_nat(stride),U32.from_nat(Nat.mul(Nat.sub(Nat.add(remaining,coordinate),1n),stride))} <> represent_outer(tail) : List<&2,Cursor.Axis>}:
-  %subtract_suffix(remaining,coordinate) :
+  %DivisionOrder.subtract_sum(remaining,coordinate) :
     {represent_outer(CursorModel.Coordinate{Nat.add(remaining,coordinate),coordinate,stride} <> tail) ==
       Cursor.Axis{Nat.add(remaining,coordinate),_,U32.from_nat(stride),U32.from_nat(Nat.mul(Nat.sub(Nat.add(remaining,coordinate),1n),stride))} <> represent_outer(tail) : List<&2,Cursor.Axis>}
   {==}
@@ -115,7 +98,7 @@ def reset_level(~Rest: Data,~represent_rest: List<&2,CursorModel.Coordinate> -> 
 def head_level(~Rest: Data,~represent_rest: List<&2,CursorModel.Coordinate> -> Rest,+remaining: Nat,+coordinate: Nat,+stride: Nat,+tail: List<&2,CursorModel.Coordinate>) ->
   {represent_level(~Rest,~represent_rest,CursorModel.Coordinate{Nat.add(remaining,coordinate),coordinate,stride} <> tail) ==
     Cursor.Level{Cursor.Axis{Nat.add(remaining,coordinate),remaining,U32.from_nat(stride),U32.from_nat(Nat.mul(Nat.sub(Nat.add(remaining,coordinate),1n),stride))},represent_rest(tail)} : Cursor.Level<Rest>}:
-  %subtract_suffix(remaining,coordinate) :
+  %DivisionOrder.subtract_sum(remaining,coordinate) :
     {represent_level(~Rest,~represent_rest,CursorModel.Coordinate{Nat.add(remaining,coordinate),coordinate,stride} <> tail) ==
       Cursor.Level{Cursor.Axis{Nat.add(remaining,coordinate),_,U32.from_nat(stride),U32.from_nat(Nat.mul(Nat.sub(Nat.add(remaining,coordinate),1n),stride))},represent_rest(tail)} : Cursor.Level<Rest>}
   {==}
@@ -123,7 +106,7 @@ def head_level(~Rest: Data,~represent_rest: List<&2,CursorModel.Coordinate> -> R
 def decrement_remaining(+remaining: Nat,+coordinate: Nat) ->
   {Nat.sub(Nat.add(2n+remaining,coordinate),1n+coordinate) == 1n+remaining : Nat}:
   %Addition.successor_right(1n+remaining,coordinate) : {Nat.sub(_,1n+coordinate) == 1n+remaining : Nat}
-  subtract_suffix(1n+remaining,1n+coordinate)
+  DivisionOrder.subtract_sum(1n+remaining,1n+coordinate)
 
 def subtract_front(+head: Nat,+tail: Nat) ->
   {U32.sub(U32.from_nat(Nat.add(head,tail)),U32.from_nat(head)) == U32.from_nat(tail) : U32}:
@@ -200,7 +183,7 @@ def level(~Rest: Data,~next: Rest -> U32 -> Rest & U32,~represent_rest: List<&2,
         head_level(~Rest,~represent_rest,Nat.sub(extent,coordinate),coordinate,stride,tail)) :
         {Cursor.step(~Rest,~next,_,U32.from_nat(Nat.add(Nat.mul(coordinate,stride),CursorModel.address(tail,offset)))) ==
           placed(~Cursor.Level<Rest>,~represent_level(~Rest,~represent_rest),CursorModel.advance(CursorModel.Coordinate{Nat.add(Nat.sub(extent,coordinate),coordinate),coordinate,stride} <> tail),offset) : Cursor.Level<Rest> & U32}
-      level_step(~Rest,~next,~represent_rest,Nat.sub(extent,coordinate),coordinate,stride,tail,offset,remaining_positive(extent,coordinate,inside),
+      level_step(~Rest,~next,~represent_rest,Nat.sub(extent,coordinate),coordinate,stride,tail,offset,Order.positive_difference(extent,coordinate,inside),
         next_ok(tail,offset,tail_valid))
 
 # A non-tail reference for the runtime carry; the tail-recursive loop is
@@ -314,7 +297,7 @@ def reference(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,valid: Valid(a
         head_outer(Nat.sub(extent,coordinate),coordinate,stride,tail)) :
         {carry_reference(_,U32.from_nat(Nat.add(Nat.mul(coordinate,stride),CursorModel.address(tail,offset)))) ==
           placed(~List<&2,Cursor.Axis>,~represent_outer,CursorModel.advance(CursorModel.Coordinate{Nat.add(Nat.sub(extent,coordinate),coordinate),coordinate,stride} <> tail),offset) : List<&2,Cursor.Axis> & U32}
-      outer_step(Nat.sub(extent,coordinate),coordinate,stride,tail,offset,remaining_positive(extent,coordinate,inside),reference(tail,offset,tail_valid))
+      outer_step(Nat.sub(extent,coordinate),coordinate,stride,tail,offset,Order.positive_difference(extent,coordinate,inside),reference(tail,offset,tail_valid))
 
 def outer(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,valid: Valid(axes)) ->
   {Cursor.advance_outer(represent_outer(axes),U32.from_nat(CursorModel.address(axes,offset))) == placed(~List<&2,Cursor.Axis>,~represent_outer,CursorModel.advance(axes),offset) : List<&2,Cursor.Axis> & U32}:

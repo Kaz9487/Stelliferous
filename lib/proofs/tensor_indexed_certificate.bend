@@ -36,15 +36,6 @@ def preserves(~Element: Data,~Context: Data,~index: Context -> U32 -> U32,~opera
       ~Indexed.destination(~Context),~read(~Element,~Context,~index,~operation)),
     count,0,context,input,output,Certificate.witness(Element,input,input_certificate),depth,equation)
 
-def certificates(~Element: Data,~Context: Data,~index: Context -> U32 -> U32,~operation: U32 -> Element -> Element,
-  +call: Indexed.Call<Context>,-input: Array<Element>,-output: Array<Element>,input_certificate: Certificate.Certificate<Element,input>,
-  output_certificate: Certificate.Certificate<Element,output>) ->
-  TraversalCertificate.Certificates<Array<Element>,Element,Certificate.family(~Element),Indexed.run(~Element,~Context,~index,~operation,call,input,output)>:
-  Certificate.Certificate{+depth,+equation} = input_certificate
-  TraversalCertificate.operation(~Array<Element>,~Element,~Indexed.Call<Context>,~Certificate.family(~Element),
-    ~Indexed.run(~Element,~Context,~index,~operation),~preserves(~Element,~Context,~index,~operation),
-    call,input,output,Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},Certificate.Certificate{depth,equation},output_certificate)
-
 def next_block(~Element: Data,~Context: Data,+depth: Nat,block: U32,size: U32,context: Context,-input: Array<Element>,-state: Traversal.State<&1,&1,Array<Element>,Array<Element>,Indexed.Block>,
   evidence: TraversalWitness.StateEvidence<Array<Element>,Element,Indexed.Block,input,depth,state>) ->
   TraversalWitness.StateEvidence<Array<Element>,Element,Indexed.Blocks<Context>,input,depth,Indexed.next_block(~Element,~Context,block,size,context,state)>:

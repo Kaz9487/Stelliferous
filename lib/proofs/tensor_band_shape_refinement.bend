@@ -49,10 +49,46 @@ def count(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input
     Equal.sym(Nat,Buffer.length(~Element,input),expected,length_exact))
   Count{exact,Arithmetic.count_within(Bands.local_count(geometry,rows),Buffer.length(~Element,input),capacity,1073741824,exact,room,Buffer.capacity_allocatable(~Element,input,depth_ok))}
 
+def band_fields(~Element: Data,geometry: Bands.Geometry,+first: U32,+rows: U32,+buffer: Buffer.Content<Element>) -> Data:
+  Leaf(geometry,first,rows,Buffer.content_length(~Element,buffer))
+
 def Contents(~Element: Data,+geometry: Bands.Geometry,content: Model.Content<Element>) -> Data:
-  match content:
-    case Model.RowBand{Buffer.Content{tree,length},first,rows}: Leaf(geometry,first,rows,length)
-    case Model.Joined{left,right}: Shape.Both<Contents(~Element,geometry,left),Contents(~Element,geometry,right)>
+  Model.ContentAll(~Element,~band_fields(~Element,geometry),content)
+
+# The rows of one band lie in one image and in the batch, as its metadata
+# states them. They name only the images and the height.
+type RowSpan<-images: U32,-height: U32,-first: U32,-rows: U32> is Data:
+  RowSpan{local: {U32.is_le(rows,(height - first % height : U32)) == True{} : Bool},
+    rows_fit: {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),Nat.mul(U32.to_nat(images),U32.to_nat(height))) == True{} : Bool}}
+
+type RowRoom is Data:
+  RowRoom{images: U32,height: U32}
+
+def row_room(+geometry: Bands.Geometry) -> RowRoom:
+  Bands.Geometry{images,channels,height,width} = geometry
+  RowRoom{images,height}
+
+def row_span(room: RowRoom,+first: U32,+rows: U32) -> Data:
+  RowRoom{images,height} = room
+  RowSpan<images,height,first,rows>
+
+# Every band of a plan lies in one image and in the batch of the geometry.
+def Spans(+geometry: Bands.Geometry,layout: Bands.Plan) -> Data:
+  Model.PlanAll(~RowRoom,~row_span,row_room(geometry),layout)
+
+def geometry_fields(~Element: Data,+geometry: Bands.Geometry) -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data:
+  band_fields(~Element,geometry)
+
+def leaf_span(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+buffer: Buffer.Model<Element>,
+  +metadata: geometry_fields(~Element,geometry,first,rows,Buffer.content(~Element,buffer))) -> row_span(row_room(geometry),first,rows):
+  Bands.Geometry{images,channels,height,width} = geometry
+  Fields{local,rows_fit,length_exact} = metadata
+  RowSpan{local,rows_fit}
+
+# The bands of a model lie where their metadata states.
+def spans(~Element: Data,+geometry: Bands.Geometry,model: Model.Model<Element>,metadata: Contents(~Element,geometry,Model.content(~Element,model))) ->
+  Spans(geometry,Model.layout(~Element,model)):
+  Model.layout_one(~Element,~Bands.Geometry,~geometry_fields(~Element),~RowRoom,~row_span,~row_room,~leaf_span(~Element),geometry,model,metadata)
 
 def leaf_valid(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input: Buffer.Model<Element>,
   metadata: Leaf(geometry,first,rows,Buffer.length(~Element,input)),ready: Buffer.Sized<Element,input>) ->
@@ -114,6 +150,9 @@ def leaf_accepted(~Element: Data,+geometry: Bands.Geometry,+first: U32,+rows: U3
     %rows_exact : {U32.to_nat((first + rows : U32)) == Nat.add(U32.to_nat(first),_) : Nat}
     end_exact}
 
+type AcceptedScope is Data:
+  AcceptedScope{geometry: Bands.Geometry,capacity: U32,capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},total_room: {Nat.is_le(Inspection.total_rows(geometry),U32.to_nat(capacity)) == True{} : Bool}}
+
 def accepted(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element>,+first: Nat,+rows: Nat,+capacity: U32,
   +capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},+total_room: {Nat.is_le(Inspection.total_rows(geometry),U32.to_nat(capacity)) == True{} : Bool},
   metadata: Contents(~Element,geometry,Model.content(~Element,bands)),ready: Model.Ready(~Element,bands),
@@ -145,6 +184,23 @@ def checked(+inspection: Bands.Inspection,+total: Nat,accepted: Accepted<inspect
 type WellFormed<-Element: Data,-geometry: Bands.Geometry,-content: Model.Content<Element>> is Data:
   WellFormed{metadata: Contents(~Element,geometry,content),ready: Model.ContentReady(~Element,content),
     coverage: BandPlan.Coverage(Model.content_layout(~Element,content),0n,Inspection.total_rows(geometry))}
+
+# A valid inspection states the metadata of every band.
+def leaf_fields(+images: U32,+channels: U32,+height: U32,+width: U32,+first: U32,+rows: U32,+length: Nat,+depth: Nat,
+  facts: Inspection.LeafFacts<images,channels,height,width,first,rows,length,depth>) -> Fields<images,channels,height,width,first,rows,length>:
+  Inspection.LeafFacts{local,rows_fit,length_exact,allocation_fit} = facts
+  Fields{local,rows_fit,length_exact}
+
+def inspected(~Element: Data,+geometry: Bands.Geometry,bands: Model.Model<Element>,+accepted: {Inspection.valid(Inspection.model(~Element,geometry,bands)) == True{} : Bool}) ->
+  Contents(~Element,geometry,Model.content(~Element,bands)):
+  Bands.Geometry{+images,+channels,+height,+width} = geometry
+  match bands:
+    case Model.Leaf{Buffer.Model{tree,+length,Certificate.Certificate{+depth,equation}},+first,+rows}:
+      leaf_fields(images,channels,height,width,first,rows,length,depth,Inspection.leaf_facts(images,channels,height,width,first,rows,length,depth,accepted))
+    case Model.Fork{+left,+right}:
+      +geometry = {Bands.Geometry{images,channels,height,width} : Bands.Geometry}
+      Shape.Both{inspected(~Element,geometry,left,Inspection.joined_left(Inspection.model(~Element,geometry,left),Inspection.model(~Element,geometry,right),accepted)),
+        inspected(~Element,geometry,right,Inspection.joined_right(Inspection.model(~Element,geometry,left),Inspection.model(~Element,geometry,right),accepted))}
 
 def well_formed_checked(~Element: Data,+geometry: Bands.Geometry,+bands: Model.Model<Element>,+capacity: U32,
   capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},total_room: {Nat.is_le(Inspection.total_rows(geometry),U32.to_nat(capacity)) == True{} : Bool},

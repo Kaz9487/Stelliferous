@@ -4,15 +4,6 @@ import Base
 type Twin<-Element: Data> is Data:
   Twin{first: Element,second: Element}
 
-# Static product composition also lifts an operation to any pair of elements.
-# Nesting this template gives wider products without another arithmetic kernel.
-def zip_map(~Element: Data,~Context: Data,~combine: Element -> Element -> Context -> Element,
-  left: Twin<Element>,right: Twin<Element>,context: Context) -> Twin<Element>:
-  Twin{left_first,left_second} = left
-  Twin{right_first,right_second} = right
-  +context = context
-  Twin{combine(left_first,right_first,context),combine(left_second,right_second,context)}
-
 def finish_pair(~State: Type,~Element: Data,first: Element,result: State & Element) -> State & Twin<Element>:
   (state,second) = result
   (state,Twin{first,second})

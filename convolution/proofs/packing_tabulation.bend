@@ -4,6 +4,9 @@
 # The tabulation still uses native pixel addresses. Connecting its quotient /
 # remainder coordinates to CONV.patch is a separate theorem, not assumed here.
 import Base
+import ../../lib/kernel_spatial_packing.bend as Packing
+import ../../lib/proofs/kernel_spatial_packing_samples.bend as SpatialSamples
+import ../../lib/proofs/kernel_tile_refinement.bend as TileLaws
 import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/math_sequence.bend as Sequence
 import ../../lib/proofs/storage_tree_model.bend as Tree
@@ -102,3 +105,15 @@ def fill_balanced(+n: Nat,+i: U32,+start: U32,+x: Tree.Tree<F32>,+y: Tree.Tree<T
     case 1n+ +rest:
       fill_balanced(rest,(i + 1 : U32),start,x,Tree.write(Tile.Tile8,y,i,entry(i,start,x,h,w,k,stride,pad,output_width,inner)),h,w,k,stride,pad,output_width,inner,depth,
         Shape.write(Tile.Tile8,depth,y,i,entry(i,start,x,h,w,k,stride,pad,output_width,inner),balanced))
+
+def square_vector(+input: Tree.Tree<F32>,+position: U32,+reduction: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+output_width: U32,+inner: U32) ->
+  {SpatialSamples.window_vector(input,Packing.square(height,width,kernel,stride,padding,output_width,inner),position,reduction) == vector(input,position,reduction,height,width,kernel,stride,padding,output_width) : Tile.Tile8}:
+  TileLaws.tiles_equal(SpatialSamples.window_vector(input,Packing.square(height,width,kernel,stride,padding,output_width,inner),position,reduction),vector(input,position,reduction,height,width,kernel,stride,padding,output_width),
+    LaneReads.square_first(input,position,reduction,height,width,kernel,stride,padding,output_width,inner),
+    LaneReads.square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,1n),
+    LaneReads.square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,2n),
+    LaneReads.square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,3n),
+    LaneReads.square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,4n),
+    LaneReads.square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,5n),
+    LaneReads.square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,6n),
+    LaneReads.square_sample(input,position,reduction,height,width,kernel,stride,padding,output_width,inner,7n))

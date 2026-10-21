@@ -1,275 +1,60 @@
-# Band pooling: window allocation and guards, the ordered dense pool on each
-# assembled window, and its readback values.
+# One band of a band pool. The band assembles the rows its outputs read into
+# one window and runs the checked leaf pool on it. The leaf pool theorem
+# gives every output cell as the fold of its window samples. Two facts of the
+# band carry it to the whole input: every window cell holds the input at its
+# pixel, and every row a tap reads is valid exactly when the image row is,
+# and then it is that row.
 import Base
+import ../tensor.bend as Tensors
 import ../tensor_band.bend as Bands
 import ../tensor_band_pool.bend as BandPool
 import ../tensor_band_window.bend as BandWindow
-import ./storage_buffer_model.bend as Buffer
-import ./storage_tree_model.bend as Tree
-import ./tensor_band_model.bend as Model
 import ../tensor_access.bend as Access
-import ./nat_order.bend as Order
-import ./tensor_allocation_depth.bend as Depth
+import ../tensor_operations.bend as Operations
+import ../storage_buffer.bend as Storage
+import ../machine_limits.bend as Machine
+import ../default_machine_limits.bend as Default
+import ./storage_buffer_model.bend as Buffer
+import ./storage_shape.bend as Shape
+import ./tensor_band_model.bend as Model
+import ./tensor_band_each.bend as Each
 import ./tensor_band_halo.bend as BandHalo
 import ./tensor_band_window.bend as TensorBandWindow
-import ./tensor_sweep_refinement.bend as SweepLaws
+import ./tensor_band_values.bend as BandValues
+import ./tensor_band_gather.bend as BandGather
+import ./tensor_band_count.bend as BandCount
 import ./tensor_sweep_values.bend as Sweeps
-import ./tensor_band_sweep_values.bend as BandSweeps
-import ./tensor_pool_dense_values.bend as PoolDense
-import ./traversal_indexed_values.bend as IndexedValues
-import ../tensor.bend as Tensors
-import ./storage_shape.bend as Shape
+import ./tensor_pool_leaf_values.bend as PoolLeaf
+import ./tensor_contract.bend as Contract
+import ./tensor_gather_values.bend as GatherValues
+import ./tensor_copy_values.bend as CopyValues
+import ./tensor_operations_refinement.bend as OperationsLaws
+import ./tensor_shape_refinement.bend as ShapeLaws
+import ./tensor_allocation_depth.bend as Depth
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./row_major_index.bend as RowMajor
-import ./storage_readback.bend as StorageReadback
-import ./tensor_access_refinement.bend as AccessLaws
-import ../traversal_array.bend as Traversal
-import ../machine_limits.bend as Machine
-import ./boolean_logic.bend as Boolean
+import ./nat_order.bend as Order
+import ./nat_division_order.bend as DivisionOrder
 import ./encoded_coordinates.bend as Encoded
-import ./indexed_output_readback.bend as OutputReadback
 import ./machine_limit_bounds.bend as Limits
-import ./nat_to_u32_bounds.bend as Bounds
+import ./word_encoding.bend as WordEncoding
+import ./storage_tree_model.bend as Tree
 import ./ordered_fold_refinement.bend as Fold
-import ./ordered_ranges.bend as Ranges
+import ./nat_to_u32_bounds.bend as Bounds
+import ./boolean_logic.bend as Boolean
 import ./sequence_membership.bend as Members
-import ./storage_allocation_refinement.bend as AllocationLaws
-import ./storage_certificate.bend as Certificate
-import ./storage_refinement.bend as StorageLaws
-import ./tensor_access_certificate.bend as AccessCertificate
-import ./tensor_band_dense.bend as BandDense
-import ./tensor_band_gather.bend as BandGather
-import ./tensor_band_values.bend as BandValues
-import ./tensor_band_window_apply.bend as Apply
-import ./tensor_operations_refinement.bend as OperationsLaws
-import ./traversal_array_refinement.bend as ArrayLaws
-import ./traversal_certificate.bend as TraversalCertificate
-import ./traversal_map_readback.bend as MapReadback
-import ./u32_comparison.bend as Comparison
-import ../storage_buffer.bend as Storage
-import ../tensor_operations.bend as Operations
-import ../traversal_loop.bend as Loop
-import ../traversal_partition.bend as Partition
+import ./ordered_ranges.bend as Ranges
 
-# The band pool calls the existing ordered dense pool on its assembled window.
-# This connects the real Buffer caller, preserving certificates and length.
-# Window sample coverage and global Values are separate producer obligations.
-def right_content(~Element: Data,owners: OperationsLaws.PairOwners(Element)) -> Buffer.Content<Element>:
-  (left,OperationsLaws.Owner{storage,length}) = owners
-  Buffer.Content{Tree.reflect(Element,storage),length}
+# ---- The window of a band ----
 
-def destination_content(~Element: Data,owners: Storage.Buffer<Element> & Storage.Buffer<Element>) ->
-  {Buffer.contents(~Element,Bands.destination(~Element,owners)) == right_content(~Element,OperationsLaws.observe_pair(~Element,owners)) : Buffer.Content<Element>}:
-  (left,Storage.Buffer{storage,length,certificate}) = owners
-  {==}
-
-def modeled_content(~Element: Data,+input_length: Nat,+output_length: Nat,+result: AccessLaws.ModelResult<Tree.Tree<Element>,Element>) ->
-  {right_content(~Element,OperationsLaws.modeled_pair(~Element,input_length,output_length,result)) ==
-    Buffer.Content{IndexedValues.output_tree(~Tree.Tree<Element>,~Element,result),output_length} : Buffer.Content<Element>}:
-  AccessLaws.ModelResult{input,+output} = result
-  Equal.cong(Tree.Tree<Element>,Buffer.Content<Element>,tree => Buffer.Content{tree,output_length},
-    Tree.reflect(Element,Tree.pack(Element,output)),output,StorageLaws.reflect_packed(Element,output))
-
-def packed_swept(~Element: Data,~operation: Element -> Element -> Element,+count: Nat,+context: Access.SweepContext<Element>,
-  +input: Buffer.Model<Element>,+output: Buffer.Model<Element>) ->
-  {Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input),Buffer.pack(~Element,output)))) ==
-    Sweeps.model(~Element,~operation,count,context,Buffer.content(~Element,input),Buffer.content(~Element,output)) : Buffer.Content<Element>}:
-  Buffer.Model{+input_storage,+input_length,+input_certificate} = input
-  Buffer.Model{+output_storage,+output_length,+output_certificate} = output
-  +input = {Buffer.Model{input_storage,input_length,input_certificate} : Buffer.Model<Element>}
-  +output = {Buffer.Model{output_storage,output_length,output_certificate} : Buffer.Model<Element>}
-  +modeled = {SweepLaws.sweep_model(~Element,~operation,count,context,input_storage,output_storage) : AccessLaws.ModelResult<Tree.Tree<Element>,Element>}
-  Equal.trans(Buffer.Content<Element>,
-    Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input),Buffer.pack(~Element,output)))),
-    right_content(~Element,OperationsLaws.modeled_pair(~Element,input_length,output_length,modeled)),Buffer.Content{IndexedValues.output_tree(~Tree.Tree<Element>,~Element,modeled),output_length},
-    Equal.trans(Buffer.Content<Element>,
-      Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input),Buffer.pack(~Element,output)))),
-      right_content(~Element,OperationsLaws.observe_pair(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input),Buffer.pack(~Element,output)))),
-      right_content(~Element,OperationsLaws.modeled_pair(~Element,input_length,output_length,modeled)),
-      destination_content(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input),Buffer.pack(~Element,output))),
-      Equal.cong(OperationsLaws.PairOwners(Element),Buffer.Content<Element>,owners => right_content(~Element,owners),
-        OperationsLaws.observe_pair(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input),Buffer.pack(~Element,output))),OperationsLaws.modeled_pair(~Element,input_length,output_length,modeled),
-        Sweeps.swept_packed(~Element,~operation,count,context,input,output))),
-    modeled_content(~Element,input_length,output_length,modeled))
-
-def swept_observed(~Element: Data,~operation: Element -> Element -> Element,+count: Nat,+context: Access.SweepContext<Element>,
-  -input: Storage.Buffer<Element>,-output: Storage.Buffer<Element>,
-  input_observation: Buffer.Observation<Element,input>,output_observation: Buffer.Observation<Element,output>) ->
-  {Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,input,output))) ==
-    Sweeps.model(~Element,~operation,count,context,Buffer.contents(~Element,input),Buffer.contents(~Element,output)) : Buffer.Content<Element>}:
-  Buffer.Observation{+input_model,input_equal} = input_observation
-  Buffer.Observation{+output_model,output_equal} = output_observation
-  %input_equal :
-    {Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,_,output))) ==
-      Sweeps.model(~Element,~operation,count,context,Buffer.contents(~Element,_),Buffer.contents(~Element,output)) : Buffer.Content<Element>}
-  %output_equal :
-    {Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input_model),_))) ==
-      Sweeps.model(~Element,~operation,count,context,Buffer.contents(~Element,Buffer.pack(~Element,input_model)),Buffer.contents(~Element,_)) : Buffer.Content<Element>}
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,input_model)),Buffer.content(~Element,input_model),Buffer.packed_contents(~Element,input_model)) :
-    {Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input_model),Buffer.pack(~Element,output_model)))) ==
-      Sweeps.model(~Element,~operation,count,context,_,Buffer.contents(~Element,Buffer.pack(~Element,output_model))) : Buffer.Content<Element>}
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,output_model)),Buffer.content(~Element,output_model),Buffer.packed_contents(~Element,output_model)) :
-    {Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,Buffer.pack(~Element,input_model),Buffer.pack(~Element,output_model)))) ==
-      Sweeps.model(~Element,~operation,count,context,Buffer.content(~Element,input_model),_) : Buffer.Content<Element>}
-  packed_swept(~Element,~operation,count,context,input_model,output_model)
-
-def refinement_swept(~Element: Data,~operation: Element -> Element -> Element,+count: Nat,+context: Access.SweepContext<Element>,input: Storage.Buffer<Element>,output: Storage.Buffer<Element>) ->
-  {Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,count,context,input,output))) ==
-    Sweeps.model(~Element,~operation,count,context,Buffer.contents(~Element,input),Buffer.contents(~Element,output)) : Buffer.Content<Element>}:
-  swept_observed(~Element,~operation,count,context,input,output,Buffer.observe(~Element,input),Buffer.observe(~Element,output))
-
-# The model of a pooled window: the planes swept along the columns, then the
-# output swept along the rows from origin.
-def pooled_model(~Element: Data,~operation: Element -> Element -> Element,+pool: Access.Pool,+pad: Element,origin: U32,+channels: U32,
-  input: Buffer.Content<Element>,middle: Buffer.Content<Element>,output: Buffer.Content<Element>) -> Buffer.Content<Element>:
-  Access.Pool{+height,+width,+kernel,+stride,+padding,+out_height,+out_width} = pool
-  +pool = {Access.Pool{height,width,kernel,stride,padding,out_height,out_width} : Access.Pool}
-  Sweeps.model(~Element,~operation,U32.to_nat((channels * out_height * out_width : U32)),Access.SweepContext{Access.pool_rows(pool,origin),pad},
-    Sweeps.model(~Element,~operation,U32.to_nat((channels * height * out_width : U32)),Access.SweepContext{Access.pool_columns(pool),pad},input,middle),output)
-
-def packed_pooled(~Element: Data,~operation: Element -> Element -> Element,+pool: Access.Pool,+pad: Element,+origin: U32,+channels: U32,
-  +input: Buffer.Model<Element>,+middle: Buffer.Model<Element>,+output: Buffer.Model<Element>) ->
-  {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input),Buffer.pack(~Element,middle),Buffer.pack(~Element,output))) == pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.content(~Element,input),Buffer.content(~Element,middle),Buffer.content(~Element,output)) : Buffer.Content<Element>}:
-  Access.Pool{+height,+width,+kernel,+stride,+padding,+out_height,+out_width} = pool
-  +pool = {Access.Pool{height,width,kernel,stride,padding,out_height,out_width} : Access.Pool}
-  +columns = {Access.SweepContext{Access.pool_columns(pool),pad} : Access.SweepContext<Element>}
-  +lines = {Access.SweepContext{Access.pool_rows(pool,origin),pad} : Access.SweepContext<Element>}
-  +column_count = U32.to_nat((channels * height * out_width : U32))
-  +row_count = U32.to_nat((channels * out_height * out_width : U32))
-  Equal.trans(Buffer.Content<Element>,
-    Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,row_count,lines,Bands.destination(~Element,Operations.swept(~Element,~operation,column_count,columns,Buffer.pack(~Element,input),Buffer.pack(~Element,middle))),Buffer.pack(~Element,output)))),
-    Sweeps.model(~Element,~operation,row_count,lines,Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,column_count,columns,Buffer.pack(~Element,input),Buffer.pack(~Element,middle)))),Buffer.contents(~Element,Buffer.pack(~Element,output))),
-    Sweeps.model(~Element,~operation,row_count,lines,Sweeps.model(~Element,~operation,column_count,columns,Buffer.content(~Element,input),Buffer.content(~Element,middle)),Buffer.content(~Element,output)),
-    refinement_swept(~Element,~operation,row_count,lines,Bands.destination(~Element,Operations.swept(~Element,~operation,column_count,columns,Buffer.pack(~Element,input),Buffer.pack(~Element,middle))),Buffer.pack(~Element,output)),
-    %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Bands.destination(~Element,Operations.swept(~Element,~operation,column_count,columns,Buffer.pack(~Element,input),Buffer.pack(~Element,middle)))),Sweeps.model(~Element,~operation,column_count,columns,Buffer.content(~Element,input),Buffer.content(~Element,middle)),packed_swept(~Element,~operation,column_count,columns,input,middle)) :
-      {Sweeps.model(~Element,~operation,row_count,lines,_,Buffer.contents(~Element,Buffer.pack(~Element,output))) ==
-        Sweeps.model(~Element,~operation,row_count,lines,Sweeps.model(~Element,~operation,column_count,columns,Buffer.content(~Element,input),Buffer.content(~Element,middle)),Buffer.content(~Element,output)) : Buffer.Content<Element>}
-    %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,output)),Buffer.content(~Element,output),Buffer.packed_contents(~Element,output)) :
-      {Sweeps.model(~Element,~operation,row_count,lines,Sweeps.model(~Element,~operation,column_count,columns,Buffer.content(~Element,input),Buffer.content(~Element,middle)),_) ==
-        Sweeps.model(~Element,~operation,row_count,lines,Sweeps.model(~Element,~operation,column_count,columns,Buffer.content(~Element,input),Buffer.content(~Element,middle)),Buffer.content(~Element,output)) : Buffer.Content<Element>}
-    {==})
-
-def pooled_observed(~Element: Data,~operation: Element -> Element -> Element,+pool: Access.Pool,+pad: Element,+origin: U32,+channels: U32,
-  -input: Storage.Buffer<Element>,-middle: Storage.Buffer<Element>,-output: Storage.Buffer<Element>,
-  input_observation: Buffer.Observation<Element,input>,middle_observation: Buffer.Observation<Element,middle>,output_observation: Buffer.Observation<Element,output>) ->
-  {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,input,middle,output)) ==
-    pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.contents(~Element,input),Buffer.contents(~Element,middle),Buffer.contents(~Element,output)) : Buffer.Content<Element>}:
-  Buffer.Observation{+input_model,input_equal} = input_observation
-  Buffer.Observation{+middle_model,middle_equal} = middle_observation
-  Buffer.Observation{+output_model,output_equal} = output_observation
-  %input_equal :
-    {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,_,middle,output)) ==
-      pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.contents(~Element,_),Buffer.contents(~Element,middle),Buffer.contents(~Element,output)) : Buffer.Content<Element>}
-  %middle_equal :
-    {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input_model),_,output)) ==
-      pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.contents(~Element,Buffer.pack(~Element,input_model)),Buffer.contents(~Element,_),Buffer.contents(~Element,output)) : Buffer.Content<Element>}
-  %output_equal :
-    {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input_model),Buffer.pack(~Element,middle_model),_)) ==
-      pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.contents(~Element,Buffer.pack(~Element,input_model)),Buffer.contents(~Element,Buffer.pack(~Element,middle_model)),Buffer.contents(~Element,_)) : Buffer.Content<Element>}
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,input_model)),Buffer.content(~Element,input_model),Buffer.packed_contents(~Element,input_model)) :
-    {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input_model),Buffer.pack(~Element,middle_model),Buffer.pack(~Element,output_model))) ==
-      pooled_model(~Element,~operation,pool,pad,origin,channels,_,Buffer.contents(~Element,Buffer.pack(~Element,middle_model)),Buffer.contents(~Element,Buffer.pack(~Element,output_model))) : Buffer.Content<Element>}
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,middle_model)),Buffer.content(~Element,middle_model),Buffer.packed_contents(~Element,middle_model)) :
-    {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input_model),Buffer.pack(~Element,middle_model),Buffer.pack(~Element,output_model))) ==
-      pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.content(~Element,input_model),_,Buffer.contents(~Element,Buffer.pack(~Element,output_model))) : Buffer.Content<Element>}
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,Buffer.pack(~Element,output_model)),Buffer.content(~Element,output_model),Buffer.packed_contents(~Element,output_model)) :
-    {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input_model),Buffer.pack(~Element,middle_model),Buffer.pack(~Element,output_model))) ==
-      pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.content(~Element,input_model),Buffer.content(~Element,middle_model),_) : Buffer.Content<Element>}
-  packed_pooled(~Element,~operation,pool,pad,origin,channels,input_model,middle_model,output_model)
-
-def refinement_pooled(~Element: Data,~operation: Element -> Element -> Element,+pool: Access.Pool,+pad: Element,+origin: U32,+channels: U32,
-  input: Storage.Buffer<Element>,middle: Storage.Buffer<Element>,output: Storage.Buffer<Element>) ->
-  {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,input,middle,output)) ==
-    pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.contents(~Element,input),Buffer.contents(~Element,middle),Buffer.contents(~Element,output)) : Buffer.Content<Element>}:
-  pooled_observed(~Element,~operation,pool,pad,origin,channels,input,middle,output,Buffer.observe(~Element,input),Buffer.observe(~Element,middle),Buffer.observe(~Element,output))
-
-def refinement_window_model(~Element: Data,~operation: Element -> Element -> Element,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,
-  rows_read: BandWindow.RowWindow,core: Buffer.Content<Element>,above: Buffer.Content<Element>,below: Buffer.Content<Element>) -> Model.Content<Element>:
-  BandWindow.Geometry{Bands.Geometry{batch,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},+above_range,+below_range,+window} = rows_read
-  BandWindow.Rows{+window_first,+window_rows} = window
-  +middle_count = (channels * window_rows * output_width : U32)
-  +count = (channels * output_rows * output_width : U32)
-  Model.RowBand{pooled_model(~Element,~operation,Access.Pool{window_rows,width,kernel,stride,padding,output_rows,output_width},pad,((output_first - first / height * output_height) * stride + first / height * height - window_first : U32),channels,TensorBandWindow.assembly_content(~Element,BandWindow.input_geometry(geometry),fill,window,BandWindow.Rows{first,rows},above_range,below_range,core,above,below),Buffer.Content{Tree.fresh(Element,Tensors.depth_for(middle_count),fill),U32.to_nat(middle_count)},Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)}),output_first,output_rows}
-
-def refinement_windowed(~Element: Data,~operation: Element -> Element -> Element,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,
-  +rows_read: BandWindow.RowWindow,+core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>) ->
-  {Model.contents(~Element,BandPool.windowed(~Element,~operation,geometry,pad,fill,first,rows,rows_read,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))) == refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,rows_read,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below)) : Model.Content<Element>}:
-  BandWindow.Geometry{Bands.Geometry{batch,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},+above_range,+below_range,+window} = rows_read
-  BandWindow.Rows{+window_first,+window_rows} = window
-  +geometry = {BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width} : BandWindow.Geometry}
-  +middle_count = (channels * window_rows * output_width : U32)
-  +count = (channels * output_rows * output_width : U32)
-  +pool = {Access.Pool{window_rows,width,kernel,stride,padding,output_rows,output_width} : Access.Pool}
-  +origin = ((output_first - first / height * output_height) * stride + first / height * height - window_first : U32)
-  +core_content = Buffer.content(~Element,core)
-  +above_content = Buffer.content(~Element,above)
-  +below_content = Buffer.content(~Element,below)
-  +assembled = TensorBandWindow.assembly_content(~Element,BandWindow.input_geometry(geometry),fill,window,BandWindow.Rows{first,rows},above_range,below_range,core_content,above_content,below_content)
-  Equal.cong(Buffer.Content<Element>,Model.Content<Element>,buffer => Model.RowBand{buffer,output_first,output_rows},
-    Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)),Tensors.buffer(~Element,fill,middle_count),Tensors.buffer(~Element,fill,count))),
-    pooled_model(~Element,~operation,pool,pad,origin,channels,assembled,Buffer.Content{Tree.fresh(Element,Tensors.depth_for(middle_count),fill),U32.to_nat(middle_count)},Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)}),
-    %TensorBandWindow.assemble_contents(~Element,BandWindow.input_geometry(geometry),fill,window,BandWindow.Rows{first,rows},above_range,below_range,core,above,below) :
-      {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)),Tensors.buffer(~Element,fill,middle_count),Tensors.buffer(~Element,fill,count))) ==
-        pooled_model(~Element,~operation,pool,pad,origin,channels,_,Buffer.Content{Tree.fresh(Element,Tensors.depth_for(middle_count),fill),U32.to_nat(middle_count)},Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)}) : Buffer.Content<Element>}
-    %AllocationLaws.contents(~Element,Tensors.depth_for(middle_count),fill,U32.to_nat(middle_count)) :
-      {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)),Tensors.buffer(~Element,fill,middle_count),Tensors.buffer(~Element,fill,count))) ==
-        pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.contents(~Element,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))),_,Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)}) : Buffer.Content<Element>}
-    %AllocationLaws.contents(~Element,Tensors.depth_for(count),fill,U32.to_nat(count)) :
-      {Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)),Tensors.buffer(~Element,fill,middle_count),Tensors.buffer(~Element,fill,count))) ==
-        pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.contents(~Element,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))),Buffer.contents(~Element,Tensors.buffer(~Element,fill,middle_count)),_) : Buffer.Content<Element>}
-    refinement_pooled(~Element,~operation,pool,pad,origin,channels,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)),Tensors.buffer(~Element,fill,middle_count),Tensors.buffer(~Element,fill,count)))
-
-# The sweeps only store into their destinations: readiness of the output is
-# kept whatever the planes hold.
-def model_ready(~Element: Data,~operation: Element -> Element -> Element,+pool: Access.Pool,+pad: Element,+origin: U32,+channels: U32,
-  input: Buffer.Content<Element>,middle: Buffer.Content<Element>,output: Buffer.Content<Element>,
-  evidence: Buffer.ContentReady<Element,output>) -> Buffer.ContentReady<Element,pooled_model(~Element,~operation,pool,pad,origin,channels,input,middle,output)>:
-  Access.Pool{+height,+width,+kernel,+stride,+padding,+out_height,+out_width} = pool
-  +pool = {Access.Pool{height,width,kernel,stride,padding,out_height,out_width} : Access.Pool}
-  Sweeps.model_ready(~Element,~operation,U32.to_nat((channels * out_height * out_width : U32)),Access.SweepContext{Access.pool_rows(pool,origin),pad},
-    Sweeps.model(~Element,~operation,U32.to_nat((channels * height * out_width : U32)),Access.SweepContext{Access.pool_columns(pool),pad},input,middle),output,evidence)
-
-def pooled_ready(~Element: Data,~operation: Element -> Element -> Element,+pool: Access.Pool,+pad: Element,+origin: U32,+channels: U32,
-  +input: Buffer.Model<Element>,+middle: Buffer.Model<Element>,+output: Buffer.Model<Element>,evidence: Buffer.Sized<Element,output>) ->
-  Buffer.ContentReady<Element,Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input),Buffer.pack(~Element,middle),Buffer.pack(~Element,output)))>:
-  %Equal.sym(Buffer.Content<Element>,Buffer.contents(~Element,BandPool.pooled(~Element,~operation,pool,pad,origin,channels,Buffer.pack(~Element,input),Buffer.pack(~Element,middle),Buffer.pack(~Element,output))),pooled_model(~Element,~operation,pool,pad,origin,channels,Buffer.content(~Element,input),Buffer.content(~Element,middle),Buffer.content(~Element,output)),packed_pooled(~Element,~operation,pool,pad,origin,channels,input,middle,output)) : Buffer.ContentReady<Element,_>
-  model_ready(~Element,~operation,pool,pad,origin,channels,Buffer.content(~Element,input),Buffer.content(~Element,middle),Buffer.content(~Element,output),Buffer.content_ready(~Element,output,evidence))
-
-def fresh_ready(~Element: Data,+fill: Element,+count: U32,evidence: Depth.Sized<count>) ->
-  Buffer.ContentReady<Element,Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)}>:
-  Depth.Sized{depth_ok,room} = evidence
-  Buffer.content_ready(~Element,Buffer.fresh(~Element,Tensors.depth_for(count),fill,U32.to_nat(count)),Buffer.fresh_ready(~Element,Tensors.depth_for(count),fill,U32.to_nat(count),depth_ok,room))
-
-# Connect the actual windowed pool's fresh destination to content readiness.
-# The caller must still derive this window count bound from its global guard.
+# The output rows a window writes, as a word count of cells.
 def window_count(geometry: BandWindow.Geometry,window: BandWindow.RowWindow) -> U32:
   BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
   BandWindow.RowWindow{BandWindow.Rows{first,rows},above,below,window} = window
   (channels * rows * output_width : U32)
 
-def modeled_ready(~Element: Data,~operation: Element -> Element -> Element,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,+window: BandWindow.RowWindow,
-  +core: Buffer.Content<Element>,+above: Buffer.Content<Element>,+below: Buffer.Content<Element>,
-  evidence: Depth.Sized<window_count(geometry,window)>) ->
-  Model.ContentReady(~Element,refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)):
-  match geometry window:
-    case BandWindow.Geometry{Bands.Geometry{batch,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width}
-      BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},+above_range,+below_range,BandWindow.Rows{+window_first,+window_rows}}:
-      +geometry = {BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width} : BandWindow.Geometry}
-      +window = {BandWindow.Rows{window_first,window_rows} : BandWindow.Rows}
-      +middle_count = (channels * window_rows * output_width : U32)
-      +count = (channels * output_rows * output_width : U32)
-      model_ready(~Element,~operation,Access.Pool{window_rows,width,kernel,stride,padding,output_rows,output_width},pad,((output_first - first / height * output_height) * stride + first / height * height - window_first : U32),channels,TensorBandWindow.assembly_content(~Element,BandWindow.input_geometry(geometry),fill,window,BandWindow.Rows{first,rows},above_range,below_range,core,above,below),Buffer.Content{Tree.fresh(Element,Tensors.depth_for(middle_count),fill),U32.to_nat(middle_count)},Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)},fresh_ready(~Element,fill,count,evidence))
-
-def windowed_ready(~Element: Data,~operation: Element -> Element -> Element,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,+window: BandWindow.RowWindow,
-  +core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>,evidence: Depth.Sized<window_count(geometry,window)>) ->
-  Model.ContentReady(~Element,Model.contents(~Element,BandPool.windowed(~Element,~operation,geometry,pad,fill,first,rows,window,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)))):
-  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandPool.windowed(~Element,~operation,geometry,pad,fill,first,rows,window,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))),refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below)),refinement_windowed(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)) : Model.ContentReady(~Element,_)
-  modeled_ready(~Element,~operation,geometry,pad,fill,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below),evidence)
-
-# An active output leaf fits in one image; a positive batch includes that
-# image. Inactive/zero-batch callers establish zero rows before using this law.
+# An active output band fits in one image; a positive batch includes that
+# image.
 def rows_elements(+channels: Nat,+rows: Nat,+height: Nat,+width: Nat,
   within: {Nat.is_le(rows,height) == True{} : Bool}) ->
   {Nat.is_le(Nat.mul(channels,Nat.mul(rows,width)),Nat.mul(channels,Nat.mul(height,width))) == True{} : Bool}:
@@ -279,19 +64,13 @@ def rows_elements(+channels: Nat,+rows: Nat,+height: Nat,+width: Nat,
     {Nat.is_le(Nat.mul(Nat.mul(rows,width),channels),_) == True{} : Bool}
   RowMajor.mul_le(Nat.mul(rows,width),Nat.mul(height,width),channels,RowMajor.mul_le(rows,height,width,within))
 
-def image_elements(+images: Nat,+elements: Nat,positive: {Nat.is_lt(0n,images) == True{} : Bool}) ->
-  {Nat.is_le(elements,Nat.mul(images,elements)) == True{} : Bool}:
-  %Equal.sym(Nat,Nat.mul(images,elements),Nat.mul(elements,images),RowMajor.multiply_commutative(images,elements)) : {Nat.is_le(elements,_) == True{} : Bool}
-  RowMajor.product_covers(elements,images,positive)
-
 def local_elements(+images: Nat,+channels: Nat,+height: Nat,+width: Nat,+rows: Nat,
   positive: {Nat.is_lt(0n,images) == True{} : Bool},within: {Nat.is_le(rows,height) == True{} : Bool}) ->
   {Nat.is_le(Nat.mul(channels,Nat.mul(rows,width)),Nat.mul(images,Nat.mul(channels,Nat.mul(height,width)))) == True{} : Bool}:
   Order.transitive(Nat.mul(channels,Nat.mul(rows,width)),Nat.mul(channels,Nat.mul(height,width)),Nat.mul(images,Nat.mul(channels,Nat.mul(height,width))),
-    rows_elements(channels,rows,height,width,within),image_elements(images,Nat.mul(channels,Nat.mul(height,width)),positive))
+    rows_elements(channels,rows,height,width,within),DivisionOrder.le_multiple(images,Nat.mul(channels,Nat.mul(height,width)),positive))
 
-# The accepted full pool output bounds each active window's fresh destination.
-# An inactive leaf allocates count zero without requiring a positive batch.
+# The output geometry whose count bounds every window's fresh destination.
 def allocation_guards_output_geometry(geometry: BandWindow.Geometry) -> Bands.Geometry:
   BandWindow.Geometry{Bands.Geometry{images,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
   Bands.Geometry{images,channels,output_height,output_width}
@@ -331,205 +110,10 @@ def active(+geometry: BandWindow.Geometry,+first: U32,+rows: U32,+limits: Machin
   Depth.Sized<window_count(geometry,BandWindow.window(geometry,first,rows))>:
   from_window(geometry,BandWindow.window(geometry,first,rows),limits,domain,positive_batch,TensorBandWindow.bounded(geometry,first,rows))
 
-# The actual window apply tree for pooling. Scheduling changes neither the
-# leaf's dense ordered pool nor its observed output. Structural mismatches
-# retain the original core, exactly as the native ownership fallback does.
-def leaf_model(~Element: Data,~operation: Element -> Element -> Element,context: BandPool.Context<Element>,first: U32,rows: U32,window: BandWindow.RowWindow,
-  core: Buffer.Content<Element>,above: Buffer.Content<Element>,below: Buffer.Content<Element>) -> Model.Content<Element>:
-  BandPool.Context{geometry,pad,fill,workers} = context
-  refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)
-
-def leaf_refines(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+first: U32,+rows: U32,+window: BandWindow.RowWindow,
-  +core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>) ->
-  {Model.contents(~Element,BandPool.leaf(~Element,~operation,context,first,rows,Buffer.pack(~Element,core),BandWindow.Halo{Buffer.pack(~Element,above),Buffer.pack(~Element,below),window})) ==
-    leaf_model(~Element,~operation,context,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below)) : Model.Content<Element>}:
-  BandPool.Context{+geometry,+pad,+fill,workers} = context
-  refinement_windowed(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)
-
-def pipeline_model(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,layout: Bands.Plan,cores: Model.Model<Element>,halos: BandHalo.Owners<Element>) -> Model.Content<Element>:
-  match layout cores:
-    case Bands.Rows{+first,+rows} Model.Leaf{+core,+core_first,+core_rows}:
-      match halos:
-        case BandHalo.OwnedLeaf{above,below,window,halo_first,halo_rows}:
-          leaf_model(~Element,~operation,context,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below))
-        case BandHalo.OwnedFork{left,right}: Model.content(~Element,Model.Leaf{core,core_first,core_rows})
-    case Bands.Split{+left_plan,+right_plan} Model.Fork{+left,+right}:
-      match halos:
-        case BandHalo.OwnedFork{left_halo,right_halo}:
-          Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),pipeline_model(~Element,~operation,context,right_plan,right,right_halo)}
-        case BandHalo.OwnedLeaf{above,below,window,first,rows}: Model.content(~Element,Model.Fork{left,right})
-    case layout cores: Model.content(~Element,cores)
-
-def kept(~Element: Data,+pipeline_model: Model.Model<Element>,-bands: Bands.Bands(~Element),equation: {bands == Model.pack(~Element,pipeline_model) : Bands.Bands(~Element)}) ->
-  {Model.contents(~Element,bands) == Model.content(~Element,pipeline_model) : Model.Content<Element>}:
-  %Equal.sym(Bands.Bands(~Element),bands,Model.pack(~Element,pipeline_model),equation) : {Model.contents(~Element,_) == Model.content(~Element,pipeline_model) : Model.Content<Element>}
-  Model.packed_contents(~Element,pipeline_model)
-
-def apply_mode(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,+mode: Bool,+enabled: Bool,+geometry: Bands.Geometry,
-  cores: Model.Model<Element>,halos: BandHalo.Owners<Element>) ->
-  {Model.contents(~Element,BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),layout,mode,enabled,geometry,context,Model.pack(~Element,cores),BandHalo.pack_owners(~Element,halos))) ==
-    pipeline_model(~Element,~operation,context,layout,cores,halos) : Model.Content<Element>}:
-  match layout cores:
-    case Bands.Rows{+first,+rows} Model.Leaf{+core,+core_first,+core_rows}:
-      match halos:
-        case BandHalo.OwnedLeaf{+above,+below,+window,+halo_first,+halo_rows}:
-          leaf_refines(~Element,~operation,context,first,rows,window,core,above,below)
-        case BandHalo.OwnedFork{+left,+right}:
-          kept(~Element,Model.Leaf{core,core_first,core_rows},
-            BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),Bands.Rows{first,rows},mode,enabled,geometry,context,Model.pack(~Element,Model.Leaf{core,core_first,core_rows}),BandHalo.pack_owners(~Element,BandHalo.OwnedFork{left,right})),
-            Apply.leaf_forked_halos(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),first,rows,mode,enabled,geometry,context,core,core_first,core_rows,left,right))
-    case Bands.Split{+left_plan,+right_plan} Model.Fork{+left,+right}:
-      match halos:
-        case BandHalo.OwnedFork{+left_halo,+right_halo}:
-          %Equal.sym(Bands.Bands(~Element),BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),Bands.Split{left_plan,right_plan},mode,enabled,geometry,context,
-              Model.pack(~Element,Model.Fork{left,right}),BandHalo.pack_owners(~Element,BandHalo.OwnedFork{left_halo,right_halo})),
-            Partition.Fork{BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),left_plan,enabled && Bands.same_image(geometry,left_plan),enabled,geometry,context,Model.pack(~Element,left),BandHalo.pack_owners(~Element,left_halo)),
-              BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),right_plan,enabled && Bands.same_image(geometry,right_plan),enabled,geometry,context,Model.pack(~Element,right),BandHalo.pack_owners(~Element,right_halo))},
-            Apply.fork(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),left_plan,right_plan,mode,enabled,geometry,context,left,right,left_halo,right_halo)) :
-            {Model.contents(~Element,_) == Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),pipeline_model(~Element,~operation,context,right_plan,right,right_halo)} : Model.Content<Element>}
-          %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),left_plan,enabled && Bands.same_image(geometry,left_plan),enabled,geometry,context,Model.pack(~Element,left),BandHalo.pack_owners(~Element,left_halo))),
-            pipeline_model(~Element,~operation,context,left_plan,left,left_halo),apply_mode(~Element,~operation,context,left_plan,enabled && Bands.same_image(geometry,left_plan),enabled,geometry,left,left_halo)) :
-            {Model.Joined{_,Model.contents(~Element,BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),right_plan,enabled && Bands.same_image(geometry,right_plan),enabled,geometry,context,Model.pack(~Element,right),BandHalo.pack_owners(~Element,right_halo)))} ==
-              Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),pipeline_model(~Element,~operation,context,right_plan,right,right_halo)} : Model.Content<Element>}
-          %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),right_plan,enabled && Bands.same_image(geometry,right_plan),enabled,geometry,context,Model.pack(~Element,right),BandHalo.pack_owners(~Element,right_halo))),
-            pipeline_model(~Element,~operation,context,right_plan,right,right_halo),apply_mode(~Element,~operation,context,right_plan,enabled && Bands.same_image(geometry,right_plan),enabled,geometry,right,right_halo)) :
-            {Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),_} == Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),pipeline_model(~Element,~operation,context,right_plan,right,right_halo)} : Model.Content<Element>}
-          {==}
-        case BandHalo.OwnedLeaf{+above,+below,+window,+first,+rows}:
-          kept(~Element,Model.Fork{left,right},
-            BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),Bands.Split{left_plan,right_plan},mode,enabled,geometry,context,Model.pack(~Element,Model.Fork{left,right}),BandHalo.pack_owners(~Element,BandHalo.OwnedLeaf{above,below,window,first,rows})),
-            Apply.fork_leaf_halos(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),left_plan,right_plan,mode,enabled,geometry,context,left,right,above,below,window,first,rows))
-    case Bands.Rows{+first,+rows} Model.Fork{+left,+right}:
-      +halos = halos
-      kept(~Element,Model.Fork{left,right},
-        BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),Bands.Rows{first,rows},mode,enabled,geometry,context,Model.pack(~Element,Model.Fork{left,right}),BandHalo.pack_owners(~Element,halos)),
-        Apply.rows_fork(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),first,rows,mode,enabled,geometry,context,left,right,halos))
-    case Bands.Split{+left_plan,+right_plan} Model.Leaf{+core,+first,+rows}:
-      +halos = halos
-      kept(~Element,Model.Leaf{core,first,rows},
-        BandWindow.apply(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),Bands.Split{left_plan,right_plan},mode,enabled,geometry,context,Model.pack(~Element,Model.Leaf{core,first,rows}),BandHalo.pack_owners(~Element,halos)),
-        Apply.split_leaf(~Element,~BandPool.Context<Element>,~BandPool.leaf(~Element,~operation),left_plan,right_plan,mode,enabled,geometry,context,core,first,rows,halos))
-
-def pipeline_prepared(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,+cores: Model.Model<Element>,+halos: BandHalo.Owners<Element>) ->
-  {Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,(Model.pack(~Element,cores),BandHalo.pack_owners(~Element,halos)))) ==
-    pipeline_model(~Element,~operation,context,layout,cores,halos) : Model.Content<Element>}:
-  BandPool.Context{+window,+pad,+fill,+workers} = context
-  +enabled = BandPool.parallel(window,workers,BandPool.plan_size(layout,window))
-  apply_mode(~Element,~operation,BandPool.Context{window,pad,fill,workers},layout,
-    enabled && Bands.same_image(BandWindow.input_geometry(window),layout),enabled,BandWindow.input_geometry(window),cores,halos)
-
-# Actual preparation and planning refine the content model of band pooling.
-# Halo contents are obtained from BandWindow.prepare, never supplied as an oracle.
-def execution_model(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,layout: Bands.Plan,cores: Model.Content<Element>,halos: BandHalo.Tree<Element>) -> Model.Content<Element>:
-  match layout cores:
-    case Bands.Rows{+first,+rows} Model.RowBand{+core,+core_first,+core_rows}:
-      match halos:
-        case BandHalo.Leaf{above,below,window,halo_first,halo_rows}:
-          leaf_model(~Element,~operation,context,first,rows,window,core,above,below)
-        case BandHalo.Fork{left,right}: Model.RowBand{core,core_first,core_rows}
-    case Bands.Split{+left_plan,+right_plan} Model.Joined{+left,+right}:
-      match halos:
-        case BandHalo.Fork{left_halo,right_halo}:
-          Model.Joined{execution_model(~Element,~operation,context,left_plan,left,left_halo),execution_model(~Element,~operation,context,right_plan,right,right_halo)}
-        case BandHalo.Leaf{above,below,window,first,rows}: Model.Joined{left,right}
-    case layout cores: cores
-
-def modeled_owners(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,cores: Model.Model<Element>,halos: BandHalo.Owners<Element>) ->
-  {pipeline_model(~Element,~operation,context,layout,cores,halos) == execution_model(~Element,~operation,context,layout,Model.content(~Element,cores),BandHalo.owner_contents(~Element,halos)) : Model.Content<Element>}:
-  match layout cores:
-    case Bands.Rows{first,rows} Model.Leaf{core,core_first,core_rows}:
-      match halos:
-        case BandHalo.OwnedLeaf{above,below,window,halo_first,halo_rows}: {==}
-        case BandHalo.OwnedFork{left,right}: {==}
-    case Bands.Split{+left_plan,+right_plan} Model.Fork{+left,+right}:
-      match halos:
-        case BandHalo.OwnedFork{+left_halo,+right_halo}:
-          %modeled_owners(~Element,~operation,context,left_plan,left,left_halo) :
-            {Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),pipeline_model(~Element,~operation,context,right_plan,right,right_halo)} ==
-              Model.Joined{_,execution_model(~Element,~operation,context,right_plan,Model.content(~Element,right),BandHalo.owner_contents(~Element,right_halo))} : Model.Content<Element>}
-          %modeled_owners(~Element,~operation,context,right_plan,right,right_halo) :
-            {Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),pipeline_model(~Element,~operation,context,right_plan,right,right_halo)} ==
-              Model.Joined{pipeline_model(~Element,~operation,context,left_plan,left,left_halo),_} : Model.Content<Element>}
-          {==}
-        case BandHalo.OwnedLeaf{above,below,window,first,rows}: {==}
-    case Bands.Rows{first,rows} Model.Fork{left,right}: {==}
-    case Bands.Split{left,right} Model.Leaf{core,first,rows}: {==}
-
-def prepared_model(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,owners: BandHalo.Content<Element>) -> Model.Content<Element>:
-  BandHalo.Content{cores,halos} = owners
-  execution_model(~Element,~operation,context,layout,cores,halos)
-
-def prepared_observed(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,-cores: Bands.Bands(~Element),-halos: BandWindow.Halos(~Element),
-  cores_observation: Model.Observation<Element,cores>,halos_observation: BandHalo.OwnerObservation<Element,halos>) ->
-  {Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,(cores,halos))) ==
-    prepared_model(~Element,~operation,context,layout,BandHalo.refinement_contents(~Element,(cores,halos))) : Model.Content<Element>}:
-  Model.Observation{+core_model,core_equal} = cores_observation
-  BandHalo.OwnerObservation{+halo_model,halo_equal} = halos_observation
-  %core_equal : {Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,(_,halos))) ==
-    prepared_model(~Element,~operation,context,layout,BandHalo.refinement_contents(~Element,(_,halos))) : Model.Content<Element>}
-  %halo_equal : {Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,(Model.pack(~Element,core_model),_))) ==
-    prepared_model(~Element,~operation,context,layout,BandHalo.refinement_contents(~Element,(Model.pack(~Element,core_model),_))) : Model.Content<Element>}
-  %Equal.sym(Model.Content<Element>,Model.contents(~Element,Model.pack(~Element,core_model)),Model.content(~Element,core_model),Model.packed_contents(~Element,core_model)) :
-    {Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,(Model.pack(~Element,core_model),BandHalo.pack_owners(~Element,halo_model)))) ==
-      execution_model(~Element,~operation,context,layout,_,BandHalo.reflect(~Element,BandHalo.pack_owners(~Element,halo_model))) : Model.Content<Element>}
-  %Equal.sym(BandHalo.Tree<Element>,BandHalo.reflect(~Element,BandHalo.pack_owners(~Element,halo_model)),BandHalo.owner_contents(~Element,halo_model),BandHalo.packed_owners(~Element,halo_model)) :
-    {Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,(Model.pack(~Element,core_model),BandHalo.pack_owners(~Element,halo_model)))) ==
-      execution_model(~Element,~operation,context,layout,Model.content(~Element,core_model),_) : Model.Content<Element>}
-  Equal.trans(Model.Content<Element>,
-    Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,(Model.pack(~Element,core_model),BandHalo.pack_owners(~Element,halo_model)))),
-    pipeline_model(~Element,~operation,context,layout,core_model,halo_model),
-    execution_model(~Element,~operation,context,layout,Model.content(~Element,core_model),BandHalo.owner_contents(~Element,halo_model)),
-    pipeline_prepared(~Element,~operation,context,layout,core_model,halo_model),modeled_owners(~Element,~operation,context,layout,core_model,halo_model))
-
-def execution_prepared(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,owners: Bands.Bands(~Element) & BandWindow.Halos(~Element)) ->
-  {Model.contents(~Element,BandPool.prepared(~Element,~operation,context,layout,owners)) == prepared_model(~Element,~operation,context,layout,BandHalo.refinement_contents(~Element,owners)) : Model.Content<Element>}:
-  (cores,halos) = owners
-  prepared_observed(~Element,~operation,context,layout,cores,halos,Model.observe(~Element,cores),BandHalo.observe_owners(~Element,halos))
-
-def planned_model(~Element: Data,~operation: Element -> Element -> Element,context: BandPool.Context<Element>,+layout: Bands.Plan,+cores: Model.Content<Element>) -> Model.Content<Element>:
-  BandPool.Context{+geometry,+pad,+fill,+workers} = context
-  execution_model(~Element,~operation,BandPool.Context{geometry,pad,fill,workers},layout,cores,BandHalo.model(~Element,geometry,pad,layout,cores))
-
-def planned_packed(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,+cores: Model.Model<Element>) ->
-  {Model.contents(~Element,BandPool.planned(~Element,~operation,context,(Model.pack(~Element,cores),layout))) == planned_model(~Element,~operation,context,layout,Model.contents(~Element,Model.pack(~Element,cores))) : Model.Content<Element>}:
-  BandPool.Context{+geometry,+pad,+fill,+workers} = context
-  +context = {BandPool.Context{geometry,pad,fill,workers} : BandPool.Context<Element>}
-  Equal.trans(Model.Content<Element>,Model.contents(~Element,BandPool.planned(~Element,~operation,context,(Model.pack(~Element,cores),layout))),
-    prepared_model(~Element,~operation,context,layout,BandHalo.refinement_contents(~Element,BandWindow.prepare(~Element,geometry,pad,layout,Model.pack(~Element,cores)))),
-    planned_model(~Element,~operation,context,layout,Model.contents(~Element,Model.pack(~Element,cores))),
-    execution_prepared(~Element,~operation,context,layout,BandWindow.prepare(~Element,geometry,pad,layout,Model.pack(~Element,cores))),
-    Equal.cong(BandHalo.Content<Element>,Model.Content<Element>,owners => prepared_model(~Element,~operation,context,layout,owners),
-      BandHalo.refinement_contents(~Element,BandWindow.prepare(~Element,geometry,pad,layout,Model.pack(~Element,cores))),
-      BandHalo.Content{Model.contents(~Element,Model.pack(~Element,cores)),BandHalo.model(~Element,geometry,pad,layout,Model.contents(~Element,Model.pack(~Element,cores)))},BandHalo.prepare(~Element,geometry,pad,layout,Model.pack(~Element,cores))))
-
-def planned_observed(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,-cores: Bands.Bands(~Element),observation: Model.Observation<Element,cores>) ->
-  {Model.contents(~Element,BandPool.planned(~Element,~operation,context,(cores,layout))) == planned_model(~Element,~operation,context,layout,Model.contents(~Element,cores)) : Model.Content<Element>}:
-  Model.Observation{+source,equation} = observation
-  %equation : {Model.contents(~Element,BandPool.planned(~Element,~operation,context,(_,layout))) == planned_model(~Element,~operation,context,layout,Model.contents(~Element,_)) : Model.Content<Element>}
-  planned_packed(~Element,~operation,context,layout,source)
-
-def planned(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+layout: Bands.Plan,cores: Bands.Bands(~Element)) ->
-  {Model.contents(~Element,BandPool.planned(~Element,~operation,context,(cores,layout))) == planned_model(~Element,~operation,context,layout,Model.contents(~Element,cores)) : Model.Content<Element>}:
-  planned_observed(~Element,~operation,context,layout,cores,Model.observe(~Element,cores))
-
-def execution_execute(~Element: Data,~operation: Element -> Element -> Element,+context: BandPool.Context<Element>,+cores: Model.Model<Element>) ->
-  {Model.contents(~Element,BandPool.execute(~Element,~operation,context,Model.pack(~Element,cores))) ==
-    planned_model(~Element,~operation,context,Model.layout(~Element,cores),Model.content(~Element,cores)) : Model.Content<Element>}:
-  %Equal.sym(Bands.Bands(~Element) & Bands.Plan,Bands.plan(~Element,Model.pack(~Element,cores)),(Model.pack(~Element,cores),Model.layout(~Element,cores)),Model.plan(~Element,cores)) :
-    {Model.contents(~Element,BandPool.planned(~Element,~operation,context,_)) == planned_model(~Element,~operation,context,Model.layout(~Element,cores),Model.content(~Element,cores)) : Model.Content<Element>}
-  %Model.packed_contents(~Element,cores) :
-    {Model.contents(~Element,BandPool.planned(~Element,~operation,context,(Model.pack(~Element,cores),Model.layout(~Element,cores)))) == planned_model(~Element,~operation,context,Model.layout(~Element,cores),_) : Model.Content<Element>}
-  planned_packed(~Element,~operation,context,Model.layout(~Element,cores),cores)
-
-# The values of band pooling. Every output cell of every band holds the pool
-# of its pixel over the whole logical input: the fold, from pad, of the k
-# lines of its window, each the fold, from pad, of its k samples; a line or a
-# sample outside the image is pad. The leaf sweeps the columns of the rows it
-# assembled and then the rows of those planes; the stored rows are a window
-# of one image, and the caller states which rows of the image they are.
+# The input read through the two sweeps of a whole pool.
 def global_context(~Element: Data,~Logical: Data,logical: Logical,geometry: BandWindow.Geometry,+pad: Element) -> Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>:
   BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
-  PoolDense.context(~Element,~Logical,logical,Access.Pool{height,width,kernel,stride,padding,output_height,output_width},pad)
+  PoolLeaf.context(~Element,~Logical,logical,Access.Pool{height,width,kernel,stride,padding,output_height,output_width},0,pad)
 
 def values_output_geometry(geometry: BandWindow.Geometry) -> Bands.Geometry:
   BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
@@ -541,7 +125,7 @@ def planes_geometry(geometry: BandWindow.Geometry) -> Bands.Geometry:
   Bands.Geometry{batch,channels,height,output_width}
 
 # The row of the assembled window that the first tap of the first output row
-# of a leaf reads, before padding.
+# of a band reads, before padding.
 def window_origin(geometry: BandWindow.Geometry,+first: U32,window: BandWindow.RowWindow) -> U32:
   BandWindow.Geometry{Bands.Geometry{batch,channels,+height,width},kernel,+stride,padding,+output_height,output_width} = geometry
   BandWindow.RowWindow{BandWindow.Rows{+output_first,output_rows},above,below,BandWindow.Rows{+window_first,window_rows}} = window
@@ -562,40 +146,209 @@ def middle_cells(geometry: BandWindow.Geometry,window: BandWindow.RowWindow) -> 
   BandWindow.RowWindow{output,above,below,BandWindow.Rows{first,+rows}} = window
   BandValues.cell_count(planes_geometry(geometry),rows)
 
-# The number of cells of the output leaf of a window.
+# The number of cells of the output band of a window.
 def window_cells(geometry: BandWindow.Geometry,window: BandWindow.RowWindow) -> Nat:
   BandWindow.RowWindow{BandWindow.Rows{first,+rows},above,below,input} = window
   BandValues.cell_count(values_output_geometry(geometry),rows)
 
+# ---- The rows a window reads ----
+
+# One tap of an output row: the window row it reads is valid exactly when the
+# row of the image is, and then it is that row of the image.
+def RowTap(+stride: U32,+padding: U32,+origin: U32,+window_first: U32,+window_rows: U32,+height: U32,+image: Nat,+local: U32,+global: U32,+tap: U32) -> Data:
+  Shape.Both<{U32.is_lt((local * stride + origin + tap - padding : U32),window_rows) == U32.is_lt((global * stride + 0 + tap - padding : U32),height) : Bool},
+    Boolean.When(U32.is_lt((global * stride + 0 + tap - padding : U32),height),
+      {Nat.add(Nat.mul(image,U32.to_nat(height)),U32.to_nat((global * stride + 0 + tap - padding : U32))) == Nat.add(U32.to_nat(window_first),U32.to_nat((local * stride + origin + tap - padding : U32))) : Nat})>
+
+def RowTaps(+stride: U32,+padding: U32,+origin: U32,+window_first: U32,+window_rows: U32,+height: U32,+image: Nat,+local: U32,+global: U32,remaining: Nat,+tap: U32) -> Data:
+  match remaining:
+    case 0n: Unit
+    case 1n+rest: Shape.Both<RowTap(stride,padding,origin,window_first,window_rows,height,image,local,global,tap),RowTaps(stride,padding,origin,window_first,window_rows,height,image,local,global,rest,(tap + 1 : U32))>
+
+# The taps of one output row of a band: the row inside the band and the row
+# inside its image.
+def RowTapsAt(+kernel: U32,+stride: U32,+padding: U32,+origin: U32,+window_first: U32,+window_rows: U32,+height: U32,+out_height: U32,+output_first: U32,+row: Nat) -> Data:
+  RowTaps(stride,padding,origin,window_first,window_rows,height,Nat.div(Nat.add(U32.to_nat(output_first),row),U32.to_nat(out_height)),U32.from_nat(row),
+    U32.from_nat(Nat.mod(Nat.add(U32.to_nat(output_first),row),U32.to_nat(out_height))),U32.to_nat(kernel),0)
+
+def RowFacts(+kernel: U32,+stride: U32,+padding: U32,+origin: U32,+window_first: U32,+window_rows: U32,+height: U32,+out_height: U32,+output_first: U32,+output_rows: U32) -> Data:
+  Members.All(Nat,{row => RowTapsAt(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,row) : Nat -> Data},Ranges.range(U32.to_nat(output_rows),0n))
+
+# The bounds of a pooled window: its output rows fit in the batch, and the
+# input, the column-swept planes and the output fit the machine capacity, for
+# the whole batch and for the rows the window holds.
+type Rooms<-batch: U32,-channels: U32,-height: U32,-width: U32,-out_height: U32,-out_width: U32,-window_rows: U32,-output_first: U32,-output_rows: U32,-limits: Machine.Limits> is Data:
+  Rooms{output_fit: {Nat.is_le(Nat.add(U32.to_nat(output_first),U32.to_nat(output_rows)),Nat.mul(U32.to_nat(batch),U32.to_nat(out_height))) == True{} : Bool},
+    out_height_positive: {Nat.is_lt(0n,U32.to_nat(out_height)) == True{} : Bool},
+    input_room: {Nat.is_le(Nat.mul(U32.to_nat(batch),Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(height),U32.to_nat(width)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    planes_room: {Nat.is_le(Nat.mul(U32.to_nat(batch),Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(height),U32.to_nat(out_width)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    output_room: {Nat.is_le(Nat.mul(U32.to_nat(batch),Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(out_height),U32.to_nat(out_width)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    local_input_room: {Nat.is_le(Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(window_rows),U32.to_nat(width))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    local_planes_room: {Nat.is_le(Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(window_rows),U32.to_nat(out_width))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    local_output_room: {Nat.is_le(Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(output_rows),U32.to_nat(out_width))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+
 def WindowRooms(geometry: BandWindow.Geometry,window: BandWindow.RowWindow,limits: Machine.Limits) -> Data:
   BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width} = geometry
   BandWindow.RowWindow{BandWindow.Rows{output_first,output_rows},above,below,BandWindow.Rows{window_first,window_rows}} = window
-  BandSweeps.Rooms<batch,channels,height,width,output_height,output_width,window_first,window_rows,output_first,output_rows,limits>
+  Rooms<batch,channels,height,width,output_height,output_width,window_rows,output_first,output_rows,limits>
 
-# For every output row of the leaf and every tap: the assembled row it reads
+# For every output row of the band and every tap: the assembled row it reads
 # is valid exactly when the row of the image is, and then it is that row.
 def WindowRows(+geometry: BandWindow.Geometry,+first: U32,+window: BandWindow.RowWindow) -> Data:
   BandWindow.Geometry{Bands.Geometry{batch,channels,+height,width},+kernel,+stride,+padding,+output_height,output_width} = geometry
   BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},above,below,BandWindow.Rows{+window_first,+window_rows}} = window
-  BandSweeps.RowFacts(kernel,stride,padding,((output_first - first / height * output_height) * stride + first / height * height - window_first : U32),window_first,window_rows,height,output_height,output_first,output_rows)
+  RowFacts(kernel,stride,padding,((output_first - first / height * output_height) * stride + first / height * height - window_first : U32),window_first,window_rows,height,output_height,output_first,output_rows)
 
-def NativeWindowValues(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+fill: Element,+first: U32,+rows: U32,
-  window: BandWindow.RowWindow,+core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>) -> Data:
-  BandWindow.RowWindow{output,above_range,below_range,+window_range} = window
-  BandHalo.RangeValues(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),window_range,
-    Buffer.contents(~Element,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window_range,BandWindow.Rows{first,rows},above_range,below_range,
-      Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))))
+def grouped(+batch: Nat,+channels: Nat,+rest: Nat,+limit: Nat,room: {Nat.is_le(Nat.mul(batch,Nat.mul(channels,rest)),limit) == True{} : Bool}) ->
+  {Nat.is_le(Nat.mul(Nat.mul(batch,channels),rest),limit) == True{} : Bool}:
+  %Equal.sym(Nat,Nat.mul(Nat.mul(batch,channels),rest),Nat.mul(batch,Nat.mul(channels,rest)),RowMajor.assoc(batch,channels,rest)) : {Nat.is_le(_,limit) == True{} : Bool}
+  room
 
-def assembled_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: Bands.Geometry,+first: U32,+rows: U32,+input: Buffer.Content<Element>,
-  evidence: BandHalo.RangeValues(~Element,~Logical,~original,logical,geometry,BandWindow.Rows{first,rows},input)) ->
-  BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.RowBand{input,first,rows}):
-  Buffer.Content{tree,length} = input
-  Shape.Both{ready,Shape.Both{metadata,values}} = evidence
-  values
+# ---- The window pool is the pool of the input ----
 
-# What a window supplies: both fresh destinations can be allocated and hold
-# their cell counts, the assembled rows hold the logical input, the bounds,
-# and the rows read by every tap.
+# A valid sample of a run of the window reads the window cell of its row and
+# column, which holds the input at the pixel of the image row it stands for.
+def window_read(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+batch: U32,+channels: U32,+height: U32,+width: U32,
+  +window_first: U32,+window_rows: U32,+tree: Tree.Tree<Element>,+length: Nat,+channel: Nat,+image: Nat,+near: Nat,+far: Nat,valid: Bool,+column: U32,
+  +exact: {U32.is_lt(column,width) == valid : Bool},
+  +values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,tree,length),
+  +channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool},+near_inside: {Nat.is_lt(near,U32.to_nat(window_rows)) == True{} : Bool},
+  +far_inside: {Nat.is_lt(far,U32.to_nat(height)) == True{} : Bool},
+  +located: {Nat.add(Nat.mul(image,U32.to_nat(height)),far) == Nat.add(U32.to_nat(window_first),near) : Nat}) ->
+  Boolean.When(valid,{Contract.stored(~Element,Buffer.Content{tree,length},U32.from_nat(RowMajor.index(channel,U32.to_nat(window_rows),U32.to_nat(width),near,U32.to_nat(column)))) ==
+    original(logical,U32.from_nat(RowMajor.index(Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),U32.to_nat(height),U32.to_nat(width),far,U32.to_nat(column)))) : Element}):
+  match valid:
+    case False{}: Unit{}
+    case True{}:
+      +source = {Bands.Geometry{batch,channels,height,width} : Bands.Geometry}
+      %BandValues.located_pixel(source,image,channel,far,U32.to_nat(column),Nat.add(U32.to_nat(window_first),near),far_inside,located) :
+        {Tree.read(Element,tree,U32.from_nat(BandValues.position(source,window_rows,channel,near,U32.to_nat(column)))) == original(logical,U32.from_nat(_)) : Element}
+      BandValues.leaf_read(~Element,~Logical,~original,logical,source,window_first,window_rows,tree,length,channel,near,U32.to_nat(column),values,channel_inside,near_inside,
+        Bounds.as_nat_lt(column,width,exact))
+
+# One column tap of a window row and of the image row it stands for.
+def window_column(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+pad: Element,+batch: U32,+channels: U32,+height: U32,+width: U32,+padding: U32,
+  +window_first: U32,+window_rows: U32,+tree: Tree.Tree<Element>,+length: Nat,+first: U32,+channel: Nat,+image: Nat,+near: Nat,+far: Nat,+tap: U32,
+  +values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,tree,length),
+  +channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool},+near_inside: {Nat.is_lt(near,U32.to_nat(window_rows)) == True{} : Bool},
+  +far_inside: {Nat.is_lt(far,U32.to_nat(height)) == True{} : Bool},
+  +located: {Nat.add(Nat.mul(image,U32.to_nat(height)),far) == Nat.add(U32.to_nat(window_first),near) : Nat}) ->
+  {PoolLeaf.run_sample(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),Buffer.Content{tree,length},PoolLeaf.Run{channel,U32.to_nat(window_rows),width,near,first,padding,pad},tap) ==
+    PoolLeaf.run_sample(~Element,~Logical,~original,logical,PoolLeaf.Run{Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),U32.to_nat(height),width,far,first,padding,pad},tap) : Element}:
+  +column = (first + tap - padding : U32)
+  Sweeps.moved(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~Logical,~original,Buffer.Content{tree,length},logical,pad,U32.is_lt(column,width),
+    U32.from_nat(RowMajor.index(channel,U32.to_nat(window_rows),U32.to_nat(width),near,U32.to_nat(column))),
+    U32.from_nat(RowMajor.index(Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),U32.to_nat(height),U32.to_nat(width),far,U32.to_nat(column))),
+    window_read(~Element,~Logical,~original,logical,batch,channels,height,width,window_first,window_rows,tree,length,channel,image,near,far,U32.is_lt(column,width),column,{==},
+      values,channel_inside,near_inside,far_inside,located))
+
+def window_columns(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,remaining: Nat,+tap: U32,+logical: Logical,+pad: Element,+batch: U32,+channels: U32,+height: U32,+width: U32,+padding: U32,
+  +window_first: U32,+window_rows: U32,+tree: Tree.Tree<Element>,+length: Nat,+first: U32,+channel: Nat,+image: Nat,+near: Nat,+far: Nat,
+  +values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,tree,length),
+  +channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool},+near_inside: {Nat.is_lt(near,U32.to_nat(window_rows)) == True{} : Bool},
+  +far_inside: {Nat.is_lt(far,U32.to_nat(height)) == True{} : Bool},
+  +located: {Nat.add(Nat.mul(image,U32.to_nat(height)),far) == Nat.add(U32.to_nat(window_first),near) : Nat}) ->
+  Fold.Agree(~Element,~Buffer.Content<Element>,~PoolLeaf.Run<Element>,~PoolLeaf.run_sample(~Element,~Buffer.Content<Element>,~Contract.stored(~Element)),
+    ~Logical,~PoolLeaf.Run<Element>,~PoolLeaf.run_sample(~Element,~Logical,~original),
+    Buffer.Content{tree,length},PoolLeaf.Run{channel,U32.to_nat(window_rows),width,near,first,padding,pad},
+    logical,PoolLeaf.Run{Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),U32.to_nat(height),width,far,first,padding,pad},remaining,tap):
+  match remaining:
+    case 0n: Unit{}
+    case 1n+ +rest:
+      Shape.Both{window_column(~Element,~Logical,~original,logical,pad,batch,channels,height,width,padding,window_first,window_rows,tree,length,first,channel,image,near,far,tap,
+          values,channel_inside,near_inside,far_inside,located),
+        window_columns(~Element,~Logical,~original,rest,(tap + 1 : U32),logical,pad,batch,channels,height,width,padding,window_first,window_rows,tree,length,first,channel,image,near,far,
+          values,channel_inside,near_inside,far_inside,located)}
+
+# A window row read by a row tap and the image row it stands for: both valid
+# or both pad, and a valid pair holds the same run.
+def window_line(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+pad: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+padding: U32,+window_first: U32,+window_rows: U32,+tree: Tree.Tree<Element>,+length: Nat,
+  +first: U32,+channel: Nat,+image: Nat,valid: Bool,+near: U32,+far: U32,
+  +exact: {U32.is_lt(far,height) == valid : Bool},
+  +same: {U32.is_lt(near,window_rows) == U32.is_lt(far,height) : Bool},
+  located: Boolean.When(valid,{Nat.add(Nat.mul(image,U32.to_nat(height)),U32.to_nat(far)) == Nat.add(U32.to_nat(window_first),U32.to_nat(near)) : Nat}),
+  +values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,tree,length),
+  +channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool}) ->
+  {PoolLeaf.line_when(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation,Buffer.Content{tree,length},channel,window_rows,width,kernel,padding,first,pad,valid,near) ==
+    PoolLeaf.line_when(~Element,~Logical,~original,~operation,logical,Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),height,width,kernel,padding,first,pad,valid,far) : Element}:
+  match valid:
+    case False{}: {==}
+    case True{}:
+      +far_inside = Bounds.as_nat_lt(far,height,exact)
+      +near_inside = Bounds.as_nat_lt(near,window_rows,Equal.trans(Bool,U32.is_lt(near,window_rows),U32.is_lt(far,height),True{},same,exact))
+      Fold.agreed(~Element,~Element,~Buffer.Content<Element>,~PoolLeaf.Run<Element>,~PoolLeaf.run_sample(~Element,~Buffer.Content<Element>,~Contract.stored(~Element)),
+        ~Logical,~PoolLeaf.Run<Element>,~PoolLeaf.run_sample(~Element,~Logical,~original),~operation,U32.to_nat(kernel),0,
+        Buffer.Content{tree,length},PoolLeaf.Run{channel,U32.to_nat(window_rows),width,U32.to_nat(near),first,padding,pad},
+        logical,PoolLeaf.Run{Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),U32.to_nat(height),width,U32.to_nat(far),first,padding,pad},pad,
+        window_columns(~Element,~Logical,~original,U32.to_nat(kernel),0,logical,pad,batch,channels,height,width,padding,window_first,window_rows,tree,length,first,channel,image,
+          U32.to_nat(near),U32.to_nat(far),values,channel_inside,near_inside,far_inside,located))
+
+# One row tap of an output cell of the window and of its pixel.
+def window_tap(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+pad: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+origin: U32,+window_first: U32,+window_rows: U32,+tree: Tree.Tree<Element>,+length: Nat,
+  +channel: Nat,+image: Nat,+row: Nat,+inner: Nat,+column: Nat,+tap: U32,
+  +values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,tree,length),
+  +channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool},
+  fact: RowTap(stride,padding,origin,window_first,window_rows,height,image,U32.from_nat(row),U32.from_nat(inner),tap)) ->
+  {PoolLeaf.line_sample(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation,Buffer.Content{tree,length},
+      PoolLeaf.Cell{channel,window_rows,width,kernel,padding,(U32.from_nat(row) * stride + origin : U32),(U32.from_nat(column) * stride + 0 : U32),pad},tap) ==
+    PoolLeaf.line_sample(~Element,~Logical,~original,~operation,logical,
+      PoolLeaf.Cell{Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),height,width,kernel,padding,(U32.from_nat(inner) * stride + 0 : U32),(U32.from_nat(column) * stride + 0 : U32),pad},tap) : Element}:
+  Shape.Both{+same,located} = fact
+  +near = (U32.from_nat(row) * stride + origin + tap - padding : U32)
+  +far = (U32.from_nat(inner) * stride + 0 + tap - padding : U32)
+  +first = (U32.from_nat(column) * stride + 0 : U32)
+  %Equal.sym(Bool,U32.is_lt(near,window_rows),U32.is_lt(far,height),same) :
+    {PoolLeaf.line_when(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation,Buffer.Content{tree,length},channel,window_rows,width,kernel,padding,first,pad,_,near) ==
+      PoolLeaf.line_when(~Element,~Logical,~original,~operation,logical,Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),height,width,kernel,padding,first,pad,U32.is_lt(far,height),far) : Element}
+  window_line(~Element,~Logical,~original,~operation,logical,pad,batch,channels,height,width,kernel,padding,window_first,window_rows,tree,length,first,channel,image,
+    U32.is_lt(far,height),near,far,{==},same,located,values,channel_inside)
+
+def window_taps(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,remaining: Nat,+tap: U32,+logical: Logical,+pad: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+origin: U32,+window_first: U32,+window_rows: U32,+tree: Tree.Tree<Element>,+length: Nat,
+  +channel: Nat,+image: Nat,+row: Nat,+inner: Nat,+column: Nat,
+  +values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,tree,length),
+  +channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool},
+  facts: RowTaps(stride,padding,origin,window_first,window_rows,height,image,U32.from_nat(row),U32.from_nat(inner),remaining,tap)) ->
+  Fold.Agree(~Element,~Buffer.Content<Element>,~PoolLeaf.Cell<Element>,~PoolLeaf.line_sample(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation),
+    ~Logical,~PoolLeaf.Cell<Element>,~PoolLeaf.line_sample(~Element,~Logical,~original,~operation),
+    Buffer.Content{tree,length},PoolLeaf.Cell{channel,window_rows,width,kernel,padding,(U32.from_nat(row) * stride + origin : U32),(U32.from_nat(column) * stride + 0 : U32),pad},
+    logical,PoolLeaf.Cell{Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),height,width,kernel,padding,(U32.from_nat(inner) * stride + 0 : U32),(U32.from_nat(column) * stride + 0 : U32),pad},
+    remaining,tap):
+  match remaining:
+    case 0n: Unit{}
+    case 1n+ +rest:
+      Shape.Both{head,tail} = facts
+      Shape.Both{window_tap(~Element,~Logical,~original,~operation,logical,pad,batch,channels,height,width,kernel,stride,padding,origin,window_first,window_rows,tree,length,
+          channel,image,row,inner,column,tap,values,channel_inside,head),
+        window_taps(~Element,~Logical,~original,~operation,rest,(tap + 1 : U32),logical,pad,batch,channels,height,width,kernel,stride,padding,origin,window_first,window_rows,tree,length,
+          channel,image,row,inner,column,values,channel_inside,tail)}
+
+# A cell of the window pool is the cell of the input pool at the pixel of its
+# output row: the rows read range and the window content agree tap by tap.
+def window_cell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+pad: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+out_height: U32,+out_width: U32,+origin: U32,
+  +window_first: U32,+window_rows: U32,+output_first: U32,+output_rows: U32,+tree: Tree.Tree<Element>,+length: Nat,+channel: Nat,+row: Nat,+column: Nat,
+  +values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,tree,length),
+  +channel_inside: {Nat.is_lt(channel,U32.to_nat(channels)) == True{} : Bool},
+  facts: RowTapsAt(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,row)) ->
+  {PoolLeaf.at(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation,Buffer.Content{tree,length},Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},origin,pad,
+      channel,row,column) ==
+    PoolLeaf.at(~Element,~Logical,~original,~operation,logical,Access.Pool{height,width,kernel,stride,padding,out_height,out_width},0,pad,
+      Nat.add(Nat.mul(Nat.div(Nat.add(U32.to_nat(output_first),row),U32.to_nat(out_height)),U32.to_nat(channels)),channel),Nat.mod(Nat.add(U32.to_nat(output_first),row),U32.to_nat(out_height)),column) : Element}:
+  +image = Nat.div(Nat.add(U32.to_nat(output_first),row),U32.to_nat(out_height))
+  +inner = Nat.mod(Nat.add(U32.to_nat(output_first),row),U32.to_nat(out_height))
+  Fold.agreed(~Element,~Element,~Buffer.Content<Element>,~PoolLeaf.Cell<Element>,~PoolLeaf.line_sample(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation),
+    ~Logical,~PoolLeaf.Cell<Element>,~PoolLeaf.line_sample(~Element,~Logical,~original,~operation),~operation,U32.to_nat(kernel),0,
+    Buffer.Content{tree,length},PoolLeaf.Cell{channel,window_rows,width,kernel,padding,(U32.from_nat(row) * stride + origin : U32),(U32.from_nat(column) * stride + 0 : U32),pad},
+    logical,PoolLeaf.Cell{Nat.add(Nat.mul(image,U32.to_nat(channels)),channel),height,width,kernel,padding,(U32.from_nat(inner) * stride + 0 : U32),(U32.from_nat(column) * stride + 0 : U32),pad},pad,
+    window_taps(~Element,~Logical,~original,~operation,U32.to_nat(kernel),0,logical,pad,batch,channels,height,width,kernel,stride,padding,origin,window_first,window_rows,tree,length,
+      channel,image,row,inner,column,values,channel_inside,facts))
+
+# What a window with output rows supplies: both fresh destinations can be
+# allocated and hold their cell counts, the assembled rows are ready and hold
+# the logical input, the bounds, and the rows read by every tap.
 def WindowFacts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,
   +window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+above: Buffer.Content<Element>,+below: Buffer.Content<Element>,+limits: Machine.Limits) -> Data:
   BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},above_range,below_range,BandWindow.Rows{+window_first,+window_rows}} = window
@@ -603,160 +356,253 @@ def WindowFacts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Eleme
   Shape.Both<Depth.Sized<middle_count(geometry,window)>,Shape.Both<Depth.Sized<window_count(geometry,window)>,
     Shape.Both<{U32.to_nat(middle_count(geometry,window)) == middle_cells(geometry,window) : Nat},
       Shape.Both<{U32.to_nat(window_count(geometry,window)) == window_cells(geometry,window) : Nat},
-        Shape.Both<BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.RowBand{input,window_first,window_rows}),
+        Shape.Both<BandHalo.RangeValues(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),BandWindow.Rows{window_first,window_rows},input),
           Shape.Both<WindowRooms(geometry,window,limits),WindowRows(geometry,first,window)>>>>>>
 
-# TensorBandWindow.assembly_window constructs the native range relation from core/halo Values.
-# This adapter transports that relation along the accepted assembly refinement
-# into WindowFacts, keeping allocation and coordinate producer facts explicit.
-def window_facts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,
-  +window: BandWindow.RowWindow,+core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>,+limits: Machine.Limits,
-  middle_allocation: Depth.Sized<middle_count(geometry,window)>,allocation: Depth.Sized<window_count(geometry,window)>,
-  middle_exact: {U32.to_nat(middle_count(geometry,window)) == middle_cells(geometry,window) : Nat},
-  count_exact: {U32.to_nat(window_count(geometry,window)) == window_cells(geometry,window) : Nat},
-  range_values: NativeWindowValues(~Element,~Logical,~original,logical,geometry,fill,first,rows,window,core,above,below),
-  rooms: WindowRooms(geometry,window,limits),samples: WindowRows(geometry,first,window)) ->
-  WindowFacts(~Element,~Logical,~original,logical,geometry,pad,fill,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below),limits):
-  BandWindow.RowWindow{output,+above_range,+below_range,+window_range} = window
-  BandWindow.Rows{output_first,output_rows} = output
-  BandWindow.Rows{window_first,window_rows} = window_range
-  Shape.Both{middle_allocation,Shape.Both{allocation,Shape.Both{middle_exact,Shape.Both{count_exact,Shape.Both{
-    %TensorBandWindow.assemble_contents(~Element,BandWindow.input_geometry(geometry),fill,window_range,BandWindow.Rows{first,rows},above_range,below_range,core,above,below) :
-      BandValues.Values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),Model.RowBand{_,window_first,window_rows})
-    assembled_values(~Element,~Logical,~original,logical,BandWindow.input_geometry(geometry),window_first,window_rows,
-      Buffer.contents(~Element,BandWindow.assemble(~Element,fill,BandWindow.input_geometry(geometry),window_range,BandWindow.Rows{first,rows},above_range,below_range,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))),
-      range_values),Shape.Both{rooms,samples}}}}}}
+# What a band and its halo supply: the band has no output row, or its window
+# supplies the facts above.
+def BandFacts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+limits: Machine.Limits,
+  +first: U32,+rows: U32,+core: Buffer.Content<Element>,+halo: BandHalo.Seen<Element>) -> Data:
+  BandHalo.Seen{+above,+below,+window} = halo
+  Either<&2,&2,{TensorBandWindow.output_rows(window) == 0 : U32},WindowFacts(~Element,~Logical,~original,logical,geometry,pad,fill,first,rows,window,core,above,below,limits)>
 
-# The two sweeps into fresh destinations, for any content of the stored rows.
-def values_fresh(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+pad: Element,+fill: Element,+batch: U32,+channels: U32,+height: U32,+width: U32,
-  +kernel: U32,+stride: U32,+padding: U32,+out_height: U32,+out_width: U32,+window_first: U32,+window_rows: U32,+output_first: U32,+output_rows: U32,+origin: U32,
-  +input: Buffer.Content<Element>,+limits: Machine.Limits,
+# ---- The pool of one band ----
+
+# What a pooled band holds: it is ready, and every cell holds the pool of its
+# pixel over the whole logical input.
+def Pooled(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,
+  +first: U32,+rows: U32,+buffer: Buffer.Content<Element>) -> Data:
+  Shape.Both<Buffer.ContentReady<Element,buffer>,
+    BandValues.band_values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),
+      global_context(~Element,~Logical,logical,geometry,pad),values_output_geometry(geometry),first,rows,buffer)>
+
+# The output rows of one band, with what every cell needs: the leaf facts of
+# the window pool, the window content, the bounds and the rows read range.
+type BandScope<-Element: Data,-Logical: Data,-original: Logical -> U32 -> Element,-operation: Element -> Element -> Element> is Data:
+  BandScope{logical: Logical,pad: Element,batch: U32,channels: U32,height: U32,width: U32,kernel: U32,stride: U32,padding: U32,out_height: U32,out_width: U32,
+    window_first: U32,window_rows: U32,output_first: U32,output_rows: U32,origin: U32,limits: Machine.Limits,
+    window: Tree.Tree<Element>,window_length: Nat,tree: Tree.Tree<Element>,length: Nat,
+    window_values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,window,window_length),
+    values: Contract.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Buffer.Content<Element>>>,
+      ~Sweeps.value(~Element,~Sweeps.Swept<Element,Buffer.Content<Element>>,~Sweeps.value(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation),~operation),
+      PoolLeaf.context(~Element,~Buffer.Content<Element>,Buffer.Content{window,window_length},Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},origin,pad),
+      Buffer.Content{tree,length}),
+    length_exact: {length == BandValues.cell_count(Bands.Geometry{batch,channels,out_height,out_width},output_rows) : Nat},
+    rooms: Rooms<batch,channels,height,width,out_height,out_width,window_rows,output_first,output_rows,limits>,
+    facts: RowFacts(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,output_rows)}
+
+def band_channels(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+scope: BandScope<Element,Logical,original,operation>) -> Nat:
+  BandScope{logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,window_first,window_rows,output_first,output_rows,origin,limits,
+    window,window_length,tree,length,window_values,values,length_exact,rooms,facts} = scope
+  U32.to_nat(channels)
+
+def band_rows(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+scope: BandScope<Element,Logical,original,operation>) -> Nat:
+  BandScope{logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,window_first,window_rows,output_first,output_rows,origin,limits,
+    window,window_length,tree,length,window_values,values,length_exact,rooms,facts} = scope
+  U32.to_nat(output_rows)
+
+def band_width(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+scope: BandScope<Element,Logical,original,operation>) -> Nat:
+  BandScope{logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,window_first,window_rows,output_first,output_rows,origin,limits,
+    window,window_length,tree,length,window_values,values,length_exact,rooms,facts} = scope
+  U32.to_nat(out_width)
+
+def BandCell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+scope: BandScope<Element,Logical,original,operation>,
+  +channel: Nat,+row: Nat,+column: Nat) -> Data:
+  BandScope{logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,window_first,window_rows,output_first,output_rows,origin,limits,
+    window,window_length,tree,length,window_values,values,length_exact,rooms,facts} = scope
+  BandValues.At(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),
+    PoolLeaf.context(~Element,~Logical,logical,Access.Pool{height,width,kernel,stride,padding,out_height,out_width},0,pad),
+    Bands.Geometry{batch,channels,out_height,out_width},output_first,output_rows,tree,length,channel,row,column)
+
+# One output cell of a band: the leaf facts give the window pool at its
+# position, the leaf coordinates read it as the pool of its window cell, the
+# window cell is the input cell of its pixel, and the leaf coordinates read
+# that back as the input pool at the pixel.
+def band_cell(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+scope: BandScope<Element,Logical,original,operation>,
+  +channel: Nat,+row: Nat,+column: Nat,
+  +channel_inside: {Nat.is_lt(channel,band_channels(~Element,~Logical,~original,~operation,scope)) == True{} : Bool},
+  +row_inside: {Nat.is_lt(row,band_rows(~Element,~Logical,~original,~operation,scope)) == True{} : Bool},
+  +column_inside: {Nat.is_lt(column,band_width(~Element,~Logical,~original,~operation,scope)) == True{} : Bool}) ->
+  BandCell(~Element,~Logical,~original,~operation,scope,channel,row,column):
+  BandScope{+logical,+pad,+batch,+channels,+height,+width,+kernel,+stride,+padding,+out_height,+out_width,+window_first,+window_rows,+output_first,+output_rows,+origin,+limits,
+    +window,+window_length,+tree,+length,+window_values,+values,+length_exact,+rooms,+facts} = scope
+  Rooms{+output_fit,+out_height_positive,+input_room,+planes_room,+output_room,+local_input_room,+local_planes_room,+local_output_room} = rooms
+  +output = {Bands.Geometry{batch,channels,out_height,out_width} : Bands.Geometry}
+  +local = {Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width} : Access.Pool}
+  +global = {Access.Pool{height,width,kernel,stride,padding,out_height,out_width} : Access.Pool}
+  +content = {Buffer.Content{window,window_length} : Buffer.Content<Element>}
+  +images = U32.to_nat(batch)
+  +count = U32.to_nat(channels)
+  +tall = U32.to_nat(out_height)
+  +limit = U32.to_nat(Machine.capacity(limits))
+  +position = BandValues.position(output,output_rows,channel,row,column)
+  +whole = Nat.add(U32.to_nat(output_first),row)
+  +image = Nat.div(whole,tall)
+  +inner = Nat.mod(whole,tall)
+  +plane = Nat.add(Nat.mul(image,count),channel)
+  +window_pool = Sweeps.value(~Element,~Sweeps.Swept<Element,Buffer.Content<Element>>,~Sweeps.value(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation),~operation,
+    PoolLeaf.context(~Element,~Buffer.Content<Element>,content,local,origin,pad),U32.from_nat(position))
+  +input_pool = Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation,
+    PoolLeaf.context(~Element,~Logical,logical,global,0,pad),U32.from_nat(BandValues.pixel(output,channel,whole,column)))
+  +window_cell_pool = PoolLeaf.at(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation,content,local,origin,pad,channel,row,column)
+  +input_cell_pool = PoolLeaf.at(~Element,~Logical,~original,~operation,logical,global,0,pad,plane,inner,column)
+  +inside = BandValues.position_within(output,output_rows,length,channel,row,column,length_exact,channel_inside,row_inside,column_inside)
+  +image_ok = BandValues.image_below(U32.to_nat(output_first),U32.to_nat(output_rows),row,images,tall,out_height_positive,row_inside,output_fit)
+  +stored = Contract.read(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Buffer.Content<Element>>>,
+    ~Sweeps.value(~Element,~Sweeps.Swept<Element,Buffer.Content<Element>>,~Sweeps.value(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation),~operation),
+    PoolLeaf.context(~Element,~Buffer.Content<Element>,content,local,origin,pad),Buffer.Content{tree,length},position,values,inside)
+  +window_coordinates = PoolLeaf.cell(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation,content,pad,window_rows,width,kernel,stride,padding,output_rows,out_width,origin,
+    channel,row,column,count,limits,channel_inside,row_inside,column_inside,local_input_room,local_planes_room,local_output_room)
+  +read_range = window_cell(~Element,~Logical,~original,~operation,logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,origin,
+    window_first,window_rows,output_first,output_rows,window,window_length,channel,row,column,window_values,channel_inside,
+    Members.all_member(Nat,{row => RowTapsAt(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,row) : Nat -> Data},row,
+      Ranges.range(U32.to_nat(output_rows),0n),facts,Members.range_member(U32.to_nat(output_rows),0n,row,row_inside)))
+  +input_coordinates = PoolLeaf.cell(~Element,~Logical,~original,~operation,logical,pad,height,width,kernel,stride,padding,out_height,out_width,0,plane,inner,column,Nat.mul(images,count),limits,
+    RowMajor.radix(image,images,channel,count,image_ok,channel_inside),DivisionOrder.remainder_small(whole,tall,out_height_positive),column_inside,
+    grouped(images,count,Nat.mul(U32.to_nat(height),U32.to_nat(width)),limit,input_room),
+    grouped(images,count,Nat.mul(U32.to_nat(height),U32.to_nat(out_width)),limit,planes_room),
+    grouped(images,count,Nat.mul(tall,U32.to_nat(out_width)),limit,output_room))
+  Shape.Both{inside,
+    Equal.trans(Element,Tree.read(Element,tree,U32.from_nat(position)),window_pool,input_pool,stored,
+      Equal.trans(Element,window_pool,window_cell_pool,input_pool,window_coordinates,
+        Equal.trans(Element,window_cell_pool,input_cell_pool,input_pool,read_range,Equal.sym(Element,input_pool,input_cell_pool,input_coordinates))))}
+
+# A buffer of the output rows of a band that holds, at every index, the pool
+# of its window read through the window, and one index for every cell, holds
+# the pool of the input at every cell.
+def pooled_band(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+pad: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+out_height: U32,+out_width: U32,
+  +window_first: U32,+window_rows: U32,+output_first: U32,+output_rows: U32,+origin: U32,+limits: Machine.Limits,+window: Tree.Tree<Element>,+window_length: Nat,+content: Buffer.Content<Element>,
+  pooled: GatherValues.Facts(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Buffer.Content<Element>>>,
+    ~Sweeps.value(~Element,~Sweeps.Swept<Element,Buffer.Content<Element>>,~Sweeps.value(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation),~operation),
+    PoolLeaf.context(~Element,~Buffer.Content<Element>,Buffer.Content{window,window_length},Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},origin,pad),
+    [channels,output_rows,out_width],content),
+  +window_values: BandValues.Leaf(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},window_first,window_rows,window,window_length),
+  +rooms: Rooms<batch,channels,height,width,out_height,out_width,window_rows,output_first,output_rows,limits>,
+  +facts: RowFacts(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,output_rows)) ->
+  Pooled(~Element,~Logical,~original,~operation,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width},pad,output_first,output_rows,content):
+  match content:
+    case Buffer.Content{+tree,+length}:
+      Shape.Both{Contract.WellFormed{+length_exact,ready},values} = pooled
+      Shape.Both{ready,
+        BandValues.table(~BandScope<Element,Logical,original,operation>,~BandCell(~Element,~Logical,~original,~operation),~band_channels(~Element,~Logical,~original,~operation),
+          ~band_rows(~Element,~Logical,~original,~operation),~band_width(~Element,~Logical,~original,~operation),~band_cell(~Element,~Logical,~original,~operation),
+          BandScope{logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,window_first,window_rows,output_first,output_rows,origin,limits,
+            window,window_length,tree,length,window_values,values,
+            Equal.trans(Nat,length,ShapeLaws.elements([channels,output_rows,out_width]),BandValues.cell_count(Bands.Geometry{batch,channels,out_height,out_width},output_rows),
+              length_exact,ShapeLaws.elements_three(channels,output_rows,out_width)),
+            rooms,facts})}
+
+# The checked leaf pool of one window, with its two fresh destinations
+# observed as models.
+def window_observed(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+pad: Element,+fill: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+out_height: U32,+out_width: U32,
+  +window_first: U32,+window_rows: U32,+output_first: U32,+output_rows: U32,+origin: U32,+limits: Machine.Limits,+actual: {limits == Default.limits() : Machine.Limits},
+  +input: Buffer.Model<Element>,input_ready: Buffer.ContentReady<Element,Buffer.content(~Element,input)>,
+  middle_observation: Buffer.Observation<Element,Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32))>,
+  observation: Buffer.Observation<Element,Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))>,
   middle_allocation: Depth.Sized<(channels * window_rows * out_width : U32)>,allocation: Depth.Sized<(channels * output_rows * out_width : U32)>,
   +middle_exact: {U32.to_nat((channels * window_rows * out_width : U32)) == BandValues.cell_count(Bands.Geometry{batch,channels,height,out_width},window_rows) : Nat},
   +count_exact: {U32.to_nat((channels * output_rows * out_width : U32)) == BandValues.cell_count(Bands.Geometry{batch,channels,out_height,out_width},output_rows) : Nat},
-  values: BandValues.Values(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},Model.RowBand{input,window_first,window_rows}),
-  rooms: BandSweeps.Rooms<batch,channels,height,width,out_height,out_width,window_first,window_rows,output_first,output_rows,limits>,
-  +facts: BandSweeps.RowFacts(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,output_rows)) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),
-    Sweeps.Swept{Sweeps.Swept{logical,Access.Sweep{width,1,kernel,stride,padding,out_width,0},pad},Access.Sweep{height,out_width,kernel,stride,padding,out_height,0},pad},
-    Bands.Geometry{batch,channels,out_height,out_width},
-    Model.RowBand{pooled_model(~Element,~operation,Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},pad,origin,channels,input,
-      Buffer.Content{Tree.fresh(Element,Tensors.depth_for((channels * window_rows * out_width : U32)),fill),U32.to_nat((channels * window_rows * out_width : U32))},
-      Buffer.Content{Tree.fresh(Element,Tensors.depth_for((channels * output_rows * out_width : U32)),fill),U32.to_nat((channels * output_rows * out_width : U32))}),output_first,output_rows}):
-  Buffer.Content{+input_tree,+input_length} = input
-  Depth.Sized{+middle_depth_ok,+middle_room} = middle_allocation
-  Depth.Sized{+depth_ok,+room} = allocation
-  +middle_count = (channels * window_rows * out_width : U32)
+  +values: BandValues.Values(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},Model.RowBand{Buffer.content(~Element,input),window_first,window_rows}),
+  +rooms: Rooms<batch,channels,height,width,out_height,out_width,window_rows,output_first,output_rows,limits>,
+  +facts: RowFacts(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,output_rows),
+  accepted: {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),
+    Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},origin,channels,
+    Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))))) == True{} : Bool}) ->
+  Pooled(~Element,~Logical,~original,~operation,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width},pad,output_first,output_rows,
+    CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),
+      Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},origin,channels,
+      Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32)))))):
+  Buffer.Model{+input_tree,+input_length,+input_certificate} = input
+  Buffer.Observation{+middle_model,+middle_equation} = middle_observation
+  Buffer.Observation{+output,+equation} = observation
+  +input = {Buffer.Model{input_tree,input_length,input_certificate} : Buffer.Model<Element>}
+  +window = {Buffer.Content{input_tree,input_length} : Buffer.Content<Element>}
+  +pool = {Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width} : Access.Pool}
+  +middle = (channels * window_rows * out_width : U32)
   +count = (channels * output_rows * out_width : U32)
-  BandSweeps.pooled_leaf(~Element,~Logical,~original,~operation,logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,window_first,window_rows,output_first,output_rows,origin,
-    input_tree,input_length,Buffer.fresh(~Element,Tensors.depth_for(middle_count),fill,U32.to_nat(middle_count)),Buffer.fresh(~Element,Tensors.depth_for(count),fill,U32.to_nat(count)),limits,rooms,
-    Buffer.fresh_ready(~Element,Tensors.depth_for(middle_count),fill,U32.to_nat(middle_count),middle_depth_ok,middle_room),
-    Buffer.fresh_ready(~Element,Tensors.depth_for(count),fill,U32.to_nat(count),depth_ok,room),
-    values,middle_exact,count_exact,facts)
+  +middle_length = PoolLeaf.fresh_length(~Element,fill,middle,middle_model,middle_equation)
+  +length = PoolLeaf.fresh_length(~Element,fill,count,output,equation)
+  +middle_cells = Equal.trans(Nat,PoolLeaf.swept_cells(pool,channels),U32.to_nat(middle),Buffer.length(~Element,middle_model),
+    Equal.sym(Nat,U32.to_nat(middle),BandValues.cell_count(Bands.Geometry{batch,channels,height,out_width},window_rows),middle_exact),
+    Equal.sym(Nat,Buffer.length(~Element,middle_model),U32.to_nat(middle),middle_length))
+  +middle_shaped = Equal.trans(Nat,Buffer.length(~Element,middle_model),U32.to_nat(middle),ShapeLaws.elements([channels,window_rows,out_width]),middle_length,
+    Equal.trans(Nat,U32.to_nat(middle),BandValues.cell_count(Bands.Geometry{batch,channels,height,out_width},window_rows),ShapeLaws.elements([channels,window_rows,out_width]),middle_exact,
+      Equal.sym(Nat,ShapeLaws.elements([channels,window_rows,out_width]),BandValues.cell_count(Bands.Geometry{batch,channels,height,out_width},window_rows),ShapeLaws.elements_three(channels,window_rows,out_width))))
+  +cells = Equal.trans(Nat,PoolLeaf.pooled_cells(pool,channels),U32.to_nat(count),Buffer.length(~Element,output),
+    Equal.sym(Nat,U32.to_nat(count),BandValues.cell_count(Bands.Geometry{batch,channels,out_height,out_width},output_rows),count_exact),
+    Equal.sym(Nat,Buffer.length(~Element,output),U32.to_nat(count),length))
+  +shaped = Equal.trans(Nat,Buffer.length(~Element,output),U32.to_nat(count),ShapeLaws.elements([channels,output_rows,out_width]),length,
+    Equal.trans(Nat,U32.to_nat(count),BandValues.cell_count(Bands.Geometry{batch,channels,out_height,out_width},output_rows),ShapeLaws.elements([channels,output_rows,out_width]),count_exact,
+      Equal.sym(Nat,ShapeLaws.elements([channels,output_rows,out_width]),BandValues.cell_count(Bands.Geometry{batch,channels,out_height,out_width},output_rows),ShapeLaws.elements_three(channels,output_rows,out_width))))
+  +accepted_models = {
+    %Equal.sym(Storage.Buffer<Element>,Buffer.pack(~Element,middle_model),Tensors.buffer(~Element,fill,middle),middle_equation) :
+      {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),pool,origin,channels,_,Buffer.pack(~Element,output)))) == True{} : Bool}
+    %Equal.sym(Storage.Buffer<Element>,Buffer.pack(~Element,output),Tensors.buffer(~Element,fill,count),equation) :
+      {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),pool,origin,channels,Tensors.buffer(~Element,fill,middle),_))) == True{} : Bool}
+    accepted : {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),pool,origin,channels,Buffer.pack(~Element,middle_model),Buffer.pack(~Element,output)))) == True{} : Bool}}
+  +pooled = PoolLeaf.pooled_facts(~Element,~Buffer.Content<Element>,~Contract.stored(~Element),~operation,window,pad,pool,origin,channels,input,middle_model,output,
+    [channels,window_rows,out_width],[channels,output_rows,out_width],limits,actual,
+    Buffer.ready_content(~Element,input,input_ready),
+    Buffer.ready_observed(~Element,Tensors.buffer(~Element,fill,middle),middle_model,middle_equation,BandCount.allocated_ready(~Element,middle,fill,middle_allocation)),
+    Buffer.ready_observed(~Element,Tensors.buffer(~Element,fill,count),output,equation,BandCount.allocated_ready(~Element,count,fill,allocation)),
+    Contract.stored_values(~Element,window),middle_cells,middle_shaped,cells,shaped,accepted_models)
+  +content = CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),pool,origin,channels,
+    Buffer.pack(~Element,middle_model),Buffer.pack(~Element,output))))
+  %middle_equation : Pooled(~Element,~Logical,~original,~operation,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width},pad,output_first,output_rows,
+    CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),pool,origin,channels,_,Tensors.buffer(~Element,fill,count)))))
+  %equation : Pooled(~Element,~Logical,~original,~operation,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width},pad,output_first,output_rows,
+    CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),pool,origin,channels,Buffer.pack(~Element,middle_model),_))))
+  pooled_band(~Element,~Logical,~original,~operation,logical,pad,batch,channels,height,width,kernel,stride,padding,out_height,out_width,
+    window_first,window_rows,output_first,output_rows,origin,limits,input_tree,input_length,content,pooled,values,rooms,facts)
 
-def values_window_model(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,
-  +window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+above: Buffer.Content<Element>,+below: Buffer.Content<Element>,+limits: Machine.Limits,
-  facts: WindowFacts(~Element,~Logical,~original,logical,geometry,pad,fill,first,rows,window,core,above,below,limits)) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),global_context(~Element,~Logical,logical,geometry,pad),values_output_geometry(geometry),
-    refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)):
-  BandWindow.Geometry{Bands.Geometry{+batch,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},+above_range,+below_range,BandWindow.Rows{+window_first,+window_rows}} = window
-  Shape.Both{middle_allocation,Shape.Both{allocation,Shape.Both{+middle_exact,Shape.Both{+count_exact,Shape.Both{range_values,Shape.Both{rooms,+samples}}}}}} = facts
-  values_fresh(~Element,~Logical,~original,~operation,logical,pad,fill,batch,channels,height,width,kernel,stride,padding,output_height,output_width,window_first,window_rows,output_first,output_rows,
-    ((output_first - first / height * output_height) * stride + first / height * height - window_first : U32),
-    TensorBandWindow.assembly_content(~Element,Bands.Geometry{batch,channels,height,width},fill,BandWindow.Rows{window_first,window_rows},BandWindow.Rows{first,rows},above_range,below_range,core,above,below),limits,
-    middle_allocation,allocation,middle_exact,count_exact,range_values,rooms,samples)
+def window_output(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+pad: Element,+fill: Element,
+  +batch: U32,+channels: U32,+height: U32,+width: U32,+kernel: U32,+stride: U32,+padding: U32,+out_height: U32,+out_width: U32,
+  +window_first: U32,+window_rows: U32,+output_first: U32,+output_rows: U32,+origin: U32,+limits: Machine.Limits,+actual: {limits == Default.limits() : Machine.Limits},
+  +input: Buffer.Model<Element>,
+  range_values: BandHalo.RangeValues(~Element,~Logical,~original,logical,Bands.Geometry{batch,channels,height,width},BandWindow.Rows{window_first,window_rows},Buffer.content(~Element,input)),
+  middle_allocation: Depth.Sized<(channels * window_rows * out_width : U32)>,allocation: Depth.Sized<(channels * output_rows * out_width : U32)>,
+  +middle_exact: {U32.to_nat((channels * window_rows * out_width : U32)) == BandValues.cell_count(Bands.Geometry{batch,channels,height,out_width},window_rows) : Nat},
+  +count_exact: {U32.to_nat((channels * output_rows * out_width : U32)) == BandValues.cell_count(Bands.Geometry{batch,channels,out_height,out_width},output_rows) : Nat},
+  +rooms: Rooms<batch,channels,height,width,out_height,out_width,window_rows,output_first,output_rows,limits>,
+  +facts: RowFacts(kernel,stride,padding,origin,window_first,window_rows,height,out_height,output_first,output_rows),
+  accepted: {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),
+    Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},origin,channels,
+    Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))))) == True{} : Bool}) ->
+  Pooled(~Element,~Logical,~original,~operation,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,out_height,out_width},pad,output_first,output_rows,
+    CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,Operations.pool(~Element,~operation,pad,Buffer.pack(~Element,input),
+      Access.Pool{window_rows,width,kernel,stride,padding,output_rows,out_width},origin,channels,
+      Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32)),Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32)))))):
+  Buffer.Model{+tree,+length,+certificate} = input
+  Shape.Both{input_ready,Shape.Both{metadata,+values}} = range_values
+  +input = {Buffer.Model{tree,length,certificate} : Buffer.Model<Element>}
+  window_observed(~Element,~Logical,~original,~operation,logical,pad,fill,batch,channels,height,width,kernel,stride,padding,out_height,out_width,
+    window_first,window_rows,output_first,output_rows,origin,limits,actual,input,input_ready,
+    Buffer.observe(~Element,Tensors.buffer(~Element,fill,(channels * window_rows * out_width : U32))),Buffer.observe(~Element,Tensors.buffer(~Element,fill,(channels * output_rows * out_width : U32))),
+    middle_allocation,allocation,middle_exact,count_exact,values,rooms,facts,accepted)
 
-def values_windowed(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,
-  +window: BandWindow.RowWindow,+core: Buffer.Model<Element>,+above: Buffer.Model<Element>,+below: Buffer.Model<Element>,+limits: Machine.Limits,
-  facts: WindowFacts(~Element,~Logical,~original,logical,geometry,pad,fill,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below),limits)) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),global_context(~Element,~Logical,logical,geometry,pad),values_output_geometry(geometry),
-    Model.contents(~Element,BandPool.windowed(~Element,~operation,geometry,pad,fill,first,rows,window,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below)))):
-  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandPool.windowed(~Element,~operation,geometry,pad,fill,first,rows,window,Buffer.pack(~Element,core),Buffer.pack(~Element,above),Buffer.pack(~Element,below))),
-    refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below)),
-    refinement_windowed(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)) :
-    BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),global_context(~Element,~Logical,logical,geometry,pad),values_output_geometry(geometry),_)
-  values_window_model(~Element,~Logical,~original,~operation,logical,geometry,pad,fill,first,rows,window,Buffer.content(~Element,core),Buffer.content(~Element,above),Buffer.content(~Element,below),limits,facts)
+# A band without output rows holds no cell.
+def empty_band(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,
+  +first: U32,+content: Buffer.Content<Element>,ready: Buffer.ContentReady<Element,content>) ->
+  Pooled(~Element,~Logical,~original,~operation,logical,geometry,pad,first,0,content):
+  match geometry content:
+    case BandWindow.Geometry{Bands.Geometry{+batch,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} Buffer.Content{+tree,+length}:
+      Shape.Both{ready,
+        BandValues.empty_leaf(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),
+          global_context(~Element,~Logical,logical,BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width},pad),
+          Bands.Geometry{batch,channels,output_height,output_width},first,0,tree,length,RowMajor.multiply_zero_right(U32.to_nat(channels)))}
 
-def empty_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+geometry: Bands.Geometry,+first: U32,+rows: U32,+content: Buffer.Content<Element>,
-  empty: {BandValues.cell_count(geometry,rows) == 0n : Nat}) -> BandValues.Values(~Element,~Logical,~original,logical,geometry,Model.RowBand{content,first,rows}):
-  Buffer.Content{+tree,+length} = content
-  BandValues.empty_leaf(~Element,~Logical,~original,logical,geometry,first,rows,tree,length,empty)
-
-# A window without output cells has no output samples: the relation holds
-# independently of halo row metadata or input addresses.
-def zero_window_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+geometry: BandWindow.Geometry,+pad: Element,+fill: Element,+first: U32,+rows: U32,
-  +window: BandWindow.RowWindow,+core: Buffer.Content<Element>,+above: Buffer.Content<Element>,+below: Buffer.Content<Element>,zero: {window_cells(geometry,window) == 0n : Nat}) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),global_context(~Element,~Logical,logical,geometry,pad),values_output_geometry(geometry),
-    refinement_window_model(~Element,~operation,geometry,pad,fill,first,rows,window,core,above,below)):
-  BandWindow.Geometry{Bands.Geometry{+batch,+channels,+height,+width},+kernel,+stride,+padding,+output_height,+output_width} = geometry
-  BandWindow.RowWindow{BandWindow.Rows{+output_first,+output_rows},+above_range,+below_range,BandWindow.Rows{+window_first,+window_rows}} = window
-  +geometry = {BandWindow.Geometry{Bands.Geometry{batch,channels,height,width},kernel,stride,padding,output_height,output_width} : BandWindow.Geometry}
-  +middle_count = (channels * window_rows * output_width : U32)
-  +count = (channels * output_rows * output_width : U32)
-  empty_values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),global_context(~Element,~Logical,logical,geometry,pad),values_output_geometry(geometry),output_first,output_rows,
-    pooled_model(~Element,~operation,Access.Pool{window_rows,width,kernel,stride,padding,output_rows,output_width},pad,((output_first - first / height * output_height) * stride + first / height * height - window_first : U32),channels,
-      TensorBandWindow.assembly_content(~Element,Bands.Geometry{batch,channels,height,width},fill,BandWindow.Rows{window_first,window_rows},BandWindow.Rows{first,rows},above_range,below_range,core,above,below),
-      Buffer.Content{Tree.fresh(Element,Tensors.depth_for(middle_count),fill),U32.to_nat(middle_count)},Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)}),zero)
-
-# A successful semantic call must have matching plan/core/halo structures.
-# Fallback branches remain in the execution model; their producer contract is
-# Empty because an unchanged input is not generally a pooled output.
-def TreeFacts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+context: BandPool.Context<Element>,+limits: Machine.Limits,layout: Bands.Plan,cores: Model.Content<Element>,halos: BandHalo.Tree<Element>) -> Data:
-  BandPool.Context{+geometry,+pad,+fill,+workers} = context
-  match layout cores halos:
-    case Bands.Rows{first,rows} Model.RowBand{core,core_first,core_rows} BandHalo.Leaf{above,below,window,halo_first,halo_rows}:
-      Either<&2,&2,{window_cells(geometry,window) == 0n : Nat},WindowFacts(~Element,~Logical,~original,logical,geometry,pad,fill,first,rows,window,core,above,below,limits)>
-    case Bands.Split{left_plan,right_plan} Model.Joined{left,right} BandHalo.Fork{left_halo,right_halo}:
-      Shape.Both<TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},limits,left_plan,left,left_halo),
-        TreeFacts(~Element,~Logical,~original,logical,BandPool.Context{geometry,pad,fill,workers},limits,right_plan,right,right_halo)>
-    case layout cores halos: Empty
-
-def pool_context(~Element: Data,~Logical: Data,logical: Logical,context: BandPool.Context<Element>) -> Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>:
-  BandPool.Context{geometry,+pad,fill,workers} = context
-  global_context(~Element,~Logical,logical,geometry,pad)
-
-def pool_output_geometry(~Element: Data,context: BandPool.Context<Element>) -> Bands.Geometry:
-  BandPool.Context{geometry,pad,fill,workers} = context
-  values_output_geometry(geometry)
-
-def tree_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+context: BandPool.Context<Element>,+limits: Machine.Limits,
-  +layout: Bands.Plan,+cores: Model.Content<Element>,+halos: BandHalo.Tree<Element>,facts: TreeFacts(~Element,~Logical,~original,logical,context,limits,layout,cores,halos)) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),pool_context(~Element,~Logical,logical,context),pool_output_geometry(~Element,context),
-    execution_model(~Element,~operation,context,layout,cores,halos)):
-  BandPool.Context{+geometry,+pad,+fill,+workers} = context
-  match layout cores halos:
-    case Bands.Rows{+first,+rows} Model.RowBand{+core,core_first,core_rows} BandHalo.Leaf{+above,+below,+window,halo_first,halo_rows}:
-      match facts:
-        case Inl{zero}: zero_window_values(~Element,~Logical,~original,~operation,logical,geometry,pad,fill,first,rows,window,core,above,below,zero)
-        case Inr{window_facts}: values_window_model(~Element,~Logical,~original,~operation,logical,geometry,pad,fill,first,rows,window,core,above,below,limits,window_facts)
-    case Bands.Split{+left_plan,+right_plan} Model.Joined{+left,+right} BandHalo.Fork{+left_halo,+right_halo}:
-      Shape.Both{left_facts,right_facts} = facts
-      Shape.Both{tree_values(~Element,~Logical,~original,~operation,logical,BandPool.Context{geometry,pad,fill,workers},limits,left_plan,left,left_halo,left_facts),
-        tree_values(~Element,~Logical,~original,~operation,logical,BandPool.Context{geometry,pad,fill,workers},limits,right_plan,right,right_halo,right_facts)}
-    case Bands.Rows{first,rows} Model.RowBand{core,core_first,core_rows} BandHalo.Fork{left_halo,right_halo}: match facts:
-    case Bands.Rows{first,rows} Model.Joined{left,right} BandHalo.Leaf{above,below,window,halo_first,halo_rows}: match facts:
-    case Bands.Rows{first,rows} Model.Joined{left,right} BandHalo.Fork{left_halo,right_halo}: match facts:
-    case Bands.Split{left_plan,right_plan} Model.RowBand{core,core_first,core_rows} BandHalo.Leaf{above,below,window,halo_first,halo_rows}: match facts:
-    case Bands.Split{left_plan,right_plan} Model.RowBand{core,core_first,core_rows} BandHalo.Fork{left_halo,right_halo}: match facts:
-    case Bands.Split{left_plan,right_plan} Model.Joined{left,right} BandHalo.Leaf{above,below,window,halo_first,halo_rows}: match facts:
-
-def PlannedFacts(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+context: BandPool.Context<Element>,+limits: Machine.Limits,+layout: Bands.Plan,+cores: Model.Content<Element>) -> Data:
-  BandPool.Context{+geometry,+pad,fill,workers} = context
-  TreeFacts(~Element,~Logical,~original,logical,context,limits,layout,cores,BandHalo.model(~Element,geometry,pad,layout,cores))
-
-def planned_values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+context: BandPool.Context<Element>,+limits: Machine.Limits,
-  +layout: Bands.Plan,+cores: Model.Content<Element>,facts: PlannedFacts(~Element,~Logical,~original,logical,context,limits,layout,cores)) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),pool_context(~Element,~Logical,logical,context),pool_output_geometry(~Element,context),
-    planned_model(~Element,~operation,context,layout,cores)):
-  BandPool.Context{+geometry,+pad,+fill,+workers} = context
-  tree_values(~Element,~Logical,~original,~operation,logical,BandPool.Context{geometry,pad,fill,workers},limits,layout,cores,BandHalo.model(~Element,geometry,pad,layout,cores),facts)
-
-def values_execute(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,~operation: Element -> Element -> Element,+logical: Logical,+context: BandPool.Context<Element>,+limits: Machine.Limits,+cores: Model.Model<Element>,
-  facts: PlannedFacts(~Element,~Logical,~original,logical,context,limits,Model.layout(~Element,cores),Model.content(~Element,cores))) ->
-  BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),pool_context(~Element,~Logical,logical,context),pool_output_geometry(~Element,context),
-    Model.contents(~Element,BandPool.execute(~Element,~operation,context,Model.pack(~Element,cores)))):
-  %Equal.sym(Model.Content<Element>,Model.contents(~Element,BandPool.execute(~Element,~operation,context,Model.pack(~Element,cores))),
-    planned_model(~Element,~operation,context,Model.layout(~Element,cores),Model.content(~Element,cores)),execution_execute(~Element,~operation,context,cores)) :
-    BandValues.Values(~Element,~Sweeps.Swept<Element,Sweeps.Swept<Element,Logical>>,~Sweeps.value(~Element,~Sweeps.Swept<Element,Logical>,~Sweeps.value(~Element,~Logical,~original,~operation),~operation),pool_context(~Element,~Logical,logical,context),pool_output_geometry(~Element,context),_)
-  planned_values(~Element,~Logical,~original,~operation,logical,context,limits,Model.layout(~Element,cores),Model.content(~Element,cores),facts)
+# A band of the pool through its checked call: when the call accepted, what
+# holds of its output holds of the band.
+def checked_outcome(~Element: Data,~Scope: Data,~After: @+scope: Scope -> @+first: U32 -> @+rows: U32 -> @+buffer: Buffer.Content<Element> -> Data,+scope: Scope,+first: U32,+rows: U32,
+  outcome: Operations.Outcome<(Storage.Buffer<Element> & Storage.Buffer<Element>)>,
+  accepted: {Each.usable(~Element,Each.checked(~Element,BandPool.checked(~Element,first,rows,outcome))) == True{} : Bool},
+  rule: {GatherValues.accepted_owners(~Element,OperationsLaws.observe_pair_outcome(~Element,outcome)) == True{} : Bool} ->
+    After(scope,first,rows,CopyValues.right_content(~Element,OperationsLaws.observe_pair_outcome(~Element,outcome)))) ->
+  Model.ContentAll(~Element,~After(scope),Model.contents(~Element,Each.made(~Element,Each.checked(~Element,BandPool.checked(~Element,first,rows,outcome))))):
+  match outcome:
+    case Operations.Accepted{(input,Storage.Buffer{storage,length,certificate})}: rule({==})
+    case Operations.Rejected{(input,output)}:
+      Empty.absurd(Model.ContentAll(~Element,~After(scope),Model.contents(~Element,Each.made(~Element,Each.checked(~Element,BandPool.checked(~Element,first,rows,Operations.Rejected{(input,output)}))))),
+        WordEncoding.false_true(accepted))

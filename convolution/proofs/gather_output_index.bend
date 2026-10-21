@@ -2,20 +2,8 @@
 # logical map. Iteration coverage and actual tile-range premises are separate.
 import Base
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
-import ../../lib/proofs/binary_radix.bend as Radix
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/natural_addition.bend as Addition
-
-def madd_words(+a: U32,+b: U32,+c: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
-  +bound: {Nat.is_le(Nat.add(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c)),
-      U32.to_nat(cap)) == True{} : Bool}) -> {U32.to_nat((a * b + c : U32)) == Nat.add(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c)) : Nat}:
-  +ep = Arithmetic.multiply(a,b,cap,cap_ok,Order.transitive(Nat.mul(U32.to_nat(a),U32.to_nat(b)),Nat.add(Nat.mul(U32.to_nat(a),
-          U32.to_nat(b)),U32.to_nat(c)),U32.to_nat(cap),Order.le_add(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c)),bound))
-  %ep : {U32.to_nat((a * b + c : U32)) == Nat.add(_,U32.to_nat(c)) : Nat}
-  Arithmetic.add((a * b : U32),c,cap,cap_ok,
-    %Equal.sym(Nat,U32.to_nat((a * b : U32)),Nat.mul(U32.to_nat(a),U32.to_nat(b)),ep) : {Nat.is_le(Nat.add(_,U32.to_nat(c)),
-        U32.to_nat(cap)) == True{} : Bool}
-    bound)
 
 def destination(+row: Nat,+col: Nat,+spatial: Nat,+offset: Nat) -> Nat:
   Nat.add(Nat.mul(row,spatial),Nat.add(offset,col))
@@ -43,7 +31,7 @@ def combine(+q: U32,+r: U32,+spatial: U32,+offset: U32,+row: Nat,+col: Nat,+spac
   +es: {U32.to_nat(spatial) == space : Nat},+eo: {U32.to_nat(offset) == start : Nat},bound: {Nat.is_le(destination(row,col,space,start),
       U32.to_nat(cap)) == True{} : Bool}) -> {U32.to_nat((q * spatial + offset + r : U32)) == destination(row,col,space,start) : Nat}:
   +hb = bound_machine(q,r,spatial,offset,row,col,space,start,cap,eq,er,es,eo,bound)
-  +em = madd_words(q,spatial,offset,cap,cap_ok,Order.transitive(Nat.add(Nat.mul(U32.to_nat(q),U32.to_nat(spatial)),U32.to_nat(offset)),
+  +em = Arithmetic.multiply_add_exact(q,spatial,offset,cap,cap_ok,Order.transitive(Nat.add(Nat.mul(U32.to_nat(q),U32.to_nat(spatial)),U32.to_nat(offset)),
       Nat.add(Nat.add(Nat.mul(U32.to_nat(q),U32.to_nat(spatial)),U32.to_nat(offset)),U32.to_nat(r)),U32.to_nat(cap),
       Order.le_add(Nat.add(Nat.mul(U32.to_nat(q),U32.to_nat(spatial)),U32.to_nat(offset)),U32.to_nat(r)),hb))
   %expanded(row,col,space,start) : {U32.to_nat((q * spatial + offset + r : U32)) == _ : Nat}

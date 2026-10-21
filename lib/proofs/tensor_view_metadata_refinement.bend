@@ -67,3 +67,10 @@ def contiguous_count_offset(+count: Maybe<&2,U32>,+extents: List<&2,U32>,+offset
   match count:
     case None{}: {==}
     case Some{+value}: built_offset(List.reverse(&2,U32,extents),Some{Bool.pick(U32,U32.is_zero(value),0,1)},Nil{},offset)
+
+# A view has as many extents as axes.
+def extents_length(+axes: List<&2,Views.Axis>) -> {List.length(&2,U32,Views.axis_extents(axes)) == List.length(&2,Views.Axis,axes) : Nat}:
+  match axes:
+    case []: {==}
+    case Views.Axis{extent,stride} <> +tail:
+      Equal.cong(Nat,Nat,length => 1n+length,List.length(&2,U32,Views.axis_extents(tail)),List.length(&2,Views.Axis,tail),extents_length(tail))

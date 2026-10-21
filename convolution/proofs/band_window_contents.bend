@@ -1,8 +1,6 @@
 # Contents of a convolution window and the rows it covers.
 import Base
-import ./concrete_support_guard.bend as Support
 import ./window_positions.bend as Positions
-import ./window_samples.bend as Samples
 import ../specification.bend as ConvSpec
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 import ../../lib/proofs/nat_order.bend as Order
@@ -12,9 +10,7 @@ import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/word_encoding.bend as WordEncoding
 import ./convolution_guard_facts.bend as Guards
 import ./input_storage.bend as Inputs
-import ./supported_padded_coordinates.bend as Padded
 import ./window_band_values.bend as WindowBandValues
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/nat_division.bend as Division
 import ../../lib/proofs/nat_extrema.bend as Extrema
 import ../../lib/proofs/storage_tree_model.bend as Tree
@@ -80,16 +76,6 @@ def image_index(+image: Nat,+channels: Nat,+area: Nat,+channel: Nat,+base: Nat,+
     {Nat.add(Nat.add(_,Nat.mul(channel,area)),Nat.add(base,remainder)) == Nat.add(Nat.mul(image,Nat.mul(channels,area)),Nat.add(Nat.mul(channel,area),Nat.add(base,remainder))) : Nat}
   Addition.associative(Nat.mul(image,Nat.mul(channels,area)),Nat.mul(channel,area),Nat.add(base,remainder))
 
-def positive_right(+left: Nat,+right: Nat,+positive: {Nat.is_lt(0n,Nat.mul(left,right)) == True{} : Bool}) -> {Nat.is_lt(0n,right) == True{} : Bool}:
-  RowMajor.left_factor_positive(right,left,
-    %RowMajor.multiply_commutative(left,right) : {Nat.is_lt(0n,_) == True{} : Bool} positive)
-
-def multiply_left_le(+factor: Nat,+smaller: Nat,+larger: Nat,+ordered: {Nat.is_le(smaller,larger) == True{} : Bool}) ->
-  {Nat.is_le(Nat.mul(factor,smaller),Nat.mul(factor,larger)) == True{} : Bool}:
-  %RowMajor.multiply_commutative(smaller,factor) : {Nat.is_le(_,Nat.mul(factor,larger)) == True{} : Bool}
-  %RowMajor.multiply_commutative(larger,factor) : {Nat.is_le(Nat.mul(smaller,factor),_) == True{} : Bool}
-  RowMajor.mul_le(smaller,larger,factor,ordered)
-
 # The tensor offset of a window element, in the problem's image-list terms.
 def element_index(+image: Nat,+channels: Nat,+height: Nat,+width: Nat,+channel: Nat,+first: Nat,+row: Nat,+column: Nat,+local: Nat,
   +local_split: {local == Nat.add(Nat.mul(row,width),column) : Nat}) ->
@@ -123,15 +109,15 @@ def image_read(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical
   +geometry = {Bands.Geometry{images,channels,height,width} : Bands.Geometry}
   +inside_total = {%length_exact : {Nat.is_lt(index,_) == True{} : Bool} inside : {Nat.is_lt(index,Nat.mul(ci,plane)) == True{} : Bool}}
   +product_positive = Order.le_lt_trans(0n,index,Nat.mul(ci,plane),Order.zero_le(index),inside_total)
-  +plane_positive = positive_right(ci,plane,product_positive)
-  +width_positive = positive_right(r,w,plane_positive)
+  +plane_positive = DivisionOrder.right_factor_positive(ci,plane,product_positive)
+  +width_positive = DivisionOrder.right_factor_positive(r,w,plane_positive)
   +channel = Nat.div(index,plane)
   +local = Nat.mod(index,plane)
   +row = Nat.div(local,w)
   +column = Nat.mod(local,w)
-  +channel_inside = Positions.quotient_lt(index,ci,plane,plane_positive,inside_total)
+  +channel_inside = DivisionOrder.quotient_below(index,ci,plane,plane_positive,inside_total)
   +local_inside = DivisionOrder.remainder_small(index,plane,plane_positive)
-  +row_inside = Positions.quotient_lt(local,r,w,width_positive,local_inside)
+  +row_inside = DivisionOrder.quotient_below(local,r,w,width_positive,local_inside)
   +column_inside = DivisionOrder.remainder_small(local,w,width_positive)
   +index_split = DivisionOrder.quotient_exact(index,plane,plane_positive)
   +local_split = DivisionOrder.quotient_exact(local,w,width_positive)
@@ -199,8 +185,7 @@ def contents(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+
 
 # A band leaf's window holds every image row its output rows read. The window
 # starts at the first row read, moved down to a stride multiple, and ends at
-# the last row read. Padding smaller than the kernel keeps every output row
-# reading at least one image row, so the window is never empty.
+# the last row read. The covers below are for windows that hold a row.
 def aligned(+value: Nat,+stride: Nat) -> Nat:
   Nat.sub(value,Nat.mod(value,stride))
 
@@ -223,55 +208,6 @@ def not_le(+left: Nat,+right: Nat,+outside: {Nat.is_le(left,right) == False{} : 
     case 1n+left 0n: {==}
     case 1n+ +left 1n+ +right: not_le(left,right,outside)
 
-def sub_below(+value: Nat,+amount: Nat,+below: {Nat.is_le(value,amount) == True{} : Bool}) -> {Nat.sub(value,amount) == 0n : Nat}:
-  match value amount:
-    case 0n amount: Order.zero_subtract(amount)
-    case 1n+value 0n: Empty.absurd({Nat.sub(1n+value,0n) == 0n : Nat},WordEncoding.false_true(below))
-    case 1n+ +value 1n+ +amount: sub_below(value,amount,below)
-
-def zero_below(+value: Nat,+bounded: {Nat.is_le(value,0n) == True{} : Bool}) -> {value == 0n : Nat}:
-  match value:
-    case 0n: {==}
-    case 1n+rest: Empty.absurd({1n+rest == 0n : Nat},WordEncoding.false_true(bounded))
-
-def two_times(+value: Nat) -> {Nat.mul(2n,value) == Nat.add(value,value) : Nat}:
-  %Addition.zero_right(value) : {Nat.add(value,Nat.add(value,0n)) == Nat.add(value,_) : Nat}
-  {==}
-
-def positive_amount(+amount: Nat,+extra: Nat,+small: {Nat.is_lt(amount,extra) == True{} : Bool}) -> {Nat.is_lt(0n,extra) == True{} : Bool}:
-  Order.le_lt_trans(0n,amount,extra,Order.zero_le(amount),small)
-
-def shifted_below_when(ordered: Bool,+value: Nat,+amount: Nat,+extra: Nat,+guard: {Nat.is_le(amount,value) == ordered : Bool},
-  +small: {Nat.is_lt(amount,extra) == True{} : Bool}) ->
-  {Nat.is_lt(Nat.sub(value,amount),Nat.sub(Nat.add(value,extra),amount)) == True{} : Bool}:
-  match ordered:
-    case True{}:
-      %Equal.sym(Nat,Nat.sub(Nat.add(value,extra),amount),Nat.add(Nat.sub(value,amount),extra),Positions.sub_after(value,amount,extra,guard)) :
-        {Nat.is_lt(Nat.sub(value,amount),_) == True{} : Bool}
-      %Addition.zero_right(Nat.sub(value,amount)) : {Nat.is_lt(_,Nat.add(Nat.sub(value,amount),extra)) == True{} : Bool}
-      Order.offset_lt(Nat.sub(value,amount),0n,extra,positive_amount(amount,extra,small))
-    case False{}:
-      %Equal.sym(Nat,Nat.sub(value,amount),0n,sub_below(value,amount,not_le(amount,value,guard))) : {Nat.is_lt(_,Nat.sub(Nat.add(value,extra),amount)) == True{} : Bool}
-      Order.positive_difference(Nat.add(value,extra),amount,Bounds.nat_trans(amount,extra,Nat.add(value,extra),small,Samples.le_after(value,extra)))
-
-# Subtracting an amount smaller than the extra term keeps a strict order.
-def shifted_below(+value: Nat,+amount: Nat,+extra: Nat,+small: {Nat.is_lt(amount,extra) == True{} : Bool}) ->
-  {Nat.is_lt(Nat.sub(value,amount),Nat.sub(Nat.add(value,extra),amount)) == True{} : Bool}:
-  shifted_below_when(Nat.is_le(amount,value),value,amount,extra,{==},small)
-
-def clipped_below_when(ordered: Bool,+value: Nat,+amount: Nat,+limit: Nat,+guard: {Nat.is_le(amount,value) == ordered : Bool},
-  +positive: {Nat.is_lt(0n,limit) == True{} : Bool},+bound: {Nat.is_lt(value,Nat.add(amount,limit)) == True{} : Bool}) ->
-  {Nat.is_lt(Nat.sub(value,amount),limit) == True{} : Bool}:
-  match ordered:
-    case True{}: Order.sub_lt(value,amount,limit,guard,bound)
-    case False{}:
-      %Equal.sym(Nat,Nat.sub(value,amount),0n,sub_below(value,amount,not_le(amount,value,guard))) : {Nat.is_lt(_,limit) == True{} : Bool}
-      positive
-
-def clipped_below(+value: Nat,+amount: Nat,+limit: Nat,+positive: {Nat.is_lt(0n,limit) == True{} : Bool},
-  +bound: {Nat.is_lt(value,Nat.add(amount,limit)) == True{} : Bool}) -> {Nat.is_lt(Nat.sub(value,amount),limit) == True{} : Bool}:
-  clipped_below_when(Nat.is_le(amount,value),value,amount,limit,{==},positive,bound)
-
 def minimum_shift_when(choice: Bool,+left: Nat,+right: Nat,+shift: Nat,+lower: Nat,
   +left_ok: {Nat.is_le(lower,Nat.add(left,shift)) == True{} : Bool},+right_ok: {Nat.is_le(lower,Nat.add(right,shift)) == True{} : Bool}) ->
   {Nat.is_le(lower,Nat.add(Bool.pick(Nat,choice,left,right),shift)) == True{} : Bool}:
@@ -293,8 +229,8 @@ def window_end(+height: Nat,+output_end: Nat,+stride: Nat,+kernel: Nat,+padding:
 
 # The Nat facts a window cover needs, from an output interval inside the image.
 type Span<-height: Nat,-kernel: Nat,-stride: Nat,-padding: Nat,-output_first: Nat,-output_end: Nat> is Data:
-  Span{stride_positive: {Nat.is_lt(0n,stride) == True{} : Bool},height_positive: {Nat.is_lt(0n,height) == True{} : Bool},
-    padding_small: {Nat.is_lt(padding,kernel) == True{} : Bool},ordered: {Nat.is_lt(output_first,output_end) == True{} : Bool},
+  Span{before: {Nat.is_lt(window_first(height,output_first,stride,padding),window_end(height,output_end,stride,kernel,padding)) == True{} : Bool},
+    ordered: {Nat.is_lt(output_first,output_end) == True{} : Bool},
     last_room: {Nat.is_le(Nat.add(Nat.mul(Nat.sub(output_end,1n),stride),kernel),Nat.add(height,Nat.mul(2n,padding))) == True{} : Bool}}
 
 def first_row(+output_first: Nat,+stride: Nat) -> Nat:
@@ -305,50 +241,11 @@ def last_row(+output_end: Nat,+stride: Nat) -> Nat:
 
 def rows_ordered(+output_first: Nat,+output_end: Nat,+stride: Nat,+ordered: {Nat.is_lt(output_first,output_end) == True{} : Bool}) ->
   {Nat.is_le(first_row(output_first,stride),last_row(output_end,stride)) == True{} : Bool}:
-  RowMajor.mul_le(output_first,Nat.sub(output_end,1n),stride,TensorBandWindow.before_last(output_first,output_end,ordered))
-
-# The first row read lies inside the image.
-def first_inside(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+output_first: Nat,+output_end: Nat,
-  +span: Span<height,kernel,stride,padding,output_first,output_end>) ->
-  {Nat.is_lt(Nat.sub(first_row(output_first,stride),padding),height) == True{} : Bool}:
-  Span{stride_positive,+height_positive,+padding_small,+ordered,+last_room} = span
-  +first = first_row(output_first,stride)
-  +first_room = Order.transitive(Nat.add(first,kernel),Nat.add(last_row(output_end,stride),kernel),Nat.add(height,Nat.mul(2n,padding)),
-    Order.add_le(first,last_row(output_end,stride),kernel,rows_ordered(output_first,output_end,stride,ordered)),last_room)
-  # first + kernel <= height + padding + padding < height + padding + kernel.
-  +strict = Order.le_lt_trans(Nat.add(first,kernel),Nat.add(Nat.add(height,padding),padding),Nat.add(Nat.add(height,padding),kernel),
-    %Equal.sym(Nat,Nat.add(Nat.add(height,padding),padding),Nat.add(height,Nat.add(padding,padding)),Addition.associative(height,padding,padding)) :
-      {Nat.is_le(Nat.add(first,kernel),_) == True{} : Bool}
-    %two_times(padding) : {Nat.is_le(Nat.add(first,kernel),Nat.add(height,_)) == True{} : Bool}
-    first_room,
-    Order.offset_lt(Nat.add(height,padding),padding,kernel,padding_small))
-  +below = {
-    %Order.commutative(first,kernel) : {Nat.is_lt(_,Nat.add(kernel,Nat.add(height,padding))) == True{} : Bool}
-    %Order.commutative(Nat.add(height,padding),kernel) : {Nat.is_lt(Nat.add(first,kernel),_) == True{} : Bool}
-    strict : {Nat.is_lt(Nat.add(kernel,first),Nat.add(kernel,Nat.add(height,padding))) == True{} : Bool}}
-  clipped_below(first,padding,height,height_positive,
-    %Order.commutative(height,padding) : {Nat.is_lt(first,_) == True{} : Bool}
-    Order.cancel_offset_lt(kernel,first,Nat.add(height,padding),below))
+  RowMajor.mul_le(output_first,Nat.sub(output_end,1n),stride,Order.before_last(output_first,output_end,ordered))
 
 def restore_upper(+amount: Nat,+value: Nat) -> {Nat.is_le(value,Nat.add(amount,Nat.sub(value,amount))) == True{} : Bool}:
   %Equal.sym(Nat,Nat.add(amount,Nat.sub(value,amount)),Nat.max(amount,value),Extrema.clipped_end(amount,value)) : {Nat.is_le(value,_) == True{} : Bool}
   Extrema.maximum_right(amount,value)
-
-# The window starts before its end: the first row read precedes the last.
-def start_before_end(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+output_first: Nat,+output_end: Nat,
-  +span: Span<height,kernel,stride,padding,output_first,output_end>) ->
-  {Nat.is_lt(window_first(height,output_first,stride,padding),window_end(height,output_end,stride,kernel,padding)) == True{} : Bool}:
-  Span{stride_positive,height_positive,+padding_small,+ordered,last_room} = span
-  +first = first_row(output_first,stride)
-  +last = last_row(output_end,stride)
-  +needed = TensorBandWindow.needed_first(height,output_first,stride,padding)
-  +clipped = Nat.sub(first,padding)
-  +strict = Extrema.minimum_strict_lower(height,Nat.sub(Nat.add(last,kernel),padding),clipped,
-    first_inside(height,kernel,stride,padding,output_first,output_end,span),
-    Order.le_lt_trans(clipped,Nat.sub(last,padding),Nat.sub(Nat.add(last,kernel),padding),
-      DivisionOrder.subtract_le(first,last,padding,rows_ordered(output_first,output_end,stride,ordered)),shifted_below(last,padding,kernel,padding_small)))
-  Order.le_lt_trans(window_first(height,output_first,stride,padding),clipped,window_end(height,output_end,stride,kernel,padding),
-    Order.transitive(window_first(height,output_first,stride,padding),needed,clipped,aligned_below(needed,stride),Extrema.minimum_right(height,clipped)),strict)
 
 def window_below_first(+height: Nat,+output_first: Nat,+stride: Nat,+padding: Nat) ->
   {Nat.is_le(window_first(height,output_first,stride,padding),Nat.sub(first_row(output_first,stride),padding)) == True{} : Bool}:
@@ -357,14 +254,14 @@ def window_below_first(+height: Nat,+output_first: Nat,+stride: Nat,+padding: Na
     Extrema.minimum_right(height,Nat.sub(first_row(output_first,stride),padding)))
 
 def padding_doubled(+padding: Nat) -> {Nat.is_le(padding,Nat.mul(2n,padding)) == True{} : Bool}:
-  %Equal.sym(Nat,Nat.mul(2n,padding),Nat.add(padding,padding),two_times(padding)) : {Nat.is_le(padding,_) == True{} : Bool}
+  %Equal.sym(Nat,Nat.mul(2n,padding),Nat.add(padding,padding),Order.twice(padding)) : {Nat.is_le(padding,_) == True{} : Bool}
   Order.le_add(padding,padding)
 
 # The window with padding on both sides fits the kernel.
 def kernel_room(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+output_first: Nat,+output_end: Nat,
   +span: Span<height,kernel,stride,padding,output_first,output_end>) ->
   {Nat.is_le(Nat.add(window_first(height,output_first,stride,padding),kernel),Nat.add(window_end(height,output_end,stride,kernel,padding),Nat.mul(2n,padding))) == True{} : Bool}:
-  Span{stride_positive,height_positive,+padding_small,+ordered,+last_room} = span
+  Span{+before,+ordered,+last_room} = span
   +first = first_row(output_first,stride)
   +last = last_row(output_end,stride)
   +doubled = Nat.mul(2n,padding)
@@ -372,7 +269,10 @@ def kernel_room(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+output_fir
   +start = window_first(height,output_first,stride,padding)
   +start_below = Order.transitive(start,Nat.sub(first,padding),first,window_below_first(height,output_first,stride,padding),Order.sub_le(first,padding))
   +first_last = Order.add_le(first,last,kernel,rows_ordered(output_first,output_end,stride,ordered))
-  +padding_room = Bounds.strict_le(padding,Nat.add(last,kernel),Bounds.nat_trans(padding,kernel,Nat.add(last,kernel),padding_small,Samples.le_after(last,kernel)))
+  # A window that holds a row ends after row 0, so its last read passes the padding.
+  +reached = Bounds.nat_trans(0n,window_end(height,output_end,stride,kernel,padding),clipped_end,
+    Order.le_lt_trans(0n,start,window_end(height,output_end,stride,kernel,padding),Order.zero_le(start),before),Extrema.minimum_right(height,clipped_end))
+  +padding_room = Bounds.strict_le(padding,Nat.add(last,kernel),Order.difference_positive(padding,Nat.add(last,kernel),reached))
   +last_restored = {%Order.restore_shift(padding,Nat.add(last,kernel),padding_room) : {Nat.is_le(_,Nat.add(clipped_end,doubled)) == True{} : Bool}
     %Order.commutative(doubled,clipped_end) : {Nat.is_le(Nat.add(padding,clipped_end),_) == True{} : Bool}
     Order.add_le(padding,doubled,clipped_end,padding_doubled(padding)) : {Nat.is_le(Nat.add(last,kernel),Nat.add(clipped_end,doubled)) == True{} : Bool}}
@@ -395,8 +295,8 @@ def top_when(ordered: Bool,+height: Nat,+stride: Nat,+padding: Nat,+output_first
     case False{}:
       +first = first_row(output_first,stride)
       +start = window_first(height,output_first,stride,padding)
-      Inl{zero_below(start,
-        %sub_below(first,padding,not_le(padding,first,guard)) : {Nat.is_le(start,_) == True{} : Bool}
+      Inl{Order.zero_below(start,
+        %Order.subtract_below(first,padding,not_le(padding,first,guard)) : {Nat.is_le(start,_) == True{} : Bool}
         window_below_first(height,output_first,stride,padding))}
 
 def bottom_when(choice: Bool,+height: Nat,+kernel: Nat,+padding: Nat,+last: Nat,+row: Nat,
@@ -429,10 +329,6 @@ def last_room(+height: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+output_end: 
     %Order.restore_shift(kernel,extent,kernel_fits) : {Nat.is_le(Nat.add(kernel,reach),_) == True{} : Bool}
     Order.reflexive(Nat.add(kernel,reach)))
 
-def before_whole(+whole: Nat,+positive: {Nat.is_lt(0n,whole) == True{} : Bool}) -> {Nat.is_lt(Nat.sub(whole,1n),whole) == True{} : Bool}:
-  %Order.positive_has_last(whole,positive) : {Nat.is_lt(Nat.sub(whole,1n),_) == True{} : Bool}
-  Order.lt_succ(Nat.sub(whole,1n),Nat.sub(whole,1n),Order.reflexive(Nat.sub(whole,1n)))
-
 # The positions of output rows [output_first, output_end) end at output_end rows.
 def positions_end(+output_first: Nat,+output_end: Nat,+width: Nat,+ordered: {Nat.is_le(output_first,output_end) == True{} : Bool}) ->
   {Nat.add(Nat.mul(output_first,width),Nat.mul(Nat.sub(output_end,output_first),width)) == Nat.mul(output_end,width) : Nat}:
@@ -450,15 +346,15 @@ def last_output(+output_first: Nat,+output_end: Nat,+width: Nat,+width_positive:
   +end_positive = Order.le_lt_trans(0n,output_first,output_end,Order.zero_le(output_first),ordered)
   +inside = {%Equal.sym(Nat,total,Nat.mul(output_end,width),positions_end(output_first,output_end,width,Bounds.strict_le(output_first,output_end,ordered))) :
       {Nat.is_lt(Nat.sub(_,1n),Nat.mul(output_end,width)) == True{} : Bool}
-    before_whole(Nat.mul(output_end,width),Support.positive_mul(output_end,width,end_positive,width_positive)) :
+    Order.last_below(Nat.mul(output_end,width),Order.product_positive(output_end,width,end_positive,width_positive)) :
     {Nat.is_lt(Nat.sub(total,1n),Nat.mul(output_end,width)) == True{} : Bool}}
-  TensorBandWindow.before_last(Nat.div(Nat.sub(total,1n),width),output_end,Positions.quotient_lt(Nat.sub(total,1n),output_end,width,width_positive,inside))
+  Order.before_last(Nat.div(Nat.sub(total,1n),width),output_end,DivisionOrder.quotient_below(Nat.sub(total,1n),output_end,width,width_positive,inside))
 
 def cover_facts(+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,
   +input: List<&2,F32>,+weights: List<&2,F32>,+bias: List<&2,F32>,+facts: Guards.Valid<ConvSpec.Problem{ConvSpec.Shape{ci,co,height,width,kernel,stride,padding},input,weights,bias}>,
-  +padding_small: {Nat.is_lt(padding,kernel) == True{} : Bool},
   +output_first: Nat,+output_end: Nat,+ordered: {Nat.is_lt(output_first,output_end) == True{} : Bool},
-  +bounded: {Nat.is_le(output_end,ConvSpec.axis_size(height,kernel,stride,padding)) == True{} : Bool}) ->
+  +bounded: {Nat.is_le(output_end,ConvSpec.axis_size(height,kernel,stride,padding)) == True{} : Bool},
+  +before: {Nat.is_lt(window_first(height,output_first,stride,padding),window_end(height,output_end,stride,kernel,padding)) == True{} : Bool}) ->
   Positions.Cover<ConvSpec.Problem{ConvSpec.Shape{ci,co,height,width,kernel,stride,padding},input,weights,bias},window_first(height,output_first,stride,padding),
     Nat.sub(window_end(height,output_end,stride,kernel,padding),window_first(height,output_first,stride,padding)),
     Nat.mul(output_first,ConvSpec.axis_size(width,kernel,stride,padding)),Nat.mul(Nat.sub(output_end,output_first),ConvSpec.axis_size(width,kernel,stride,padding))>:
@@ -466,14 +362,13 @@ def cover_facts(+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride:
   +output_width = ConvSpec.axis_size(width,kernel,stride,padding)
   +width_ok = {{==} : {Nat.is_lt(0n,output_width) == True{} : Bool}}
   +end_positive = Order.le_lt_trans(0n,output_first,output_end,Order.zero_le(output_first),ordered)
-  +span = {Span{stride_positive,height_positive,padding_small,ordered,last_room(height,kernel,stride,padding,output_end,stride_positive,kernel_fits,end_positive,bounded)} :
+  +span = {Span{before,ordered,last_room(height,kernel,stride,padding,output_end,stride_positive,kernel_fits,end_positive,bounded)} :
     Span<height,kernel,stride,padding,output_first,output_end>}
   +start = window_first(height,output_first,stride,padding)
   +finish = window_end(height,output_end,stride,kernel,padding)
   +clipped_end = Nat.sub(Nat.add(last_row(output_end,stride),kernel),padding)
   +rows = Nat.sub(finish,start)
   +doubled = Nat.mul(2n,padding)
-  +before = start_before_end(height,kernel,stride,padding,output_first,output_end,span)
   +restored = Order.restore_shift(start,finish,Bounds.strict_le(start,finish,before))
   +needed = TensorBandWindow.needed_first(height,output_first,stride,padding)
   +fits = {%Equal.sym(Nat,Nat.add(start,rows),finish,restored) : {Nat.is_le(_,height) == True{} : Bool}
@@ -484,7 +379,7 @@ def cover_facts(+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride:
     kernel_room(height,kernel,stride,padding,output_first,output_end,span))
   +offset = Nat.mul(output_first,output_width)
   +positions = Nat.mul(Nat.sub(output_end,output_first),output_width)
-  +top = {%Equal.sym(Nat,Nat.div(offset,output_width),output_first,Positions.exact_quotient(output_first,output_width,width_ok)) :
+  +top = {%Equal.sym(Nat,Nat.div(offset,output_width),output_first,Division.exact_quotient(output_first,output_width,width_ok)) :
       Either<&2,&2,{start == 0n : Nat},{Nat.is_le(Nat.add(start,padding),Nat.mul(_,stride)) == True{} : Bool}>
     top_when(Nat.is_le(padding,first_row(output_first,stride)),height,stride,padding,output_first,{==}) :
     Either<&2,&2,{start == 0n : Nat},{Nat.is_le(Nat.add(start,padding),Nat.mul(Nat.div(offset,output_width),stride)) == True{} : Bool}>}
@@ -497,13 +392,16 @@ def cover_facts(+ci: Nat,+co: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride:
       Either<&2,&2,{height == _ : Nat},{Nat.is_le(Nat.add(row,kernel),Nat.add(_,padding)) == True{} : Bool}>
     bottom_when(Nat.is_lt(height,clipped_end),height,kernel,padding,last_row(output_end,stride),row,row_room) :
     Either<&2,&2,{height == Nat.add(start,rows) : Nat},{Nat.is_le(Nat.add(row,kernel),Nat.add(Nat.add(start,rows),padding)) == True{} : Bool}>}
-  Positions.Cover{Nat.div(needed,stride),aligned_exact(needed,stride,stride_positive),fits,Order.positive_difference(finish,start,before),kernel_room_window,top,bottom}
+  Positions.Cover{Nat.div(needed,stride),aligned_exact(needed,stride,stride_positive),fits,Order.positive_difference(finish,start,before),kernel_room_window,
+    Positions.top_of(ConvSpec.Problem{ConvSpec.Shape{ci,co,height,width,kernel,stride,padding},input,weights,bias},start,offset,positions,top),bottom}
 
-# The actual window of output rows [output_first, output_end) covers them.
+# The actual window of output rows [output_first, output_end), when it holds
+# a row, covers them.
 def cover(+problem: ConvSpec.Problem,+valid: {ConvSpec.valid(problem) == True{} : Bool},
-  +padding_small: {Nat.is_lt(Guards.pad(problem),Guards.kernel(problem)) == True{} : Bool},
   +output_first: Nat,+output_end: Nat,+ordered: {Nat.is_lt(output_first,output_end) == True{} : Bool},
-  +bounded: {Nat.is_le(output_end,ConvSpec.out_height(problem)) == True{} : Bool}) ->
+  +bounded: {Nat.is_le(output_end,ConvSpec.out_height(problem)) == True{} : Bool},
+  +before: {Nat.is_lt(window_first(Guards.height(problem),output_first,Guards.stride(problem),Guards.pad(problem)),
+    window_end(Guards.height(problem),output_end,Guards.stride(problem),Guards.kernel(problem),Guards.pad(problem))) == True{} : Bool}) ->
   Positions.Cover<problem,window_first(Guards.height(problem),output_first,Guards.stride(problem),Guards.pad(problem)),
     Nat.sub(window_end(Guards.height(problem),output_end,Guards.stride(problem),Guards.kernel(problem),Guards.pad(problem)),
       window_first(Guards.height(problem),output_first,Guards.stride(problem),Guards.pad(problem))),
@@ -512,4 +410,4 @@ def cover(+problem: ConvSpec.Problem,+valid: {ConvSpec.valid(problem) == True{} 
   ConvSpec.Shape{+ci,+co,+height,+width,+kernel,+stride,+padding} = shape
   +problem = {ConvSpec.Problem{ConvSpec.Shape{ci,co,height,width,kernel,stride,padding},input,weights,bias} : ConvSpec.Problem}
   +facts = Guards.valid(problem,valid)
-  cover_facts(ci,co,height,width,kernel,stride,padding,input,weights,bias,facts,padding_small,output_first,output_end,ordered,bounded)
+  cover_facts(ci,co,height,width,kernel,stride,padding,input,weights,bias,facts,output_first,output_end,ordered,bounded,before)

@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import numpy as np
+from reduction_reference import reduced_last, sum8
 
 ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'out/checks'
@@ -48,19 +49,29 @@ def public_values(expected: List<&2,U32>,result: Result<&2,&2,F.Problem(),List<&
     case Done{values}: same_words(expected,bit_values(values))
     case Fail{problem}: False{}
 
-# Compare rounded FP32 words: at most two steps for finite nonzero values;
-# zero signs and infinities must agree exactly.
-def activation_words(expected: List<&2,U32>,actual: List<&2,U32>) -> Bool:
+# Compare rounded FP32 words: at most the given number of steps apart for
+# finite nonzero values; zero signs and infinities must agree exactly, and a
+# NaN needs a NaN.
+def near_words(expected: List<&2,U32>,actual: List<&2,U32>,+steps: U32) -> Bool:
   match expected actual:
     case Nil{} Nil{}: True{}
     case Con{+x,xs} Con{+y,ys}:
-      Bool.pick(Bool,U32.is_eq(U32.and(x,2147483647),0) || U32.is_ge(U32.and(x,2147483647),2139095040),
-        U32.is_eq(x,y),U32.is_le((U32.max(x,y) - U32.min(x,y) : U32),2)) && activation_words(xs,ys)
+      Bool.pick(Bool,U32.is_gt(U32.and(x,2147483647),2139095040),U32.is_gt(U32.and(y,2147483647),2139095040),
+        Bool.pick(Bool,U32.is_eq(U32.and(x,2147483647),0) || U32.is_eq(U32.and(x,2147483647),2139095040),
+          U32.is_eq(x,y),U32.is_le((U32.max(x,y) - U32.min(x,y) : U32),steps))) && near_words(xs,ys,steps)
     case expected actual: False{}
 
-def activation_values(expected: List<&2,U32>,result: Result<&2,&2,F.Problem(),List<&2,F32>>) -> Bool:
+def near_values(+steps: U32,expected: List<&2,U32>,result: Result<&2,&2,F.Problem(),List<&2,F32>>) -> Bool:
   match result:
-    case Done{values}: activation_words(expected,bit_values(values))
+    case Done{values}: near_words(expected,bit_values(values),steps)
+    case Fail{problem}: False{}
+
+def activation_values(expected: List<&2,U32>,result: Result<&2,&2,F.Problem(),List<&2,F32>>) -> Bool:
+  near_values(2,expected,result)
+
+def all_near(~expected: U32,~steps: U32,result: Result<&2,&2,F.Problem(),List<&2,F32>>) -> Bool:
+  match result:
+    case Done{values}: List.all(~&2,~F32,~(value => near_words([expected],[to_bits(value)],steps)),values)
     case Fail{problem}: False{}
 
 def public_observed(+shape: List<&2,U32>,+expected: List<&2,U32>,observed: F.Tensor() & List<&2,U32>) -> Bool:
@@ -237,6 +248,12 @@ def convolution_activation(value: F32) -> F32:
     case('public_check_clears', 'cleared(F.check(F.add(F.zeros([2]),F.zeros([3]))))')
     grid = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
     public('public_transpose', f'F.transpose({tensor(grid.shape, grid.ravel())},[2,0,1])', grid.transpose(2, 0, 1))
+    for axes in [[0], [2], [1, 2], [2, 0, 1], []]:
+        public('public_flip_' + '_'.join(map(str, axes)), f'F.flip({tensor(grid.shape, grid.ravel())},{axes})',
+            np.flip(grid, axes) if axes else grid)
+    public('public_flip_empty', 'F.flip(F.zeros([0,3]),[0,1])', np.zeros([0, 3], np.float32))
+    failing('public_flip_axis', 'F.flip(F.zeros([2,3]),[2])', 'flip: invalid argument for shape [2, 3]')
+    failing('public_flip_repeated', 'F.flip(F.zeros([2,3]),[1,1])', 'flip: invalid argument for shape [2, 3]')
     public('public_slice_step', f'F.slice({tensor(grid.shape, grid.ravel())},2,1,2,2)', grid[:, :, 1:4:2])
     part = -np.arange(6, dtype=np.float32).reshape(2, 3, 1)
     written = grid.copy(); written[:, :, 2:3] = part
@@ -246,6 +263,12 @@ def convolution_activation(value: F32) -> F32:
         np.concatenate([a, b, c], axis=1))
     public('public_concat_axis0', f'F.concat(F.cons({tensor(grid.shape, grid.ravel())},F.single({tensor(grid.shape, -grid.ravel())})),0)',
         np.concatenate([grid, -grid], axis=0))
+    images = np.arange(120, dtype=np.float32).reshape(2, 3, 4, 5)
+    for axis in [1, 2, 3]:
+        first, second = np.split(images, [1], axis=axis)
+        public(f'public_concat_images_axis{axis}',
+            f'F.concat(F.cons({tensor(second.shape, second.ravel())},F.single({tensor(first.shape, -first.ravel())})),{axis})',
+            np.concatenate([second, -first], axis=axis))
     failing('public_concat_mismatch', f'F.concat(F.cons({tensor(a.shape, a.ravel())},F.single({tensor([2,2,3], np.zeros(12))})),1)',
         'concat: invalid argument for shape [2, 1, 4]')
     public('public_upsample', f'F.upsample_nearest({tensor(grid.shape, grid.ravel())},2)', grid.repeat(2, axis=1).repeat(2, axis=2))
@@ -262,9 +285,7 @@ def convolution_activation(value: F32) -> F32:
         public(f'public_max_pool_{kernel}_{stride}_{padding}', f'F.max_pool2d_with({tensor(pooled.shape, pooled.ravel())},{kernel},{stride},{padding})', expected)
     public('public_apply_indexed', f'F.apply_indexed(~plus_index,Act.unknown_operations(),{tensor(grid.shape, grid.ravel())})', grid + np.arange(24, dtype=np.float32).reshape(grid.shape))
     public('public_scalar', f'F.mul_scalar(F.add_scalar({tensor(grid.shape, grid.ravel())},0.5),F32.neg(2.0))', (grid + np.float32(0.5)) * np.float32(-2.0))
-    total = np.float32(0)
-    for value in grid.ravel():
-        total = np.float32(total + value)
+    total = np.float32(sum8(grid))
     public('public_sum', f'F.sum({tensor(grid.shape, grid.ravel())})', total)
     public('public_mean', f'F.mean({tensor(grid.shape, grid.ravel())})', total / np.float32(grid.size))
     signed = grid - np.float32(7.5)
@@ -285,6 +306,50 @@ def convolution_activation(value: F32) -> F32:
     public('public_reshape', f'F.reshape({tensor(grid.shape, grid.ravel())},[4,6])', grid.reshape(4, 6))
     public('public_copy', f'F.then(F.copy({tensor(grid.shape, grid.ravel())}),kept => copied => F.sub(kept,copied))', np.zeros_like(grid))
     public('public_then_shape', f'F.then_shape(F.shape({tensor(grid.shape, grid.ravel())}),owner => extents => F.add(owner,F.full(extents,0.5)))', grid + np.float32(0.5))
+
+    # Derivatives: the endpoints of PyTorch's backward, signed zeros, infinities,
+    # NaN and a tail shorter than eight values. The four with their own
+    # arithmetic are compared with the real formula rounded to FP32, within the
+    # four steps that benchmarks/checks/math_accuracy.py measures over every input.
+    derivative_input = np.array([-np.inf, -6, -3, -1.5, -0.0, 0.0, 3, 6,
+        np.inf, np.nan, -1, 1, 2, -2, np.nextafter(np.float32(-3), np.float32(0)),
+        np.nextafter(np.float32(3), np.float32(0)), -110, 25, 0.125], dtype=np.float32)
+    with np.errstate(all='ignore'):
+        x = derivative_input
+        wide = x.astype(np.float64)
+        logistic = np.exp(-np.abs(wide))
+        doubled = np.exp(-2 * np.abs(wide))
+        slope = 2 * np.sqrt(2 / np.pi) * -np.abs(wide) * (1 + 3 * .044715 * wide * wide)
+        cubic = np.exp(2 * np.sqrt(2 / np.pi) * -np.abs(wide) * (1 + .044715 * wide * wide))
+        mirrored = lambda negative: np.where(x > 0, 1 - negative, negative)
+        derivative_expected = {
+            'identity': (0, np.ones_like(x)),
+            'relu': (0, np.where(x > 0, 1, 0)),
+            'relu6': (0, np.where((x > 0) & (x < 6), 1, 0)),
+            'leaky_relu': (0, np.where(x > 0, 1, np.float32(-0.125))),
+            'hard_sigmoid': (0, np.where((x > -3) & (x < 3), np.float32(1) / np.float32(6), 0)),
+            'hard_swish': (0, np.where(x <= -3, 0, np.where(x < 3, x / np.float32(3) + np.float32(0.5), 1))),
+            'sigmoid': (4, logistic / ((1 + logistic) * (1 + logistic))),
+            'tanh': (4, 4 * doubled / ((1 + doubled) * (1 + doubled))),
+            'silu': (4, mirrored(logistic * (1 - np.abs(wide) + logistic) / ((1 + logistic) * (1 + logistic)))),
+            'gelu_tanh': (4, mirrored(cubic * (1 + slope + cubic) / ((1 + cubic) * (1 + cubic)))),
+        }
+    for name, (steps, reference) in derivative_expected.items():
+        reference = np.asarray(reference, dtype=np.float32)
+        reference[np.isnan(x)] = np.nan
+        if name in ['silu', 'gelu_tanh']:
+            reference[np.isneginf(x)] = np.float32(-0.0)
+            reference[np.isposinf(x)] = np.float32(1.0)
+        activation = 'Act.leaky_relu(F32.neg(0.125))' if name == 'leaky_relu' else f'Act.{name}()'
+        case(f'public_{name}_derivative',
+            f'near_values({steps},{bits(reference)},F.to_list(F.activate_derivative({tensor(x.shape, x)},{activation})))')
+    failing('public_derivative_custom', 'F.activate_derivative(F.zeros([3]),Act.Custom{1.0})',
+        'activate_derivative: invalid argument for shape [3]')
+    # A map large enough to be scheduled across workers, through the staged eight-value form.
+    q = np.exp(-0.75)
+    case('public_silu_derivative_large',
+        f'all_near(~{bits([q * (1 - .75 + q) / ((1 + q) * (1 + q))])[0]},~4,'
+        'F.to_list(F.silu_derivative(F.with_workers(F.full([262147],F32.neg(0.75)),8))))')
 
     # MPFR 4.2.2, 256-bit directed bounds rounded directly to binary32.
     # Negative-tail samples must continue below exp(-88); SiLU scales x before
@@ -336,26 +401,39 @@ def convolution_activation(value: F32) -> F32:
     public('public_broadcast_to_rank', f'F.broadcast_to({tensor(row.shape, row)},[3,2,4])', np.broadcast_to(row, (3, 2, 4)))
     failing('public_broadcast_to_mismatch', f'F.broadcast_to({tensor([3], row[:3])},[2,4])', 'broadcast_to: shapes [3] and [2, 4] do not match')
 
-    # An axis reduction takes the elements of the axis in increasing index.
-    def fold_axis(x, axis, operation, initial):
-        accumulator = np.full(np.delete(x.shape, axis), initial, dtype=np.float32)
-        for index in range(x.shape[axis]):
-            accumulator = operation(accumulator, np.take(x, index, axis=axis)).astype(np.float32)
+    # max_axes and min_axes take the elements of the reduced axes in
+    # row-major order, the axes in increasing index; sum_axes and mean_axes
+    # add them as F.sum does.
+    def fold_axes(x, axes, operation, initial):
+        lines = reduced_last(x, axes)
+        accumulator = np.full(lines.shape[:-1], initial, dtype=np.float32)
+        for index in range(lines.shape[-1]):
+            accumulator = operation(accumulator, lines[..., index]).astype(np.float32)
         return accumulator
 
     special = cube.copy()
     special[0, 1, 2], special[1, 0, 0], special[1, 2, 3] = np.nan, -np.inf, np.inf
-    for axis in range(3):
+    for axes in [[0], [1], [2], [0, 2], [2, 1], [0, 1, 2]]:
+        label = '_'.join(map(str, axes))
         call = tensor(cube.shape, cube.ravel())
-        total = fold_axis(cube, axis, np.add, 0.0)
-        public(f'public_sum_axis_{axis}', f'F.sum_axis({call},{axis})', total)
-        public(f'public_mean_axis_{axis}', f'F.mean_axis({call},{axis})', total / np.float32(cube.shape[axis]))
+        total = sum8(cube, axes)
+        public(f'public_sum_axes_{label}', f'F.sum_axes({call},{axes})', total)
+        public(f'public_mean_axes_{label}', f'F.mean_axes({call},{axes})', total / np.float32(np.prod([cube.shape[axis] for axis in axes])))
         call = tensor(special.shape, special.ravel())
         with np.errstate(invalid='ignore'):
-            public(f'public_max_axis_{axis}', f'F.max_axis({call},{axis})', fold_axis(special, axis, ordered_max, -np.inf))
-            public(f'public_min_axis_{axis}', f'F.min_axis({call},{axis})', fold_axis(special, axis, ordered_min, np.inf))
-    public('public_sum_axis_empty', 'F.sum_axis(F.zeros([2,0,3]),1)', np.zeros((2, 3), dtype=np.float32))
-    failing('public_sum_axis_range', f'F.sum_axis({tensor(cube.shape, cube.ravel())},3)', 'sum_axis: invalid argument for shape [2, 3, 4]')
+            public(f'public_max_axes_{label}', f'F.max_axes({call},{axes})', fold_axes(special, axes, ordered_max, -np.inf))
+            public(f'public_min_axes_{label}', f'F.min_axes({call},{axes})', fold_axes(special, axes, ordered_min, np.inf))
+    # Statistics of every channel of a batch, over images, rows and columns,
+    # and the sums of long rows: large enough to run on several workers.
+    public('public_sum_axes_channels', f'F.sum_axes(F.reshape(F.arange(0.0,{4 * 64 * 64 * 64}),[4,64,64,64]),[0,2,3])',
+        sum8(np.arange(4 * 64 * 64 * 64, dtype=np.float32).reshape(4, 64, 64, 64), [0, 2, 3]))
+    public('public_sum_axes_rows', f'F.sum_axes(F.reshape(F.arange(0.0,{256 * 4096}),[256,4096]),[1])',
+        sum8(np.arange(256 * 4096, dtype=np.float32).reshape(256, 4096), [1]))
+    public('public_sum_axes_none', f'F.sum_axes({tensor(cube.shape, cube.ravel())},[])', sum8(cube, []))
+    public('public_sum_axes_empty', 'F.sum_axes(F.zeros([2,0,3]),[1])', np.zeros((2, 3), dtype=np.float32))
+    public('public_max_axes_empty', 'F.max_axes(F.zeros([2,0,3]),[0,1])', np.full(3, -np.inf, dtype=np.float32))
+    failing('public_sum_axes_range', f'F.sum_axes({tensor(cube.shape, cube.ravel())},[3])', 'sum_axes: invalid argument for shape [2, 3, 4]')
+    failing('public_sum_axes_twice', f'F.sum_axes({tensor(cube.shape, cube.ravel())},[1,1])', 'sum_axes: invalid argument for shape [2, 3, 4]')
 
     widths = ((0, 0), (1, 2), (2, 0))
     before, after = [list(side) for side in zip(*widths)]
@@ -371,7 +449,7 @@ def convolution_activation(value: F32) -> F32:
     feature = (((np.arange(90, dtype=np.float32) * np.float32(7)) % 23) - np.float32(9)).reshape(3, 5, 6) / np.float32(5)
     gain = np.array([1.5, -0.25, 2 / 3], dtype=np.float32).reshape(3, 1, 1)
     shift = np.array([0.125, 1.0, -0.5], dtype=np.float32).reshape(3, 1, 1)
-    mean = fold_axis(fold_axis(feature, 2, np.add, 0.0) / np.float32(6), 1, np.add, 0.0) / np.float32(5)
+    mean = sum8(feature, [1, 2]) / np.float32(30)
     normalized = (feature - mean.reshape(3, 1, 1)) * gain + shift
     bordered = np.pad(normalized, ((0, 0), (1, 1), (1, 1)), mode='edge')
     pooled_flow = np.full(normalized.shape, -np.inf, dtype=np.float32)
@@ -379,7 +457,7 @@ def convolution_activation(value: F32) -> F32:
         for kx in range(3):
             pooled_flow = ordered_max(pooled_flow, bordered[:, ky:ky + 5, kx:kx + 6])
     flow = ('F.then(F.copy(' + tensor(feature.shape, feature.ravel()) + '),kept => copied => '
-        'F.max_pool2d_with(F.pad_edge(F.add(F.mul(F.sub(kept,F.reshape(F.mean_axis(F.mean_axis(copied,2),1),[3,1,1])),'
+        'F.max_pool2d_with(F.pad_edge(F.add(F.mul(F.sub(kept,F.reshape(F.mean_axes(copied,[1,2]),[3,1,1])),'
         + tensor(gain.shape, gain.ravel()) + '),' + tensor(shift.shape, shift.ravel()) + '),[0,1,1],[0,1,1]),3,1,0))')
     public('public_flow_channel_normalize', flow, pooled_flow)
 
@@ -441,10 +519,7 @@ def convolution_activation(value: F32) -> F32:
     def softmax_reference(values, axis):
         shifted = np.float32(values - np.max(values, axis=axis, keepdims=True))
         exponentials = np.exp(shifted.astype(np.float64)).astype(np.float32)
-        total = np.zeros_like(np.take(exponentials, [0], axis=axis))
-        for index in range(values.shape[axis]):
-            total = np.float32(total + np.take(exponentials, [index], axis=axis))
-        return np.float32(exponentials / total)
+        return np.float32(exponentials / np.expand_dims(sum8(exponentials, [axis]), axis))
 
     # A small classification head exercises convolution, probabilities and
     # log probabilities; the same values also exercise a non-final axis.

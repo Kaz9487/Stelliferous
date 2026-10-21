@@ -1,11 +1,49 @@
 # One induction for every state representation, output index and step count.
 import Base
+import ./natural_addition.bend as Addition
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./word_arithmetic.bend as WordArithmetic
+import ./nat_order.bend as Order
+import ./nat_division_order.bend as DivisionOrder
 import ../traversal_loop.bend as Loop
 
 def iterate(~State: Data,~step: State -> State,count: Nat,state: State) -> State:
   Loop.run(~State,~step,count,state)
+
+def iteration_split(~State: Type,~step: State -> State,first: Nat,+second: Nat,-state: State) ->
+  {Loop.run(~State,~step,Nat.add(first,second),state) == Loop.run(~State,~step,second,Loop.run(~State,~step,first,state)) : State}:
+  match first:
+    case 0n: {==}
+    case 1n+rest: iteration_split(~State,~step,rest,second,step(state))
+
+# count runs of a step that is eight steps are 8 * count steps.
+def eights(~State: Type,~step: State -> State,~eight: State -> State,
+  ~grouped: @-state: State -> {eight(state) == Loop.run(~State,~step,8n,state) : State},count: Nat,-state: State) ->
+  {Loop.run(~State,~eight,count,state) == Loop.run(~State,~step,Nat.mul(count,8n),state) : State}:
+  match count:
+    case 0n: {==}
+    case 1n+ +rest:
+      %Equal.sym(State,eight(state),Loop.run(~State,~step,8n,state),grouped(state)) :
+        {Loop.run(~State,~eight,rest,_) == Loop.run(~State,~step,Nat.mul(1n+rest,8n),state) : State}
+      %Equal.sym(State,Loop.run(~State,~step,Nat.add(8n,Nat.mul(rest,8n)),state),Loop.run(~State,~step,Nat.mul(rest,8n),Loop.run(~State,~step,8n,state)),
+        iteration_split(~State,~step,8n,Nat.mul(rest,8n),state)) :
+        {Loop.run(~State,~eight,rest,Loop.run(~State,~step,8n,state)) == _ : State}
+      eights(~State,~step,~eight,~grouped,rest,Loop.run(~State,~step,8n,state))
+
+# The first count % 8 steps one by one, then the rest eight at a time.
+def head_then_eights(~State: Type,~step: State -> State,~eight: State -> State,
+  ~grouped: @-state: State -> {eight(state) == Loop.run(~State,~step,8n,state) : State},+count: Nat,-state: State) ->
+  {Loop.run(~State,~eight,Nat.div(count,8n),Loop.run(~State,~step,Nat.mod(count,8n),state)) == Loop.run(~State,~step,count,state) : State}:
+  +rounds = Nat.mul(Nat.div(count,8n),8n)
+  +head = Nat.mod(count,8n)
+  %Equal.sym(Nat,count,Nat.add(rounds,head),DivisionOrder.quotient_exact(count,8n,{==})) :
+    {Loop.run(~State,~eight,Nat.div(count,8n),Loop.run(~State,~step,head,state)) == Loop.run(~State,~step,_,state) : State}
+  %Order.commutative(head,rounds) :
+    {Loop.run(~State,~eight,Nat.div(count,8n),Loop.run(~State,~step,head,state)) == Loop.run(~State,~step,_,state) : State}
+  %Equal.sym(State,Loop.run(~State,~step,Nat.add(head,rounds),state),Loop.run(~State,~step,rounds,Loop.run(~State,~step,head,state)),
+    iteration_split(~State,~step,head,rounds,state)) :
+    {Loop.run(~State,~eight,Nat.div(count,8n),Loop.run(~State,~step,head,state)) == _ : State}
+  eights(~State,~step,~eight,~grouped,Nat.div(count,8n),Loop.run(~State,~step,head,state))
 
 # A single commuting step lifts to every count. RuntimeState may own arrays;
 # only the model is duplicated in the proof. No runtime array is cloned.
@@ -51,63 +89,12 @@ def iteration_matches_denotation(
       %after_step(index,rest,state) : {project(index,iterate(~State,~step,rest,step(state))) == _ : Observation}
       iteration_matches_denotation(~Observation,~State,~Index,~step,~project,~denote,~at_zero,~after_step,rest,index,step(state))
 
-type Measured<-State: Data> is Data:
-  Measured{result: State,work: Nat}
-
-def add_work(-State: Data,work: Nat,tail: Measured<State>) -> Measured<State>:
-  Measured{result,remaining} = tail
-  Measured{result,Nat.add(work,remaining)}
-
-def measured_iteration(~State: Data,~step: State -> State,~cost: State -> Nat,count: Nat,+state: State) -> Measured<State>:
-  match count:
-    case 0n: Measured{state,0n}
-    case 1n+rest:
-      add_work(State,cost(state),measured_iteration(~State,~step,~cost,rest,step(state)))
-
-# Concrete adapters must establish cost_per_step; it is not a heap-cost claim.
-def iteration_result_and_work(
-  ~State: Data,~step: State -> State,~cost: State -> Nat,
-  ~width: Nat,
-  ~cost_per_step: @+state: State -> {cost(state) == width : Nat},
-  +count: Nat,+state: State
-) -> {measured_iteration(~State,~step,~cost,count,state) == Measured{iterate(~State,~step,count,state),Nat.mul(count,width)} : Measured<State>}:
-  match count:
-    case 0n: {==}
-    case 1n+ +rest:
-      %cost_per_step(state) : {add_work(State,cost(state),measured_iteration(~State,~step,~cost,rest,step(state))) == add_work(State,_,
-          Measured{iterate(~State,~step,rest,step(state)),Nat.mul(rest,width)}) : Measured<State>}
-      %iteration_result_and_work(~State,~step,~cost,~width,~cost_per_step,rest,step(state)) : {add_work(State,cost(state),
-          measured_iteration(~State,~step,~cost,rest,step(state))) == add_work(State,cost(state),_) : Measured<State>}
-      {==}
-
-# Machine counters share the same modular progress theorem for any step size.
-# Non-wrapping coordinate bounds are separate obligations of the caller.
-
 def indexed_successor(+position: U32,+offset: Nat) ->
   {(position + U32.from_nat(1n+offset) : U32) == ((position + 1 : U32) + U32.from_nat(offset) : U32) : U32}:
   %WordArithmetic.native_add(1n,offset) :
     {(position + _ : U32) == ((position + 1 : U32) + U32.from_nat(offset) : U32) : U32}
   Equal.sym(U32,((position + 1 : U32) + U32.from_nat(offset) : U32),(position + (1 + U32.from_nat(offset) : U32) : U32),
     Arithmetic.add_associative(position,1,U32.from_nat(offset)))
-def add_counted_stride(+position: U32,+stride: Nat,+count: Nat) ->
-  {((position + U32.from_nat(stride) : U32) + U32.from_nat(Nat.mul(count,stride)) : U32) ==
-    (position + U32.from_nat(Nat.mul(1n+count,stride)) : U32) : U32}:
-  Equal.trans(U32,((position + U32.from_nat(stride) : U32) + U32.from_nat(Nat.mul(count,stride)) : U32),
-    (position + (U32.from_nat(stride) + U32.from_nat(Nat.mul(count,stride)) : U32) : U32),
-    (position + U32.from_nat(Nat.mul(1n+count,stride)) : U32),Arithmetic.add_associative(position,U32.from_nat(stride),U32.from_nat(Nat.mul(count,stride))),
-    Equal.cong(U32,U32,value => (position + value : U32),(U32.from_nat(stride) + U32.from_nat(Nat.mul(count,stride)) : U32),
-      U32.from_nat(Nat.mul(1n+count,stride)),WordArithmetic.native_add(stride,Nat.mul(count,stride))))
-
-def counter_progress(~State: Data,~step: State -> State,~position: State -> U32,~stride: Nat,
-  ~advances: @+state: State -> {position(step(state)) == (position(state) + U32.from_nat(stride) : U32) : U32},
-  +count: Nat,+state: State) ->
-  {position(iterate(~State,~step,count,state)) == (position(state) + U32.from_nat(Nat.mul(count,stride)) : U32) : U32}:
-  match count:
-    case 0n: Equal.sym(U32,(position(state) + 0 : U32),position(state),Arithmetic.add_zero(position(state)))
-    case 1n+ +rest:
-      %add_counted_stride(position(state),stride,rest) : {position(iterate(~State,~step,rest,step(state))) == _ : U32}
-      %advances(state) : {position(iterate(~State,~step,rest,step(state))) == (_ + U32.from_nat(Nat.mul(rest,stride)) : U32) : U32}
-      counter_progress(~State,~step,~position,~stride,~advances,rest,step(state))
 
 # The final step is applied once, to the state the loop ends in.
 def run_then_finishes(~State: Type,~Result: Type,~step: State -> State,~finish: State -> Result,count: Nat,-state: State) ->
@@ -115,3 +102,24 @@ def run_then_finishes(~State: Type,~Result: Type,~step: State -> State,~finish: 
   match count:
     case 0n: {==}
     case 1n+rest: run_then_finishes(~State,~Result,~step,~finish,rest,step(state))
+
+# Natural counters use the same symbolic induction as machine counters.
+def natural_counter_progress(~State: Data,~step: State -> State,~position: State -> Nat,
+  ~advances: @+state: State -> {position(step(state)) == 1n+position(state) : Nat},
+  +count: Nat,+state: State) ->
+  {position(iterate(~State,~step,count,state)) == Nat.add(count,position(state)) : Nat}:
+  match count:
+    case 0n: {==}
+    case 1n+ +rest:
+      %Addition.successor_right(rest,position(state)) : {position(iterate(~State,~step,rest,step(state))) == _ : Nat}
+      %advances(state) : {position(iterate(~State,~step,rest,step(state))) == Nat.add(rest,_) : Nat}
+      natural_counter_progress(~State,~step,~position,~advances,rest,step(state))
+
+# Structural properties of an owned model also follow the shared loop.
+def preserves_invariant(~State: Data,~Context: Data,~Property: Context -> State -> Data,~step: State -> State,
+  ~preserved: @+context: Context -> @+state: State -> Property(context,state) -> Property(context,step(state)),
+  count: Nat,+context: Context,+state: State,evidence: Property(context,state)) -> Property(context,Loop.run(~State,~step,count,state)):
+  match count:
+    case 0n: evidence
+    case 1n+rest:
+      preserves_invariant(~State,~Context,~Property,~step,~preserved,rest,context,step(state),preserved(context,state,evidence))

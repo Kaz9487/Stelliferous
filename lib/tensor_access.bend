@@ -106,34 +106,48 @@ def combine_run(~Element: Data,~operation: Element -> Element -> Element,fast: B
 def apply_element(~Element: Data,~operation: Element -> Element,context: Unit,value: Element) -> Element:
   operation(value)
 
-def reduce_run(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
-  fast: Bool,count: Nat,view: Views.View,storage: Array<Element>,initial: Accumulator) -> Array<Element> & Accumulator:
-  match fast:
-    case True{}:
-      Views.View{axes,offset} = view
-      Traversal.fold(~Array<Element>,~Element,~Accumulator,~Traversal.Offsets,~Traversal.source_offset(~Element),~operation,
-        count,0,storage,initial,Traversal.Offsets{offset,0})
-    case False{}:
-      Traversal.finish_fold(~Array<Element>,~Accumulator,~Cursor.Cursor,
-        Traversal.visit_fold(~Array<Element>,~Element,~Accumulator,~Cursor.Cursor,~Cursor.read(~Element),~operation,count,
-          Traversal.State{storage,initial,0,Cursor.prepare(view)}))
+# Reduction of the lines of a view, one output at a time. The cursor walks
+# the view without its last axis, which has extent values stride apart; a
+# line is runs consecutive runs of that axis. Output i folds the values of
+# line i in the view's row-major order, from initial, and stores finish of
+# the fold.
+type Runs is Data:
+  Runs{cursor: Cursor.Cursor,extent: U32,stride: U32}
 
-def indexed_value(~Element: Data,~operation: U32 -> Element -> Element,+position: U32,result: Array<Element> & Element) -> Array<Element> & Element:
-  (input,value) = result
-  (input,operation(position,value))
+type Lines<-Accumulator: Data> is Data:
+  Lines{cursor: Cursor.Cursor,runs: Nat,extent: U32,stride: U32,initial: Accumulator}
 
-def read_indexed(~Element: Data,~operation: U32 -> Element -> Element,input: Array<Element>,context: Traversal.Offsets,position: U32) ->
-  Array<Element> & Element:
-  +position = position
-  indexed_value(~Element,~operation,position,Traversal.source_offset(~Element,input,context,position))
+def ran(~Element: Data,~Accumulator: Data,axes: Cursor.Levels(),address: U32,+extent: U32,+stride: U32,+position: U32,
+  result: Array<Element> & Accumulator) -> Traversal.State<&1,&2,Array<Element>,Accumulator,Runs>:
+  (input,folded) = result
+  Traversal.State{input,folded,(position + 1 : U32),Runs{Cursor.advance(axes,address),extent,stride}}
 
-# Reads a contiguous view and writes a separate contiguous output from zero.
-def apply_indexed_run(~Element: Data,~operation: U32 -> Element -> Element,count: Nat,view: Views.View,
-  input: Array<Element>,output: Array<Element>) -> Array<Element> & Array<Element>:
-  Views.View{axes,offset} = view
-  Traversal.finish(~Array<Element>,~Element,~Traversal.Offsets,
-    Traversal.run(~Array<Element>,~Element,~Traversal.Offsets,~read_indexed(~Element,~operation),~Traversal.destination_offset,count,
-      Traversal.State{input,output,0,Traversal.Offsets{offset,0}}))
+# One run folded into the accumulator; the cursor moves to the next run.
+def fold_run(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
+  state: Traversal.State<&1,&2,Array<Element>,Accumulator,Runs>) -> Traversal.State<&1,&2,Array<Element>,Accumulator,Runs>:
+  Traversal.State{input,folded,+position,Runs{Cursor.Cursor{axes,+address},+extent,+stride}} = state
+  ran(~Element,~Accumulator,axes,address,extent,stride,position,
+    Traversal.fold_rounds(~Array<Element>,~Element,~Accumulator,~Traversal.Strided,~Traversal.strided(~Element),~operation,U32.to_nat(extent),0,input,folded,
+      Traversal.Strided{address,stride}))
+
+def folded_line(~Element: Data,~Accumulator: Data,~finish: Accumulator -> Element,+runs: Nat,+initial: Accumulator,
+  state: Traversal.State<&1,&2,Array<Element>,Accumulator,Runs>) -> Array<Element> & Traversal.Visited<Lines<Accumulator>,Element>:
+  Traversal.State{input,folded,position,Runs{cursor,extent,stride}} = state
+  (input,Traversal.Visited{Lines{cursor,runs,extent,stride,initial},finish(folded)})
+
+def fold_line(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  input: Array<Element>,context: Lines<Accumulator>) -> Array<Element> & Traversal.Visited<Lines<Accumulator>,Element>:
+  Lines{cursor,+runs,extent,stride,+initial} = context
+  folded_line(~Element,~Accumulator,~finish,runs,initial,
+    Loop.run(~Traversal.State<&1,&2,Array<Element>,Accumulator,Runs>,~fold_run(~Element,~Accumulator,~operation),runs,
+      Traversal.State{input,initial,0,Runs{cursor,extent,stride}}))
+
+# count lines of runs runs; view is the view without its last axis.
+def reduce_lines(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  count: Nat,view: Views.View,+runs: Nat,+extent: U32,+stride: U32,+initial: Accumulator,input: Array<Element>,output: Array<Element>) -> Array<Element> & Array<Element>:
+  Traversal.finish(~Array<Element>,~Element,~Lines<Accumulator>,
+    Traversal.visit(~Array<Element>,~Element,~Lines<Accumulator>,~fold_line(~Element,~Accumulator,~operation,~finish),count,
+      Traversal.State{input,output,0,Lines{Cursor.prepare(view),runs,extent,stride,initial}}))
 
 # The geometry of a two-dimensional window reduction over the last two axes.
 # It runs as two sweeps: along the columns of every row, then along the rows.

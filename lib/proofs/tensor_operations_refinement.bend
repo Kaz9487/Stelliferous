@@ -8,7 +8,6 @@ import ../tensor_view.bend as Views
 import ../tensor_shape.bend as Shapes
 import ../tensor_access.bend as Access
 import ../traversal_array.bend as Traversal
-import ../kernel_block.bend as Block
 import ./storage_tree_model.bend as Tree
 import ./storage_certificate.bend as Certificate
 import ./traversal_certificate.bend as TraversalCertificate
@@ -17,8 +16,9 @@ import ./tensor_access_certificate.bend as AccessCertificate
 import ./tensor_access_refinement.bend as AccessLaws
 import ./traversal_array_refinement.bend as ArrayLaws
 import ./tensor_operation_bounds.bend as OperationBounds
-import ./tensor_cursor_order.bend as CursorOrder
 import ../traversal_lanes.bend as Lanes
+import ../kernel_tile.bend as Tile
+import ./traversal_lanes_refinement.bend as LaneLaws
 import ./traversal_lanes_certificate.bend as LanesCertificate
 import ./storage_buffer_model.bend as Buffer
 import ./storage_clone_refinement.bend as CloneLaws
@@ -167,24 +167,167 @@ def observed_copy(~Element: Data,+valid: Bool,+count: Maybe<&2,U32>,+source: Vie
   input_certificate => output_certificate =>
     packed_copy(~Element,valid,count,source,target,input_tree,input_length,output_tree,output_length,input_certificate,output_certificate)
 
-def copy_denotation(~Element: Data,input: Storage.Buffer<Element>,+source: Views.View,output: Storage.Buffer<Element>,+target: Views.View) -> Operations.Outcome<PairOwners(Element)>:
+# A copy whose check was decided before the call.
+def copy_when_denotation(~Element: Data,+valid: Bool,+count: Maybe<&2,U32>,input: Storage.Buffer<Element>,+source: Views.View,output: Storage.Buffer<Element>,+target: Views.View) ->
+  Operations.Outcome<PairOwners(Element)>:
+  Storage.Buffer{input,+input_length,input_certificate} = input
+  Storage.Buffer{output,+output_length,output_certificate} = output
+  copy_model(~Element,valid,count,source,target,Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length)
+
+def copy_when(~Element: Data,+valid: Bool,+count: Maybe<&2,U32>,input: Storage.Buffer<Element>,+source: Views.View,output: Storage.Buffer<Element>,+target: Views.View) ->
+  {observe_pair_outcome(~Element,Operations.copy_when(~Element,valid,count,source,target,input,output)) == copy_when_denotation(~Element,valid,count,input,source,output,target) : Operations.Outcome<PairOwners(Element)>}:
+  Storage.Buffer{input,+input_length,input_certificate} = input
+  Storage.Buffer{output,+output_length,output_certificate} = output
+  observed_copy(~Element,valid,count,source,target,input,input_length,output,output_length,StorageLaws.observe(Element,input),StorageLaws.observe(Element,output))(input_certificate)(output_certificate)
+
+# The checked copy is the model of the copy through the mirrored view of its
+# source, under the guard on the source itself.
+def copy_denotation(~Element: Data,input: Storage.Buffer<Element>,+source: Views.View,+reversed: List<&2,Bool>,output: Storage.Buffer<Element>,+target: Views.View) ->
+  Operations.Outcome<PairOwners(Element)>:
   Storage.Buffer{input,+input_length,input_certificate} = input
   Storage.Buffer{output,+output_length,output_certificate} = output
   copy_model(~Element,Shapes.same(Views.shape(source),Views.shape(target)) && Views.is_contiguous(target) &&
     Operations.valid_buffer(input_length,Storage.capacity(~Element,input,input_certificate),source) &&
-    Operations.valid_buffer(output_length,Storage.capacity(~Element,output,output_certificate),target),Views.numel(target),source,target,
+    Operations.valid_buffer(output_length,Storage.capacity(~Element,output,output_certificate),target),Views.numel(target),Views.mirrored(source,reversed),target,
     Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length)
 
-def copy(~Element: Data,input: Storage.Buffer<Element>,+source: Views.View,output: Storage.Buffer<Element>,+target: Views.View) ->
-  {observe_pair_outcome(~Element,Operations.copy(~Element,input,source,output,target)) == copy_denotation(~Element,input,source,output,target) : Operations.Outcome<PairOwners(Element)>}:
+def copy(~Element: Data,input: Storage.Buffer<Element>,+source: Views.View,+reversed: List<&2,Bool>,output: Storage.Buffer<Element>,+target: Views.View) ->
+  {observe_pair_outcome(~Element,Operations.copy(~Element,input,source,reversed,output,target)) == copy_denotation(~Element,input,source,reversed,output,target) : Operations.Outcome<PairOwners(Element)>}:
   Storage.Buffer{input,+input_length,input_certificate} = input
   Certificate.Certificate{+input_certificate_depth,+input_certificate_equation} = input_certificate
   Storage.Buffer{output,+output_length,output_certificate} = output
   Certificate.Certificate{+output_certificate_depth,+output_certificate_equation} = output_certificate
   observed_copy(~Element,Shapes.same(Views.shape(source),Views.shape(target)) && Views.is_contiguous(target) &&
     Operations.valid_buffer(input_length,Storage.capacity(~Element,input,Certificate.Certificate{input_certificate_depth,input_certificate_equation}),source) &&
-    Operations.valid_buffer(output_length,Storage.capacity(~Element,output,Certificate.Certificate{output_certificate_depth,output_certificate_equation}),target),Views.numel(target),source,target,
+    Operations.valid_buffer(output_length,Storage.capacity(~Element,output,Certificate.Certificate{output_certificate_depth,output_certificate_equation}),target),Views.numel(target),Views.mirrored(source,reversed),target,
     input,input_length,output,output_length,StorageLaws.observe(Element,input),StorageLaws.observe(Element,output))(Certificate.Certificate{input_certificate_depth,input_certificate_equation})(Certificate.Certificate{output_certificate_depth,output_certificate_equation})
+
+# The lines of a view: line i holds the values of the last reduced axes at
+# index i of the axes before them.
+def runs_model(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  +count: Nat,+kept: List<&2,Views.Axis>,+offset: U32,runs: List<&2,Views.Axis> & Views.Axis,+initial: Accumulator,
+  input: Tree.Tree<Element>,output: Tree.Tree<Element>) -> AccessLaws.ModelResult<Tree.Tree<Element>,Element>:
+  (+outer,Views.Axis{+extent,+stride}) = runs
+  AccessLaws.lines_model(~Element,~Accumulator,~operation,~finish,count,Views.View{List.append(&2,Views.Axis,kept,outer),offset},Operations.elements_of(outer),extent,stride,initial,
+    input,output)
+
+def lines_model(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  valid: Bool,count: Maybe<&2,U32>,+kept: List<&2,Views.Axis>,+line: List<&2,Views.Axis>,+offset: U32,+initial: Accumulator,
+  input: Tree.Tree<Element>,input_length: Nat,output: Tree.Tree<Element>,output_length: Nat) -> Operations.Outcome<PairOwners(Element)>:
+  match valid count:
+    case True{} Some{count}:
+      Operations.Accepted{modeled_pair(~Element,input_length,output_length,
+        runs_model(~Element,~Accumulator,~operation,~finish,U32.to_nat(count),kept,offset,Operations.line_runs(line),initial,input,output))}
+    case valid count:
+      Operations.Rejected{(Owner{Tree.pack(Element,input),input_length},Owner{Tree.pack(Element,output),output_length})}
+
+def packed_runs(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  +count: Nat,+kept: List<&2,Views.Axis>,+offset: U32,runs: List<&2,Views.Axis> & Views.Axis,+initial: Accumulator,
+  +input: Tree.Tree<Element>,+input_length: Nat,+output: Tree.Tree<Element>,+output_length: Nat,
+  +input_certificate: Certificate.Certificate<Element,Tree.pack(Element,input)>,
+  +output_certificate: Certificate.Certificate<Element,Tree.pack(Element,output)>) ->
+  {observe_pair(~Element,Operations.runs_lined(~Element,~Accumulator,~operation,~finish,count,kept,offset,runs,initial,
+      Storage.Buffer{Tree.pack(Element,input),input_length,input_certificate},Storage.Buffer{Tree.pack(Element,output),output_length,output_certificate})) ==
+    modeled_pair(~Element,input_length,output_length,runs_model(~Element,~Accumulator,~operation,~finish,count,kept,offset,runs,initial,input,output)) : PairOwners(Element)}:
+  (+outer,Views.Axis{+extent,+stride}) = runs
+  +view = {Views.View{List.append(&2,Views.Axis,kept,outer),offset} : Views.View}
+  +groups = Operations.elements_of(outer)
+  pair_finished(~Element,input_length,output_length,
+    Access.reduce_lines(~Element,~Accumulator,~operation,~finish,count,view,groups,extent,stride,initial,Tree.pack(Element,input),Tree.pack(Element,output)),
+    AccessCertificate.lines(~Element,~Accumulator,~operation,~finish,count,view,groups,extent,stride,initial,Tree.pack(Element,input),Tree.pack(Element,output),
+      input_certificate,output_certificate),
+    AccessLaws.lines_model(~Element,~Accumulator,~operation,~finish,count,view,groups,extent,stride,initial,input,output),
+    AccessLaws.lines(~Element,~Accumulator,~operation,~finish,count,view,groups,extent,stride,initial,input,output))
+
+def packed_lines(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  +valid: Bool,+count: Maybe<&2,U32>,+kept: List<&2,Views.Axis>,+line: List<&2,Views.Axis>,+offset: U32,+initial: Accumulator,
+  +input: Tree.Tree<Element>,+input_length: Nat,+output: Tree.Tree<Element>,+output_length: Nat,
+  +input_certificate: Certificate.Certificate<Element,Tree.pack(Element,input)>,
+  +output_certificate: Certificate.Certificate<Element,Tree.pack(Element,output)>) ->
+  {observe_pair_outcome(~Element,Operations.lines_when(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,
+      Storage.Buffer{Tree.pack(Element,input),input_length,input_certificate},Storage.Buffer{Tree.pack(Element,output),output_length,output_certificate})) ==
+    lines_model(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,input,input_length,output,output_length) : Operations.Outcome<PairOwners(Element)>}:
+  match valid count:
+    case True{} Some{+count}:
+      Equal.cong(PairOwners(Element),Operations.Outcome<PairOwners(Element)>,value => Operations.Accepted{value},
+        observe_pair(~Element,Operations.runs_lined(~Element,~Accumulator,~operation,~finish,U32.to_nat(count),kept,offset,Operations.line_runs(line),initial,
+          Storage.Buffer{Tree.pack(Element,input),input_length,input_certificate},Storage.Buffer{Tree.pack(Element,output),output_length,output_certificate})),
+        modeled_pair(~Element,input_length,output_length,
+          runs_model(~Element,~Accumulator,~operation,~finish,U32.to_nat(count),kept,offset,Operations.line_runs(line),initial,input,output)),
+        packed_runs(~Element,~Accumulator,~operation,~finish,U32.to_nat(count),kept,offset,Operations.line_runs(line),initial,input,input_length,output,output_length,
+          input_certificate,output_certificate))
+    case True{} None{}: {==}
+    case False{} Some{count}: {==}
+    case False{} None{}: {==}
+
+def observed_lines(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  +valid: Bool,+count: Maybe<&2,U32>,+kept: List<&2,Views.Axis>,+line: List<&2,Views.Axis>,+offset: U32,+initial: Accumulator,
+  -input: Array<Element>,+input_length: Nat,-output: Array<Element>,+output_length: Nat,
+  input_observation: StorageLaws.Observation<Element,input>,output_observation: StorageLaws.Observation<Element,output>) ->
+  @input_certificate: Certificate.Certificate<Element,input> -> @output_certificate: Certificate.Certificate<Element,output> ->
+  {observe_pair_outcome(~Element,Operations.lines_when(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,
+      Storage.Buffer{input,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
+    lines_model(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length) :
+    Operations.Outcome<PairOwners(Element)>}:
+  StorageLaws.Observation{+input_tree,input_packed,input_reflected} = input_observation
+  StorageLaws.Observation{+output_tree,output_packed,output_reflected} = output_observation
+  %input_reflected :
+    @input_certificate: Certificate.Certificate<Element,input> -> @output_certificate: Certificate.Certificate<Element,output> ->
+    {observe_pair_outcome(~Element,Operations.lines_when(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,
+        Storage.Buffer{input,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
+      lines_model(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,_,input_length,Tree.reflect(Element,output),output_length) : Operations.Outcome<PairOwners(Element)>}
+  %output_reflected :
+    @input_certificate: Certificate.Certificate<Element,input> -> @output_certificate: Certificate.Certificate<Element,output> ->
+    {observe_pair_outcome(~Element,Operations.lines_when(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,
+        Storage.Buffer{input,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
+      lines_model(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,input_tree,input_length,_,output_length) : Operations.Outcome<PairOwners(Element)>}
+  %input_packed :
+    @input_certificate: Certificate.Certificate<Element,_> -> @output_certificate: Certificate.Certificate<Element,output> ->
+    {observe_pair_outcome(~Element,Operations.lines_when(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,
+        Storage.Buffer{_,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
+      lines_model(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,input_tree,input_length,output_tree,output_length) : Operations.Outcome<PairOwners(Element)>}
+  %output_packed :
+    @input_certificate: Certificate.Certificate<Element,Tree.pack(Element,input_tree)> -> @output_certificate: Certificate.Certificate<Element,_> ->
+    {observe_pair_outcome(~Element,Operations.lines_when(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,
+        Storage.Buffer{Tree.pack(Element,input_tree),input_length,input_certificate},Storage.Buffer{_,output_length,output_certificate})) ==
+      lines_model(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,input_tree,input_length,output_tree,output_length) : Operations.Outcome<PairOwners(Element)>}
+  input_certificate => output_certificate =>
+    packed_lines(~Element,~Accumulator,~operation,~finish,valid,count,kept,line,offset,initial,input_tree,input_length,output_tree,output_length,input_certificate,output_certificate)
+
+def kept_axes(+axes: List<&2,Views.Axis>,+reduced: Nat) -> List<&2,Views.Axis>:
+  List.take(&2,Views.Axis,axes,Nat.sub(List.length(&2,Views.Axis,axes),reduced))
+
+def line_axes(+axes: List<&2,Views.Axis>,+reduced: Nat) -> List<&2,Views.Axis>:
+  List.drop(&2,Views.Axis,axes,Nat.sub(List.length(&2,Views.Axis,axes),reduced))
+
+# The check of the lines: the view fits the input and the outputs the output.
+def lines_fit(+axes: List<&2,Views.Axis>,+reduced: Nat,+offset: U32,+input_length: Nat,+input_capacity: U32,+output_length: Nat,+output_capacity: U32) -> Bool:
+  Operations.valid_buffer(input_length,input_capacity,Views.View{axes,offset}) &&
+    Operations.holds(Views.numel(Views.View{kept_axes(axes,reduced),0}),output_length,output_capacity)
+
+def lines_denotation(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  input: Storage.Buffer<Element>,+axes: List<&2,Views.Axis>,+reduced: Nat,+offset: U32,+initial: Accumulator,output: Storage.Buffer<Element>) -> Operations.Outcome<PairOwners(Element)>:
+  Storage.Buffer{input,+input_length,input_certificate} = input
+  Storage.Buffer{output,+output_length,output_certificate} = output
+  lines_model(~Element,~Accumulator,~operation,~finish,
+    lines_fit(axes,reduced,offset,input_length,Storage.capacity(~Element,input,input_certificate),output_length,Storage.capacity(~Element,output,output_certificate)),
+    Views.numel(Views.View{kept_axes(axes,reduced),0}),kept_axes(axes,reduced),line_axes(axes,reduced),offset,initial,
+    Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length)
+
+def lines(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,~finish: Accumulator -> Element,
+  input: Storage.Buffer<Element>,+axes: List<&2,Views.Axis>,+reduced: Nat,+offset: U32,+initial: Accumulator,output: Storage.Buffer<Element>) ->
+  {observe_pair_outcome(~Element,Operations.reduce_lines(~Element,~Accumulator,~operation,~finish,input,axes,reduced,offset,initial,output)) ==
+    lines_denotation(~Element,~Accumulator,~operation,~finish,input,axes,reduced,offset,initial,output) : Operations.Outcome<PairOwners(Element)>}:
+  Storage.Buffer{input,+input_length,input_certificate} = input
+  Certificate.Certificate{+input_certificate_depth,+input_certificate_equation} = input_certificate
+  Storage.Buffer{output,+output_length,output_certificate} = output
+  Certificate.Certificate{+output_certificate_depth,+output_certificate_equation} = output_certificate
+  observed_lines(~Element,~Accumulator,~operation,~finish,
+    lines_fit(axes,reduced,offset,input_length,Storage.capacity(~Element,input,Certificate.Certificate{input_certificate_depth,input_certificate_equation}),
+      output_length,Storage.capacity(~Element,output,Certificate.Certificate{output_certificate_depth,output_certificate_equation})),
+    Views.numel(Views.View{kept_axes(axes,reduced),0}),kept_axes(axes,reduced),line_axes(axes,reduced),offset,initial,
+    input,input_length,output,output_length,StorageLaws.observe(Element,input),StorageLaws.observe(Element,output))(Certificate.Certificate{input_certificate_depth,input_certificate_equation})(Certificate.Certificate{output_certificate_depth,output_certificate_equation})
+
 # A scatter: the contiguous source written through the target view.
 def scatter_model(~Element: Data,valid: Bool,count: Maybe<&2,U32>,source: Views.View,target: Views.View,
   input: Tree.Tree<Element>,input_length: Nat,output: Tree.Tree<Element>,output_length: Nat) -> Operations.Outcome<PairOwners(Element)>:
@@ -376,25 +519,12 @@ def combine(~Element: Data,~operation: Element -> Element -> Element,~kernel: Ke
 type UnaryCall is Data:
   UnaryCall{valid: Bool,count: Maybe<&2,U32>,view: Views.View,length: Nat}
 
-def observe_outcome(~Element: Data,result: Operations.Outcome<Storage.Buffer<Element>>) -> Operations.Outcome<Owner<&1,Array<Element>>>:
-  match result:
-    case Operations.Accepted{value}: Operations.Accepted{observe_owner(~Element,value)}
-    case Operations.Rejected{value}: Operations.Rejected{observe_owner(~Element,value)}
-
-def apply_model(~Element: Data,~operation: Element -> Element,call: UnaryCall,tree: Tree.Tree<Element>) -> Operations.Outcome<Owner<&1,Array<Element>>>:
-  UnaryCall{valid,count,view,length} = call
-  match valid count:
-    case True{} Some{count}:
-      Views.View{axes,offset} = view
-      Operations.Accepted{Owner{Tree.pack(Element,AccessLaws.apply_model(~Element,~operation,U32.to_nat(count),offset,tree)),length}}
-    case valid count: Operations.Rejected{Owner{Tree.pack(Element,tree),length}}
-
 # The law of a mapper: on any certified Buffer it leaves the storage of the
 # ordered map and keeps the length.
-def MapLaw(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>) -> Type:
-  @+count: Nat -> @+position: U32 -> @+tree: Tree.Tree<Element> -> @+length: Nat -> @+certificate: Certificate.Certificate<Element,Tree.pack(Element,tree)> ->
-  {observe_owner(~Element,mapper(count,position,Storage.Buffer{Tree.pack(Element,tree),length,certificate})) ==
-    Owner{Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),count,position,Unit{},Tree.pack(Element,tree)),length} : Owner<&1,Array<Element>>}
+def MapLaw_context(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> @+context: Context -> Storage.Buffer<Element> -> Storage.Buffer<Element>) -> Type:
+  @+count: Nat -> @+position: U32 -> @+context: Context -> @+tree: Tree.Tree<Element> -> @+length: Nat -> @+certificate: Certificate.Certificate<Element,Tree.pack(Element,tree)> ->
+  {observe_owner(~Element,mapper(count,position,context,Storage.Buffer{Tree.pack(Element,tree),length,certificate})) ==
+    Owner{Traversal.map_in_place(~Element,~Context,~operation,count,position,context,Tree.pack(Element,tree)),length} : Owner<&1,Array<Element>>}
 
 def mapped(~Element: Data,~operation: Element -> Element,+count: Nat,+position: U32,+tree: Tree.Tree<Element>,+length: Nat,
   +certificate: Certificate.Certificate<Element,Tree.pack(Element,tree)>) ->
@@ -402,213 +532,39 @@ def mapped(~Element: Data,~operation: Element -> Element,+count: Nat,+position: 
     Owner{Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),count,position,Unit{},Tree.pack(Element,tree)),length} : Owner<&1,Array<Element>>}:
   {==}
 
+def lanes(~Context: Data,~operation: Context -> F32 -> F32,+count: Nat,+position: U32,+context: Context,+tree: Tree.Tree<F32>,+length: Nat,
+  +certificate: Certificate.Certificate<F32,Tree.pack(F32,tree)>) ->
+  {observe_owner(~F32,Operations.lanes(~Context,~operation,count,position,context,Storage.Buffer{Tree.pack(F32,tree),length,certificate})) ==
+    Owner{Traversal.map_in_place(~F32,~Context,~operation,count,position,context,Tree.pack(F32,tree)),length} : Owner<&1,Array<F32>>}:
+  Certificate.Certificate{+depth,+equation} = certificate
+  Equal.cong(Array<F32>,Owner<&1,Array<F32>>,storage => Owner{storage,length},
+    Lanes.map_when(~Context,~operation,Lanes.covered(depth,position,count),count,position,context,Tree.pack(F32,tree)),
+    Traversal.map_in_place(~F32,~Context,~operation,count,position,context,Tree.pack(F32,tree)),
+    LanesCertificate.certified(~Context,~operation,count,position,context,Tree.pack(F32,tree),depth,equation))
+
 # The FP32 map through tiles is a lawful mapper of the same operation.
 def mapped_lanes(~operation: F32 -> F32,+count: Nat,+position: U32,+tree: Tree.Tree<F32>,+length: Nat,
   +certificate: Certificate.Certificate<F32,Tree.pack(F32,tree)>) ->
   {observe_owner(~F32,Operations.mapped_lanes(~operation,count,position,Storage.Buffer{Tree.pack(F32,tree),length,certificate})) ==
     Owner{Traversal.map_in_place(~F32,~Unit,~Access.apply_element(~F32,~operation),count,position,Unit{},Tree.pack(F32,tree)),length} : Owner<&1,Array<F32>>}:
+  lanes(~Unit,~Access.apply_element(~F32,~operation),count,position,Unit{},tree,length,certificate)
+
+def MapLaw(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>) -> Type:
+  @+count: Nat -> @+position: U32 -> @+tree: Tree.Tree<Element> -> @+length: Nat -> @+certificate: Certificate.Certificate<Element,Tree.pack(Element,tree)> ->
+  {observe_owner(~Element,mapper(count,position,Storage.Buffer{Tree.pack(Element,tree),length,certificate})) ==
+    Owner{Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),count,position,Unit{},Tree.pack(Element,tree)),length} : Owner<&1,Array<Element>>}
+
+
+def unit_map_law(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: MapLaw(~Element,~operation,~mapper),+count: Nat,+position: U32,+context: Unit,+tree: Tree.Tree<Element>,+length: Nat,+certificate: Certificate.Certificate<Element,Tree.pack(Element,tree)>) ->
+  {observe_owner(~Element,Operations.without_context(~Element,~mapper,count,position,context,Storage.Buffer{Tree.pack(Element,tree),length,certificate})) == Owner{Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),count,position,context,Tree.pack(Element,tree)),length} : Owner<&1,Array<Element>>}:
+  Unit{} = context
+  lawful(count,position,tree,length,certificate)
+
+def lanes_tiles(~Context: Data,~operation: Context -> F32 -> F32,~transform: Context -> Tile.Tile8 -> Tile.Tile8,~lawful: LaneLaws.TileLaw(~Context,~operation,~transform),+count: Nat,+position: U32,+context: Context,+tree: Tree.Tree<F32>,+length: Nat,+certificate: Certificate.Certificate<F32,Tree.pack(F32,tree)>) ->
+  {observe_owner(~F32,Operations.lanes_tiles(~Context,~operation,~transform,count,position,context,Storage.Buffer{Tree.pack(F32,tree),length,certificate})) ==
+    Owner{Traversal.map_in_place(~F32,~Context,~operation,count,position,context,Tree.pack(F32,tree)),length} : Owner<&1,Array<F32>>}:
   Certificate.Certificate{+depth,+equation} = certificate
   Equal.cong(Array<F32>,Owner<&1,Array<F32>>,storage => Owner{storage,length},
-    Lanes.map_when(~Unit,~Access.apply_element(~F32,~operation),Lanes.covered(depth,position,count),count,position,Unit{},Tree.pack(F32,tree)),
-    Traversal.map_in_place(~F32,~Unit,~Access.apply_element(~F32,~operation),count,position,Unit{},Tree.pack(F32,tree)),
-    LanesCertificate.certified(~Unit,~Access.apply_element(~F32,~operation),count,position,Unit{},Tree.pack(F32,tree),depth,equation))
-
-def apply_proposition(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,call: UnaryCall,-storage: Array<Element>,-tree: Tree.Tree<Element>) -> Type:
-  UnaryCall{valid,count,view,length} = call
-  @+certificate: Certificate.Certificate<Element,storage> ->
-  {observe_outcome(~Element,Operations.apply_context_when(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},valid,count,view,Storage.Buffer{storage,length,certificate})) ==
-    apply_model(~Element,~operation,UnaryCall{valid,count,view,length},tree) : Operations.Outcome<Owner<&1,Array<Element>>>}
-
-def packed_apply(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: MapLaw(~Element,~operation,~mapper),+call: UnaryCall,+tree: Tree.Tree<Element>) ->
-  apply_proposition(~Element,~operation,~mapper,call,Tree.pack(Element,tree),tree):
-  UnaryCall{valid,count,view,+length} = call
-  match valid count:
-    case False{} None{}: certificate => {==}
-    case False{} Some{count}: certificate => {==}
-    case True{} None{}: certificate => {==}
-    case True{} Some{+count}:
-      Views.View{axes,+offset} = view
-      certificate =>
-        %Equal.sym(Owner<&1,Array<Element>>,observe_owner(~Element,mapper(U32.to_nat(count),offset,Storage.Buffer{Tree.pack(Element,tree),length,certificate})),
-          Owner{Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),U32.to_nat(count),offset,Unit{},Tree.pack(Element,tree)),length},
-          lawful(U32.to_nat(count),offset,tree,length,certificate)) :
-          {Operations.Accepted{_} == Operations.Accepted{Owner{Tree.pack(Element,AccessLaws.apply_model(~Element,~operation,U32.to_nat(count),offset,tree)),length}} : Operations.Outcome<Owner<&1,Array<Element>>>}
-        Equal.cong(Array<Element>,Operations.Outcome<Owner<&1,Array<Element>>>,storage => Operations.Accepted{Owner{storage,length}},
-          Traversal.map_in_place(~Element,~Unit,~Access.apply_element(~Element,~operation),U32.to_nat(count),offset,Unit{},Tree.pack(Element,tree)),
-          Tree.pack(Element,AccessLaws.apply_model(~Element,~operation,U32.to_nat(count),offset,tree)),AccessLaws.apply(~Element,~operation,U32.to_nat(count),offset,tree))
-
-def apply_denotation(~Element: Data,~operation: Element -> Element,buffer: Storage.Buffer<Element>,+view: Views.View) -> Operations.Outcome<Owner<&1,Array<Element>>>:
-  Storage.Buffer{storage,+length,certificate} = buffer
-  apply_model(~Element,~operation,UnaryCall{Views.is_contiguous(view) && Operations.valid_buffer(length,Storage.capacity(~Element,storage,certificate),view),Views.numel(view),view,length},Tree.reflect(Element,storage))
-
-def apply(~Element: Data,~operation: Element -> Element,~mapper: @+count: Nat -> @+position: U32 -> Storage.Buffer<Element> -> Storage.Buffer<Element>,~lawful: MapLaw(~Element,~operation,~mapper),buffer: Storage.Buffer<Element>,+view: Views.View) ->
-  {observe_outcome(~Element,Operations.apply_context(~Element,~Unit,~Operations.without_context(~Element,~mapper),Unit{},buffer,view)) == apply_denotation(~Element,~operation,buffer,view) : Operations.Outcome<Owner<&1,Array<Element>>>}:
-  Storage.Buffer{storage,+length,certificate} = buffer
-  Certificate.Certificate{+certificate_depth,+certificate_equation} = certificate
-  +call = {UnaryCall{Views.is_contiguous(view) && Operations.valid_buffer(length,Storage.capacity(~Element,storage,Certificate.Certificate{certificate_depth,certificate_equation}),view),Views.numel(view),view,length} : UnaryCall}
-  StorageLaws.lift_observation(~Element,~UnaryCall,~apply_proposition(~Element,~operation,~mapper),call,storage,StorageLaws.observe(Element,storage),
-    tree => packed_apply(~Element,~operation,~mapper,~lawful,call,tree))(Certificate.Certificate{certificate_depth,certificate_equation})
-
-type ReductionCall<-Accumulator: Data> is Data:
-  ReductionCall{call: UnaryCall,initial: Accumulator}
-
-def ReductionOwner(-Element: Data,-Accumulator: Data) -> Type:
-  Owner<&1,Array<Element>> & Accumulator
-
-def observe_reduction(~Element: Data,~Accumulator: Data,pair: Storage.Buffer<Element> & Accumulator) -> ReductionOwner(Element,Accumulator):
-  (buffer,value) = pair
-  (observe_owner(~Element,buffer),value)
-
-def observe_reduction_outcome(~Element: Data,~Accumulator: Data,result: Operations.Outcome<(Storage.Buffer<Element> & Accumulator)>) -> Operations.Outcome<ReductionOwner(Element,Accumulator)>:
-  match result:
-    case Operations.Accepted{value}: Operations.Accepted{observe_reduction(~Element,~Accumulator,value)}
-    case Operations.Rejected{value}: Operations.Rejected{observe_reduction(~Element,~Accumulator,value)}
-
-def reduced_owner(~Element: Data,~Accumulator: Data,length: Nat,result: AccessLaws.FoldResult<Tree.Tree<Element>,Accumulator>) -> ReductionOwner(Element,Accumulator):
-  AccessLaws.FoldResult{tree,value} = result
-  (Owner{Tree.pack(Element,tree),length},value)
-
-def reduce_owned(~Element: Data,~Accumulator: Data,length: Nat,result: Array<Element> & Accumulator) -> ReductionOwner(Element,Accumulator):
-  (storage,value) = result
-  (Owner{storage,length},value)
-
-def reduce_finished(~Element: Data,~Accumulator: Data,+length: Nat,result: Array<Element> & Accumulator,
-  certificate: Certificate.Certificate<Element,TraversalWitness.first(~Array<Element>,~Accumulator,result)>,+model: AccessLaws.FoldResult<Tree.Tree<Element>,Accumulator>,
-  equation: {result == AccessLaws.pack_fold(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~ArrayLaws.pack_tree(~Element),model) : Array<Element> & Accumulator}) ->
-  {observe_reduction(~Element,~Accumulator,Operations.reduce_buffer(~Element,~Accumulator,length,result,certificate)) == reduced_owner(~Element,~Accumulator,length,model) : ReductionOwner(Element,Accumulator)}:
-  (storage,value) = result
-  AccessLaws.FoldResult{+tree,+model_value} = model
-  Equal.cong(Array<Element> & Accumulator,ReductionOwner(Element,Accumulator),result => reduce_owned(~Element,~Accumulator,length,result),
-    (storage,value),(Tree.pack(Element,tree),model_value),equation)
-
-def reduce_model(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,request: ReductionCall<Accumulator>,tree: Tree.Tree<Element>) -> Operations.Outcome<ReductionOwner(Element,Accumulator)>:
-  ReductionCall{UnaryCall{valid,count,view,length},initial} = request
-  match valid count:
-    case True{} Some{count}:
-      +view = view
-      Operations.Accepted{reduced_owner(~Element,~Accumulator,length,AccessLaws.reduce_model(~Element,~Accumulator,~operation,Views.is_contiguous(view),U32.to_nat(count),view,tree,initial))}
-    case valid count: Operations.Rejected{(Owner{Tree.pack(Element,tree),length},initial)}
-
-def reduce_proposition(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
-  request: ReductionCall<Accumulator>,-storage: Array<Element>,-tree: Tree.Tree<Element>) -> Type:
-  ReductionCall{UnaryCall{valid,count,view,length},initial} = request
-  @certificate: Certificate.Certificate<Element,storage> ->
-  {observe_reduction_outcome(~Element,~Accumulator,Operations.reduce_when(~Element,~Accumulator,~operation,valid,count,view,Storage.Buffer{storage,length,certificate},initial)) ==
-    reduce_model(~Element,~Accumulator,~operation,ReductionCall{UnaryCall{valid,count,view,length},initial},tree) : Operations.Outcome<ReductionOwner(Element,Accumulator)>}
-
-def packed_reduce(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,+request: ReductionCall<Accumulator>,+tree: Tree.Tree<Element>) ->
-  reduce_proposition(~Element,~Accumulator,~operation,request,Tree.pack(Element,tree),tree):
-  ReductionCall{UnaryCall{valid,count,+view,+length},+initial} = request
-  match valid count:
-    case False{} None{}: certificate => {==}
-    case False{} Some{count}: certificate => {==}
-    case True{} None{}: certificate => {==}
-    case True{} Some{+count}:
-      +fast = Views.is_contiguous(view)
-      certificate => Equal.cong(ReductionOwner(Element,Accumulator),Operations.Outcome<ReductionOwner(Element,Accumulator)>,value => Operations.Accepted{value},
-        observe_reduction(~Element,~Accumulator,Operations.reduce_buffer(~Element,~Accumulator,length,
-          Access.reduce_run(~Element,~Accumulator,~operation,fast,U32.to_nat(count),view,Tree.pack(Element,tree),initial),
-          AccessCertificate.reduce(~Element,~Accumulator,~operation,fast,U32.to_nat(count),view,Tree.pack(Element,tree),initial,certificate))),
-        reduced_owner(~Element,~Accumulator,length,AccessLaws.reduce_model(~Element,~Accumulator,~operation,fast,U32.to_nat(count),view,tree,initial)),
-        reduce_finished(~Element,~Accumulator,length,Access.reduce_run(~Element,~Accumulator,~operation,fast,U32.to_nat(count),view,Tree.pack(Element,tree),initial),
-          AccessCertificate.reduce(~Element,~Accumulator,~operation,fast,U32.to_nat(count),view,Tree.pack(Element,tree),initial,certificate),
-          AccessLaws.reduce_model(~Element,~Accumulator,~operation,fast,U32.to_nat(count),view,tree,initial),AccessLaws.reduce(~Element,~Accumulator,~operation,fast,U32.to_nat(count),view,tree,initial)))
-
-def reduce_denotation(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,
-  buffer: Storage.Buffer<Element>,+view: Views.View,initial: Accumulator) -> Operations.Outcome<ReductionOwner(Element,Accumulator)>:
-  Storage.Buffer{storage,+length,certificate} = buffer
-  reduce_model(~Element,~Accumulator,~operation,ReductionCall{UnaryCall{Operations.valid_buffer(length,Storage.capacity(~Element,storage,certificate),view),Views.numel(view),view,length},initial},Tree.reflect(Element,storage))
-
-def reduce(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,buffer: Storage.Buffer<Element>,+view: Views.View,+initial: Accumulator) ->
-  {observe_reduction_outcome(~Element,~Accumulator,Operations.reduce(~Element,~Accumulator,~operation,buffer,view,initial)) ==
-    reduce_denotation(~Element,~Accumulator,~operation,buffer,view,initial) : Operations.Outcome<ReductionOwner(Element,Accumulator)>}:
-  Storage.Buffer{storage,+length,certificate} = buffer
-  Certificate.Certificate{+certificate_depth,+certificate_equation} = certificate
-  +request = {ReductionCall{UnaryCall{Operations.valid_buffer(length,Storage.capacity(~Element,storage,Certificate.Certificate{certificate_depth,certificate_equation}),view),Views.numel(view),view,length},initial} : ReductionCall<Accumulator>}
-  StorageLaws.lift_observation(~Element,~ReductionCall<Accumulator>,~reduce_proposition(~Element,~Accumulator,~operation),request,storage,StorageLaws.observe(Element,storage),
-    tree => packed_reduce(~Element,~Accumulator,~operation,request,tree))(Certificate.Certificate{certificate_depth,certificate_equation})
-def apply_indexed_model(~Element: Data,~operation: U32 -> Element -> Element,valid: Bool,count: Maybe<&2,U32>,view: Views.View,
-  input: Tree.Tree<Element>,input_length: Nat,output: Tree.Tree<Element>,output_length: Nat) -> Operations.Outcome<PairOwners(Element)>:
-  match valid count:
-    case True{} Some{count}:
-      Operations.Accepted{modeled_pair(~Element,input_length,output_length,AccessLaws.apply_indexed_model(~Element,~operation,U32.to_nat(count),view,input,output))}
-    case valid count:
-      Operations.Rejected{(Owner{Tree.pack(Element,input),input_length},Owner{Tree.pack(Element,output),output_length})}
-
-def packed_apply_indexed(~Element: Data,~operation: U32 -> Element -> Element,+valid: Bool,+count: Maybe<&2,U32>,+view: Views.View,
-  +input: Tree.Tree<Element>,+input_length: Nat,+output: Tree.Tree<Element>,+output_length: Nat,
-  +input_certificate: Certificate.Certificate<Element,Tree.pack(Element,input)>,
-  +output_certificate: Certificate.Certificate<Element,Tree.pack(Element,output)>) ->
-  {observe_pair_outcome(~Element,Operations.apply_indexed_when(~Element,~operation,valid,count,view,
-      Storage.Buffer{Tree.pack(Element,input),input_length,input_certificate},Storage.Buffer{Tree.pack(Element,output),output_length,output_certificate})) ==
-    apply_indexed_model(~Element,~operation,valid,count,view,input,input_length,output,output_length) : Operations.Outcome<PairOwners(Element)>}:
-  match valid count:
-    case False{} None{}: {==}
-    case False{} Some{count}: {==}
-    case True{} None{}: {==}
-    case True{} Some{+count}:
-      Equal.cong(PairOwners(Element),Operations.Outcome<PairOwners(Element)>,value => Operations.Accepted{value},
-        observe_pair(~Element,Operations.pair_buffers(~Element,input_length,output_length,
-          Access.apply_indexed_run(~Element,~operation,U32.to_nat(count),view,Tree.pack(Element,input),Tree.pack(Element,output)),
-          AccessCertificate.apply_indexed(~Element,~operation,U32.to_nat(count),view,Tree.pack(Element,input),Tree.pack(Element,output),input_certificate,output_certificate))),
-        modeled_pair(~Element,input_length,output_length,AccessLaws.apply_indexed_model(~Element,~operation,U32.to_nat(count),view,input,output)),
-        pair_finished(~Element,input_length,output_length,
-          Access.apply_indexed_run(~Element,~operation,U32.to_nat(count),view,Tree.pack(Element,input),Tree.pack(Element,output)),
-          AccessCertificate.apply_indexed(~Element,~operation,U32.to_nat(count),view,Tree.pack(Element,input),Tree.pack(Element,output),input_certificate,output_certificate),
-          AccessLaws.apply_indexed_model(~Element,~operation,U32.to_nat(count),view,input,output),
-          AccessLaws.apply_indexed(~Element,~operation,U32.to_nat(count),view,input,output)))
-
-def observed_apply_indexed(~Element: Data,~operation: U32 -> Element -> Element,+valid: Bool,+count: Maybe<&2,U32>,+view: Views.View,
-  -input: Array<Element>,+input_length: Nat,-output: Array<Element>,+output_length: Nat,
-  input_observation: StorageLaws.Observation<Element,input>,output_observation: StorageLaws.Observation<Element,output>) ->
-  @input_certificate: Certificate.Certificate<Element,input> -> @output_certificate: Certificate.Certificate<Element,output> ->
-  {observe_pair_outcome(~Element,Operations.apply_indexed_when(~Element,~operation,valid,count,view,
-      Storage.Buffer{input,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
-    apply_indexed_model(~Element,~operation,valid,count,view,Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length) :
-    Operations.Outcome<PairOwners(Element)>}:
-  StorageLaws.Observation{+input_tree,input_packed,input_reflected} = input_observation
-  StorageLaws.Observation{+output_tree,output_packed,output_reflected} = output_observation
-  %input_reflected :
-    @input_certificate: Certificate.Certificate<Element,input> -> @output_certificate: Certificate.Certificate<Element,output> ->
-    {observe_pair_outcome(~Element,Operations.apply_indexed_when(~Element,~operation,valid,count,view,
-        Storage.Buffer{input,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
-      apply_indexed_model(~Element,~operation,valid,count,view,_,input_length,Tree.reflect(Element,output),output_length) : Operations.Outcome<PairOwners(Element)>}
-  %output_reflected :
-    @input_certificate: Certificate.Certificate<Element,input> -> @output_certificate: Certificate.Certificate<Element,output> ->
-    {observe_pair_outcome(~Element,Operations.apply_indexed_when(~Element,~operation,valid,count,view,
-        Storage.Buffer{input,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
-      apply_indexed_model(~Element,~operation,valid,count,view,input_tree,input_length,_,output_length) : Operations.Outcome<PairOwners(Element)>}
-  %input_packed :
-    @input_certificate: Certificate.Certificate<Element,_> -> @output_certificate: Certificate.Certificate<Element,output> ->
-    {observe_pair_outcome(~Element,Operations.apply_indexed_when(~Element,~operation,valid,count,view,
-        Storage.Buffer{_,input_length,input_certificate},Storage.Buffer{output,output_length,output_certificate})) ==
-      apply_indexed_model(~Element,~operation,valid,count,view,input_tree,input_length,output_tree,output_length) : Operations.Outcome<PairOwners(Element)>}
-  %output_packed :
-    @input_certificate: Certificate.Certificate<Element,Tree.pack(Element,input_tree)> -> @output_certificate: Certificate.Certificate<Element,_> ->
-    {observe_pair_outcome(~Element,Operations.apply_indexed_when(~Element,~operation,valid,count,view,
-        Storage.Buffer{Tree.pack(Element,input_tree),input_length,input_certificate},Storage.Buffer{_,output_length,output_certificate})) ==
-      apply_indexed_model(~Element,~operation,valid,count,view,input_tree,input_length,output_tree,output_length) : Operations.Outcome<PairOwners(Element)>}
-  input_certificate => output_certificate =>
-    packed_apply_indexed(~Element,~operation,valid,count,view,input_tree,input_length,output_tree,output_length,input_certificate,output_certificate)
-
-def apply_indexed_denotation(~Element: Data,~operation: U32 -> Element -> Element,input: Storage.Buffer<Element>,+view: Views.View,
-  output: Storage.Buffer<Element>) -> Operations.Outcome<PairOwners(Element)>:
-  Storage.Buffer{input,+input_length,input_certificate} = input
-  Storage.Buffer{output,+output_length,output_certificate} = output
-  apply_indexed_model(~Element,~operation,Views.is_contiguous(view) &&
-    Operations.valid_buffer(input_length,Storage.capacity(~Element,input,input_certificate),view) &&
-    Operations.holds(Views.numel(view),output_length,Storage.capacity(~Element,output,output_certificate)),Views.numel(view),view,
-    Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length)
-
-# Output element i is operation(i, input element i) whenever the guard holds.
-def apply_indexed(~Element: Data,~operation: U32 -> Element -> Element,input: Storage.Buffer<Element>,+view: Views.View,output: Storage.Buffer<Element>) ->
-  {observe_pair_outcome(~Element,Operations.apply_indexed(~Element,~operation,input,view,output)) ==
-    apply_indexed_denotation(~Element,~operation,input,view,output) : Operations.Outcome<PairOwners(Element)>}:
-  Storage.Buffer{input,+input_length,input_certificate} = input
-  Certificate.Certificate{+input_certificate_depth,+input_certificate_equation} = input_certificate
-  Storage.Buffer{output,+output_length,output_certificate} = output
-  Certificate.Certificate{+output_certificate_depth,+output_certificate_equation} = output_certificate
-  observed_apply_indexed(~Element,~operation,Views.is_contiguous(view) &&
-    Operations.valid_buffer(input_length,Storage.capacity(~Element,input,Certificate.Certificate{input_certificate_depth,input_certificate_equation}),view) &&
-    Operations.holds(Views.numel(view),output_length,Storage.capacity(~Element,output,Certificate.Certificate{output_certificate_depth,output_certificate_equation})),
-    Views.numel(view),view,input,input_length,output,output_length,StorageLaws.observe(Element,input),StorageLaws.observe(Element,output))(Certificate.Certificate{input_certificate_depth,input_certificate_equation})(Certificate.Certificate{output_certificate_depth,output_certificate_equation})
+    Lanes.map_with_when(~Context,~operation,~Lanes.gather_transformed(~Context,~transform),Lanes.covered(depth,position,count),count,position,context,Tree.pack(F32,tree)),
+    Traversal.map_in_place(~F32,~Context,~operation,count,position,context,Tree.pack(F32,tree)),
+    LanesCertificate.certified_with(~Context,~operation,~Lanes.gather_transformed(~Context,~transform),~LaneLaws.gather_tiles(~Context,~operation,~transform,~lawful),count,position,context,Tree.pack(F32,tree),depth,equation))

@@ -11,6 +11,22 @@ import ../specification_law.bend as SpecificationLaw
 import ../reference.bend as Reference
 import ./reference_refinement.bend as ProofsReferenceLaws
 
+def product_input(source: Unit,column: Unit,product: ConvSpec.Product) -> F32:
+  ConvSpec.Product{value,weight} = product
+  value
+
+def product_weight(source: Unit,row: Unit,product: ConvSpec.Product) -> F32:
+  ConvSpec.Product{value,weight} = product
+  weight
+
+def product_sum(products: List<&2,ConvSpec.Product>,+initial: F32) ->
+  {OrderedMatrix.dot(~Unit,~ConvSpec.Product,~Unit,~Unit,~product_input,~product_weight,products,Unit{},Unit{},Unit{},initial) ==
+    ConvSpec.sum(ConvSpec.multiply(products),initial) : F32}:
+  match products:
+    case Nil{}: {==}
+    case ConvSpec.Product{+value,+weight} <> rest:
+      product_sum(rest,(initial + value * weight : F32))
+
 def kcols(+n: Nat,+kernel_column_index: Nat,+kernel_row_index: Nat,+input_channel_index: Nat,+output_channel_index: Nat,+output_row_index: Nat,+output_column_index: Nat,+p: ConvSpec.Problem,+acc: F32) -> {OrderedMatrix.dot(~Nat,
     ~MatrixSpec.Reduction,~MatrixSpec.Pixel,~ConvSpec.Problem,~MatrixSpec.patch,~MatrixSpec.weight,MatrixSpec.kcols(n,kernel_column_index,kernel_row_index,input_channel_index),output_channel_index,
     MatrixSpec.Position{output_row_index,output_column_index},p,acc) == OrderedReference.kernel_columns(n,kernel_column_index,kernel_row_index,input_channel_index,output_channel_index,output_row_index,output_column_index,p,acc) : F32}:
