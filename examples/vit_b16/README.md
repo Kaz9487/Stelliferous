@@ -21,6 +21,12 @@ python run.py vit --threads 4
 
 It prepares the PyTorch reference if missing, compiles the model, runs it, and compares each block, the logits and the top five classes. A run on more threads is also compared bit for bit with the run on one. Results go to `out/results/vit_b16/`.
 
+```sh
+python run.py vit --threads 4 --timing   # then time it and PyTorch alternately
+```
+
+The timing runs three rounds, each ten forwards of the compiled model and then ten of PyTorch after one warmup, and prints the median and range of each. The samples go to `out/results/vit_b16/timing_4t.json`.
+
 ## The model
 
 [vit_b16.bend](vit_b16.bend) is the network, block by block as in torchvision.
@@ -40,3 +46,4 @@ def linear(x: F.Tensor(),+weight_name: String,+bias_name: String) -> F.Model(F.T
 | [prepare_reference.py](prepare_reference.py) | The input, the block outputs and the logits of PyTorch |
 | [build_run.sh](build_run.sh) | Compiles and runs on a thread count |
 | [compare_results.py](compare_results.py) | The comparison with PyTorch and with one thread |
+| [time_backends.py](time_backends.py) | The alternate timing of the compiled model and PyTorch |
