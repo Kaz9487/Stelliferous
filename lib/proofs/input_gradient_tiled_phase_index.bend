@@ -16,7 +16,7 @@ import ./u32_extrema.bend as Extrema
 import ./binary_radix.bend as Radix
 import ./machine_limit_bounds.bend as Limits
 import ./encoded_coordinates.bend as Encoded
-import ./storage_shape.bend as Shape
+import ../kernel_gemm.bend as KernelGemm
 
 def columns(+phase: Jobs.Phase) -> U32:
   U32.min(Domain.stride_word(Jobs.geometry(phase)),Domain.width_word(Jobs.geometry(phase)))
@@ -52,7 +52,7 @@ def columns_double_room(+phase: Jobs.Phase) -> {Nat.is_le(Nat.double(U32.to_nat(
   Kernel.Geometry{c,o,h,+w,k,+s,p,gh,gw} = g
   Limits.double_bound(l,U32.to_nat(columns(phase)),Order.transitive(U32.to_nat(columns(phase)),U32.to_nat(w),U32.to_nat(Machine.capacity(l)),Bounds.as_nat_le(columns(phase),w,Extrema.minimum_right(s,w)),Limits.dimension_capacity(l,U32.to_nat(w),Domain.width_room(call))))
 def decoded(+phase: Jobs.Phase) ->
-  Shape.Both<{(U32.from_nat(ordinal(phase)) / columns(phase) : U32) == U32.from_nat(Jobs.phase_y(phase)) : U32},
+  KernelGemm.Both<{(U32.from_nat(ordinal(phase)) / columns(phase) : U32) == U32.from_nat(Jobs.phase_y(phase)) : U32},
     {(U32.from_nat(ordinal(phase)) % columns(phase) : U32) == U32.from_nat(Jobs.phase_x(phase)) : U32}>:
   Jobs.Phase{+call,e,+y,+x,yi,+xi} = phase
   Domain.Call{+g,b,+l,facts} = call
@@ -62,16 +62,16 @@ def decoded(+phase: Jobs.Phase) ->
   +cap = Machine.half_word(l)
   +ok = Limits.half_word_fits(l)
   +double_room = columns_double_room(phase)
-  Shape.Both{Encoded.encoding((U32.from_nat(ordinal(phase)) / width : U32),y,Radix.quotient_word(U32.from_nat(ordinal(phase)),width,y,x,U32.to_nat(width),cap,ok,ordinal_exact(phase),{==},positive,xi,double_room)),
+  KernelGemm.Both{Encoded.encoding((U32.from_nat(ordinal(phase)) / width : U32),y,Radix.quotient_word(U32.from_nat(ordinal(phase)),width,y,x,U32.to_nat(width),cap,ok,ordinal_exact(phase),{==},positive,xi,double_room)),
     Encoded.encoding((U32.from_nat(ordinal(phase)) % width : U32),x,Radix.remainder_word(U32.from_nat(ordinal(phase)),width,y,x,U32.to_nat(width),cap,ok,ordinal_exact(phase),{==},positive,xi,double_room))}
 def phase_matches_from(+phase: Jobs.Phase,
-  decoded: Shape.Both<{(U32.from_nat(ordinal(phase)) / columns(phase) : U32) == U32.from_nat(Jobs.phase_y(phase)) : U32},
+  decoded: KernelGemm.Both<{(U32.from_nat(ordinal(phase)) / columns(phase) : U32) == U32.from_nat(Jobs.phase_y(phase)) : U32},
     {(U32.from_nat(ordinal(phase)) % columns(phase) : U32) == U32.from_nat(Jobs.phase_x(phase)) : U32}>) ->
   {Kernel.phase_of(Jobs.geometry(phase),U32.from_nat(ordinal(phase))) == Jobs.context(phase) : Kernel.Phase}:
   Jobs.Phase{+call,e,+y,+x,yi,xi} = phase
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  Shape.Both{+ye,+xe} = decoded
+  KernelGemm.Both{+ye,+xe} = decoded
   %Equal.sym(U32,(U32.from_nat(ordinal(phase)) / columns(phase) : U32),U32.from_nat(y),ye) : {Kernel.phase(g,_,(U32.from_nat(ordinal(phase)) % columns(phase) : U32)) == Jobs.context(phase) : Kernel.Phase}
   %Equal.sym(U32,(U32.from_nat(ordinal(phase)) % columns(phase) : U32),U32.from_nat(x),xe) : {Kernel.phase(g,U32.from_nat(y),_) == Jobs.context(phase) : Kernel.Phase}
   {==}
@@ -79,7 +79,7 @@ def phase_matches(+phase: Jobs.Phase) -> {Kernel.phase_of(Jobs.geometry(phase),U
   phase_matches_from(phase,decoded(phase))
 
 def packing_bounds(phase: Jobs.Phase) -> PackingBounds.Query:
-  PackingBounds.Query{False{},Jobs.call(phase)}
+  PackingBounds.Query{Jobs.call(phase)}
 def packing_count_matches(+phase: Jobs.Phase) -> {Kernel.window_jobs(Jobs.geometry(phase)) == PackingBounds.count(packing_bounds(phase)) : Nat}:
   Jobs.Phase{+call,e,y,x,yi,xi} = phase
   Domain.Call{+g,b,l,facts} = call

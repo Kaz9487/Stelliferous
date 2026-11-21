@@ -1,4 +1,5 @@
-# Storage-tree samples for the spatial packing readers.
+# Storage-tree samples for the spatial packing readers, for planes of values
+# and for the cells of every position in turn.
 import Base
 import ../math_sequence.bend as Sequence
 import ../kernel_packing_samples.bend as PackingSamples
@@ -8,159 +9,229 @@ import ./kernel_tile_refinement.bend as TileLaws
 import ./storage_tree_model.bend as Tree
 import ./storage_refinement.bend as StorageLaws
 import ./bounded_u32_arithmetic.bend as Arithmetic
+import ./storage_shape.bend as Shape
+import ./list_storage_readback.bend as ListRead
 
-def value(+x: Tree.Tree<F32>,+iy: U32,+ix: U32,+cb: U32,+h: U32,+w: U32) -> F32:
-  PackingSamples.masked(Tree.read(F32,x,(cb + iy * w + ix : U32)),U32.is_lt(iy,h) && U32.is_lt(ix,w))
+def value(~Element: Data,~field: Element -> F32,+x: Tree.Tree<Element>,+iy: U32,+ix: U32,+cb: U32,+h: U32,+w: U32,+step: U32) -> F32:
+  PackingSamples.masked(field(Tree.read(Element,x,(cb + (iy * w + ix) * step : U32))),U32.is_lt(iy,h) && U32.is_lt(ix,w))
 
-def pixel(+x: Tree.Tree<F32>,+iy: U32,+ix: U32,+cb: U32,+h: U32,+w: U32) -> {Packing.pixel(Tree.pack(F32,x),iy,ix,cb,h,
-    w) == (Tree.pack(F32,x),value(x,iy,ix,cb,h,w)) : Array<F32> & F32}:
-  %Equal.sym(Array<F32> & F32,Array.get(F32,Tree.pack(F32,x),(cb + iy * w + ix : U32)),(Tree.pack(F32,x),Tree.read(F32,x,
-        (cb + iy * w + ix : U32))),StorageLaws.read(F32,x,(cb + iy * w + ix : U32))) : {Packing.masked(U32.is_lt(iy,h) && U32.is_lt(ix,
-        w),_) == (Tree.pack(F32,x),value(x,iy,ix,cb,h,w)) : Array<F32> & F32}
+# A sample at step 1 reads the plane at row and column.
+def unit_step_value(~Element: Data,~field: Element -> F32,+x: Tree.Tree<Element>,+iy: U32,+ix: U32,+cb: U32,+h: U32,+w: U32) ->
+  {value(~Element,~field,x,iy,ix,cb,h,w,1) == PackingSamples.masked(field(Tree.read(Element,x,(cb + iy * w + ix : U32))),U32.is_lt(iy,h) && U32.is_lt(ix,w)) : F32}:
+  +offset = (iy * w + ix : U32)
+  Equal.cong(U32,F32,index => PackingSamples.masked(field(Tree.read(Element,x,index)),U32.is_lt(iy,h) && U32.is_lt(ix,w)),(cb + offset * 1 : U32),(cb + iy * w + ix : U32),
+    Equal.trans(U32,(cb + offset * 1 : U32),(cb + offset : U32),(cb + iy * w + ix : U32),
+      Equal.cong(U32,U32,tail => (cb + tail : U32),(offset * 1 : U32),offset,Arithmetic.multiply_one(offset)),
+      Equal.sym(U32,(cb + iy * w + ix : U32),(cb + offset : U32),Arithmetic.add_associative(cb,(iy * w : U32),ix))))
+
+# A pixel at step 1 reads the plane at row and column.
+def unit_step_pixel(~Element: Data,~field: Element -> F32,input: Array<Element>,+iy: U32,+ix: U32,+cb: U32,+h: U32,+w: U32) ->
+  {Packing.pixel(~Element,~field,input,iy,ix,cb,h,w,1) ==
+    Packing.masked_field(~Element,U32.is_lt(iy,h) && U32.is_lt(ix,w),Packing.field_of(~Element,~field,Array.get(Element,input,(cb + iy * w + ix : U32)))) : Array<Element> & F32}:
+  +offset = (iy * w + ix : U32)
+  Equal.cong(U32,Array<Element> & F32,index => Packing.masked_field(~Element,U32.is_lt(iy,h) && U32.is_lt(ix,w),Packing.field_of(~Element,~field,Array.get(Element,input,index))),
+    (cb + offset * 1 : U32),(cb + iy * w + ix : U32),
+    Equal.trans(U32,(cb + offset * 1 : U32),(cb + offset : U32),(cb + iy * w + ix : U32),
+      Equal.cong(U32,U32,tail => (cb + tail : U32),(offset * 1 : U32),offset,Arithmetic.multiply_one(offset)),
+      Equal.sym(U32,(cb + iy * w + ix : U32),(cb + offset : U32),Arithmetic.add_associative(cb,(iy * w : U32),ix))))
+
+def pixel(~Element: Data,~field: Element -> F32,+x: Tree.Tree<Element>,+iy: U32,+ix: U32,+cb: U32,+h: U32,+w: U32,+step: U32) ->
+  {Packing.pixel(~Element,~field,Tree.pack(Element,x),iy,ix,cb,h,w,step) == (Tree.pack(Element,x),value(~Element,~field,x,iy,ix,cb,h,w,step)) : Array<Element> & F32}:
+  %Equal.sym(Array<Element> & Element,Array.get(Element,Tree.pack(Element,x),(cb + (iy * w + ix) * step : U32)),(Tree.pack(Element,x),Tree.read(Element,x,(cb + (iy * w + ix) * step : U32))),
+    StorageLaws.read(Element,x,(cb + (iy * w + ix) * step : U32))) :
+    {Packing.masked_field(~Element,U32.is_lt(iy,h) && U32.is_lt(ix,w),Packing.field_of(~Element,~field,_)) == (Tree.pack(Element,x),value(~Element,~field,x,iy,ix,cb,h,w,step)) :
+      Array<Element> & F32}
   {==}
 
-def pack_input(input: Tree.Tree<F32>) -> Array<F32>:
-  Tree.pack(F32,input)
+def pack_input(~Element: Data,input: Tree.Tree<Element>) -> Array<Element>:
+  Tree.pack(Element,input)
 
-def block_sample(input: Tree.Tree<F32>,context: Packing.PixelBlock,index: Nat) -> F32:
-  Packing.PixelBlock{row,column,channel_base,height,width,+stride} = context
-  value(input,row,(column + U32.from_nat(index) * stride : U32),channel_base,height,width)
+def block_sample(~Element: Data,~field: Element -> F32,input: Tree.Tree<Element>,context: Packing.PixelBlock,index: Nat) -> F32:
+  Packing.PixelBlock{row,column,channel_base,height,width,+stride,step} = context
+  value(~Element,~field,input,row,(column + U32.from_nat(index) * stride : U32),channel_base,height,width,step)
 
-def native_block_read(+input: Tree.Tree<F32>,+context: Packing.PixelBlock,+index: Nat) -> {Packing.read_block_pixel(pack_input(input),
-    context,index) == (pack_input(input),block_sample(input,context,index)) : Array<F32> & F32}:
-  Packing.PixelBlock{row,column,channel_base,height,width,+stride} = context
-  pixel(input,row,(column + U32.from_nat(index) * stride : U32),channel_base,height,width)
+def native_block_read(~Element: Data,~field: Element -> F32,+input: Tree.Tree<Element>,+context: Packing.PixelBlock,+index: Nat) ->
+  {Packing.read_block_pixel(~Element,~field,pack_input(~Element,input),context,index) == (pack_input(~Element,input),block_sample(~Element,~field,input,context,index)) : Array<Element> & F32}:
+  Packing.PixelBlock{row,column,channel_base,height,width,+stride,step} = context
+  pixel(~Element,~field,input,row,(column + U32.from_nat(index) * stride : U32),channel_base,height,width,step)
 
-def native_vector(input: Array<F32>,context: Packing.PixelBlock) -> Array<F32> & Tile.Tile8:
-  Packing.PixelBlock{+row,+column,+channel_base,+height,+width,+stride} = context
-  Tile.read_tail(~Array<F32>,~Packing.PixelBlock,~Packing.read_block_pixel,
-    Packing.pixel(input,row,column,channel_base,height,width),context)
+def native_vector(~Element: Data,~field: Element -> F32,input: Array<Element>,context: Packing.PixelBlock) -> Array<Element> & Tile.Tile8:
+  Packing.PixelBlock{+row,+column,+channel_base,+height,+width,+stride,+step} = context
+  Tile.read_tail(~Array<Element>,~Packing.PixelBlock,~Packing.read_block_pixel(~Element,~field),
+    Packing.pixel(~Element,~field,input,row,column,channel_base,height,width,step),context)
 
-def pure_vector(+input: Tree.Tree<F32>,+context: Packing.PixelBlock) -> Tile.Tile8:
-  Tile.from_sequence(Sequence.tabulate(~F32,~TileLaws.SampleContext<Tree.Tree<F32>,Packing.PixelBlock>,
-    ~TileLaws.sample_context(~Tree.Tree<F32>,~Packing.PixelBlock,~block_sample),8n,0n,TileLaws.SampleContext{input,context}))
+def pure_vector(~Element: Data,~field: Element -> F32,+input: Tree.Tree<Element>,+context: Packing.PixelBlock) -> Tile.Tile8:
+  Tile.from_sequence(Sequence.tabulate(~F32,~TileLaws.SampleContext<Tree.Tree<Element>,Packing.PixelBlock>,
+    ~TileLaws.sample_context(~Tree.Tree<Element>,~Packing.PixelBlock,~block_sample(~Element,~field)),8n,0n,TileLaws.SampleContext{input,context}))
 
 def zero_lane_column(+column: U32,+stride: U32) -> {(column + 0 * stride : U32) == column : U32}:
   %Equal.sym(U32,(0 * stride : U32),0,Arithmetic.multiply_zero_left(stride)) : {(column + _ : U32) == column : U32}
   Arithmetic.add_zero(column)
 
-def native_vector_matches_tabulation(+input: Tree.Tree<F32>,+context: Packing.PixelBlock) ->
-  {native_vector(Tree.pack(F32,input),context) == (Tree.pack(F32,input),pure_vector(input,context)) : Array<F32> & Tile.Tile8}:
-  Packing.PixelBlock{+row,+column,+channel_base,+height,+width,+stride} = context
-  %Equal.sym(Array<F32> & F32,Packing.pixel(Tree.pack(F32,input),row,column,channel_base,height,width),
-    (Tree.pack(F32,input),value(input,row,column,channel_base,height,width)),pixel(input,row,column,channel_base,height,width)) :
-    {Tile.read_tail(~Array<F32>,~Packing.PixelBlock,~Packing.read_block_pixel,_,context) == (Tree.pack(F32,input),pure_vector(input,context)) : Array<F32> & Tile.Tile8}
+def native_vector_matches_tabulation(~Element: Data,~field: Element -> F32,+input: Tree.Tree<Element>,+context: Packing.PixelBlock) ->
+  {native_vector(~Element,~field,Tree.pack(Element,input),context) == (Tree.pack(Element,input),pure_vector(~Element,~field,input,context)) : Array<Element> & Tile.Tile8}:
+  Packing.PixelBlock{+row,+column,+channel_base,+height,+width,+stride,+step} = context
+  %Equal.sym(Array<Element> & F32,Packing.pixel(~Element,~field,Tree.pack(Element,input),row,column,channel_base,height,width,step),
+    (Tree.pack(Element,input),value(~Element,~field,input,row,column,channel_base,height,width,step)),pixel(~Element,~field,input,row,column,channel_base,height,width,step)) :
+    {Tile.read_tail(~Array<Element>,~Packing.PixelBlock,~Packing.read_block_pixel(~Element,~field),_,context) ==
+      (Tree.pack(Element,input),pure_vector(~Element,~field,input,context)) : Array<Element> & Tile.Tile8}
   %Equal.sym(U32,(column + 0 * stride : U32),column,zero_lane_column(column,stride)) :
-    {Tile.read_tail(~Array<F32>,~Packing.PixelBlock,~Packing.read_block_pixel,(Tree.pack(F32,input),value(input,row,column,channel_base,height,width)),context) ==
-      (Tree.pack(F32,input),Tile.from_sequence(Sequence.Elements{value(input,row,_,channel_base,height,width),
-        Sequence.tabulate(~F32,~TileLaws.SampleContext<Tree.Tree<F32>,Packing.PixelBlock>,~TileLaws.sample_context(~Tree.Tree<F32>,~Packing.PixelBlock,~block_sample),7n,1n,TileLaws.SampleContext{input,context})})) : Array<F32> & Tile.Tile8}
-  TileLaws.tail_block_refines(~Array<F32>,~Tree.Tree<F32>,~Packing.PixelBlock,~pack_input,~Packing.read_block_pixel,
-    ~block_sample,~native_block_read,input,context,value(input,row,column,channel_base,height,width))
+    {Tile.read_tail(~Array<Element>,~Packing.PixelBlock,~Packing.read_block_pixel(~Element,~field),
+        (Tree.pack(Element,input),value(~Element,~field,input,row,column,channel_base,height,width,step)),context) ==
+      (Tree.pack(Element,input),Tile.from_sequence(Sequence.Elements{value(~Element,~field,input,row,_,channel_base,height,width,step),
+        Sequence.tabulate(~F32,~TileLaws.SampleContext<Tree.Tree<Element>,Packing.PixelBlock>,~TileLaws.sample_context(~Tree.Tree<Element>,~Packing.PixelBlock,~block_sample(~Element,~field)),
+          7n,1n,TileLaws.SampleContext{input,context})})) : Array<Element> & Tile.Tile8}
+  TileLaws.tail_block_refines(~Array<Element>,~Tree.Tree<Element>,~Packing.PixelBlock,~pack_input(~Element),~Packing.read_block_pixel(~Element,~field),
+    ~block_sample(~Element,~field),~native_block_read(~Element,~field),input,context,value(~Element,~field,input,row,column,channel_base,height,width,step))
 
-# A lane of a tile that may end in the next output row.
-def wrap_value(same: Bool,+x: Tree.Tree<F32>,+row: U32,+column: U32,+cb: U32,+h: U32,+w: U32,+s: U32,+next_row: U32,+offset: U32,+ow: U32,+kc: U32,+p: U32,+lane: U32) -> F32:
-  match same:
-    case True{}: value(x,row,(column + lane * s : U32),cb,h,w)
-    case False{}: value(x,next_row,((offset + lane - ow) * s + kc - p : U32),cb,h,w)
-
-def wrap_pixel(+same: Bool,+x: Tree.Tree<F32>,+row: U32,+column: U32,+cb: U32,+h: U32,+w: U32,+s: U32,+next_row: U32,+offset: U32,+ow: U32,+kc: U32,+p: U32,+lane: U32) ->
-  {Packing.wrap_pixel(same,Tree.pack(F32,x),row,column,cb,h,w,s,next_row,offset,ow,kc,p,lane) == (Tree.pack(F32,x),wrap_value(same,x,row,column,cb,h,w,s,next_row,offset,ow,kc,p,lane)) : Array<F32> & F32}:
-  match same:
-    case True{}: pixel(x,row,(column + lane * s : U32),cb,h,w)
-    case False{}: pixel(x,next_row,((offset + lane - ow) * s + kc - p : U32),cb,h,w)
-
-def wrap_lane(+x: Tree.Tree<F32>,+row: U32,+column: U32,+cb: U32,+h: U32,+w: U32,+s: U32,+next_row: U32,+offset: U32,+ow: U32,+kc: U32,+p: U32,+lane: U32) -> F32:
-  wrap_value(U32.is_lt((offset + lane : U32),ow),x,row,column,cb,h,w,s,next_row,offset,ow,kc,p,lane)
-
-def wrap_sample(input: Tree.Tree<F32>,context: Packing.WrapBlock,index: Nat) -> F32:
-  Packing.WrapBlock{row,column,cb,h,w,s,next_row,offset,ow,kc,p} = context
-  wrap_lane(input,row,column,cb,h,w,s,next_row,offset,ow,kc,p,U32.from_nat(index))
-
-def native_wrap_read(+input: Tree.Tree<F32>,+context: Packing.WrapBlock,+index: Nat) -> {Packing.read_wrap_pixel(pack_input(input),
-    context,index) == (pack_input(input),wrap_sample(input,context,index)) : Array<F32> & F32}:
-  Packing.WrapBlock{+row,+column,+cb,+h,+w,+s,+next_row,+offset,+ow,+kc,+p} = context
-  wrap_pixel(U32.is_lt((offset + U32.from_nat(index) : U32),ow),input,row,column,cb,h,w,s,next_row,offset,ow,kc,p,U32.from_nat(index))
-
-# Lane 0 lies in the output row of the tile.
-def pure_wrap_vector(+x: Tree.Tree<F32>,+row: U32,+column: U32,+cb: U32,+h: U32,+w: U32,+s: U32,+next_row: U32,+offset: U32,+ow: U32,+kc: U32,+p: U32) -> Tile.Tile8:
-  Tile.from_sequence(Sequence.Elements{value(x,row,column,cb,h,w),
-    Sequence.tabulate(~F32,~TileLaws.SampleContext<Tree.Tree<F32>,Packing.WrapBlock>,~TileLaws.sample_context(~Tree.Tree<F32>,~Packing.WrapBlock,~wrap_sample),7n,1n,
-      TileLaws.SampleContext{x,Packing.WrapBlock{row,column,cb,h,w,s,next_row,offset,ow,kc,p}})})
-
-def native_wrap_vector_matches_tabulation(+x: Tree.Tree<F32>,+row: U32,+column: U32,+cb: U32,+h: U32,+w: U32,+s: U32,+next_row: U32,+offset: U32,+ow: U32,+kc: U32,+p: U32) ->
-  {Packing.wrap_block(Tree.pack(F32,x),row,column,cb,h,w,s,next_row,offset,ow,kc,p) == (Tree.pack(F32,x),pure_wrap_vector(x,row,column,cb,h,w,s,next_row,offset,ow,kc,p)) : Array<F32> & Tile.Tile8}:
-  %Equal.sym(Array<F32> & F32,Packing.pixel(Tree.pack(F32,x),row,column,cb,h,w),(Tree.pack(F32,x),value(x,row,column,cb,h,w)),pixel(x,row,column,cb,h,w)) :
-    {Tile.read_tail(~Array<F32>,~Packing.WrapBlock,~Packing.read_wrap_pixel,_,Packing.WrapBlock{row,column,cb,h,w,s,next_row,offset,ow,kc,p}) ==
-      (Tree.pack(F32,x),pure_wrap_vector(x,row,column,cb,h,w,s,next_row,offset,ow,kc,p)) : Array<F32> & Tile.Tile8}
-  TileLaws.tail_block_refines(~Array<F32>,~Tree.Tree<F32>,~Packing.WrapBlock,~pack_input,~Packing.read_wrap_pixel,
-    ~wrap_sample,~native_wrap_read,x,Packing.WrapBlock{row,column,cb,h,w,s,next_row,offset,ow,kc,p},value(x,row,column,cb,h,w))
-
-def address_sample(input: Tree.Tree<F32>,address: PackingSamples.PixelAddress) -> F32:
+def address_sample(~Element: Data,~field: Element -> F32,input: Tree.Tree<Element>,address: PackingSamples.PixelAddress) -> F32:
   PackingSamples.PixelAddress{index,inside} = address
-  PackingSamples.masked(Tree.read(F32,input,index),inside)
+  PackingSamples.masked(field(Tree.read(Element,input,index)),inside)
 
-def native_address_read(+input: Tree.Tree<F32>,+address: PackingSamples.PixelAddress) ->
-  {PackingSamples.read_pixel_address(pack_input(input),address) ==
-    (pack_input(input),address_sample(input,address)) : Array<F32> & F32}:
+def native_address_read(~Element: Data,~field: Element -> F32,+input: Tree.Tree<Element>,+address: PackingSamples.PixelAddress) ->
+  {PackingSamples.read_pixel_address(~Element,~field,pack_input(~Element,input),address) ==
+    (pack_input(~Element,input),address_sample(~Element,~field,input,address)) : Array<Element> & F32}:
   PackingSamples.PixelAddress{+index,+inside} = address
-  %Equal.sym(Array<F32> & F32,Array.get(F32,pack_input(input),index),
-    (pack_input(input),Tree.read(F32,input,index)),StorageLaws.read(F32,input,index)) :
-    {PackingSamples.mask_pixel(inside,_) == (pack_input(input),PackingSamples.masked(Tree.read(F32,input,index),inside)) : Array<F32> & F32}
+  %Equal.sym(Array<Element> & Element,Array.get(Element,pack_input(~Element,input),index),
+    (pack_input(~Element,input),Tree.read(Element,input,index)),StorageLaws.read(Element,input,index)) :
+    {PackingSamples.mask_field(~Element,~field,inside,_) == (pack_input(~Element,input),PackingSamples.masked(field(Tree.read(Element,input,index)),inside)) : Array<Element> & F32}
   {==}
 
-def window_sample(input: Tree.Tree<F32>,context: PackingSamples.WindowPixelBlock,index: Nat) -> F32:
-  address_sample(input,PackingSamples.window_pixel_address(context,index))
+def window_sample(~Element: Data,~field: Element -> F32,input: Tree.Tree<Element>,context: PackingSamples.WindowPixelBlock,index: Nat) -> F32:
+  address_sample(~Element,~field,input,PackingSamples.window_pixel_address(context,index))
 
-def native_window_read(+input: Tree.Tree<F32>,+context: PackingSamples.WindowPixelBlock,+index: Nat) ->
-  {PackingSamples.read_window_pixel(pack_input(input),context,index) ==
-    (pack_input(input),window_sample(input,context,index)) : Array<F32> & F32}:
-  native_address_read(input,PackingSamples.window_pixel_address(context,index))
+def native_window_read(~Element: Data,~field: Element -> F32,+input: Tree.Tree<Element>,+context: PackingSamples.WindowPixelBlock,+index: Nat) ->
+  {PackingSamples.read_window_pixel(~Element,~field,pack_input(~Element,input),context,index) ==
+    (pack_input(~Element,input),window_sample(~Element,~field,input,context,index)) : Array<Element> & F32}:
+  native_address_read(~Element,~field,input,PackingSamples.window_pixel_address(context,index))
 
-def window_context(+window: Packing.Stencil,position: U32,reduction: U32) -> PackingSamples.WindowPixelBlock:
-  Packing.Stencil{base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,inner} = window
-  PackingSamples.window_pixel_block(position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width)
+def window_context(~located: U32 -> U32 -> U32 -> U32,~spread: U32 -> U32,+window: Packing.Stencil,position: U32,reduction: U32) -> PackingSamples.WindowPixelBlock:
+  Packing.Stencil{base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,inner,groups} = window
+  PackingSamples.window_pixel_block(~located,~spread,position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,groups)
 
-def window_value(input: Tree.Tree<F32>,window: Packing.Stencil,position: U32,reduction: U32) -> F32:
-  window_sample(input,window_context(window,position,reduction),0n)
+def window_value(~Element: Data,~field: Element -> F32,~located: U32 -> U32 -> U32 -> U32,~spread: U32 -> U32,input: Tree.Tree<Element>,window: Packing.Stencil,position: U32,reduction: U32) -> F32:
+  window_sample(~Element,~field,input,window_context(~located,~spread,window,position,reduction),0n)
 
-def window_vector(+input: Tree.Tree<F32>,+window: Packing.Stencil,+position: U32,+reduction: U32) -> Tile.Tile8:
-  Tile.from_sequence(Sequence.Elements{window_value(input,window,position,reduction),
-    Sequence.tabulate(~F32,~TileLaws.SampleContext<Tree.Tree<F32>,PackingSamples.WindowPixelBlock>,
-      ~TileLaws.sample_context(~Tree.Tree<F32>,~PackingSamples.WindowPixelBlock,~window_sample),7n,1n,
-      TileLaws.SampleContext{input,window_context(window,position,reduction)})})
+def window_vector(~Element: Data,~field: Element -> F32,~located: U32 -> U32 -> U32 -> U32,~spread: U32 -> U32,+input: Tree.Tree<Element>,+window: Packing.Stencil,+position: U32,+reduction: U32) -> Tile.Tile8:
+  Tile.from_sequence(Sequence.Elements{window_value(~Element,~field,~located,~spread,input,window,position,reduction),
+    Sequence.tabulate(~F32,~TileLaws.SampleContext<Tree.Tree<Element>,PackingSamples.WindowPixelBlock>,
+      ~TileLaws.sample_context(~Tree.Tree<Element>,~PackingSamples.WindowPixelBlock,~window_sample(~Element,~field)),7n,1n,
+      TileLaws.SampleContext{input,window_context(~located,~spread,window,position,reduction)})})
 
-def native_window_vector(input: Array<F32>,+window: Packing.Stencil,+position: U32,+reduction: U32) -> Array<F32> & Tile.Tile8:
-  Packing.Stencil{base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,inner} = window
-  Tile.read_tail(~Array<F32>,~PackingSamples.WindowPixelBlock,~PackingSamples.read_window_pixel,
-    PackingSamples.window_pixel(input,position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width),
-    window_context(window,position,reduction))
+def native_window_vector(~Element: Data,~field: Element -> F32,~located: U32 -> U32 -> U32 -> U32,~spread: U32 -> U32,input: Array<Element>,+window: Packing.Stencil,+position: U32,+reduction: U32) ->
+  Array<Element> & Tile.Tile8:
+  Packing.Stencil{base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,inner,groups} = window
+  Tile.read_tail(~Array<Element>,~PackingSamples.WindowPixelBlock,~PackingSamples.read_window_pixel(~Element,~field),
+    PackingSamples.window_pixel(~Element,~field,~located,~spread,input,position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,groups),
+    window_context(~located,~spread,window,position,reduction))
 
-def window_vector_matches(+input: Tree.Tree<F32>,+window: Packing.Stencil,+position: U32,+reduction: U32) ->
-  {native_window_vector(pack_input(input),window,position,reduction) == (pack_input(input),window_vector(input,window,position,reduction)) : Array<F32> & Tile.Tile8}:
-  Packing.Stencil{+base,+height,+width,+tap_rows,+tap_columns,+stride,+row_origin,+column_origin,+output_width,inner} = window
-  %Equal.sym(Array<F32> & F32,PackingSamples.window_pixel(pack_input(input),position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width),
-    (pack_input(input),window_value(input,window,position,reduction)),native_window_read(input,window_context(window,position,reduction),0n)) :
-    {Tile.read_tail(~Array<F32>,~PackingSamples.WindowPixelBlock,~PackingSamples.read_window_pixel,_,window_context(window,position,reduction)) ==
-      (pack_input(input),window_vector(input,window,position,reduction)) : Array<F32> & Tile.Tile8}
-  TileLaws.tail_block_refines(~Array<F32>,~Tree.Tree<F32>,~PackingSamples.WindowPixelBlock,~pack_input,~PackingSamples.read_window_pixel,
-    ~window_sample,~native_window_read,input,window_context(window,position,reduction),window_value(input,window,position,reduction))
+def window_vector_matches(~Element: Data,~field: Element -> F32,~located: U32 -> U32 -> U32 -> U32,~spread: U32 -> U32,+input: Tree.Tree<Element>,+window: Packing.Stencil,+position: U32,+reduction: U32) ->
+  {native_window_vector(~Element,~field,~located,~spread,pack_input(~Element,input),window,position,reduction) ==
+    (pack_input(~Element,input),window_vector(~Element,~field,~located,~spread,input,window,position,reduction)) : Array<Element> & Tile.Tile8}:
+  Packing.Stencil{+base,+height,+width,+tap_rows,+tap_columns,+stride,+row_origin,+column_origin,+output_width,inner,+groups} = window
+  %Equal.sym(Array<Element> & F32,
+    PackingSamples.window_pixel(~Element,~field,~located,~spread,pack_input(~Element,input),position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,groups),
+    (pack_input(~Element,input),window_value(~Element,~field,~located,~spread,input,window,position,reduction)),
+    native_window_read(~Element,~field,input,window_context(~located,~spread,window,position,reduction),0n)) :
+    {Tile.read_tail(~Array<Element>,~PackingSamples.WindowPixelBlock,~PackingSamples.read_window_pixel(~Element,~field),_,window_context(~located,~spread,window,position,reduction)) ==
+      (pack_input(~Element,input),window_vector(~Element,~field,~located,~spread,input,window,position,reduction)) : Array<Element> & Tile.Tile8}
+  TileLaws.tail_block_refines(~Array<Element>,~Tree.Tree<Element>,~PackingSamples.WindowPixelBlock,~pack_input(~Element),~PackingSamples.read_window_pixel(~Element,~field),
+    ~window_sample(~Element,~field),~native_window_read(~Element,~field),input,window_context(~located,~spread,window,position,reduction),
+    window_value(~Element,~field,~located,~spread,input,window,position,reduction))
 
-# Scalar projection of the canonical window block, with lane zero's position unchanged.
-def window_scalar_context(input: Tree.Tree<F32>,context: PackingSamples.WindowPixelBlock) -> F32:
-  PackingSamples.WindowPixelBlock{+position,kernel_row,kernel_column,channel_base,height,width,+stride,row_origin,column_origin,+output_width} = context
-  value(input,(position / output_width * stride + kernel_row + row_origin : U32),
-    (position % output_width * stride + kernel_column + column_origin : U32),channel_base,height,width)
+# ---- The values of a plain window ----
 
-def window_scalar(input: Tree.Tree<F32>,window: Packing.Stencil,position: U32,reduction: U32) -> F32:
-  window_scalar_context(input,window_context(window,position,reduction))
+# Channel c of values placed channel after channel, plane apart, pixels
+# adjacent.
+def planes(channel: U32,plane: U32,groups: U32) -> U32:
+  (channel * plane : U32)
 
-def window_scalar_context_matches(+input: Tree.Tree<F32>,context: PackingSamples.WindowPixelBlock) ->
-  {window_sample(input,context,0n) == window_scalar_context(input,context) : F32}:
-  PackingSamples.WindowPixelBlock{+position,+kernel_row,+kernel_column,+channel_base,+height,+width,+stride,+row_origin,+column_origin,+output_width} = context
-  Equal.cong(U32,F32,at => value(input,(at / output_width * stride + kernel_row + row_origin : U32),
-    (at % output_width * stride + kernel_column + column_origin : U32),channel_base,height,width),
-    (position + 0 : U32),position,Arithmetic.add_zero(position))
+def adjacent(groups: U32) -> U32:
+  1
 
-def window_scalar_matches(+input: Tree.Tree<F32>,+window: Packing.Stencil,+position: U32,+reduction: U32) ->
-  {window_value(input,window,position,reduction) == window_scalar(input,window,position,reduction) : F32}:
-  window_scalar_context_matches(input,window_context(window,position,reduction))
+# The same stencil over values read from zero.
+def plain(+window: Packing.Stencil) -> Packing.Stencil:
+  Packing.Stencil{base,+height,+width,+tap_rows,+tap_columns,+stride,+row_origin,+column_origin,+output_width,+inner,+groups} = window
+  Packing.Stencil{0,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,inner,groups}
+
+# The window vector of values at a position and a reduction index.
+def value_vector(+values: Tree.Tree<F32>,+window: Packing.Stencil,+position: U32,+reduction: U32) -> Tile.Tile8:
+  window_vector(~F32,~Packing.identity,~planes,~adjacent,values,plain(window),position,reduction)
+
+# ---- The packed entries ----
+
+# The inner extent of a window: the entries of the block of a position.
+def inner_count(+window: Packing.Stencil) -> Nat:
+  Packing.Stencil{base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,+inner,groups} = window
+  U32.to_nat(inner)
+
+# What every packed entry reads: the values, the window and the first
+# position.
+type Entries is Data:
+  Entries{values: Tree.Tree<F32>,window: Packing.Stencil,start: U32}
+
+# Entry index of a packing: the value vector at the block index / inner of
+# eight positions from the start and the reduction index index % inner.
+def packed_entry(context: Entries,index: Nat) -> Tile.Tile8:
+  Entries{+values,+window,start} = context
+  +inner = inner_count(window)
+  +at = index
+  value_vector(values,window,(start + U32.from_nat(Nat.div(at,inner)) * 8 : U32),U32.from_nat(Nat.mod(at,inner)))
+
+# The first count packed entries written into tiles from zero on.
+def fill(count: Nat,+values: Tree.Tree<F32>,+window: Packing.Stencil,+start: U32,tiles: Tree.Tree<Tile.Tile8>) -> Tree.Tree<Tile.Tile8>:
+  Tree.write_sequence(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,count,0n,Entries{values,window,start}),U32.from_nat(0n),tiles)
+
+def fill_balanced(+count: Nat,+values: Tree.Tree<F32>,+window: Packing.Stencil,+start: U32,+depth: Nat,+tiles: Tree.Tree<Tile.Tile8>,
+  +balanced: Shape.Balanced(Tile.Tile8,depth,tiles)) -> Shape.Balanced(Tile.Tile8,depth,fill(count,values,window,start,tiles)):
+  ListRead.sequence_balanced(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,count,0n,Entries{values,window,start}),U32.from_nat(0n),depth,tiles,balanced)
+
+# A filled index holds its packed entry.
+def fill_entry(+count: Nat,+values: Tree.Tree<F32>,+window: Packing.Stencil,+start: U32,+depth: Nat,+tiles: Tree.Tree<Tile.Tile8>,
+  +balanced: Shape.Balanced(Tile.Tile8,depth,tiles),+limit: {Nat.is_le(depth,30n) == True{} : Bool},
+  +room: {Nat.is_le(count,U32.to_nat(Tree.capacity(Tile.Tile8,tiles))) == True{} : Bool},+query: Nat,+within: {Nat.is_lt(query,count) == True{} : Bool}) ->
+  {Tree.read(Tile.Tile8,fill(count,values,window,start,tiles),U32.from_nat(query)) == packed_entry(Entries{values,window,start},query) : Tile.Tile8}:
+  +context = {Entries{values,window,start} : Entries}
+  +entries = ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,count,0n,context)
+  +length = ListRead.enumerate_length(~Tile.Tile8,~Entries,~packed_entry,count,0n,context)
+  Equal.trans(Tile.Tile8,Tree.read(Tile.Tile8,fill(count,values,window,start,tiles),U32.from_nat(query)),ListRead.at(~Tile.Tile8,Tile.filled(0.0),query,entries),
+    packed_entry(context,query),
+    ListRead.listed(~Tile.Tile8,entries,query,0n,depth,tiles,Tile.filled(0.0),balanced,limit,
+      %Equal.sym(Nat,List.length(&2,Tile.Tile8,entries),count,length) : {Nat.is_le(_,U32.to_nat(Tree.capacity(Tile.Tile8,tiles))) == True{} : Bool} room,
+      %Equal.sym(Nat,List.length(&2,Tile.Tile8,entries),count,length) : {Nat.is_lt(query,_) == True{} : Bool} within),
+    ListRead.enumerate_at(~Tile.Tile8,~Entries,~packed_entry,Tile.filled(0.0),count,query,0n,context,within))
+
+# An index past the filled ones keeps its tile.
+def fill_kept(+count: Nat,+values: Tree.Tree<F32>,+window: Packing.Stencil,+start: U32,+depth: Nat,+tiles: Tree.Tree<Tile.Tile8>,
+  +balanced: Shape.Balanced(Tile.Tile8,depth,tiles),+limit: {Nat.is_le(depth,30n) == True{} : Bool},
+  +room: {Nat.is_le(count,U32.to_nat(Tree.capacity(Tile.Tile8,tiles))) == True{} : Bool},+query: Nat,
+  +query_inside: {Nat.is_lt(query,U32.to_nat(Tree.capacity(Tile.Tile8,tiles))) == True{} : Bool},+after: {Nat.is_le(count,query) == True{} : Bool}) ->
+  {Tree.read(Tile.Tile8,fill(count,values,window,start,tiles),U32.from_nat(query)) == Tree.read(Tile.Tile8,tiles,U32.from_nat(query)) : Tile.Tile8}:
+  +context = {Entries{values,window,start} : Entries}
+  +entries = ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,count,0n,context)
+  +length = ListRead.enumerate_length(~Tile.Tile8,~Entries,~packed_entry,count,0n,context)
+  ListRead.preserved_after(~Tile.Tile8,entries,0n,query,depth,tiles,balanced,limit,
+    %Equal.sym(Nat,List.length(&2,Tile.Tile8,entries),count,length) : {Nat.is_le(_,U32.to_nat(Tree.capacity(Tile.Tile8,tiles))) == True{} : Bool} room,
+    query_inside,%Equal.sym(Nat,List.length(&2,Tile.Tile8,entries),count,length) : {Nat.is_le(_,query) == True{} : Bool} after)
+
+# The entries read the values from zero, so the base of the window does not
+# change them.
+def entries_plain(n: Nat,+first: Nat,+values: Tree.Tree<F32>,+window: Packing.Stencil,+start: U32) ->
+  {ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,n,first,Entries{values,window,start}) ==
+    ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,n,first,Entries{values,plain(window),start}) : List<&2,Tile.Tile8>}:
+  match n:
+    case 0n: {==}
+    case 1n+ +rest:
+      Packing.Stencil{+base,+height,+width,+tap_rows,+tap_columns,+stride,+row_origin,+column_origin,+output_width,+inner,+groups} = window
+      +window = {Packing.Stencil{base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,inner,groups} : Packing.Stencil}
+      Equal.cong(List<&2,Tile.Tile8>,List<&2,Tile.Tile8>,tail => packed_entry(Entries{values,window,start},first) <> tail,
+        ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,rest,1n+first,Entries{values,window,start}),
+        ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,rest,1n+first,Entries{values,plain(window),start}),
+        entries_plain(rest,1n+first,values,window,start))
+
+def fill_plain(+count: Nat,+values: Tree.Tree<F32>,+window: Packing.Stencil,+start: U32,+tiles: Tree.Tree<Tile.Tile8>) ->
+  {fill(count,values,window,start,tiles) == fill(count,values,plain(window),start,tiles) : Tree.Tree<Tile.Tile8>}:
+  Equal.cong(List<&2,Tile.Tile8>,Tree.Tree<Tile.Tile8>,entries => Tree.write_sequence(~Tile.Tile8,entries,U32.from_nat(0n),tiles),
+    ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,count,0n,Entries{values,window,start}),
+    ListRead.enumerate(~Tile.Tile8,~Entries,~packed_entry,count,0n,Entries{values,plain(window),start}),
+    entries_plain(count,0n,values,window,start))

@@ -1,1004 +1,737 @@
-# The public conv2d. A Normal input of any layout arrives in the layout the
-# planner chooses for it, the band pipeline runs there, and every output cell
-# holds the ordered convolution value. Weights and bias of any layout are read
-# as their whole tensors.
+# The public conv2d. The input moves its lanes onto the channels, the
+# weights and bias are read as their whole tensors, and the windowed pipeline
+# runs over the pieces of the output cells. Every output cell holds, in its
+# lanes, the ordered convolution value.
 import Base
 import ../specification.bend as ConvSpec
-import ../../lib/tensor.bend as Tensors
-import ../../lib/tensor_band.bend as Bands
-import ../../lib/tensor_band_window.bend as BandWindow
-import ../../lib/tensor_band_schedule.bend as BandSchedule
+import ../inference.bend as NativeConv
 import ../../lib/tensor_convolution.bend as TensorConvolution
 import ../../lib/kernel_shape.bend as KernelShape
-import ../../lib/kernel_tile.bend as Tile
-import ../../lib/kernel_band_planning.bend as BandPlanning
-import ../../lib/default_kernel_cost.bend as DefaultCost
+import ../../lib/kernel_window_pipeline.bend as WindowPipeline
 import ../../lib/math_activation.bend as Activations
 import ../../lib/machine_limits.bend as Machine
-import ../../lib/default_machine_limits.bend as Default
+import ../../lib/tensor_tiled.bend as Tiled
+import ../../lib/tensor_grid.bend as Grid
+import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
+import ./image_problems.bend as ImageProblems
+import ./window_packed_values.bend as Calls
+import ./convolution_guard_facts.bend as Guards
+import ./reduction_coordinate_bounds.bend as Coordinates
+import ./concrete_support_guard.bend as Support
+import ./supported_padded_coordinates.bend as Padded
 import ../../lib/storage_buffer.bend as Storage
-import ../../lib/proofs/storage_certificate.bend as Certificate
+import ../../lib/storage_clone.bend as Clone
+import ../../lib/tensor.bend as Tensors
+import ../../lib/kernel_tile.bend as Tile
+import ../../lib/proofs/storage_clone_refinement.bend as CloneLaws
 import ../../lib/proofs/storage_buffer_model.bend as Buffer
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/proofs/storage_shape.bend as Shape
-import ../../lib/proofs/tensor_band_model.bend as Model
-import ../../lib/proofs/tensor_band_shape_refinement.bend as BandShape
-import ../../lib/proofs/tensor_band_values.bend as BandValues
-import ../../lib/proofs/tensor_band_inspection.bend as Inspection
-import ../../lib/proofs/tensor_band_gather.bend as BandGather
-import ../../lib/proofs/tensor_band_count.bend as BandCount
-import ../../lib/proofs/tensor_band_from_whole.bend as FromWhole
-import ../../lib/proofs/tensor_band_plan.bend as BandPlan
-import ../../lib/proofs/tensor_band_target.bend as Target
-import ../../lib/proofs/tensor_band_arrive.bend as Arrive
-import ../../lib/proofs/tensor_global_shape_count.bend as Global
-import ../../lib/proofs/tensor_contract.bend as Contract
-import ../../lib/proofs/tensor_whole_leaf.bend as WholeLeaf
-import ../../lib/proofs/tensor_gather_values.bend as GatherValues
-import ../../lib/proofs/tensor_shape_refinement.bend as ShapeLaws
-import ../../lib/proofs/tensor_band_concat_execution.bend as BandConcatExecution
-import ../../lib/proofs/kernel_band_planning_refinement.bend as Planning
-import ../../lib/proofs/kernel_band_planning_observation.bend as Observation
+import ../../lib/proofs/traversal_partition_refinement.bend as PartitionLaws
+import ../../lib/kernel_gemm.bend as Gemm
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
+import ../../lib/proofs/tensor_grid_ranges.bend as GridRanges
+import ../../lib/proofs/tensor_grid_pieces.bend as GridLaws
+import ../../lib/proofs/tensor_task_runs.bend as Runs
+import ../../lib/proofs/tensor_move_readback.bend as Held
+import ../../lib/proofs/nat_order.bend as Order
+import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
+import ../../lib/proofs/natural_addition.bend as Addition
+import ../../lib/tensor_tiled_cells.bend as TiledCells
+import ./window_cell_contents.bend as CellContents
+import ./window_reach.bend as Reach
+import ../../lib/proofs/tensor_convolution_whole_cells.bend as WholeCells
+import ./window_band_cover.bend as BandCover
+import ./input_storage.bend as Inputs
+import ../../lib/kernel_pipeline.bend as Pipeline
+import ../../lib/tensor_pieces.bend as Pieces
+import ../../lib/traversal_partition.bend as Partition
+import ../../lib/proofs/tensor_tiled_representation.bend as Representation
+import ../../lib/proofs/storage_refinement.bend as StorageLaws
+import ../../lib/proofs/tensor_halo_windows.bend as Windows
+import ../../lib/proofs/tensor_pieces_model.bend as PiecesModel
+import ../../lib/proofs/tensor_pieces_content.bend as Content
+import ../../lib/proofs/tensor_pieces_grouped_with.bend as Grouped
+import ../../lib/proofs/tensor_placed.bend as Placed
+import ../../lib/proofs/tensor_shape_refinement.bend as ShapeLaws
+import ../../lib/tensor_move.bend as Move
+import ../../lib/tensor_tasks.bend as Tasks
+import ../../lib/tensor_halo.bend as Halo
+import ./window_windowed.bend as Windowed
+import ../../lib/proofs/tensor_global_shape_count.bend as Global
+import ../../lib/proofs/word_encoding.bend as WordEncoding
+import ../../lib/proofs/u32_extrema.bend as U32Extrema
+import ../../lib/proofs/kernel_pipeline_bounds.bend as BlockBounds
+import ./window_call_evidence.bend as Evidence
+import ../../lib/proofs/tensor_allocation_depth.bend as Depth
+import ../../lib/proofs/u32_division.bend as U32Division
+import ./supported_coordinate_bounds.bend as SupportedCoordinates
+import ../../lib/proofs/tensor_tiled_values.bend as TiledValues
+import ../../lib/proofs/encoded_coordinates.bend as Encoded
+import ../../lib/proofs/nat_ceiling.bend as Ceiling
+import ../../lib/proofs/row_major_index.bend as RowMajor
+import ./window_contents.bend as Contents
+import ../../lib/proofs/kernel_window_windows.bend as KernelWindows
+import ../../lib/proofs/tensor_storage_count.bend as StorageCount
+import ../../lib/default_machine_limits.bend as Default
+import ./window_cell_values.bend as CellValues
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
+import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 import ../../lib/proofs/boolean_logic.bend as Boolean
-import ./convolution_guard_facts.bend as Guards
-import ./band_caller_guards.bend as Caller
-import ./band_leaf_caller.bend as Leaf
-import ./band_leaf_values.bend as LeafValues
-import ./band_frame_configuration.bend as Configuration
-import ./band_native_source_domain.bend as BandNativeSourceDomain
-import ./band_convolution_values.bend as BandConvolutionValues
-import ./band_pipeline_execution.bend as PipelineExecution
-import ./band_tensor_execution.bend as TensorExecution
-import ./band_output_metadata.bend as OutputMetadata
-import ./band_output_normal.bend as BandOutputNormal
-import ./band_public_frame.bend as PublicFrame
-import ./band_parameter_owners.bend as Parameters
+import ../../lib/proofs/tensor_tiled_public.bend as TiledPublic
 
-# A conv2d result: Usable in its output shape, with the values and the Normal
-# envelope of the contract.
-def Convolved(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+context: BandConvolutionValues.Context<Logical>,+shape: List<&2,U32>,-result: Tensors.Tensor<F32>) -> Data:
-  Global.Shaped(~F32,~BandConvolutionValues.Context<Logical>,~BandConvolutionValues.value(~custom,~Logical,~original),context,shape,result)
+# The record of the convolution the call builds from its shape words is the
+# record the windowed pipeline reads.
+def record_runtime(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,
+  +kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,
+  +valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +activation: Activations.Activation) ->
+  {Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation) ==
+    WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),
+      U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),
+      U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation} : WindowPipeline.Convolution}:
+  +problem = ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)
+  +support = Padded.scalar(limits,problem,Support.fast(limits,problem,supported))
+  +inner_word = Arithmetic.from_nat_exact(Coordinates.native_inner(problem),Coordinates.inner(problem),Coordinates.inner_exact(limits,problem,Guards.valid(problem,valid),support))
+  +divided = (Coordinates.native_inner(problem) / (U32.from_nat(kernel) * U32.from_nat(kernel) : U32) : U32)
+  +channels_word = Arithmetic.from_nat_exact(divided,channels,Coordinates.inner_channels(limits,problem,Guards.valid(problem,valid),support))
+  %Equal.sym(U32,U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Coordinates.native_inner(problem),inner_word) :
+    {Calls.record(problem,Tiled.groups(U32.from_nat(outputs)),activation) ==
+      WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),
+        U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),
+        _,Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation} : WindowPipeline.Convolution}
+  %Equal.sym(U32,U32.from_nat(channels),divided,channels_word) :
+    {Calls.record(problem,Tiled.groups(U32.from_nat(outputs)),activation) ==
+      WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),
+        U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),
+        Coordinates.native_inner(problem),Grid.groups(_),Tiled.groups(U32.from_nat(outputs)),activation} : WindowPipeline.Convolution}
+  {==}
 
-# The values the pipeline stores, with the Normal envelope of the result.
-def convolved(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+context: BandConvolutionValues.Context<Logical>,+shape: List<&2,U32>,-result: Tensors.Tensor<F32>,
-  usable: Global.Usable<F32,shape,result>,contract: PublicFrame.Contract(~custom,~Logical,~original,context,result),normal: Global.Normal(~F32,result)) ->
-  Convolved(~custom,~Logical,~original,context,shape,result):
-  Shape.Both{values,well_formed} = contract
-  Shape.Both{usable,Shape.Both{normal,values}}
+# ---- The room of the problem ----
 
-# The output extents of a frame: its images, output channels and output
-# rows and columns.
-def frame_extents(~Logical: Data,frame: PipelineExecution.Frame<Logical>,batched: Bool) -> List<&2,U32>:
-  BandOutputNormal.extents(batched,OutputMetadata.bounds_geometry(~Logical,frame))
+# A number is at least zero.
+def max_zero(+value: Nat) -> {Nat.max(value,0n) == value : Nat}:
+  match value:
+    case 0n: {==}
+    case 1n+ +rest: {==}
 
-def dimension_extents(batched: Bool,images: U32,dimensions: KernelShape.Dimensions) -> List<&2,U32>:
-  KernelShape.Dimensions{ci,co,+h,+w,+k,+s,+p} = dimensions
-  TensorConvolution.output_shape(batched,images,U32.from_nat(co),U32.from_nat(ConvSpec.axis_size(h,k,s,p)),U32.from_nat(ConvSpec.axis_size(w,k,s,p)))
+# A positive number is at least one.
+def max_one(+value: Nat,+positive: {Nat.is_lt(0n,value) == True{} : Bool}) -> {Nat.max(value,1n) == value : Nat}:
+  match value:
+    case 0n: Empty.absurd({Nat.max(0n,1n) == 0n : Nat},WordEncoding.false_true(positive))
+    case 1n+ +rest: Equal.cong(Nat,Nat,n => 1n+n,Nat.max(rest,0n),rest,max_zero(rest))
 
-# The public extents of a native input record.
-def batched(input: PublicFrame.NativeInput) -> Bool:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p} = input
-  batched
+def plane_positive(+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat) -> {Nat.is_lt(0n,ImageProblems.plane(height,width,kernel,stride,padding)) == True{} : Bool}:
+  Order.product_positive(ConvSpec.axis_size(height,kernel,stride,padding),ConvSpec.axis_size(width,kernel,stride,padding),{==},{==})
 
-def input_extents(input: PublicFrame.NativeInput) -> List<&2,U32>:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p} = input
-  TensorConvolution.output_shape(batched,images,ci,h,w)
+# The plane word of the record is the output plane of the problem.
+def call_plane_exact(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+groups_out: U32,+activation: Activations.Activation) ->
+  {U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)) == ImageProblems.plane(height,width,kernel,stride,padding) : Nat}:
+  +exact = Padded.spatial_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid),Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported))
+  Equal.trans(Nat,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),Nat.max(U32.to_nat(Padded.spatial(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),1n),ImageProblems.plane(height,width,kernel,stride,padding),U32Extrema.maximum(Padded.spatial(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),1),
+    {%Equal.sym(Nat,U32.to_nat(Padded.spatial(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),ImageProblems.plane(height,width,kernel,stride,padding),exact) : {Nat.max(_,1n) == ImageProblems.plane(height,width,kernel,stride,padding) : Nat}
+      max_one(ImageProblems.plane(height,width,kernel,stride,padding),plane_positive(height,width,kernel,stride,padding)) : {Nat.max(U32.to_nat(Padded.spatial(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),1n) == ImageProblems.plane(height,width,kernel,stride,padding) : Nat}})
 
-def weight_extents(input: PublicFrame.NativeInput) -> List<&2,U32>:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,+k,s,p} = input
-  [co,ci,k,k]
+def call_plane_positive(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+groups_out: U32,+activation: Activations.Activation) ->
+  {Nat.is_lt(0n,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))) == True{} : Bool}:
+  %Equal.sym(Nat,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),ImageProblems.plane(height,width,kernel,stride,padding),call_plane_exact(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,groups_out,activation)) : {Nat.is_lt(0n,_) == True{} : Bool}
+  plane_positive(height,width,kernel,stride,padding)
 
-def bias_extents(input: PublicFrame.NativeInput) -> List<&2,U32>:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p} = input
-  [co]
+def call_plane_room(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+groups_out: U32,+activation: Activations.Activation) ->
+  {Nat.is_le(U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  %Equal.sym(Nat,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),ImageProblems.plane(height,width,kernel,stride,padding),call_plane_exact(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,groups_out,activation)) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+  Padded.spatial_bound_facts(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid),Padded.scalar(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported)))
 
-# The extents of the result of a native input record.
-def output_extents(input: PublicFrame.NativeInput) -> List<&2,U32>:
-  PublicFrame.NativeInput{images,batched,ci,co,+h,+w,+k,+s,+p} = input
-  TensorConvolution.output_shape(batched,images,co,
-    U32.from_nat(ConvSpec.axis_size(U32.to_nat(h),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p))),
-    U32.from_nat(ConvSpec.axis_size(U32.to_nat(w),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p))))
+# The output channels and their groups of eight.
+def outputs_room(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool}) -> {Nat.is_le(outputs,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  Limits.dimension_capacity(limits,outputs,SupportedCoordinates.co_bound(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Padded.scalar(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported))))
 
-def stride(input: PublicFrame.NativeInput) -> U32:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p} = input
-  s
+def output_groups_exact(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool}) -> {Calls.cell_groups(outputs) == TiledValues.groups_of(outputs) : Nat}:
+  +exact = SupportedCoordinates.co_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Padded.scalar(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported)))
+  %exact : {U32.to_nat(Gemm.blocks(U32.from_nat(outputs))) == Ceiling.ceiling(_,8n) : Nat}
+  Encoded.eight_blocks_exact(limits,U32.from_nat(outputs),
+    {%Equal.sym(Nat,U32.to_nat(U32.from_nat(outputs)),outputs,exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+      outputs_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported) : {Nat.is_le(U32.to_nat(U32.from_nat(outputs)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}})
 
-def padding(input: PublicFrame.NativeInput) -> U32:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p} = input
-  p
+def output_groups_positive(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool}) -> {Nat.is_lt(0n,Calls.cell_groups(outputs)) == True{} : Bool}:
+  +groups = TiledValues.groups_of(outputs)
+  %Equal.sym(Nat,Calls.cell_groups(outputs),groups,output_groups_exact(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported)) : {Nat.is_lt(0n,_) == True{} : Bool}
+  RowMajor.left_factor_positive(groups,8n,Bounds.nat_trans(0n,outputs,Nat.mul(groups,8n),Contents.valid_condition(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid,9n),Ceiling.covers(outputs,8n,{==})))
 
-def input_shape_value(input: PublicFrame.NativeInput) -> TensorConvolution.InputShape:
-  PublicFrame.NativeInput{images,+batched,ci,co,h,w,k,s,p} = input
-  TensorConvolution.InputShape{PublicFrame.image_count(batched,images),batched,ci,h,w}
+def output_groups_below(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool}) -> {Nat.is_le(Calls.cell_groups(outputs),outputs) == True{} : Bool}:
+  %Equal.sym(Nat,Calls.cell_groups(outputs),TiledValues.groups_of(outputs),output_groups_exact(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported)) : {Nat.is_le(_,outputs) == True{} : Bool}
+  Ceiling.minimal(outputs,8n,outputs,{==},RowMajor.product_covers(outputs,8n,{==}))
 
-def input_shape_matches(+input: PublicFrame.NativeInput) ->
-  {TensorConvolution.input_shape(input_extents(input)) == Some{input_shape_value(input)} : Maybe<&2,TensorConvolution.InputShape>}:
-  PublicFrame.NativeInput{+images,+batched,+ci,+co,+h,+w,+k,+s,+p} = input
+def output_groups_room(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool}) -> {Nat.is_le(Calls.cell_groups(outputs),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  Order.transitive(Calls.cell_groups(outputs),outputs,U32.to_nat(Machine.capacity(limits)),output_groups_below(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported),outputs_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported))
+
+# A positive number is its own least one.
+def least_one_positive(+value: Nat,+positive: {Nat.is_lt(0n,value) == True{} : Bool}) -> {Representation.least_one(value) == value : Nat}:
+  match value:
+    case 0n: Empty.absurd({Representation.least_one(0n) == 0n : Nat},WordEncoding.false_true(positive))
+    case 1n+ +rest: {==}
+
+# Products of three numbers in another order.
+def swap_outer(+a: Nat,+b: Nat,+c: Nat) -> {Nat.mul(a,Nat.mul(b,c)) == Nat.mul(b,Nat.mul(a,c)) : Nat}:
+  Equal.trans(Nat,Nat.mul(a,Nat.mul(b,c)),Nat.mul(Nat.mul(a,b),c),Nat.mul(b,Nat.mul(a,c)),Equal.sym(Nat,Nat.mul(Nat.mul(a,b),c),Nat.mul(a,Nat.mul(b,c)),RowMajor.assoc(a,b,c)),
+    Equal.trans(Nat,Nat.mul(Nat.mul(a,b),c),Nat.mul(Nat.mul(b,a),c),Nat.mul(b,Nat.mul(a,c)),
+      Equal.cong(Nat,Nat,product => Nat.mul(product,c),Nat.mul(a,b),Nat.mul(b,a),RowMajor.multiply_commutative(a,b)),RowMajor.assoc(b,a,c)))
+
+def swap_inner(+a: Nat,+b: Nat,+c: Nat) -> {Nat.mul(a,Nat.mul(b,c)) == Nat.mul(Nat.mul(a,c),b) : Nat}:
+  Equal.trans(Nat,Nat.mul(a,Nat.mul(b,c)),Nat.mul(a,Nat.mul(c,b)),Nat.mul(Nat.mul(a,c),b),
+    Equal.cong(Nat,Nat,product => Nat.mul(a,product),Nat.mul(b,c),Nat.mul(c,b),RowMajor.multiply_commutative(b,c)),
+    Equal.sym(Nat,Nat.mul(Nat.mul(a,c),b),Nat.mul(a,Nat.mul(c,b)),RowMajor.assoc(a,c,b)))
+
+def output_groups_word(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool}) -> {U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)) == Calls.cell_groups(outputs) : Nat}:
+  Equal.trans(Nat,U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)),Nat.max(Calls.cell_groups(outputs),1n),Calls.cell_groups(outputs),U32Extrema.maximum(Tiled.groups(U32.from_nat(outputs)),1),
+    max_one(Calls.cell_groups(outputs),output_groups_positive(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported)))
+
+# The positive extents of a valid problem.
+def height_positive_of(+problem: ConvSpec.Problem,+facts: Guards.Valid<problem>) -> {Nat.is_lt(0n,Guards.height(problem)) == True{} : Bool}:
+  Guards.Valid{+inputs,+outputs,+heights,+widths,+kernels,+strides,+kernel_height,+kernel_width,+input_length,+weight_length,+bias_length} = facts
+  heights
+
+def width_positive_of(+problem: ConvSpec.Problem,+facts: Guards.Valid<problem>) -> {Nat.is_lt(0n,Guards.width(problem)) == True{} : Bool}:
+  Guards.Valid{+inputs,+outputs,+heights,+widths,+kernels,+strides,+kernel_height,+kernel_width,+input_length,+weight_length,+bias_length} = facts
+  widths
+
+def kernel_positive_of(+problem: ConvSpec.Problem,+facts: Guards.Valid<problem>) -> {Nat.is_lt(0n,Guards.kernel(problem)) == True{} : Bool}:
+  Guards.Valid{+inputs,+outputs,+heights,+widths,+kernels,+strides,+kernel_height,+kernel_width,+input_length,+weight_length,+bias_length} = facts
+  kernels
+
+def stride_positive_of(+problem: ConvSpec.Problem,+facts: Guards.Valid<problem>) -> {Nat.is_lt(0n,Guards.stride(problem)) == True{} : Bool}:
+  Guards.Valid{+inputs,+outputs,+heights,+widths,+kernels,+strides,+kernel_height,+kernel_width,+input_length,+weight_length,+bias_length} = facts
+  strides
+
+# The shape of the windows of a supported problem: its words, positive and
+# inside the machine, and the input cells of its images inside total.
+def problem_shape(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},+groups_out: U32,+activation: Activations.Activation,+images: Nat,+total: Nat,
+  +images_positive: {Nat.is_lt(0n,images) == True{} : Bool},+groups_exact_out: {U32.to_nat(U32.max(groups_out,1)) == Calls.cell_groups(outputs) : Nat},
+  +groups_room: {Nat.is_le(Calls.cell_groups(outputs),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +inputs_within: {Nat.is_le(Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),total) == True{} : Bool},+total_room: {Nat.is_le(total,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
+  Reach.Shape<limits,BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),BandCover.kernel_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),groups_out,images,total>:
+  +problem = ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)
+  +facts = Guards.valid(problem,valid)
+  +scalar = Padded.scalar(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported))
+  +height_exact = SupportedCoordinates.height_exact(limits,problem,scalar)
+  +width_exact = SupportedCoordinates.width_exact(limits,problem,scalar)
+  +kernel_exact = SupportedCoordinates.kernel_exact(limits,problem,scalar)
+  +stride_room = Limits.dimension_capacity(limits,Guards.stride(problem),SupportedCoordinates.stride_bound(limits,problem,scalar))
+  +stride_exact = Bounds.roundtrip(Guards.stride(problem),Machine.capacity(limits),Limits.capacity_fits(limits),stride_room)
+  +rows_exact = Bounds.roundtrip(ConvSpec.out_height(problem),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.row_limit(limits,problem,facts,scalar))
+  +columns_exact = Bounds.roundtrip(ConvSpec.out_width(problem),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.col_limit(limits,problem,facts,scalar))
+  +groups_exact = Calls.groups_word_exact(limits,problem,valid,supported)
+  +height_room = Limits.dimension_capacity(limits,Guards.height(problem),SupportedCoordinates.height_bound(limits,problem,scalar))
+  +plane_room = Padded.spatial_bound_facts(limits,problem,facts,scalar)
+  +columns_room = Order.transitive(ConvSpec.out_width(problem),Nat.mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem)),U32.to_nat(Machine.capacity(limits)),
+    DivisionOrder.le_multiple(ConvSpec.out_height(problem),ConvSpec.out_width(problem),{==}),plane_room)
+  +words_plane = Equal.trans(Nat,Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Nat.mul(ConvSpec.out_height(problem),U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Nat.mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem)),
+    Equal.cong(Nat,Nat,value => Nat.mul(value,U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),ConvSpec.out_height(problem),rows_exact),
+    Equal.cong(Nat,Nat,value => Nat.mul(ConvSpec.out_height(problem),value),U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),ConvSpec.out_width(problem),columns_exact))
+  +plane_exact = Equal.trans(Nat,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),ImageProblems.plane(height,width,kernel,stride,padding),Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),
+    call_plane_exact(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,groups_out,activation),Equal.sym(Nat,Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),ImageProblems.plane(height,width,kernel,stride,padding),words_plane))
+  +words_room = {%Equal.sym(Nat,Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Nat.mul(ConvSpec.out_height(problem),ConvSpec.out_width(problem)),words_plane) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    plane_room : {Nat.is_le(Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +envelope = SupportedCoordinates.row_envelope(limits,problem,scalar)
+  +reach_rows = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),ConvSpec.out_height(problem),rows_exact) : {Nat.is_le(Nat.add(Nat.mul(_,Guards.stride(problem)),Guards.kernel(problem)),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}
+    envelope : {Nat.is_le(Nat.add(Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Guards.stride(problem)),Guards.kernel(problem)),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}}
+  +reach_stride = {%Equal.sym(Nat,U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.stride(problem),stride_exact) : {Nat.is_le(Nat.add(Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),_),Guards.kernel(problem)),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}
+    reach_rows : {Nat.is_le(Nat.add(Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Guards.kernel(problem)),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}}
+  +reach_room = {%Equal.sym(Nat,U32.to_nat(BandCover.kernel_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.kernel(problem),kernel_exact) : {Nat.is_le(Nat.add(Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),_),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}
+    reach_stride : {Nat.is_le(Nat.add(Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.kernel_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}}
+  +count = CellContents.count(problem,Guards.height(problem))
+  +count_room = Order.transitive(count,Nat.mul(images,count),U32.to_nat(Machine.capacity(limits)),DivisionOrder.le_multiple(images,count,images_positive),
+    Order.transitive(Nat.mul(images,count),total,U32.to_nat(Machine.capacity(limits)),inputs_within,total_room))
+  +image_words = Equal.trans(Nat,Nat.mul(Nat.mul(U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Nat.mul(Nat.mul(Guards.height(problem),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),count,
+    Equal.cong(Nat,Nat,value => Nat.mul(Nat.mul(value,U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.height(problem),height_exact),
+    Equal.trans(Nat,Nat.mul(Nat.mul(Guards.height(problem),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Nat.mul(Nat.mul(Guards.height(problem),Guards.width(problem)),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),count,
+      Equal.cong(Nat,Nat,value => Nat.mul(Nat.mul(Guards.height(problem),value),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Guards.width(problem),width_exact),
+      Equal.cong(Nat,Nat,value => Nat.mul(Nat.mul(Guards.height(problem),Guards.width(problem)),value),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),CellContents.group_count(problem),groups_exact)))
+  +image_room = {%Equal.sym(Nat,Nat.mul(Nat.mul(U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),count,image_words) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    count_room : {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +cells_room = {%Equal.sym(Nat,Nat.mul(Nat.mul(U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),count,image_words) : {Nat.is_le(Nat.mul(images,_),total) == True{} : Bool}
+    inputs_within : {Nat.is_le(Nat.mul(images,Nat.mul(Nat.mul(U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),total) == True{} : Bool}}
+  Reach.Shape{
+    {%Equal.sym(Nat,U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.height(problem),height_exact) : {Nat.is_lt(0n,_) == True{} : Bool} height_positive_of(problem,facts) : {Nat.is_lt(0n,U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Guards.width(problem),width_exact) : {Nat.is_lt(0n,_) == True{} : Bool} width_positive_of(problem,facts) : {Nat.is_lt(0n,U32.to_nat(U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(BandCover.kernel_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.kernel(problem),kernel_exact) : {Nat.is_lt(0n,_) == True{} : Bool} kernel_positive_of(problem,facts) : {Nat.is_lt(0n,U32.to_nat(BandCover.kernel_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.stride(problem),stride_exact) : {Nat.is_lt(0n,_) == True{} : Bool} stride_positive_of(problem,facts) : {Nat.is_lt(0n,U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),ConvSpec.out_width(problem),columns_exact) : {Nat.is_lt(0n,_) == True{} : Bool} {==} : {Nat.is_lt(0n,U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),CellContents.group_count(problem),groups_exact) : {Nat.is_lt(0n,_) == True{} : Bool} Calls.group_positive(problem,valid) : {Nat.is_lt(0n,U32.to_nat(Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.height(problem),height_exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} height_room : {Nat.is_le(U32.to_nat(BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),Guards.stride(problem),stride_exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} stride_room : {Nat.is_le(U32.to_nat(BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}},
+    {%Equal.sym(Nat,U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),ConvSpec.out_width(problem),columns_exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} columns_room : {Nat.is_le(U32.to_nat(BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}},
+    plane_exact,words_room,reach_room,
+    {%Equal.sym(Nat,U32.to_nat(U32.max(groups_out,1)),Calls.cell_groups(outputs),groups_exact_out) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} groups_room : {Nat.is_le(U32.to_nat(U32.max(groups_out,1)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}},
+    image_room,cells_room,total_room}
+
+
+# The times a cut unit holds its unit.
+def cut_times(-value: Nat,-unit: Nat,+multiple: GridRanges.Multiple<value,unit>) -> Nat:
+  GridRanges.Multiple{+times,+exact} = multiple
+  times
+
+def cut_times_exact(-value: Nat,-unit: Nat,+multiple: GridRanges.Multiple<value,unit>) -> {value == Nat.mul(cut_times(value,unit,multiple),unit) : Nat}:
+  GridRanges.Multiple{+times,+exact} = multiple
+  exact
+
+# The output pieces of the windowed convolution over an output cell shape
+# are a tensor of the contract of the convolution values.
+def output_contract(~custom: F32 -> F32,
+  ~Logical: Data,
+  ~original: Logical -> U32 -> F32,
+  +logical: Logical,
+  +channels: Nat,
+  +outputs: Nat,
+  +height: Nat,
+  +width: Nat,
+  +kernel: Nat,
+  +stride: Nat,
+  +padding: Nat,
+  +weight_list: List<&2,F32>,
+  +bias_list: List<&2,F32>,
+  +limits: Machine.Limits,
+  +cells: List<&2,U32>,
+  +room: {Nat.is_le(ShapeLaws.elements(cells),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +nonempty: {Nat.is_lt(0n,ShapeLaws.elements(cells)) == True{} : Bool},
+  +divides: GridRanges.Multiple<GridRanges.last_extent(cells),Calls.cell_groups(outputs)>,
+  +counted: Global.Counted<cells>,
+  +upper: U32,
+  +upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},
+  +upper_bound: {U32.is_le(upper,1073741824) == True{} : Bool},
+  +area_positive: {Nat.is_lt(0n,Nat.mul(channels,Nat.mul(height,width))) == True{} : Bool},
+  +area_room: {Nat.is_le(Nat.mul(channels,Nat.mul(height,width)),U32.to_nat(upper)) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weight_list),weight_list>,
+  +bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias_list),bias_list>,
+  +parameters: Inputs.Parameters(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),
+  +valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +groups_out: U32,
+  +activation: Activations.Activation,
+  +word_positive: {Nat.is_lt(0n,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))) == True{} : Bool},
+  +plane_positive_word: {Nat.is_lt(0n,ImageProblems.plane(height,width,kernel,stride,padding)) == True{} : Bool},
+  +plane_exact: {U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)) == ImageProblems.plane(height,width,kernel,stride,padding) : Nat},
+  +plane_room: {Nat.is_le(U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +outputs_room: {Nat.is_le(outputs,U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +groups_exact_out: {U32.to_nat(U32.max(groups_out,1)) == Calls.cell_groups(outputs) : Nat},
+  +outer_word: U32,
+  +after_word: U32,
+  +lanes_word: U32,
+  +groups_word: U32,
+  +after_exact: {U32.to_nat(after_word) == ImageProblems.plane(height,width,kernel,stride,padding) : Nat},
+  +lanes_exact: {U32.to_nat(lanes_word) == outputs : Nat},
+  +plane_positive: {Nat.is_lt(0n,ImageProblems.plane(height,width,kernel,stride,padding)) == True{} : Bool},
+  +images: Nat,
+  +elements_room: {Nat.is_le(Nat.mul(Nat.mul(images,Representation.lane_count(TiledCells.Cells{outer_word,after_word,lanes_word,groups_word,Grid.Innermost{}})),Representation.after_count(TiledCells.Cells{outer_word,after_word,lanes_word,groups_word,Grid.Innermost{}})),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +groups_exact: {U32.to_nat(groups_word) == Calls.cell_groups(outputs) : Nat},
+  +positive: {Nat.is_lt(0n,Calls.cell_groups(outputs)) == True{} : Bool},
+  +input_outer: U32,
+  +input_after: U32,
+  +input_lanes: U32,
+  +input_groups: U32,
+  +input_after_exact: {U32.to_nat(input_after) == Nat.mul(height,width) : Nat},
+  +input_lanes_exact: {U32.to_nat(input_lanes) == channels : Nat},
+  +input_groups_exact: {U32.to_nat(input_groups) == CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) : Nat},
+  +groups_room: {Nat.is_le(Calls.cell_groups(outputs),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +bound_cells: {Nat.is_le(ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))),Calls.cell_groups(outputs))) == True{} : Bool},
+  +total: Nat,
+  +shape: Reach.Shape<limits,BandCover.height_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),U32.from_nat(Guards.width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),BandCover.kernel_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),BandCover.stride_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),U32.from_nat(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))),BandCover.width_word(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Calls.groups_in(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),groups_out,images,total>,
+  +total_room: {Nat.is_le(total,U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +images_count_room: {Nat.is_le(Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +images_outputs_room: {Nat.is_le(Nat.mul(outputs,Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +cells_room: {Nat.is_le(Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))),Calls.cell_groups(outputs)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +input_grid: Grid.Grid,
+  -pieces: Pieces.Pieces(~Tile.Tile8),
+  +weights: Buffer.Model<Tile.Tile8>,
+  +bias: Buffer.Model<Tile.Tile8>,
+  +weights_exact: {Buffer.tree(~Tile.Tile8,weights) == Calls.weight_tree(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters) : Tree.Tree<Tile.Tile8>},
+  +bias_exact: {Buffer.tree(~Tile.Tile8,bias) == Inputs.bias_cells(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Calls.image_contract(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters)) : Tree.Tree<Tile.Tile8>},
+  +workers: U32,
+  +whole: U32,
+  +bytes_per_cell: F32,
+  +operations: F32,
+  +cut_cell_ns: F32,
+  +extra: Tasks.Extra,
+  +windowed: Windows.Windowed<Tile.Tile8,Representation.Lifted<Logical>,Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{input_outer,input_after,input_lanes,input_groups,Grid.Innermost{}}},WindowPipeline.Convolution,WindowPipeline.reach_of,Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation),total,Runs.decision_tasks(Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra)),Halo.windows(~Tile.Tile8,~WindowPipeline.Convolution,~WindowPipeline.reach_of,Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation),input_grid,Tile.filled(0.0),Runs.decision_tasks(Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra)),pieces)>,
+  +times: Nat,
+  +cut_exact: {U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)) == Nat.mul(times,U32.to_nat(U32.max(WindowPipeline.output_groups_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))) : Nat},
+  +cut_room: {Nat.is_le(U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +fill: Tile.Tile8) ->
+  Global.Contract(~Tile.Tile8,~Representation.Lifted<ImageProblems.Context<Logical>>,~Representation.lifted(~ImageProblems.Context<Logical>,~ImageProblems.value(~custom,~Logical,~original)),Representation.Lifted{ImageProblems.Context{logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list},TiledCells.Cells{outer_word,after_word,lanes_word,groups_word,Grid.Innermost{}}},Tensors.Tensor{WindowPipeline.windowed(~custom,Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation),input_grid,Grid.grid(cells,Grid.piece_target()),Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra),pieces,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~Tile.Tile8,bias)),cells,fill,Tensors.Usable{},workers}):
+  +units_divides = {%Equal.sym(Nat,U32.to_nat(U32.max(WindowPipeline.output_groups_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),Calls.cell_groups(outputs),groups_exact_out) : GridRanges.Multiple<GridRanges.last_extent(cells),_>
+    divides : GridRanges.Multiple<GridRanges.last_extent(cells),U32.to_nat(U32.max(WindowPipeline.output_groups_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))>}
+  +units_bound = {%Equal.sym(Nat,U32.to_nat(U32.max(WindowPipeline.output_groups_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)),Calls.cell_groups(outputs),groups_exact_out) : {Nat.is_le(ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))),_)) == True{} : Bool}
+    bound_cells : {Nat.is_le(ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1))),U32.to_nat(U32.max(WindowPipeline.output_groups_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation)),1)))) == True{} : Bool}}
+  GridRanges.grid_contract(~Tile.Tile8,~Representation.Lifted<ImageProblems.Context<Logical>>,~Representation.lifted(~ImageProblems.Context<Logical>,~ImageProblems.value(~custom,~Logical,~original)),Representation.Lifted{ImageProblems.Context{logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list},TiledCells.Cells{outer_word,after_word,lanes_word,groups_word,Grid.Innermost{}}},limits,cells,fill,workers,WindowPipeline.windowed(~custom,Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),groups_out,activation),input_grid,Grid.grid(cells,Grid.piece_target()),Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra),pieces,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~Tile.Tile8,bias)),room,nonempty,Calls.cell_groups(outputs),divides,counted,
+    Windowed.windowed_cells(~custom,~Logical,~original,limits,logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,groups_out,images,input_outer,input_after,input_lanes,input_groups,outer_word,after_word,lanes_word,groups_word,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters,valid,supported,word_positive,plane_positive_word,plane_exact,plane_room,outputs_room,groups_exact_out,after_exact,lanes_exact,elements_room,groups_exact,positive,input_after_exact,input_lanes_exact,input_groups_exact,groups_room,images_count_room,images_outputs_room,cells_room,total,shape,total_room,cells,room,nonempty,units_divides,units_bound,input_grid,workers,whole,bytes_per_cell,operations,cut_cell_ns,extra,pieces,windowed,weights,bias,weights_exact,bias_exact,times,cut_exact,cut_room))
+
+# The windowed convolution of the record the call builds, over the input
+# cells of a Shaped input and the output cells of a number of images, is a
+# tensor of the contract of the convolution values.
+def cells_contract(~custom: F32 -> F32,
+  ~Logical: Data,
+  ~original: Logical -> U32 -> F32,
+  +logical: Logical,
+  +channels: Nat,
+  +outputs: Nat,
+  +height: Nat,
+  +width: Nat,
+  +kernel: Nat,
+  +stride: Nat,
+  +padding: Nat,
+  +weight_list: List<&2,F32>,
+  +bias_list: List<&2,F32>,
+  +limits: Machine.Limits,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +supported: {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +activation: Activations.Activation,
+  +upper: U32,
+  +upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},
+  +upper_bound: {U32.is_le(upper,1073741824) == True{} : Bool},
+  +area_positive: {Nat.is_lt(0n,Nat.mul(channels,Nat.mul(height,width))) == True{} : Bool},
+  +area_room: {Nat.is_le(Nat.mul(channels,Nat.mul(height,width)),U32.to_nat(upper)) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weight_list),weight_list>,
+  +bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias_list),bias_list>,
+  +parameters: Inputs.Parameters(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),
+  +images: Nat,
+  +images_positive: {Nat.is_lt(0n,images) == True{} : Bool},
+  +images_room: {Nat.is_le(Nat.mul(images,Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +cells: List<&2,U32>,
+  +cells_exact: {ShapeLaws.elements(cells) == Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)) : Nat},
+  +divides: GridRanges.Multiple<GridRanges.last_extent(cells),Calls.cell_groups(outputs)>,
+  +outer_word: U32,
+  +input_cells: List<&2,U32>,
+  +input_exact: {ShapeLaws.elements(input_cells) == Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)) : Nat},
+  +input_outer: U32,
+  pieces: Pieces.Pieces(~Tile.Tile8),
+  +input_fill: Tile.Tile8,
+  +input_status: Tensors.Status,
+  +input_workers: U32,
+  +input_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{input_outer,Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),Grid.Innermost{}}},input_cells,Tensors.Tensor{pieces,input_cells,input_fill,input_status,input_workers}),
+  +weights: Buffer.Model<Tile.Tile8>,
+  +bias: Buffer.Model<Tile.Tile8>,
+  +weights_exact: {Buffer.tree(~Tile.Tile8,weights) == Calls.weight_tree(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters) : Tree.Tree<Tile.Tile8>},
+  +bias_exact: {Buffer.tree(~Tile.Tile8,bias) == Inputs.bias_cells(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Calls.image_contract(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters)) : Tree.Tree<Tile.Tile8>},
+  +workers: U32,
+  +whole: U32,
+  +bytes_per_cell: F32,
+  +operations: F32,
+  +cut_cell_ns: F32,
+  +extra: Tasks.Extra,
+  +lead: U32,
+  +whole_exact: {whole == TensorConvolution.whole_cells(lead,Tensors.grid_of(input_cells),Tensors.grid_of(cells),WindowPipeline.image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),WindowPipeline.output_image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation})) : U32},
+  +fill: Tile.Tile8) ->
+  Global.Contract(~Tile.Tile8,~Representation.Lifted<ImageProblems.Context<Logical>>,~Representation.lifted(~ImageProblems.Context<Logical>,~ImageProblems.value(~custom,~Logical,~original)),Representation.Lifted{ImageProblems.Context{logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list},TiledCells.Cells{outer_word,Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.from_nat(outputs),Tiled.groups(U32.from_nat(outputs)),Grid.Innermost{}}},Tensors.Tensor{WindowPipeline.windowed(~custom,WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation},Tensors.grid_of(input_cells),Grid.grid(cells,Grid.piece_target()),Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra),pieces,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~Tile.Tile8,bias)),cells,fill,Tensors.Usable{},workers}):
+  +facts = Guards.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid)
+  +fast = Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported)
+  +scalar = Padded.scalar(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),fast)
+  +plane_exact = call_plane_exact(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,Tiled.groups(U32.from_nat(outputs)),activation)
+  +groups_word = output_groups_word(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported)
+  +plane_cells = Order.transitive(Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),outputs),U32.to_nat(Machine.capacity(limits)),
+    DivisionOrder.multiply_left_le(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs),outputs,output_groups_below(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported)),
+    %swap_inner(images,outputs,ImageProblems.plane(height,width,kernel,stride,padding)) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} images_room)
+  +room = {%Equal.sym(Nat,ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),cells_exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    plane_cells : {Nat.is_le(ShapeLaws.elements(cells),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +nonempty = {%Equal.sym(Nat,ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),cells_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
+    Order.product_positive(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs),Order.product_positive(images,ImageProblems.plane(height,width,kernel,stride,padding),images_positive,plane_positive(height,width,kernel,stride,padding)),output_groups_positive(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported)) :
+    {Nat.is_lt(0n,ShapeLaws.elements(cells)) == True{} : Bool}}
+  +counted = StorageCount.counted_within(limits,cells,room,default_capacity)
+  +after_exact = {%Equal.sym(U32,(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * 1 : U32),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Arithmetic.multiply_one(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))) : {U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * _ : U32)) == ImageProblems.plane(height,width,kernel,stride,padding) : Nat}
+    Padded.spatial_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),facts,fast) : {U32.to_nat(Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))])) == ImageProblems.plane(height,width,kernel,stride,padding) : Nat}}
+  +lanes_exact = SupportedCoordinates.co_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +elements_room = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(outputs)),outputs,lanes_exact) : {Nat.is_le(Nat.mul(Nat.mul(images,_),Representation.after_count(TiledCells.Cells{outer_word,Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.from_nat(outputs),Tiled.groups(U32.from_nat(outputs)),Grid.Innermost{}})),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))])),ImageProblems.plane(height,width,kernel,stride,padding),after_exact) : {Nat.is_le(Nat.mul(Nat.mul(images,outputs),Representation.least_one(_)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    %Equal.sym(Nat,Representation.least_one(ImageProblems.plane(height,width,kernel,stride,padding)),ImageProblems.plane(height,width,kernel,stride,padding),least_one_positive(ImageProblems.plane(height,width,kernel,stride,padding),plane_positive(height,width,kernel,stride,padding))) :
+      {Nat.is_le(Nat.mul(Nat.mul(images,outputs),_),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    %Equal.sym(Nat,Nat.mul(Nat.mul(images,outputs),ImageProblems.plane(height,width,kernel,stride,padding)),Nat.mul(images,Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding))),RowMajor.assoc(images,outputs,ImageProblems.plane(height,width,kernel,stride,padding))) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    images_room : {Nat.is_le(Nat.mul(Nat.mul(images,Representation.lane_count(TiledCells.Cells{outer_word,Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.from_nat(outputs),Tiled.groups(U32.from_nat(outputs)),Grid.Innermost{}})),Representation.after_count(TiledCells.Cells{outer_word,Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.from_nat(outputs),Tiled.groups(U32.from_nat(outputs)),Grid.Innermost{}})),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +bound_cells = {%Equal.sym(Nat,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1)),ImageProblems.plane(height,width,kernel,stride,padding),plane_exact) : {Nat.is_le(ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,_),Calls.cell_groups(outputs))) == True{} : Bool}
+    %Equal.sym(Nat,ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),cells_exact) : {Nat.is_le(_,Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs))) == True{} : Bool}
+    Order.reflexive(Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs))) : {Nat.is_le(ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1))),Calls.cell_groups(outputs))) == True{} : Bool}}
+  +input_counted = Global.shaped_counted(~Tile.Tile8,~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{input_outer,Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),Grid.Innermost{}}},input_cells,Tensors.Tensor{pieces,input_cells,input_fill,input_status,input_workers},input_shaped)
+  +total_room = StorageCount.counted_room(limits,input_cells,input_counted,default_capacity)
+  +images_count_room = {%input_exact : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} total_room : {Nat.is_le(Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +images_outputs_room = {%Equal.sym(Nat,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1)),ImageProblems.plane(height,width,kernel,stride,padding),plane_exact) : {Nat.is_le(Nat.mul(outputs,Nat.mul(images,_)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    %swap_outer(images,outputs,ImageProblems.plane(height,width,kernel,stride,padding)) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    images_room : {Nat.is_le(Nat.mul(outputs,Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +cells_room = {%Equal.sym(Nat,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1)),ImageProblems.plane(height,width,kernel,stride,padding),plane_exact) : {Nat.is_le(Nat.mul(Nat.mul(images,_),Calls.cell_groups(outputs)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    plane_cells : {Nat.is_le(Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1))),Calls.cell_groups(outputs)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +group_positive = Calls.group_positive(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid)
+  +area_positive_input = Order.product_positive(height,width,Contents.valid_condition(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid,8n),Contents.valid_condition(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid,7n))
+  +ic_positive = Order.product_positive(Nat.mul(height,width),CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),area_positive_input,group_positive)
+  +input_nonempty = {%Equal.sym(Nat,ShapeLaws.elements(input_cells),Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),input_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
+    Order.product_positive(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),images_positive,ic_positive) : {Nat.is_lt(0n,ShapeLaws.elements(input_cells)) == True{} : Bool}}
+  +ic_room = Order.transitive(CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),U32.to_nat(Machine.capacity(limits)),DivisionOrder.le_multiple(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),images_positive),images_count_room)
+  +hw_room = Order.transitive(Nat.mul(height,width),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),U32.to_nat(Machine.capacity(limits)),RowMajor.product_covers(Nat.mul(height,width),CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),group_positive),ic_room)
+  +h_exact = SupportedCoordinates.height_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +w_exact = SupportedCoordinates.width_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +input_after_exact = {%Equal.sym(U32,(U32.from_nat(width) * 1 : U32),U32.from_nat(width),Arithmetic.multiply_one(U32.from_nat(width))) : {U32.to_nat((U32.from_nat(height) * _ : U32)) == Nat.mul(height,width) : Nat}
+    WordMultiplication.multiply_exact(U32.from_nat(height),U32.from_nat(width),height,width,Machine.capacity(limits),Limits.capacity_fits(limits),h_exact,w_exact,hw_room) :
+    {U32.to_nat(Grid.product([U32.from_nat(height),U32.from_nat(width)])) == Nat.mul(height,width) : Nat}}
+  +input_lanes_exact = SupportedCoordinates.ci_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +gi_exact = CellValues.group_count_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),U32.from_nat(channels),supported,input_lanes_exact)
+  +height_positive = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(height)),height,h_exact) : {Nat.is_lt(0n,_) == True{} : Bool} Contents.valid_condition(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid,8n) : {Nat.is_lt(0n,U32.to_nat(U32.from_nat(height))) == True{} : Bool}}
+  +height_room = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(height)),height,h_exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    Limits.dimension_capacity(limits,height,SupportedCoordinates.height_bound(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)) : {Nat.is_le(U32.to_nat(U32.from_nat(height)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +height_small = {%Equal.sym(Nat,U32.to_nat(U32.max(U32.from_nat(height),1)),U32.to_nat(U32.from_nat(height)),Equal.trans(Nat,U32.to_nat(U32.max(U32.from_nat(height),1)),Nat.max(U32.to_nat(U32.from_nat(height)),1n),U32.to_nat(U32.from_nat(height)),U32Extrema.maximum(U32.from_nat(height),1),max_one(U32.to_nat(U32.from_nat(height)),height_positive))) :
+      {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    height_room : {Nat.is_le(U32.to_nat(U32.max(U32.from_nat(height),1)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +stride_exact = Bounds.roundtrip(stride,Machine.dimension(limits),Limits.dimension_fits(limits),SupportedCoordinates.stride_bound(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar))
+  +stride_positive = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(stride)),stride,stride_exact) : {Nat.is_lt(0n,_) == True{} : Bool} Contents.valid_condition(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid,5n) : {Nat.is_lt(0n,U32.to_nat(U32.from_nat(stride))) == True{} : Bool}}
+  +stride_small = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(stride)),stride,stride_exact) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    Limits.dimension_capacity(limits,stride,SupportedCoordinates.stride_bound(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)) : {Nat.is_le(U32.to_nat(U32.from_nat(stride)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +groups_small = {%Equal.sym(Nat,U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)),Calls.cell_groups(outputs),groups_word) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    output_groups_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported) : {Nat.is_le(U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +height_inside = Order.transitive(height,Nat.mul(height,width),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),RowMajor.product_covers(height,width,Contents.valid_condition(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid,7n)),RowMajor.product_covers(Nat.mul(height,width),CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),group_positive))
+  +rows_room = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(height)),height,h_exact) : {Nat.is_le(Nat.mul(images,_),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    Order.transitive(Nat.mul(images,height),Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),U32.to_nat(Machine.capacity(limits)),DivisionOrder.multiply_left_le(images,height,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),height_inside),images_count_room) :
+    {Nat.is_le(Nat.mul(images,U32.to_nat(U32.from_nat(height))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +three_room = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(height)),height,h_exact) : {Nat.is_le(Nat.mul(Nat.mul(_,U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(U32.from_nat(width)),width,w_exact) : {Nat.is_le(Nat.mul(Nat.mul(height,_),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(Tiled.groups(U32.from_nat(channels))),CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),gi_exact) : {Nat.is_le(Nat.mul(Nat.mul(height,width),_),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    ic_room : {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(U32.from_nat(height)),U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +gi_positive = {%Equal.sym(Nat,U32.to_nat(Tiled.groups(U32.from_nat(channels))),CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),gi_exact) : {Nat.is_lt(0n,_) == True{} : Bool} group_positive : {Nat.is_lt(0n,U32.to_nat(Tiled.groups(U32.from_nat(channels)))) == True{} : Bool}}
+  +three_exact = Encoded.multiply_three(U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels)),Machine.capacity(limits),Limits.capacity_fits(limits),gi_positive,three_room)
+  +input_cells_room = {%Equal.sym(Nat,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32)),Nat.mul(Nat.mul(U32.to_nat(U32.from_nat(height)),U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),three_exact) : {Nat.is_le(Nat.mul(images,_),ShapeLaws.elements(input_cells)) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(U32.from_nat(height)),height,h_exact) : {Nat.is_le(Nat.mul(images,Nat.mul(Nat.mul(_,U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels))))),ShapeLaws.elements(input_cells)) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(U32.from_nat(width)),width,w_exact) : {Nat.is_le(Nat.mul(images,Nat.mul(Nat.mul(height,_),U32.to_nat(Tiled.groups(U32.from_nat(channels))))),ShapeLaws.elements(input_cells)) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(Tiled.groups(U32.from_nat(channels))),CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),gi_exact) : {Nat.is_le(Nat.mul(images,Nat.mul(Nat.mul(height,width),_)),ShapeLaws.elements(input_cells)) == True{} : Bool}
+    %Equal.sym(Nat,ShapeLaws.elements(input_cells),Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),input_exact) : {Nat.is_le(Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),_) == True{} : Bool}
+    Order.reflexive(Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height))) : {Nat.is_le(Nat.mul(images,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32))),ShapeLaws.elements(input_cells)) == True{} : Bool}}
+  +bound_room = {%Equal.sym(Nat,U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)),Calls.cell_groups(outputs),groups_word) : {Nat.is_le(Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1))),_),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    cells_room : {Nat.is_le(Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1))),U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +divides_word = {%Equal.sym(Nat,U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)),Calls.cell_groups(outputs),groups_word) : GridRanges.Multiple<GridRanges.last_extent(cells),_>
+    divides : GridRanges.Multiple<GridRanges.last_extent(cells),U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1))>}
+  +bounded = {%Equal.sym(Nat,U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)),Calls.cell_groups(outputs),groups_word) : {Nat.is_le(ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1))),_)) == True{} : Bool}
+    bound_cells : {Nat.is_le(ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,U32.to_nat(U32.max(WindowPipeline.plane_of(Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation)),1))),U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)))) == True{} : Bool}}
+  +image_count = Equal.trans(Nat,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32)),Nat.mul(Nat.mul(U32.to_nat(U32.from_nat(height)),U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),three_exact,
+    Equal.trans(Nat,Nat.mul(Nat.mul(U32.to_nat(U32.from_nat(height)),U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),Nat.mul(Nat.mul(height,U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),
+      Equal.cong(Nat,Nat,value => Nat.mul(Nat.mul(value,U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),U32.to_nat(U32.from_nat(height)),height,h_exact),
+      Equal.trans(Nat,Nat.mul(Nat.mul(height,U32.to_nat(U32.from_nat(width))),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),Nat.mul(Nat.mul(height,width),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),
+        Equal.cong(Nat,Nat,value => Nat.mul(Nat.mul(height,value),U32.to_nat(Tiled.groups(U32.from_nat(channels)))),U32.to_nat(U32.from_nat(width)),width,w_exact),
+        Equal.cong(Nat,Nat,value => Nat.mul(Nat.mul(height,width),value),U32.to_nat(Tiled.groups(U32.from_nat(channels))),CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),gi_exact))))
+  +image_positive = {%Equal.sym(Nat,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32)),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),image_count) : {Nat.is_lt(0n,_) == True{} : Bool} ic_positive : {Nat.is_lt(0n,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32))) == True{} : Bool}}
+  +image_room = {%Equal.sym(Nat,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32)),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),image_count) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} ic_room : {Nat.is_le(U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +input_images = Equal.trans(Nat,ShapeLaws.elements(input_cells),Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),Nat.mul(images,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32))),input_exact,
+    Equal.cong(Nat,Nat,value => Nat.mul(images,value),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32)),Equal.sym(Nat,U32.to_nat((U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32)),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),image_count)))
+  +rows_exact = Bounds.roundtrip(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.row_limit(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),facts,scalar))
+  +columns_exact = Bounds.roundtrip(ConvSpec.out_width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.col_limit(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),facts,scalar))
+  +grouped_plane = RowMajor.assoc(images,ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs))
+  +output_image_room = Order.transitive(Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),Nat.mul(images,Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs))),U32.to_nat(Machine.capacity(limits)),DivisionOrder.le_multiple(images,Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),images_positive),
+    {%grouped_plane : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} plane_cells : {Nat.is_le(Nat.mul(images,Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}})
+  +words_plane = Equal.trans(Nat,Nat.mul(U32.to_nat(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding))),U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))),Nat.mul(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))),ImageProblems.plane(height,width,kernel,stride,padding),
+    Equal.cong(Nat,Nat,value => Nat.mul(value,U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))),U32.to_nat(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding))),ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),rows_exact),
+    Equal.cong(Nat,Nat,value => Nat.mul(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),value),U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))),ConvSpec.out_width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),columns_exact))
+  +output_words_room = {%Equal.sym(Nat,Nat.mul(U32.to_nat(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding))),U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))),ImageProblems.plane(height,width,kernel,stride,padding),words_plane) : {Nat.is_le(Nat.mul(_,Calls.cell_groups(outputs)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    output_image_room : {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding))),U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))),Calls.cell_groups(outputs)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +output_three = Encoded.multiply_three(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs)),Machine.capacity(limits),Limits.capacity_fits(limits),output_groups_positive(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported),output_words_room)
+  +output_count = Equal.trans(Nat,U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32)),Nat.mul(Nat.mul(U32.to_nat(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding))),U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))),Calls.cell_groups(outputs)),Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),output_three,
+    Equal.cong(Nat,Nat,value => Nat.mul(value,Calls.cell_groups(outputs)),Nat.mul(U32.to_nat(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding))),U32.to_nat(U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)))),ImageProblems.plane(height,width,kernel,stride,padding),words_plane))
+  +output_positive = {%Equal.sym(Nat,U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32)),Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),output_count) : {Nat.is_lt(0n,_) == True{} : Bool}
+    Order.product_positive(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs),plane_positive(height,width,kernel,stride,padding),output_groups_positive(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported)) : {Nat.is_lt(0n,U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32))) == True{} : Bool}}
+  +output_room = {%Equal.sym(Nat,U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32)),Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),output_count) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} output_image_room : {Nat.is_le(U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +output_images = Equal.trans(Nat,ShapeLaws.elements(cells),Nat.mul(images,Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs))),Nat.mul(images,U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32))),Equal.trans(Nat,ShapeLaws.elements(cells),Nat.mul(Nat.mul(images,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),Nat.mul(images,Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs))),cells_exact,grouped_plane),
+    Equal.cong(Nat,Nat,value => Nat.mul(images,value),Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32)),Equal.sym(Nat,U32.to_nat((U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32)),Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),output_count)))
+  +whole_cells = {%Equal.sym(U32,whole,TensorConvolution.whole_cells(lead,Tensors.grid_of(input_cells),Tensors.grid_of(cells),WindowPipeline.image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),WindowPipeline.output_image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation})),whole_exact) :
+      GridRanges.WholeCells<limits,_,Calls.cell_groups(outputs)>
+    WholeCells.whole_units(limits,lead,input_cells,cells,(U32.from_nat(height) * U32.from_nat(width) * Tiled.groups(U32.from_nat(channels)) : U32),(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)) * U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)) * Tiled.groups(U32.from_nat(outputs)) : U32),images,Calls.cell_groups(outputs),total_room,input_nonempty,room,nonempty,image_positive,image_room,output_positive,output_room,
+      input_images,output_images,GridRanges.Multiple{ImageProblems.plane(height,width,kernel,stride,padding),output_count}) : GridRanges.WholeCells<limits,whole,Calls.cell_groups(outputs)>}
+  +cut = GridRanges.shape_cut(limits,cells,Grid.piece_target(),room,nonempty,Calls.cell_groups(outputs),divides,whole,whole_cells)
+  +cut_multiple = Held.first_of(GridRanges.Multiple<U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)),Calls.cell_groups(outputs)>,{Nat.is_le(U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},cut)
+  +cut_room = Held.second_of(GridRanges.Multiple<U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)),Calls.cell_groups(outputs)>,{Nat.is_le(U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},cut)
+  +times = cut_times(U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)),Calls.cell_groups(outputs),cut_multiple)
+  +cut_exact = {%Equal.sym(Nat,U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1)),Calls.cell_groups(outputs),groups_word) : {U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)) == Nat.mul(times,_) : Nat}
+    cut_times_exact(U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)),Calls.cell_groups(outputs),cut_multiple) : {U32.to_nat(Runs.cut_unit_of(Grid.grid(cells,Grid.piece_target()),whole)) == Nat.mul(times,U32.to_nat(U32.max(Tiled.groups(U32.from_nat(outputs)),1))) : Nat}}
+  +runtime = record_runtime(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,activation)
+  +windowed = {%Equal.sym(WindowPipeline.Convolution,Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation),WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation},runtime) :
+      Windows.Windowed<Tile.Tile8,Representation.Lifted<Logical>,Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{input_outer,Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),Grid.Innermost{}}},WindowPipeline.Convolution,WindowPipeline.reach_of,_,ShapeLaws.elements(input_cells),
+        Runs.decision_tasks(Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra)),Halo.windows(~Tile.Tile8,~WindowPipeline.Convolution,~WindowPipeline.reach_of,_,Tensors.grid_of(input_cells),Tile.filled(0.0),Runs.decision_tasks(Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra)),pieces)>
+    KernelWindows.conv_windows(~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{input_outer,Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),Grid.Innermost{}}},limits,U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation,input_cells,cells,
+      workers,whole,bytes_per_cell,operations,cut_cell_ns,extra,images,pieces,input_fill,input_status,input_workers,input_shaped,input_nonempty,Machine.capacity(limits),Limits.capacity_allocatable(limits),total_room,
+      GridRanges.grid_pieces_word(limits,input_cells,Grid.piece_target(),total_room,input_nonempty),height_positive,height_room,height_small,stride_positive,stride_small,
+      call_plane_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,Tiled.groups(U32.from_nat(outputs)),activation),groups_small,rows_room,input_cells_room,total_room,bound_room,room,nonempty,divides_word,bounded,times,cut_exact,cut_room) :
+    Windows.Windowed<Tile.Tile8,Representation.Lifted<Logical>,Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{input_outer,Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),Grid.Innermost{}}},WindowPipeline.Convolution,WindowPipeline.reach_of,Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation),ShapeLaws.elements(input_cells),
+      Runs.decision_tasks(Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra)),Halo.windows(~Tile.Tile8,~WindowPipeline.Convolution,~WindowPipeline.reach_of,Calls.record(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Tiled.groups(U32.from_nat(outputs)),activation),Tensors.grid_of(input_cells),Tile.filled(0.0),Runs.decision_tasks(Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra)),pieces)>}
+  +inputs_within = {%input_exact : {Nat.is_le(_,ShapeLaws.elements(input_cells)) == True{} : Bool} Order.reflexive(ShapeLaws.elements(input_cells)) :
+    {Nat.is_le(Nat.mul(images,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),ShapeLaws.elements(input_cells)) == True{} : Bool}}
+  +shape = problem_shape(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,Tiled.groups(U32.from_nat(outputs)),activation,images,ShapeLaws.elements(input_cells),images_positive,groups_word,
+    output_groups_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported),inputs_within,total_room)
+  %runtime : Global.Contract(~Tile.Tile8,~Representation.Lifted<ImageProblems.Context<Logical>>,~Representation.lifted(~ImageProblems.Context<Logical>,~ImageProblems.value(~custom,~Logical,~original)),Representation.Lifted{ImageProblems.Context{logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list},TiledCells.Cells{outer_word,Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.from_nat(outputs),Tiled.groups(U32.from_nat(outputs)),Grid.Innermost{}}},Tensors.Tensor{WindowPipeline.windowed(~custom,_,Tensors.grid_of(input_cells),Grid.grid(cells,Grid.piece_target()),Tasks.decide_cut(Grid.grid(cells,Grid.piece_target()),workers,whole,bytes_per_cell,operations,cut_cell_ns,extra),pieces,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~Tile.Tile8,bias)),cells,fill,Tensors.Usable{},workers})
+  output_contract(~custom,~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,cells,room,nonempty,divides,counted,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters,valid,supported,Tiled.groups(U32.from_nat(outputs)),activation,call_plane_positive(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,Tiled.groups(U32.from_nat(outputs)),activation),plane_positive(height,width,kernel,stride,padding),plane_exact,call_plane_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported,Tiled.groups(U32.from_nat(outputs)),activation),outputs_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported),groups_word,outer_word,Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.from_nat(outputs),Tiled.groups(U32.from_nat(outputs)),after_exact,lanes_exact,plane_positive(height,width,kernel,stride,padding),images,elements_room,{==},output_groups_positive(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported),input_outer,Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),input_after_exact,input_lanes_exact,gi_exact,output_groups_room(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,valid,supported),bound_cells,ShapeLaws.elements(input_cells),shape,total_room,images_count_room,images_outputs_room,cells_room,Tensors.grid_of(input_cells),pieces,weights,bias,weights_exact,bias_exact,workers,whole,bytes_per_cell,operations,cut_cell_ns,extra,windowed,times,cut_exact,cut_room,fill)
+
+# ---- The run of the call ----
+
+def one_times(+value: Nat) -> {Nat.mul(1n,value) == value : Nat}:
+  Equal.trans(Nat,Nat.mul(1n,value),Nat.mul(value,1n),value,RowMajor.multiply_commutative(1n,value),Order.times_one(value))
+
+def regroup(+a: Nat,+b: Nat,+c: Nat,+d: Nat) -> {Nat.mul(a,Nat.mul(b,Nat.mul(c,d))) == Nat.mul(Nat.mul(a,Nat.mul(b,c)),d) : Nat}:
+  Equal.trans(Nat,Nat.mul(a,Nat.mul(b,Nat.mul(c,d))),Nat.mul(a,Nat.mul(Nat.mul(b,c),d)),Nat.mul(Nat.mul(a,Nat.mul(b,c)),d),
+    Equal.cong(Nat,Nat,product => Nat.mul(a,product),Nat.mul(b,Nat.mul(c,d)),Nat.mul(Nat.mul(b,c),d),Equal.sym(Nat,Nat.mul(Nat.mul(b,c),d),Nat.mul(b,Nat.mul(c,d)),RowMajor.assoc(b,c,d))),
+    Equal.sym(Nat,Nat.mul(Nat.mul(a,Nat.mul(b,c)),d),Nat.mul(a,Nat.mul(Nat.mul(b,c),d)),RowMajor.assoc(a,Nat.mul(b,c),d)))
+
+# The machine guard of the call supports the problem of its shape.
+def machine_supported(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+count: U32,+batched: Bool,+valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +machine: {TensorConvolution.machine_support(TensorConvolution.Geometry{count,batched,KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},limits) == True{} : Bool}) -> {NativeConv.supports_packed_with_limits(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool}:
+  +area = Nat.mul(channels,Nat.mul(height,width))
+  +packed = Boolean.left(KernelShape.supports_packed(limits,KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding},area,Nat.mul(outputs,Nat.mul(channels,Nat.mul(kernel,kernel)))),
+    Nat.is_le(Nat.mul(U32.to_nat(count),Nat.mul(outputs,Nat.mul(KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding)))),U32.to_nat(Machine.capacity(limits))),machine)
+  +weights_length = Order.equal_of_is_eq(ConvSpec.length(weight_list),Nat.mul(outputs,Nat.mul(channels,Nat.mul(kernel,kernel))),Contents.valid_condition(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid,1n))
+  %Equal.sym(Nat,ConvSpec.length(ImageProblems.image_values(~Logical,~original,area,Nat.mul(0n,area),logical)),area,ImageProblems.image_length(~Logical,~original,area,Nat.mul(0n,area),logical)) :
+    {KernelShape.supports_packed(limits,KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding},_,ConvSpec.length(weight_list)) == True{} : Bool}
+  %Equal.sym(Nat,ConvSpec.length(weight_list),Nat.mul(outputs,Nat.mul(channels,Nat.mul(kernel,kernel))),weights_length) :
+    {KernelShape.supports_packed(limits,KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding},area,_) == True{} : Bool}
+  packed
+
+# The machine guard of a batch bounds the outputs of its images.
+def machine_images(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,+limits: Machine.Limits,+count: U32,+machine: {TensorConvolution.machine_support(TensorConvolution.Geometry{count,True{},KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},limits) == True{} : Bool}) ->
+  {Nat.is_le(Nat.mul(U32.to_nat(count),Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  +area = Nat.mul(channels,Nat.mul(height,width))
+  Boolean.right(KernelShape.supports_packed(limits,KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding},area,Nat.mul(outputs,Nat.mul(channels,Nat.mul(kernel,kernel)))),
+    Nat.is_le(Nat.mul(U32.to_nat(count),Nat.mul(outputs,Nat.mul(KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding)))),U32.to_nat(Machine.capacity(limits))),machine)
+
+# The run over a batch of images holds the convolution values.
+def batch_contract(~custom: F32 -> F32,
+  ~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,
+  +limits: Machine.Limits,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +activation: Activations.Activation,
+  +count: U32,
+  +count_positive: {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool},
+  +machine: {TensorConvolution.machine_support(TensorConvolution.Geometry{count,True{},KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},limits) == True{} : Bool},
+  +upper: U32,
+  +upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},
+  +upper_bound: {U32.is_le(upper,1073741824) == True{} : Bool},
+  +area_positive: {Nat.is_lt(0n,Nat.mul(channels,Nat.mul(height,width))) == True{} : Bool},
+  +area_room: {Nat.is_le(Nat.mul(channels,Nat.mul(height,width)),U32.to_nat(upper)) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weight_list),weight_list>,
+  +bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias_list),bias_list>,
+  +parameters: Inputs.Parameters(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),
+  pieces: Pieces.Pieces(~Tile.Tile8),
+  +input_fill: Tile.Tile8,
+  +input_status: Tensors.Status,
+  +input_workers: U32,
+  +input_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{((1 * count : U32) * Grid.product([U32.from_nat(height),U32.from_nat(width)]) : U32),Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),Grid.Innermost{}}},[count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))],Tensors.Tensor{pieces,[count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))],input_fill,input_status,input_workers}),
+  +weights: Buffer.Model<Tile.Tile8>,
+  +bias: Buffer.Model<Tile.Tile8>,
+  +weights_exact: {Buffer.tree(~Tile.Tile8,weights) == Calls.weight_tree(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters) : Tree.Tree<Tile.Tile8>},
+  +bias_exact: {Buffer.tree(~Tile.Tile8,bias) == Inputs.bias_cells(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Calls.image_contract(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters)) : Tree.Tree<Tile.Tile8>},
+  +workers: U32) ->
+  TiledPublic.Contract(~ImageProblems.Context<Logical>,~ImageProblems.value(~custom,~Logical,~original),ImageProblems.Context{logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list},[count,U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))],TensorConvolution.run(~custom,activation,TensorConvolution.Geometry{count,True{},KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},pieces,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~Tile.Tile8,bias),workers)):
+  +supported = machine_supported(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,count,True{},valid,machine)
+  +scalar = Padded.scalar(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported))
+  +oh_exact = Bounds.roundtrip(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.row_limit(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid),scalar))
+  +ow_exact = Bounds.roundtrip(ConvSpec.out_width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.col_limit(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid),scalar))
+  +co_exact = SupportedCoordinates.co_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +h_exact = SupportedCoordinates.height_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +w_exact = SupportedCoordinates.width_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +gi_exact = CellValues.group_count_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),U32.from_nat(channels),supported,SupportedCoordinates.ci_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar))
+  +images_room = machine_images(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,count,machine)
+  +cells_exact = Equal.trans(Nat,ShapeLaws.elements([count,U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),Nat.mul(U32.to_nat(count),Nat.mul(KernelShape.axis_size(height,kernel,stride,padding),Nat.mul(KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs)))),
+    Nat.mul(Nat.mul(U32.to_nat(count),ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),
+    ShapeLaws.elements_four_exact(count,U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs)),U32.to_nat(count),KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs),{==},oh_exact,ow_exact,{==}),
+    regroup(U32.to_nat(count),KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs)))
+  +input_exact = Equal.trans(Nat,ShapeLaws.elements([count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))]),Nat.mul(U32.to_nat(count),Nat.mul(height,Nat.mul(width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))),Nat.mul(U32.to_nat(count),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),
+    ShapeLaws.elements_four_exact(count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels)),U32.to_nat(count),height,width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),{==},h_exact,w_exact,gi_exact),
+    Equal.cong(Nat,Nat,product => Nat.mul(U32.to_nat(count),product),Nat.mul(height,Nat.mul(width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),Equal.sym(Nat,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),Nat.mul(height,Nat.mul(width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),RowMajor.assoc(height,width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n))))))
+  +values_room = {%Equal.sym(Nat,ShapeLaws.elements([count,U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),Nat.mul(U32.to_nat(count),Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding))),ShapeLaws.elements_four_exact(count,U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.to_nat(count),outputs,KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding),{==},co_exact,oh_exact,ow_exact)) :
+      {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    images_room : {Nat.is_le(ShapeLaws.elements([count,U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +divides = {GridRanges.Multiple{1n,Equal.sym(Nat,Nat.mul(1n,Calls.cell_groups(outputs)),Calls.cell_groups(outputs),one_times(Calls.cell_groups(outputs)))} : GridRanges.Multiple<GridRanges.last_extent([count,U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),Calls.cell_groups(outputs)>}
+  +laid = {TiledPublic.Laid{{==},{==},{==},StorageCount.counted_within(limits,[count,U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))],values_room,default_capacity),{==}} : TiledPublic.Laid<[count,U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))],1n,U32.from_nat(outputs),Grid.Innermost{},[count,U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]>}
+  Gemm.Both{cells_contract(~custom,~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,default_capacity,valid,supported,activation,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters,U32.to_nat(count),count_positive,images_room,[count,U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))],cells_exact,divides,((1 * count : U32) * Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]) : U32),[count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))],input_exact,((1 * count : U32) * Grid.product([U32.from_nat(height),U32.from_nat(width)]) : U32),pieces,input_fill,input_status,input_workers,input_shaped,weights,bias,weights_exact,bias_exact,workers,TensorConvolution.whole_cells(1,Tensors.grid_of([count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))]),Tensors.grid_of([count,U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),WindowPipeline.image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),WindowPipeline.output_image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation})),TensorConvolution.cell_rows(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),TensorConvolution.cell_steps(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),TensorConvolution.cut_cell_ns(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),TensorConvolution.extra_of(TensorConvolution.whole_cells(1,Tensors.grid_of([count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))]),Tensors.grid_of([count,U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),WindowPipeline.image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),WindowPipeline.output_image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation})),WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),1,{==},Tiled.zero_tile()),laid}
+
+# The run over a single image holds the convolution values.
+def single_contract(~custom: F32 -> F32,
+  ~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,
+  +limits: Machine.Limits,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +activation: Activations.Activation,
+  +count: U32,
+  +count_positive: {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool},
+  +machine: {TensorConvolution.machine_support(TensorConvolution.Geometry{count,False{},KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},limits) == True{} : Bool},
+  +upper: U32,
+  +upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},
+  +upper_bound: {U32.is_le(upper,1073741824) == True{} : Bool},
+  +area_positive: {Nat.is_lt(0n,Nat.mul(channels,Nat.mul(height,width))) == True{} : Bool},
+  +area_room: {Nat.is_le(Nat.mul(channels,Nat.mul(height,width)),U32.to_nat(upper)) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weight_list),weight_list>,
+  +bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias_list),bias_list>,
+  +parameters: Inputs.Parameters(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),
+  pieces: Pieces.Pieces(~Tile.Tile8),
+  +input_fill: Tile.Tile8,
+  +input_status: Tensors.Status,
+  +input_workers: U32,
+  +input_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledCells.Cells{(1 * Grid.product([U32.from_nat(height),U32.from_nat(width)]) : U32),Grid.product([U32.from_nat(height),U32.from_nat(width)]),U32.from_nat(channels),Tiled.groups(U32.from_nat(channels)),Grid.Innermost{}}},[U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))],Tensors.Tensor{pieces,[U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))],input_fill,input_status,input_workers}),
+  +weights: Buffer.Model<Tile.Tile8>,
+  +bias: Buffer.Model<Tile.Tile8>,
+  +weights_exact: {Buffer.tree(~Tile.Tile8,weights) == Calls.weight_tree(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters) : Tree.Tree<Tile.Tile8>},
+  +bias_exact: {Buffer.tree(~Tile.Tile8,bias) == Inputs.bias_cells(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Calls.image_contract(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters)) : Tree.Tree<Tile.Tile8>},
+  +workers: U32) ->
+  TiledPublic.Contract(~ImageProblems.Context<Logical>,~ImageProblems.value(~custom,~Logical,~original),ImageProblems.Context{logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list},[U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))],TensorConvolution.run(~custom,activation,TensorConvolution.Geometry{count,False{},KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},pieces,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~Tile.Tile8,bias),workers)):
+  +supported = machine_supported(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,count,False{},valid,machine)
+  +scalar = Padded.scalar(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Support.fast(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),supported))
+  +oh_exact = Bounds.roundtrip(ConvSpec.out_height(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.row_limit(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid),scalar))
+  +ow_exact = Bounds.roundtrip(ConvSpec.out_width(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),Machine.coordinate(limits),Limits.coordinate_fits(limits),SupportedCoordinates.col_limit(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Guards.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),valid),scalar))
+  +co_exact = SupportedCoordinates.co_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +h_exact = SupportedCoordinates.height_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +w_exact = SupportedCoordinates.width_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar)
+  +gi_exact = CellValues.group_count_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),U32.from_nat(channels),supported,SupportedCoordinates.ci_exact(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar))
+  +images_room = {%Equal.sym(Nat,Nat.mul(1n,Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding))),Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding)),one_times(Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding)))) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    Padded.scalar_output_bound(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar) : {Nat.is_le(Nat.mul(1n,Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +cells_exact = Equal.trans(Nat,ShapeLaws.elements([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),Nat.mul(KernelShape.axis_size(height,kernel,stride,padding),Nat.mul(KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs))),
+    Nat.mul(Nat.mul(1n,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),
+    ShapeLaws.elements_three_exact(U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs)),KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs),oh_exact,ow_exact,{==}),
+    Equal.trans(Nat,Nat.mul(KernelShape.axis_size(height,kernel,stride,padding),Nat.mul(KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs))),Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),Nat.mul(Nat.mul(1n,ImageProblems.plane(height,width,kernel,stride,padding)),Calls.cell_groups(outputs)),
+      Equal.sym(Nat,Nat.mul(ImageProblems.plane(height,width,kernel,stride,padding),Calls.cell_groups(outputs)),Nat.mul(KernelShape.axis_size(height,kernel,stride,padding),Nat.mul(KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs))),
+        RowMajor.assoc(KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding),Calls.cell_groups(outputs))),
+      Equal.cong(Nat,Nat,product => Nat.mul(product,Calls.cell_groups(outputs)),ImageProblems.plane(height,width,kernel,stride,padding),Nat.mul(1n,ImageProblems.plane(height,width,kernel,stride,padding)),Equal.sym(Nat,Nat.mul(1n,ImageProblems.plane(height,width,kernel,stride,padding)),ImageProblems.plane(height,width,kernel,stride,padding),one_times(ImageProblems.plane(height,width,kernel,stride,padding))))))
+  +input_exact = Equal.trans(Nat,ShapeLaws.elements([U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))]),Nat.mul(height,Nat.mul(width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),Nat.mul(1n,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),
+    ShapeLaws.elements_three_exact(U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels)),height,width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),h_exact,w_exact,gi_exact),
+    Equal.trans(Nat,Nat.mul(height,Nat.mul(width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),Nat.mul(1n,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),Equal.sym(Nat,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),Nat.mul(height,Nat.mul(width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),RowMajor.assoc(height,width,CellContents.group_count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)))),
+      Equal.sym(Nat,Nat.mul(1n,CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)),CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height),one_times(CellContents.count(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),height)))))
+  +values_room = {%Equal.sym(Nat,ShapeLaws.elements([U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),Nat.mul(outputs,ImageProblems.plane(height,width,kernel,stride,padding)),ShapeLaws.elements_three_exact(U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),outputs,KernelShape.axis_size(height,kernel,stride,padding),KernelShape.axis_size(width,kernel,stride,padding),co_exact,oh_exact,ow_exact)) :
+      {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    Padded.scalar_output_bound(limits,ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),scalar) : {Nat.is_le(ShapeLaws.elements([U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  +divides = {GridRanges.Multiple{1n,Equal.sym(Nat,Nat.mul(1n,Calls.cell_groups(outputs)),Calls.cell_groups(outputs),one_times(Calls.cell_groups(outputs)))} : GridRanges.Multiple<GridRanges.last_extent([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),Calls.cell_groups(outputs)>}
+  +laid = {TiledPublic.Laid{{==},{==},{==},StorageCount.counted_within(limits,[U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))],values_room,default_capacity),{==}} : TiledPublic.Laid<[U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))],0n,U32.from_nat(outputs),Grid.Innermost{},[U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]>}
+  Gemm.Both{cells_contract(~custom,~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,default_capacity,valid,supported,activation,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters,1n,{==},images_room,[U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))],cells_exact,divides,(1 * Grid.product([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))]) : U32),[U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))],input_exact,(1 * Grid.product([U32.from_nat(height),U32.from_nat(width)]) : U32),pieces,input_fill,input_status,input_workers,input_shaped,weights,bias,weights_exact,bias_exact,workers,TensorConvolution.whole_cells(0,Tensors.grid_of([U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))]),Tensors.grid_of([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),WindowPipeline.image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),WindowPipeline.output_image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation})),TensorConvolution.cell_rows(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),TensorConvolution.cell_steps(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),TensorConvolution.cut_cell_ns(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),TensorConvolution.extra_of(TensorConvolution.whole_cells(0,Tensors.grid_of([U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))]),Tensors.grid_of([U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),Tiled.groups(U32.from_nat(outputs))]),WindowPipeline.image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),WindowPipeline.output_image_cells(WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation})),WindowPipeline.Convolution{U32.from_nat(height),U32.from_nat(width),U32.from_nat(kernel),U32.from_nat(stride),U32.from_nat(padding),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding)),U32.from_nat(outputs),U32.from_nat(Nat.mul(channels,Nat.mul(kernel,kernel))),Tiled.groups(U32.from_nat(channels)),Tiled.groups(U32.from_nat(outputs)),activation}),0,{==},Tiled.zero_tile()),laid}
+
+# The run of the call on Shaped input cells, with parameters of the cells of
+# the problem, holds the convolution values in the extents of its output.
+def run_contract(~custom: F32 -> F32,
+  ~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+channels: Nat,+outputs: Nat,+height: Nat,+width: Nat,+kernel: Nat,+stride: Nat,+padding: Nat,+weight_list: List<&2,F32>,+bias_list: List<&2,F32>,
+  +limits: Machine.Limits,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +valid: {ConvSpec.valid(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)) == True{} : Bool},
+  +activation: Activations.Activation,
+  +count: U32,
+  +batched: Bool,
+  +count_positive: {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool},
+  +machine: {TensorConvolution.machine_support(TensorConvolution.Geometry{count,batched,KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},limits) == True{} : Bool},
+  +upper: U32,
+  +upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},
+  +upper_bound: {U32.is_le(upper,1073741824) == True{} : Bool},
+  +area_positive: {Nat.is_lt(0n,Nat.mul(channels,Nat.mul(height,width))) == True{} : Bool},
+  +area_room: {Nat.is_le(Nat.mul(channels,Nat.mul(height,width)),U32.to_nat(upper)) == True{} : Bool},
+  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weight_list),weight_list>,
+  +bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias_list),bias_list>,
+  +parameters: Inputs.Parameters(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n)),
+  pieces: Pieces.Pieces(~Tile.Tile8),
+  +input_fill: Tile.Tile8,
+  +input_status: Tensors.Status,
+  +input_workers: U32,
+  +input_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),Representation.Lifted{logical,TiledPublic.geometry_of(TensorConvolution.output_shape(batched,count,U32.from_nat(channels),U32.from_nat(height),U32.from_nat(width)),TensorConvolution.lane_of(batched),Grid.Innermost{})},TensorConvolution.image_cells(batched,count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))),Tensors.Tensor{pieces,TensorConvolution.image_cells(batched,count,U32.from_nat(height),U32.from_nat(width),Tiled.groups(U32.from_nat(channels))),input_fill,input_status,input_workers}),
+  +weights: Buffer.Model<Tile.Tile8>,
+  +bias: Buffer.Model<Tile.Tile8>,
+  +weights_exact: {Buffer.tree(~Tile.Tile8,weights) == Calls.weight_tree(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters) : Tree.Tree<Tile.Tile8>},
+  +bias_exact: {Buffer.tree(~Tile.Tile8,bias) == Inputs.bias_cells(ImageProblems.problem(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n),Calls.image_contract(~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,0n,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters)) : Tree.Tree<Tile.Tile8>},
+  +workers: U32) ->
+  TiledPublic.Contract(~ImageProblems.Context<Logical>,~ImageProblems.value(~custom,~Logical,~original),ImageProblems.Context{logical,activation,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list},TensorConvolution.output_shape(batched,count,U32.from_nat(outputs),U32.from_nat(KernelShape.axis_size(height,kernel,stride,padding)),U32.from_nat(KernelShape.axis_size(width,kernel,stride,padding))),TensorConvolution.run(~custom,activation,TensorConvolution.Geometry{count,batched,KernelShape.Dimensions{channels,outputs,height,width,kernel,stride,padding}},pieces,Buffer.pack(~Tile.Tile8,weights),Buffer.pack(~Tile.Tile8,bias),workers)):
   match batched:
-    case True{}: {==}
-    case False{}: {==}
-
-def parameter_geometry_matches(+input: PublicFrame.NativeInput) ->
-  {TensorConvolution.geometry(Some{input_shape_value(input)},weight_extents(input),bias_extents(input),stride(input),padding(input)) == Some{PublicFrame.geometry(input)} : Maybe<&2,TensorConvolution.Geometry>}:
-  PublicFrame.NativeInput{+images,+batched,+ci,+co,+h,+w,+k,+s,+p} = input
-  %Equal.sym(Bool,U32.is_eq(ci,ci),True{},BandShape.equal_words(ci,ci,{==})) :
-    {TensorConvolution.matched(_ && U32.is_eq(k,k) && U32.is_eq(co,co),TensorConvolution.Geometry{PublicFrame.image_count(batched,images),batched,PublicFrame.frame_dimensions(PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p})}) ==
-      Some{PublicFrame.geometry(PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p})} : Maybe<&2,TensorConvolution.Geometry>}
-  %Equal.sym(Bool,U32.is_eq(k,k),True{},BandShape.equal_words(k,k,{==})) :
-    {TensorConvolution.matched(True{} && _ && U32.is_eq(co,co),TensorConvolution.Geometry{PublicFrame.image_count(batched,images),batched,PublicFrame.frame_dimensions(PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p})}) ==
-      Some{PublicFrame.geometry(PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p})} : Maybe<&2,TensorConvolution.Geometry>}
-  %Equal.sym(Bool,U32.is_eq(co,co),True{},BandShape.equal_words(co,co,{==})) :
-    {TensorConvolution.matched(True{} && True{} && _,TensorConvolution.Geometry{PublicFrame.image_count(batched,images),batched,PublicFrame.frame_dimensions(PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p})}) ==
-      Some{PublicFrame.geometry(PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p})} : Maybe<&2,TensorConvolution.Geometry>}
-  {==}
-
-def public_geometry(+input: PublicFrame.NativeInput) ->
-  {TensorConvolution.geometry(TensorConvolution.input_shape(input_extents(input)),weight_extents(input),bias_extents(input),stride(input),padding(input)) == Some{PublicFrame.geometry(input)} : Maybe<&2,TensorConvolution.Geometry>}:
-  %Equal.sym(Maybe<&2,TensorConvolution.InputShape>,TensorConvolution.input_shape(input_extents(input)),Some{input_shape_value(input)},input_shape_matches(input)) :
-    {TensorConvolution.geometry(_,weight_extents(input),bias_extents(input),stride(input),padding(input)) == Some{PublicFrame.geometry(input)} : Maybe<&2,TensorConvolution.Geometry>}
-  parameter_geometry_matches(input)
-
-# The public CHW or NCHW extents of an input are its image rows.
-def source_rows(+input: PublicFrame.NativeInput) ->
-  {Bands.image_rows(input_extents(input),PublicFrame.source_geometry(input)) == True{} : Bool}:
-  PublicFrame.NativeInput{+images,+batched,+ci,+co,+h,+w,+k,+s,+p} = input
-  match batched:
-    case True{}: BandOutputNormal.coherent(True{},Bands.Geometry{images,ci,h,w},{==})
-    case False{}: BandOutputNormal.coherent(False{},Bands.Geometry{1,ci,h,w},{==})
-
-def geometry_parts(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,batched: Bool) ->
-  {TensorExecution.execution_geometry(~Logical,frame,batched) == TensorConvolution.Geometry{PublicFrame.frame_images(~Logical,frame),batched,PipelineExecution.dimensions(~Logical,frame)} : TensorConvolution.Geometry}:
-  PipelineExecution.Frame{logical,activation,dimensions,images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room} = frame
-  {==}
-
-def input_geometry_parts(+input: PublicFrame.NativeInput) ->
-  {PublicFrame.geometry(input) == TensorConvolution.Geometry{PublicFrame.input_images(input),batched(input),PublicFrame.frame_dimensions(input)} : TensorConvolution.Geometry}:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p} = input
-  {==}
-
-def geometry_fields(~Logical: Data,+logical: Logical,+activation: Activations.Activation,+input: PublicFrame.NativeInput,+weights: List<&2,F32>,+bias: List<&2,F32>,
-  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,+frame: PipelineExecution.Frame<Logical>,+limits: Machine.Limits,+capacity: U32,
-  fields: PublicFrame.Fields<Logical,logical,activation,input,weights,bias,weight_evidence,bias_evidence,frame,limits,capacity>) ->
-  {TensorExecution.execution_geometry(~Logical,frame,batched(input)) == PublicFrame.geometry(input) : TensorConvolution.Geometry}:
-  PublicFrame.Fields{logical_exact,activation_exact,+images_exact,+dimensions_exact,input_geometry_exact,weights_exact,bias_exact,context_exact,limits_exact,capacity_exact} = fields
-  Equal.trans(TensorConvolution.Geometry,TensorExecution.execution_geometry(~Logical,frame,batched(input)),
-    TensorConvolution.Geometry{PublicFrame.frame_images(~Logical,frame),batched(input),PipelineExecution.dimensions(~Logical,frame)},PublicFrame.geometry(input),
-    geometry_parts(~Logical,frame,batched(input)),
-    %Equal.sym(U32,PublicFrame.frame_images(~Logical,frame),PublicFrame.input_images(input),images_exact) :
-      {TensorConvolution.Geometry{_,batched(input),PipelineExecution.dimensions(~Logical,frame)} == PublicFrame.geometry(input) : TensorConvolution.Geometry}
-    %Equal.sym(KernelShape.Dimensions,PipelineExecution.dimensions(~Logical,frame),PublicFrame.frame_dimensions(input),dimensions_exact) :
-      {TensorConvolution.Geometry{PublicFrame.input_images(input),batched(input),_} == PublicFrame.geometry(input) : TensorConvolution.Geometry}
-    Equal.sym(TensorConvolution.Geometry,PublicFrame.geometry(input),TensorConvolution.Geometry{PublicFrame.input_images(input),batched(input),PublicFrame.frame_dimensions(input)},input_geometry_parts(input)))
-
-# Keep limits generic when exposing the factory's parameter sequences.
-def configured_lengths(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+input: PublicFrame.NativeInput,+parallel: Bool,+limits: Machine.Limits,+capacity: U32,
-  +weights: List<&2,F32>,+bias: List<&2,F32>,+domain: BandGather.Domain<Leaf.input_geometry(PublicFrame.input_images(input),PublicFrame.frame_dimensions(input)),limits,capacity>,
-  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weights),weights>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias),bias>,
-  +validated: {PublicFrame.frame_valid(input,weights,bias) == True{} : Bool},+supported: {PublicFrame.machine(input,limits) == True{} : Bool}) ->
-  Shape.Both<
-    {PublicFrame.weight_length(~Logical,PublicFrame.configured_native(~Logical,~original,logical,activation,input,parallel,limits,capacity,weights,bias,domain,weight_evidence,bias_evidence,validated,supported)) == ConvSpec.length(weights) : Nat},
-    {PublicFrame.bias_length(~Logical,PublicFrame.configured_native(~Logical,~original,logical,activation,input,parallel,limits,capacity,weights,bias,domain,weight_evidence,bias_evidence,validated,supported)) == ConvSpec.length(bias) : Nat}>:
-  PublicFrame.NativeInput{+images,+batched,+ci,+co,+h,+w,+k,+s,+p} = input
-  Shape.Both{{==},{==}}
-
-# The geometry of the bands the convolution reads.
-def arrival(~Logical: Data,frame: PipelineExecution.Frame<Logical>,+batched: Bool) -> Bands.Geometry:
-  TensorConvolution.input_geometry(TensorExecution.execution_geometry(~Logical,frame,batched))
-
-def arrival_exact(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+batched: Bool) ->
-  {arrival(~Logical,frame,batched) == PipelineExecution.input_geometry(~Logical,frame) : Bands.Geometry}:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room} = frame
-  {==}
-
-# The planner reads the window of the same input geometry.
-def window_input(+geometry: TensorConvolution.Geometry,+parallel: Bool,+activation: Activations.Activation) ->
-  {BandWindow.input_geometry(TensorConvolution.context_window(TensorConvolution.band_context(geometry,parallel,activation))) == TensorConvolution.input_geometry(geometry) : Bands.Geometry}:
-  TensorConvolution.Geometry{count,batched,KernelShape.Dimensions{ci,rows,h,w,k,s,p}} = geometry
-  {==}
-
-# What the call checks of its parameters.
-def parameters(+geometry: TensorConvolution.Geometry,weights: Buffer.Model<F32>,bias: Buffer.Model<F32>) -> Bool:
-  TensorConvolution.Geometry{count,batched,+dimensions} = geometry
-  Buffer.Model{weight_tree,+weight_length,Certificate.Certificate{+weight_depth,weight_equation}} = weights
-  Buffer.Model{bias_tree,+bias_length,Certificate.Certificate{+bias_depth,bias_equation}} = bias
-  TensorConvolution.parameters_valid(dimensions,weight_length,weight_depth,bias_length,bias_depth)
-
-def checked_matches(~custom: F32 -> F32,+activation: Activations.Activation,+geometry: TensorConvolution.Geometry,tensor: Tensors.Tensor<F32>,+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,
-  +shape: List<&2,U32>,fill: F32,workers: U32) ->
-  {TensorConvolution.band_checked(~custom,activation,Some{geometry},tensor,Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers) ==
-    TensorConvolution.band_supported(~custom,activation,parameters(geometry,weights,bias),geometry,tensor,Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers) : Tensors.Tensor<F32>}:
-  TensorConvolution.Geometry{count,batched,dimensions} = geometry
-  Buffer.Model{weight_tree,weight_length,Certificate.Certificate{weight_depth,weight_equation}} = weights
-  Buffer.Model{bias_tree,bias_length,Certificate.Certificate{bias_depth,bias_equation}} = bias
-  {==}
-
-def parameters_held(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,
-  valid: {PublicFrame.valid_parameters(PipelineExecution.dimensions(~Logical,frame),weights,bias) == True{} : Bool},
-  weight_room: {Nat.is_le(Buffer.length(~F32,weights),U32.to_nat(U32.shln(1,Buffer.depth(~F32,weights)))) == True{} : Bool},
-  bias_room: {Nat.is_le(Buffer.length(~F32,bias),U32.to_nat(U32.shln(1,Buffer.depth(~F32,bias)))) == True{} : Bool}) ->
-  {parameters(TensorExecution.execution_geometry(~Logical,frame,batched),weights,bias) == True{} : Bool}:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{+ci,+co,+height,+width,+kernel,+stride,+padding},images,parallel,limits,capacity,sw,sb,we,be,domain,frame_valid,supported,room} = frame
-  Buffer.Model{weight_tree,+weight_length,Certificate.Certificate{+weight_depth,weight_equation}} = weights
-  Buffer.Model{bias_tree,+bias_length,Certificate.Certificate{+bias_depth,bias_equation}} = bias
-  +valid_shape = KernelShape.valid(KernelShape.Dimensions{ci,co,height,width,kernel,stride,padding},Nat.mul(ci,Nat.mul(height,width)),weight_length,bias_length)
-  +weights_fit = Nat.is_le(weight_length,U32.to_nat(U32.shln(1,weight_depth)))
-  Boolean.and_true(valid_shape && weights_fit,Nat.is_le(bias_length,U32.to_nat(U32.shln(1,bias_depth))),Boolean.and_true(valid_shape,weights_fit,valid,weight_room),bias_room)
-
-# The checked parameter lengths fit the shape and their allocations.
-def parameters_accepted(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,
-  weight_length: {Buffer.length(~F32,weights) == PublicFrame.weight_length(~Logical,frame) : Nat},bias_length: {Buffer.length(~F32,bias) == PublicFrame.bias_length(~Logical,frame) : Nat},
-  weight_ready: Buffer.Sized<F32,weights>,bias_ready: Buffer.Sized<F32,bias>) ->
-  {parameters(TensorExecution.execution_geometry(~Logical,frame,batched),weights,bias) == True{} : Bool}:
-  parameters_held(~Logical,frame,batched,weights,bias,PublicFrame.parameters(~Logical,frame,weights,bias,weight_length,bias_length),
-    PublicFrame.allocation_room(~F32,weights,weight_ready),PublicFrame.allocation_room(~F32,bias,bias_ready))
-
-# The frame's checked support and output room are the machine guard.
-def machine_accepted(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool) ->
-  {TensorConvolution.machine_support(TensorExecution.execution_geometry(~Logical,frame,batched),PipelineExecution.convolution_limits(~Logical,frame)) == True{} : Bool}:
-  PipelineExecution.Frame{+logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,parallel,+limits,capacity,+weights,+bias,we,be,domain,+valid,supported,room} = frame
-  +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
-  +length_exact = Configuration.weights_length(Caller.problem(~Logical,~original,logical,dimensions,weights,bias,0n),
-    Guards.valid(Caller.problem(~Logical,~original,logical,dimensions,weights,bias,0n),Caller.valid(~Logical,~original,logical,dimensions,weights,bias,0n,valid)))
-  %length_exact : {KernelShape.supports_packed(limits,dimensions,Caller.input_length(dimensions),_) &&
-    Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
-  %Equal.sym(Bool,KernelShape.supports_packed(limits,dimensions,Caller.input_length(dimensions),ConvSpec.length(weights)),True{},supported) :
-    {_ && Nat.is_le(LeafValues.output_elements(images,dimensions),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
-  room
-
-def covered_at(+geometry: TensorConvolution.Geometry,inspection: Bands.Inspection) -> Bool:
-  TensorConvolution.Geometry{+count,batched,+dimensions} = geometry
-  TensorConvolution.covered(dimensions,count,inspection)
-
-def arrived_matches(~custom: F32 -> F32,+activation: Activations.Activation,+geometry: TensorConvolution.Geometry,parallel: Bool,weights: Storage.Buffer<Tile.Tile8>,bias: Storage.Buffer<F32>,
-  +shape: List<&2,U32>,fill: F32,workers: U32,input: Bands.Bands(~F32),+inspection: Bands.Inspection) ->
-  {TensorConvolution.arrived(~custom,activation,geometry,parallel,weights,bias,shape,fill,workers,(input,inspection)) ==
-    TensorConvolution.arrived_covered(~custom,activation,covered_at(geometry,inspection),geometry,parallel,input,weights,bias,shape,fill,workers) : Tensors.Tensor<F32>}:
-  TensorConvolution.Geometry{count,batched,dimensions} = geometry
-  {==}
-
-def covered_rows(+count: U32,+ci: Nat,+co: Nat,+h: Nat,+w: Nat,+k: Nat,+s: Nat,+p: Nat,+inspection: Bands.Inspection,words: LeafValues.Words<ci,co,h,w,k,s,p>,
-  checked: {Inspection.valid(inspection) && U32.is_zero(Inspection.first(inspection)) &&
-    Nat.is_eq(U32.to_nat(Inspection.end(inspection)),Inspection.total_rows(Leaf.input_geometry(count,KernelShape.Dimensions{ci,co,h,w,k,s,p}))) == True{} : Bool}) ->
-  {TensorConvolution.covered(KernelShape.Dimensions{ci,co,h,w,k,s,p},count,inspection) == True{} : Bool}:
-  Bands.Inspection{+valid,+first,+end,leaves} = inspection
-  LeafValues.Words{ci_word,co_word,h_word,w_word,k_word,s_word,p_word,oh_word,ow_word} = words
-  %h_word : {valid && U32.is_zero(first) && Nat.is_eq(U32.to_nat(end),Nat.mul(U32.to_nat(count),_)) == True{} : Bool}
-  checked
-
-# Well formed bands of the input geometry cover every row of its images.
-def covered(~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+source: Model.Model<F32>,
-  shape: BandShape.WellFormed<F32,PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,source)>) ->
-  {covered_at(TensorExecution.execution_geometry(~Logical,frame,batched),Inspection.model(~F32,arrival(~Logical,frame,batched),source)) == True{} : Bool}:
-  PipelineExecution.Frame{+logical,activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,parallel,+limits,+capacity,+weights,+bias,we,be,+domain,+valid,+supported,room} = frame
-  +dimensions = {KernelShape.Dimensions{ci,co,h,w,k,s,p} : KernelShape.Dimensions}
-  +geometry = Leaf.input_geometry(images,dimensions)
-  covered_rows(images,ci,co,h,w,k,s,p,Inspection.model(~F32,geometry,source),
-    Caller.words(limits,Caller.problem(~Logical,~original,logical,dimensions,weights,bias,0n),
-      Caller.valid(~Logical,~original,logical,dimensions,weights,bias,0n,valid),Caller.supported(~Logical,~original,logical,limits,dimensions,weights,bias,0n,supported)),
-    BandShape.well_formed_checked(~F32,geometry,source,Machine.capacity(limits),Limits.capacity_fits(limits),BandGather.rows_room(geometry,limits,capacity,domain),shape))
-
-# The band pipeline on arrived bands, with the parallelism of their layout.
-def parallel_run(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+parallel: Bool,+workers: U32,
-  +source: Model.Model<F32>,+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,
-  shape: BandShape.WellFormed<F32,PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,source)>,
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,source)),
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  PublicFrame.Contract(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),
-    TensorConvolution.band_output(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),parallel,Model.pack(~F32,source),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),workers)):
-  PipelineExecution.Frame{+logical,+activation,KernelShape.Dimensions{+ci,+co,+h,+w,+k,+s,+p},+images,previous,+limits,+capacity,+sw,+sb,+we,+be,+domain,+valid,+supported,+room} = frame
-  +frame = {PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,sw,sb,we,be,domain,valid,supported,room} : PipelineExecution.Frame<Logical>}
-  +geometry = {TensorConvolution.Geometry{images,batched,KernelShape.Dimensions{ci,co,h,w,k,s,p}} : TensorConvolution.Geometry}
-  PublicFrame.from_frame(~custom,~Logical,~original,frame,PipelineExecution.output_context(~Logical,frame),{==},
-    TensorConvolution.band_output(~custom,activation,geometry,parallel,Model.pack(~F32,source),TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),workers),
-    TensorExecution.band_output_contract(~custom,~Logical,~original,frame,batched,workers,source,weights,bias,shape,values,weight_exact,bias_exact))
-
-def run(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+parallel: Bool,+workers: U32,
-  +source: Model.Model<F32>,+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  shape: BandShape.WellFormed<F32,PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,source)>,
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,source)),
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.band_output(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),parallel,Model.pack(~F32,source),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),workers)):
-  +output = OutputMetadata.bounds_geometry(~Logical,frame)
-  +contract = parallel_run(~custom,~Logical,~original,frame,batched,parallel,workers,source,weights,bias,shape,values,weight_exact,bias_exact)
-  +header = BandOutputNormal.band_output_header(~custom,~Logical,frame,batched,parallel,workers,Model.pack(~F32,source),Buffer.pack(~F32,weights),Buffer.pack(~F32,bias))
-  convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.band_output(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),parallel,Model.pack(~F32,source),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),workers),
-    BandOutputNormal.usable_from_header(batched,output,
-      TensorConvolution.band_output(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),parallel,Model.pack(~F32,source),
-        TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),workers),header),
-    contract,
-    BandOutputNormal.normal_from_header(batched,output,
-      TensorConvolution.band_output(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),parallel,Model.pack(~F32,source),
-        TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),workers),header,
-      BandOutputNormal.completed_counted(BandOutputNormal.extents(batched,output),Bands.elements(output),BandOutputNormal.counted(~Logical,~original,frame,batched,matched,limits_exact)),
-      matched,BandOutputNormal.contract_shape(~custom,~Logical,~original,frame,
-        TensorConvolution.band_output(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),parallel,Model.pack(~F32,source),
-          TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),workers),contract)))
-
-# Arrived bands are read through their model, and they cover every row.
-def inspected(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+parallel: Bool,+workers: U32,
-  -bands: Bands.Bands(~F32),+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+layout: Bands.Plan,
-  observation: Model.Observation<F32,bands>,
-  arrived: Arrive.Arrived(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),arrival(~Logical,frame,batched),layout,bands),
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.arrived(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),parallel,
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,
-      Bands.inspect(~F32,arrival(~Logical,frame,batched),bands))):
-  Model.Observation{+model,+equation} = observation
-  Shape.Both{same,Shape.Both{well_formed,values}} = arrived
-  +contents = Model.observed_contents(~F32,model,bands,equation)
-  +exact = arrival_exact(~Logical,frame,batched)
-  +context = PipelineExecution.output_context(~Logical,frame)
-  +activation = TensorExecution.execution_activation(~Logical,frame)
-  +geometry = TensorExecution.execution_geometry(~Logical,frame,batched)
-  +input = arrival(~Logical,frame,batched)
-  +inspection = Inspection.model(~F32,input,model)
-  +owned = {
-    %exact : BandShape.WellFormed<F32,_,Model.content(~F32,model)>
-    %contents : BandShape.WellFormed<F32,input,_>
-    well_formed : BandShape.WellFormed<F32,PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,model)>}
-  +read = {
-    %exact : BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),_,Model.content(~F32,model))
-    %contents : BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),input,_)
-    values : BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),PipelineExecution.input_geometry(~Logical,frame),Model.content(~F32,model))}
-  %equation : Convolved(~custom,~Logical,~original,context,frame_extents(~Logical,frame,batched),
-    TensorConvolution.arrived(~custom,activation,geometry,parallel,TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,Bands.inspect(~F32,input,_)))
-  %Equal.sym(Bands.Bands(~F32) & Bands.Inspection,Bands.inspect(~F32,input,Model.pack(~F32,model)),(Model.pack(~F32,model),inspection),Inspection.inspect(~F32,input,model)) :
-    Convolved(~custom,~Logical,~original,context,frame_extents(~Logical,frame,batched),
-      TensorConvolution.arrived(~custom,activation,geometry,parallel,TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,_))
-  %Equal.sym(Tensors.Tensor<F32>,
-    TensorConvolution.arrived(~custom,activation,geometry,parallel,TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,(Model.pack(~F32,model),inspection)),
-    TensorConvolution.arrived_covered(~custom,activation,covered_at(geometry,inspection),geometry,parallel,Model.pack(~F32,model),TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers),
-    arrived_matches(~custom,activation,geometry,parallel,TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,Model.pack(~F32,model),inspection)) :
-    Convolved(~custom,~Logical,~original,context,frame_extents(~Logical,frame,batched),_)
-  %Equal.sym(Bool,covered_at(geometry,inspection),True{},covered(~Logical,~original,frame,batched,model,owned)) :
-    Convolved(~custom,~Logical,~original,context,frame_extents(~Logical,frame,batched),
-      TensorConvolution.arrived_covered(~custom,activation,_,geometry,parallel,Model.pack(~F32,model),TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers))
-  run(~custom,~Logical,~original,frame,batched,parallel,workers,model,weights,bias,matched,limits_exact,owned,read,weight_exact,bias_exact)
-
-# The input arrives in the selected layout.
-def selected(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+model: Model.Model<F32>,+other: Bands.Geometry,
-  +weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,+selection: BandPlanning.LayoutPlan,
-  arrival_facts: Target.Arrival<shape,arrival(~Logical,frame,batched),Planning.layout(selection)>,
-  well_formed: BandShape.WellFormed<F32,other,Model.content(~F32,model)>,other_coherent: Global.Coherent(shape,other),
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),other,Model.content(~F32,model)),
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.selected(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,
-      Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},selection)):
-  BandPlanning.LayoutPlan{+layout,+parallel,time,repartition} = selection
-  +input = arrival(~Logical,frame,batched)
-  inspected(~custom,~Logical,~original,frame,batched,parallel,workers,
-    Tensors.arrive(~F32,input,layout,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers}),weights,bias,shape,fill,layout,
-    Model.observe(~F32,Tensors.arrive(~F32,input,layout,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers})),
-    Arrive.arrived(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),shape,input,layout,other,fill,Tensors.Usable{},workers,model,arrival_facts,well_formed,other_coherent,values),
-    matched,limits_exact,weight_exact,bias_exact)
-
-# Well formed bands of a geometry fit it and cover its rows.
-def layout_facts(+geometry: Bands.Geometry,+limits: Machine.Limits,+capacity: U32,+model: Model.Model<F32>,+domain: BandGather.Domain<geometry,limits,capacity>,
-  well_formed: BandShape.WellFormed<F32,geometry,Model.content(~F32,model)>) -> Planning.LayoutFacts(geometry,limits,capacity,Model.layout(~F32,model)):
-  BandShape.WellFormed{metadata,ready,coverage} = well_formed
-  Shape.Both{FromWhole.target(~F32,geometry,limits,capacity,model,domain,metadata,Model.ready(~F32,model,ready)),
-    %Equal.sym(Bands.Plan,Model.layout(~F32,model),Model.content_layout(~F32,Model.content(~F32,model)),Model.layout_matches_content(~F32,model)) : BandPlan.Coverage(_,0n,Inspection.total_rows(geometry))
-    coverage}
-
-# The planner chooses again from the plan of an input of the geometry it reads.
-def replanned(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+model: Model.Model<F32>,+other: Bands.Geometry,
-  +weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,
-  observation: Observation.ReplanObservation<Model.layout(~F32,model),
-    TensorConvolution.band_work(TensorConvolution.band_context(TensorExecution.execution_geometry(~Logical,frame,batched),True{},TensorExecution.execution_activation(~Logical,frame)),U32.shln(1,Buffer.depth(~F32,bias))),
-    TensorConvolution.context_window(TensorConvolution.band_context(TensorExecution.execution_geometry(~Logical,frame,batched),True{},TensorExecution.execution_activation(~Logical,frame))),
-    workers,DefaultCost.configuration(),PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame)>,
-  +counted: Global.Counted<shape>,+coherent: Global.Coherent(shape,arrival(~Logical,frame,batched)),
-  well_formed: BandShape.WellFormed<F32,other,Model.content(~F32,model)>,other_coherent: Global.Coherent(shape,other),
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),other,Model.content(~F32,model)),
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.selected(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,
-      Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},
-      BandPlanning.replan(Model.layout(~F32,model),
-        TensorConvolution.band_work(TensorConvolution.band_context(TensorExecution.execution_geometry(~Logical,frame,batched),True{},TensorExecution.execution_activation(~Logical,frame)),U32.shln(1,Buffer.depth(~F32,bias))),
-        TensorConvolution.context_window(TensorConvolution.band_context(TensorExecution.execution_geometry(~Logical,frame,batched),True{},TensorExecution.execution_activation(~Logical,frame))),
-        workers,DefaultCost.configuration()))):
-  Observation.ReplanObservation{+selection,exact,facts} = observation
-  +geometry = TensorExecution.execution_geometry(~Logical,frame,batched)
-  +activation = TensorExecution.execution_activation(~Logical,frame)
-  +window = TensorConvolution.context_window(TensorConvolution.band_context(geometry,True{},activation))
-  %exact : Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.selected(~custom,activation,geometry,TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,
-      Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},_))
-  selected(~custom,~Logical,~original,frame,batched,model,other,weights,bias,shape,fill,workers,selection,
-    Target.Arrival{counted,coherent,{
-      %window_input(geometry,True{},activation) : Target.Planned(_,Planning.layout(selection))
-      Target.fitted_planned(BandWindow.input_geometry(window),PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame),Planning.layout(selection),facts) :
-      Target.Planned(arrival(~Logical,frame,batched),Planning.layout(selection))}},
-    well_formed,other_coherent,values,matched,limits_exact,weight_exact,bias_exact)
-
-# The first split of every image, when the input holds another geometry.
-def first(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+model: Model.Model<F32>,+other: Bands.Geometry,
-  +weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,+plan: BandPlanning.Plan,+window: BandWindow.Geometry,
-  +window_exact: {BandWindow.input_geometry(window) == arrival(~Logical,frame,batched) : Bands.Geometry},
-  +domain: BandGather.Domain<arrival(~Logical,frame,batched),PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame)>,
-  +counted: Global.Counted<shape>,+coherent: Global.Coherent(shape,arrival(~Logical,frame,batched)),
-  well_formed: BandShape.WellFormed<F32,other,Model.content(~F32,model)>,other_coherent: Global.Coherent(shape,other),
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),other,Model.content(~F32,model)),
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.selected(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,
-      Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},BandPlanning.first_split(plan,window))):
-  BandPlanning.Plan{+depth,+parallel,+time} = plan
-  BandWindow.Geometry{Bands.Geometry{+batch,+channels,+height,+width},kernel,stride,padding,oh,ow} = window
-  +split = {Bands.Geometry{batch,channels,height,width} : Bands.Geometry}
-  +limits = PipelineExecution.convolution_limits(~Logical,frame)
-  +capacity = PipelineExecution.convolution_capacity(~Logical,frame)
-  +layout = Bands.image_plan(U32.to_nat(batch),0,U32.to_nat(depth),height)
-  selected(~custom,~Logical,~original,frame,batched,model,other,weights,bias,shape,fill,workers,BandPlanning.LayoutPlan{layout,parallel,time,0.0},
-    Target.Arrival{counted,coherent,{
-      %window_exact : Target.Planned(_,layout)
-      Target.split_planned(split,limits,capacity,U32.to_nat(depth),
-        %Equal.sym(Bands.Geometry,split,arrival(~Logical,frame,batched),window_exact) : BandGather.Domain<_,limits,capacity> domain) :
-      Target.Planned(arrival(~Logical,frame,batched),layout)}},
-    well_formed,other_coherent,values,matched,limits_exact,weight_exact,bias_exact)
-
-# The layout the call chooses: again from the input's plan when the input
-# holds the geometry the convolution reads, otherwise the first split.
-def planned(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,same: Bool,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+model: Model.Model<F32>,+other: Bands.Geometry,
-  +weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,
-  +compared: {Bands.same_geometry(arrival(~Logical,frame,batched),other) == same : Bool},
-  +domain: BandGather.Domain<arrival(~Logical,frame,batched),PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame)>,
-  +counted: Global.Counted<shape>,+coherent: Global.Coherent(shape,arrival(~Logical,frame,batched)),
-  +well_formed: BandShape.WellFormed<F32,other,Model.content(~F32,model)>,other_coherent: Global.Coherent(shape,other),
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),other,Model.content(~F32,model)),
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.selected(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,
-      Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},
-      BandPlanning.layout_for(same,Model.layout(~F32,model),
-        TensorConvolution.band_work(TensorConvolution.band_context(TensorExecution.execution_geometry(~Logical,frame,batched),True{},TensorExecution.execution_activation(~Logical,frame)),U32.shln(1,Buffer.depth(~F32,bias))),
-        TensorConvolution.context_window(TensorConvolution.band_context(TensorExecution.execution_geometry(~Logical,frame,batched),True{},TensorExecution.execution_activation(~Logical,frame))),
-        workers,DefaultCost.configuration()))):
-  match same:
-    case True{}:
-      +geometry = TensorExecution.execution_geometry(~Logical,frame,batched)
-      +activation = TensorExecution.execution_activation(~Logical,frame)
-      +context = TensorConvolution.band_context(geometry,True{},activation)
-      +window = TensorConvolution.context_window(context)
-      +input = arrival(~Logical,frame,batched)
-      +limits = PipelineExecution.convolution_limits(~Logical,frame)
-      +capacity = PipelineExecution.convolution_capacity(~Logical,frame)
-      +into = Equal.sym(Bands.Geometry,BandWindow.input_geometry(window),input,window_input(geometry,True{},activation))
-      +owned = {
-        %Equal.sym(Bands.Geometry,input,other,BandCount.same_geometry_equal(input,other,compared)) : BandShape.WellFormed<F32,_,Model.content(~F32,model)>
-        well_formed : BandShape.WellFormed<F32,input,Model.content(~F32,model)>}
-      replanned(~custom,~Logical,~original,frame,batched,model,other,weights,bias,shape,fill,workers,
-        Observation.observe(Model.layout(~F32,model),TensorConvolution.band_work(context,U32.shln(1,Buffer.depth(~F32,bias))),window,workers,DefaultCost.configuration(),limits,capacity,
-          %into : BandGather.Domain<_,limits,capacity> domain,
-          %into : Planning.LayoutFacts(_,limits,capacity,Model.layout(~F32,model)) layout_facts(input,limits,capacity,model,domain,owned)),
-        counted,coherent,well_formed,other_coherent,values,matched,limits_exact,weight_exact,bias_exact)
-    case False{}:
-      +geometry = TensorExecution.execution_geometry(~Logical,frame,batched)
-      +activation = TensorExecution.execution_activation(~Logical,frame)
-      +context = TensorConvolution.band_context(geometry,True{},activation)
-      first(~custom,~Logical,~original,frame,batched,model,other,weights,bias,shape,fill,workers,
-        BandPlanning.select(TensorConvolution.band_work(context,U32.shln(1,Buffer.depth(~F32,bias))),TensorConvolution.context_window(context),workers,DefaultCost.configuration()),
-        TensorConvolution.context_window(context),window_input(geometry,True{},activation),
-        domain,counted,coherent,well_formed,other_coherent,values,matched,limits_exact,weight_exact,bias_exact)
-
-# A Normal input offers its geometry and plan, and the bias certificate sizes
-# the work the planner reads.
-def offered(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+model: Model.Model<F32>,+other: Bands.Geometry,
-  +weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,
-  +domain: BandGather.Domain<arrival(~Logical,frame,batched),PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame)>,
-  +counted: Global.Counted<shape>,+coherent: Global.Coherent(shape,arrival(~Logical,frame,batched)),
-  +well_formed: BandShape.WellFormed<F32,other,Model.content(~F32,model)>,other_coherent: Global.Coherent(shape,other),
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),other,Model.content(~F32,model)),
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.offered(~custom,TensorExecution.execution_activation(~Logical,frame),TensorExecution.execution_geometry(~Logical,frame,batched),
-      TensorConvolution.packed(TensorExecution.execution_geometry(~Logical,frame,batched),Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,
-      Tensors.offer(~F32,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers}))):
-  Buffer.Model{bias_tree,bias_length,Certificate.Certificate{bias_depth,bias_equation}} = bias
-  +bias = {Buffer.Model{bias_tree,bias_length,Certificate.Certificate{bias_depth,bias_equation}} : Buffer.Model<F32>}
-  +geometry = TensorExecution.execution_geometry(~Logical,frame,batched)
-  +layout = Model.layout(~F32,model)
-  %Equal.sym(Tensors.Tensor<F32> & BandSchedule.Target,Tensors.offer(~F32,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers}),
-    (Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},BandSchedule.Target{other,layout,BandSchedule.splits(layout)}),
-    Target.offer(~F32,model,other,shape,fill,workers)) :
-    Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-      TensorConvolution.offered(~custom,TensorExecution.execution_activation(~Logical,frame),geometry,TensorConvolution.packed(geometry,Buffer.pack(~F32,weights)),Buffer.pack(~F32,bias),shape,fill,workers,_))
-  planned(~custom,~Logical,~original,Bands.same_geometry(arrival(~Logical,frame,batched),other),frame,batched,model,other,weights,bias,shape,fill,workers,{==},
-    domain,counted,coherent,well_formed,other_coherent,values,matched,limits_exact,weight_exact,bias_exact)
-
-# The checks of the call accept the frame's parameters and machine guard.
-def checked(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+frame: PipelineExecution.Frame<Logical>,+batched: Bool,+model: Model.Model<F32>,+other: Bands.Geometry,
-  +weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,
-  +domain: BandGather.Domain<arrival(~Logical,frame,batched),PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame)>,
-  +counted: Global.Counted<shape>,+coherent: Global.Coherent(shape,arrival(~Logical,frame,batched)),
-  +well_formed: BandShape.WellFormed<F32,other,Model.content(~F32,model)>,other_coherent: Global.Coherent(shape,other),
-  values: BandValues.Values(~F32,~Logical,~original,PipelineExecution.convolution_logical(~Logical,frame),other,Model.content(~F32,model)),
-  +matched: {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched) == True{} : Bool},
-  +limits_exact: {PipelineExecution.convolution_limits(~Logical,frame) == Default.limits() : Machine.Limits},
-  weight_length: {Buffer.length(~F32,weights) == PublicFrame.weight_length(~Logical,frame) : Nat},bias_length: {Buffer.length(~F32,bias) == PublicFrame.bias_length(~Logical,frame) : Nat},
-  weight_ready: Buffer.Sized<F32,weights>,bias_ready: Buffer.Sized<F32,bias>,
-  weight_exact: {Buffer.tree(~F32,weights) == PipelineExecution.source_tree(~Logical,frame) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)) : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.band_checked(~custom,TensorExecution.execution_activation(~Logical,frame),Some{TensorExecution.execution_geometry(~Logical,frame,batched)},
-      Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers)):
-  +context = PipelineExecution.output_context(~Logical,frame)
-  +activation = TensorExecution.execution_activation(~Logical,frame)
-  +geometry = TensorExecution.execution_geometry(~Logical,frame,batched)
-  +machine = {
-    %limits_exact : {TensorConvolution.machine_support(geometry,_) == True{} : Bool}
-    machine_accepted(~Logical,~original,frame,batched) : {TensorConvolution.machine_support(geometry,Default.limits()) == True{} : Bool}}
-  %Equal.sym(Tensors.Tensor<F32>,
-    TensorConvolution.band_checked(~custom,activation,Some{geometry},Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers),
-    TensorConvolution.band_supported(~custom,activation,parameters(geometry,weights,bias),geometry,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},
-      Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers),
-    checked_matches(~custom,activation,geometry,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},weights,bias,shape,fill,workers)) :
-    Convolved(~custom,~Logical,~original,context,frame_extents(~Logical,frame,batched),_)
-  %Equal.sym(Bool,parameters(geometry,weights,bias),True{},parameters_accepted(~Logical,frame,batched,weights,bias,weight_length,bias_length,weight_ready,bias_ready)) :
-    Convolved(~custom,~Logical,~original,context,frame_extents(~Logical,frame,batched),
-      TensorConvolution.band_supported(~custom,activation,_,geometry,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers))
-  %Equal.sym(Bool,TensorConvolution.machine_support(geometry,Default.limits()),True{},machine) :
-    Convolved(~custom,~Logical,~original,context,frame_extents(~Logical,frame,batched),
-      TensorConvolution.band_machine(~custom,activation,_,geometry,Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers))
-  offered(~custom,~Logical,~original,frame,batched,model,other,weights,bias,shape,fill,workers,domain,counted,coherent,well_formed,other_coherent,values,matched,limits_exact,weight_exact,bias_exact)
-
-def frame_output_images(~Logical: Data,+frame: PipelineExecution.Frame<Logical>) ->
-  {BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)) == PublicFrame.frame_images(~Logical,frame) : U32}:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room} = frame
-  {==}
-
-def native_output_match(+input: PublicFrame.NativeInput) ->
-  {BandOutputNormal.shape_matched(PublicFrame.input_images(input),batched(input)) == True{} : Bool}:
-  PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p} = input
-  match batched:
-    case True{}: {==}
-    case False{}: {==}
-
-def output_matched(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+input: PublicFrame.NativeInput,
-  images_exact: {PublicFrame.frame_images(~Logical,frame) == PublicFrame.input_images(input) : U32}) ->
-  {BandOutputNormal.shape_matched(BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),batched(input)) == True{} : Bool}:
-  %Equal.sym(U32,BandOutputNormal.images(OutputMetadata.bounds_geometry(~Logical,frame)),PublicFrame.frame_images(~Logical,frame),frame_output_images(~Logical,frame)) :
-    {BandOutputNormal.shape_matched(_,batched(input)) == True{} : Bool}
-  %Equal.sym(U32,PublicFrame.frame_images(~Logical,frame),PublicFrame.input_images(input),images_exact) :
-    {BandOutputNormal.shape_matched(_,batched(input)) == True{} : Bool}
-  native_output_match(input)
-
-def frame_dimension_extents(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+batched: Bool) ->
-  {frame_extents(~Logical,frame,batched) == dimension_extents(batched,PublicFrame.frame_images(~Logical,frame),PipelineExecution.dimensions(~Logical,frame)) : List<&2,U32>}:
-  PipelineExecution.Frame{logical,activation,KernelShape.Dimensions{ci,co,h,w,k,s,p},images,parallel,limits,capacity,weights,bias,we,be,domain,valid,supported,room} = frame
-  {==}
-
-def image_extents(+batched: Bool,+images: U32,+channels: U32,+height: U32,+width: U32) ->
-  {TensorConvolution.output_shape(batched,PublicFrame.image_count(batched,images),channels,height,width) == TensorConvolution.output_shape(batched,images,channels,height,width) : List<&2,U32>}:
-  match batched:
-    case True{}: {==}
-    case False{}: {==}
-
-def native_extents(+input: PublicFrame.NativeInput) ->
-  {dimension_extents(batched(input),PublicFrame.input_images(input),PublicFrame.frame_dimensions(input)) == output_extents(input) : List<&2,U32>}:
-  PublicFrame.NativeInput{+images,+batched,+ci,+co,+h,+w,+k,+s,+p} = input
-  +height = U32.from_nat(ConvSpec.axis_size(U32.to_nat(h),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p)))
-  +width = U32.from_nat(ConvSpec.axis_size(U32.to_nat(w),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p)))
-  %Equal.sym(U32,U32.from_nat(U32.to_nat(co)),co,Arithmetic.native_roundtrip(co)) :
-    {TensorConvolution.output_shape(batched,PublicFrame.image_count(batched,images),_,height,width) == TensorConvolution.output_shape(batched,images,co,height,width) : List<&2,U32>}
-  image_extents(batched,images,co,height,width)
-
-# The output extents of the frame of a call are those of its native input.
-def framed_extents(~Logical: Data,+frame: PipelineExecution.Frame<Logical>,+input: PublicFrame.NativeInput,
-  images_exact: {PublicFrame.frame_images(~Logical,frame) == PublicFrame.input_images(input) : U32},
-  dimensions_exact: {PipelineExecution.dimensions(~Logical,frame) == PublicFrame.frame_dimensions(input) : KernelShape.Dimensions}) ->
-  {frame_extents(~Logical,frame,batched(input)) == output_extents(input) : List<&2,U32>}:
-  Equal.trans(List<&2,U32>,frame_extents(~Logical,frame,batched(input)),
-    dimension_extents(batched(input),PublicFrame.frame_images(~Logical,frame),PipelineExecution.dimensions(~Logical,frame)),output_extents(input),
-    frame_dimension_extents(~Logical,frame,batched(input)),{
-      %Equal.sym(U32,PublicFrame.frame_images(~Logical,frame),PublicFrame.input_images(input),images_exact) :
-        {dimension_extents(batched(input),_,PipelineExecution.dimensions(~Logical,frame)) == output_extents(input) : List<&2,U32>}
-      %Equal.sym(KernelShape.Dimensions,PipelineExecution.dimensions(~Logical,frame),PublicFrame.frame_dimensions(input),dimensions_exact) :
-        {dimension_extents(batched(input),PublicFrame.input_images(input),_) == output_extents(input) : List<&2,U32>}
-      native_extents(input) :
-        {dimension_extents(batched(input),PublicFrame.frame_images(~Logical,frame),PipelineExecution.dimensions(~Logical,frame)) == output_extents(input) : List<&2,U32>}})
-
-# The frame of the call fixes the logical context, the parameter sequences and
-# the native geometry.
-def framed(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+input: PublicFrame.NativeInput,
-  +weight_list: List<&2,F32>,+bias_list: List<&2,F32>,
-  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weight_list),weight_list>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias_list),bias_list>,
-  +frame: PipelineExecution.Frame<Logical>,+model: Model.Model<F32>,+other: Bands.Geometry,+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+fill: F32,+workers: U32,
-  +fields: PublicFrame.Fields<Logical,logical,activation,input,weight_list,bias_list,weight_evidence,bias_evidence,frame,Default.limits(),Machine.capacity(Default.limits())>,
-  lengths: Shape.Both<{PublicFrame.weight_length(~Logical,frame) == ConvSpec.length(weight_list) : Nat},{PublicFrame.bias_length(~Logical,frame) == ConvSpec.length(bias_list) : Nat}>,
-  +counted: Global.Counted<input_extents(input)>,
-  well_formed: BandShape.WellFormed<F32,other,Model.contents(~F32,Model.pack(~F32,model))>,other_coherent: Global.Coherent(input_extents(input),other),
-  values: BandValues.Values(~F32,~Logical,~original,logical,other,Model.contents(~F32,Model.pack(~F32,model))),
-  weight_length: {Buffer.length(~F32,weights) == ConvSpec.length(weight_list) : Nat},bias_length: {Buffer.length(~F32,bias) == ConvSpec.length(bias_list) : Nat},
-  weight_ready: Buffer.Sized<F32,weights>,bias_ready: Buffer.Sized<F32,bias>,
-  weight_exact: {Buffer.tree(~F32,weights) == StorageLaws.sequence_storage(F32,ConvSpec.length(weight_list),weight_list,weight_evidence) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == Buffer.Content{StorageLaws.sequence_storage(F32,ConvSpec.length(bias_list),bias_list,bias_evidence),ConvSpec.length(bias_list)} : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PublicFrame.reference_context(~Logical,logical,activation,input,weight_list,bias_list),output_extents(input),
-    TensorConvolution.band_checked(~custom,activation,Some{PublicFrame.geometry(input)},Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},workers},
-      Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),input_extents(input),fill,workers)):
-  PublicFrame.Fields{+logical_exact,+activation_exact,+images_exact,dimensions_exact,+input_geometry_exact,+weights_exact,bias_content_exact,+context_exact,+limits_exact,capacity_exact} = fields
-  Shape.Both{weight_length_exact,bias_length_exact} = lengths
-  +batched = batched(input)
-  +shape = input_extents(input)
-  +geometry_exact = geometry_fields(~Logical,logical,activation,input,weight_list,bias_list,weight_evidence,bias_evidence,frame,Default.limits(),Machine.capacity(Default.limits()),fields)
-  +bias_settings = PublicFrame.settings_bias(~Logical,~original,logical,activation,input,weight_list,bias_list,weight_evidence,bias_evidence,frame,Default.limits(),Machine.capacity(Default.limits()),fields)
-  +to_arrival = Equal.sym(Bands.Geometry,arrival(~Logical,frame,batched),PipelineExecution.input_geometry(~Logical,frame),arrival_exact(~Logical,frame,batched))
-  +from_source = Equal.sym(Bands.Geometry,PipelineExecution.input_geometry(~Logical,frame),PublicFrame.source_geometry(input),input_geometry_exact)
-  +coherent = {
-    %to_arrival : Global.Coherent(shape,_)
-    %from_source : Global.Coherent(shape,_)
-    BandCount.shape_coherence_elements(shape,PublicFrame.source_geometry(input),source_rows(input)) : Global.Coherent(shape,arrival(~Logical,frame,batched))}
-  +domain = {
-    %to_arrival : BandGather.Domain<_,PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame)>
-    PipelineExecution.convolution_domain(~Logical,frame) :
-    BandGather.Domain<arrival(~Logical,frame,batched),PipelineExecution.convolution_limits(~Logical,frame),PipelineExecution.convolution_capacity(~Logical,frame)>}
-  %framed_extents(~Logical,frame,input,images_exact,dimensions_exact) : Convolved(~custom,~Logical,~original,PublicFrame.reference_context(~Logical,logical,activation,input,weight_list,bias_list),_,
-    TensorConvolution.band_checked(~custom,activation,Some{PublicFrame.geometry(input)},Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers))
-  %context_exact : Convolved(~custom,~Logical,~original,_,frame_extents(~Logical,frame,batched),
-    TensorConvolution.band_checked(~custom,activation,Some{PublicFrame.geometry(input)},Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers))
-  %activation_exact : Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.band_checked(~custom,_,Some{PublicFrame.geometry(input)},Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers))
-  %geometry_exact : Convolved(~custom,~Logical,~original,PipelineExecution.output_context(~Logical,frame),frame_extents(~Logical,frame,batched),
-    TensorConvolution.band_checked(~custom,TensorExecution.execution_activation(~Logical,frame),Some{_},Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers},
-      Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),shape,fill,workers))
-  checked(~custom,~Logical,~original,frame,batched,model,other,weights,bias,shape,fill,workers,domain,counted,coherent,
-    %Model.packed_contents(~F32,model) : BandShape.WellFormed<F32,other,_> well_formed,
-    other_coherent,
-    %Equal.sym(Logical,PipelineExecution.convolution_logical(~Logical,frame),logical,logical_exact) : BandValues.Values(~F32,~Logical,~original,_,other,Model.content(~F32,model))
-    %Model.packed_contents(~F32,model) : BandValues.Values(~F32,~Logical,~original,logical,other,_)
-    values,
-    output_matched(~Logical,frame,input,images_exact),limits_exact,
-    Equal.trans(Nat,Buffer.length(~F32,weights),ConvSpec.length(weight_list),PublicFrame.weight_length(~Logical,frame),weight_length,Equal.sym(Nat,PublicFrame.weight_length(~Logical,frame),ConvSpec.length(weight_list),weight_length_exact)),
-    Equal.trans(Nat,Buffer.length(~F32,bias),ConvSpec.length(bias_list),PublicFrame.bias_length(~Logical,frame),bias_length,Equal.sym(Nat,PublicFrame.bias_length(~Logical,frame),ConvSpec.length(bias_list),bias_length_exact)),
-    weight_ready,bias_ready,
-    Equal.trans(Tree.Tree<F32>,Buffer.tree(~F32,weights),StorageLaws.sequence_storage(F32,ConvSpec.length(weight_list),weight_list,weight_evidence),PipelineExecution.source_tree(~Logical,frame),weight_exact,
-      Equal.sym(Tree.Tree<F32>,PipelineExecution.source_tree(~Logical,frame),StorageLaws.sequence_storage(F32,ConvSpec.length(weight_list),weight_list,weight_evidence),weights_exact)),
-    Equal.trans(Buffer.Content<F32>,Buffer.content(~F32,bias),Buffer.Content{StorageLaws.sequence_storage(F32,ConvSpec.length(bias_list),bias_list,bias_evidence),ConvSpec.length(bias_list)},
-      PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)),bias_exact,
-      Equal.sym(Buffer.Content<F32>,PipelineExecution.values_bias(~PipelineExecution.Frame<Logical>,PipelineExecution.settings(~Logical,~original,frame)),Buffer.Content{StorageLaws.sequence_storage(F32,ConvSpec.length(bias_list),bias_list,bias_evidence),ConvSpec.length(bias_list)},bias_settings)))
-
-# The existing convolution valid guard supplies positive C/H/W. The shape's
-# actual Counted receipt supplies the whole-tensor bound, including batch N.
-def counted_domain(+shape: List<&2,U32>,+images: U32,+channels: U32,+height: U32,+width: U32,+counted: Global.Counted<shape>,
-  coherent: Global.Coherent(shape,Bands.Geometry{images,channels,height,width}),
-  positives: BandNativeSourceDomain.Positive<U32.to_nat(channels),U32.to_nat(height),U32.to_nat(width)>) ->
-  BandGather.Domain<Bands.Geometry{images,channels,height,width},Default.limits(),Machine.capacity(Default.limits())>:
-  BandNativeSourceDomain.Positive{cp,hp,wp} = positives
-  Global.domain(shape,Bands.Geometry{images,channels,height,width},counted,coherent,cp,hp,wp)
-
-def source_domain(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+input: PublicFrame.NativeInput,
-  +weights: List<&2,F32>,+bias: List<&2,F32>,
-  shape: Shape.Both<Global.Counted<input_extents(input)>,Global.Coherent(input_extents(input),PublicFrame.source_geometry(input))>,
-  validated: {PublicFrame.frame_valid(input,weights,bias) == True{} : Bool}) ->
-  BandGather.Domain<Leaf.input_geometry(PublicFrame.input_images(input),PublicFrame.frame_dimensions(input)),Default.limits(),Machine.capacity(Default.limits())>:
-  PublicFrame.NativeInput{+images,+batched,+ci,+co,+h,+w,+k,+s,+p} = input
-  Shape.Both{+counted,coherent} = shape
-  +dimensions = BandNativeSourceDomain.dimensions(ci,co,h,w,k,s,p)
-  +problem = Caller.problem(~Logical,~original,logical,dimensions,weights,bias,0n)
-  +count = PublicFrame.image_count(batched,images)
-  BandNativeSourceDomain.converted(Bands.Geometry{count,ci,h,w},Leaf.input_geometry(count,dimensions),Default.limits(),Machine.capacity(Default.limits()),
-    Equal.sym(Bands.Geometry,Leaf.input_geometry(count,dimensions),Bands.Geometry{count,ci,h,w},BandNativeSourceDomain.geometry_roundtrip(count,ci,co,h,w,k,s,p)),
-    counted_domain(input_extents(PublicFrame.NativeInput{images,batched,ci,co,h,w,k,s,p}),count,ci,h,w,counted,coherent,
-      BandNativeSourceDomain.positive(problem,Guards.valid(problem,Caller.valid(~Logical,~original,logical,dimensions,weights,bias,0n,validated)))))
-
-# A Normal input and whole parameters of the record's extents.
-def native(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+input: PublicFrame.NativeInput,
-  +weight_list: List<&2,F32>,+bias_list: List<&2,F32>,
-  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(weight_list),weight_list>,+bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(bias_list),bias_list>,
-  +validated: {PublicFrame.frame_valid(input,weight_list,bias_list) == True{} : Bool},+supported: {PublicFrame.machine(input,Default.limits()) == True{} : Bool},
-  +model: Model.Model<F32>,+other: Bands.Geometry,+weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+fill: F32,+workers: U32,
-  contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},workers}),
-  weight_length: {Buffer.length(~F32,weights) == ConvSpec.length(weight_list) : Nat},bias_length: {Buffer.length(~F32,bias) == ConvSpec.length(bias_list) : Nat},
-  weight_ready: Buffer.Sized<F32,weights>,bias_ready: Buffer.Sized<F32,bias>,
-  weight_exact: {Buffer.tree(~F32,weights) == StorageLaws.sequence_storage(F32,ConvSpec.length(weight_list),weight_list,weight_evidence) : Tree.Tree<F32>},
-  bias_exact: {Buffer.content(~F32,bias) == Buffer.Content{StorageLaws.sequence_storage(F32,ConvSpec.length(bias_list),bias_list,bias_evidence),ConvSpec.length(bias_list)} : Buffer.Content<F32>}) ->
-  Convolved(~custom,~Logical,~original,PublicFrame.reference_context(~Logical,logical,activation,input,weight_list,bias_list),output_extents(input),
-    TensorConvolution.band_checked(~custom,activation,Some{PublicFrame.geometry(input)},Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},workers},
-      Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),input_extents(input),fill,workers)):
-  Shape.Both{Shape.Both{well_formed,Shape.Both{+counted,other_coherent}},values} = contract
-  +limits = Default.limits()
-  +capacity = Machine.capacity(Default.limits())
-  +domain = source_domain(~Logical,~original,logical,input,weight_list,bias_list,
-    Shape.Both{counted,BandCount.shape_coherence_elements(input_extents(input),PublicFrame.source_geometry(input),source_rows(input))},validated)
-  framed(~custom,~Logical,~original,logical,activation,input,weight_list,bias_list,weight_evidence,bias_evidence,
-    PublicFrame.configured_native(~Logical,~original,logical,activation,input,True{},limits,capacity,weight_list,bias_list,domain,weight_evidence,bias_evidence,validated,supported),
-    model,other,weights,bias,fill,workers,
-    PublicFrame.configured(~Logical,~original,logical,activation,input,True{},limits,capacity,weight_list,bias_list,domain,weight_evidence,bias_evidence,validated,supported),
-    configured_lengths(~Logical,~original,logical,activation,input,True{},limits,capacity,weight_list,bias_list,domain,weight_evidence,bias_evidence,validated,supported),
-    counted,well_formed,other_coherent,values,weight_length,bias_length,weight_ready,bias_ready,weight_exact,bias_exact)
-
-# Weights and bias arrive as one leaf each, and the input keeps its layout
-# and the larger worker count.
-def layout_matches(~custom: F32 -> F32,+activation: Activations.Activation,+input: PublicFrame.NativeInput,-bands: Bands.Bands(~F32),+other: Bands.Geometry,
-  +weights: Buffer.Model<F32>,+bias: Buffer.Model<F32>,+fill: F32,+input_workers: U32,+parameter_workers: U32) ->
-  {TensorConvolution.input_layout(~custom,activation,Tensors.Tensor{bands,other,input_extents(input),fill,Tensors.Usable{},input_workers},
-      Buffer.pack(~F32,weights),weight_extents(input),Buffer.pack(~F32,bias),bias_extents(input),Tensors.Usable{},parameter_workers,stride(input),padding(input)) ==
-    TensorConvolution.band_checked(~custom,activation,Some{PublicFrame.geometry(input)},
-      Tensors.Tensor{bands,other,input_extents(input),fill,Tensors.Usable{},U32.max(input_workers,parameter_workers)},
-      Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),input_extents(input),fill,U32.max(input_workers,parameter_workers)) : Tensors.Tensor<F32>}:
-  +workers = U32.max(input_workers,parameter_workers)
-  %Equal.sym(Maybe<&2,TensorConvolution.Geometry>,
-    TensorConvolution.geometry(TensorConvolution.input_shape(input_extents(input)),weight_extents(input),bias_extents(input),stride(input),padding(input)),Some{PublicFrame.geometry(input)},public_geometry(input)) :
-    {TensorConvolution.band_checked(~custom,activation,_,Tensors.Tensor{bands,other,input_extents(input),fill,Tensors.Usable{},workers},Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),input_extents(input),fill,workers) ==
-      TensorConvolution.band_checked(~custom,activation,Some{PublicFrame.geometry(input)},Tensors.Tensor{bands,other,input_extents(input),fill,Tensors.Usable{},workers},
-        Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),input_extents(input),fill,workers) : Tensors.Tensor<F32>}
-  {==}
-
-# The input as the tensor the call reads.
-def source_tensor(model: Model.Model<F32>,other: Bands.Geometry,shape: List<&2,U32>,fill: F32,workers: U32) -> Tensors.Tensor<F32>:
-  Tensors.Tensor{Model.pack(~F32,model),other,shape,fill,Tensors.Usable{},workers}
-
-def parameters_contract(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+activation: Activations.Activation,+input: PublicFrame.NativeInput,
-  +model: Model.Model<F32>,+other: Bands.Geometry,+fill: F32,+input_workers: U32,+parameter_workers: U32,
-  contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},input_workers}),
-  +supported: {PublicFrame.machine(input,Default.limits()) == True{} : Bool},
-  -weight_buffer: Storage.Buffer<F32>,-bias_buffer: Storage.Buffer<F32>,+weight_parameter: Parameters.Parameter<weight_buffer>,+bias_parameter: Parameters.Parameter<bias_buffer>,
-  +validated: {PublicFrame.frame_valid(input,Parameters.parameter_values(weight_buffer,weight_parameter),Parameters.parameter_values(bias_buffer,bias_parameter)) == True{} : Bool}) ->
-  Convolved(~custom,~Logical,~original,PublicFrame.reference_context(~Logical,logical,activation,input,Parameters.parameter_values(weight_buffer,weight_parameter),Parameters.parameter_values(bias_buffer,bias_parameter)),output_extents(input),
-    TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-      weight_buffer,weight_extents(input),bias_buffer,bias_extents(input),Tensors.Usable{},parameter_workers,stride(input),padding(input))):
-  Parameters.Parameter{+weight_model,+weight_equation,+weight_ready,+weight_values,+weight_length,+weight_evidence,+weight_exact} = weight_parameter
-  Parameters.Parameter{+bias_model,+bias_equation,+bias_ready,+bias_values,+bias_length,+bias_evidence,+bias_exact} = bias_parameter
-  +context = PublicFrame.reference_context(~Logical,logical,activation,input,weight_values,bias_values)
-  +workers = U32.max(input_workers,parameter_workers)
-  %weight_equation :
-    Convolved(~custom,~Logical,~original,context,output_extents(input),TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-      _,weight_extents(input),bias_buffer,bias_extents(input),Tensors.Usable{},parameter_workers,stride(input),padding(input)))
-  %bias_equation :
-    Convolved(~custom,~Logical,~original,context,output_extents(input),TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-      Buffer.pack(~F32,weight_model),weight_extents(input),_,bias_extents(input),Tensors.Usable{},parameter_workers,stride(input),padding(input)))
-  %Equal.sym(Tensors.Tensor<F32>,
-    TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-      Buffer.pack(~F32,weight_model),weight_extents(input),Buffer.pack(~F32,bias_model),bias_extents(input),Tensors.Usable{},parameter_workers,stride(input),padding(input)),
-    TensorConvolution.band_checked(~custom,activation,Some{PublicFrame.geometry(input)},Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},workers},
-      Buffer.pack(~F32,weight_model),Buffer.pack(~F32,bias_model),input_extents(input),fill,workers),
-    layout_matches(~custom,activation,input,Model.pack(~F32,model),other,weight_model,bias_model,fill,input_workers,parameter_workers)) :
-    Convolved(~custom,~Logical,~original,context,output_extents(input),_)
-  native(~custom,~Logical,~original,logical,activation,input,weight_values,bias_values,weight_evidence,bias_evidence,validated,supported,
-    model,other,weight_model,bias_model,fill,workers,contract,
-    Equal.sym(Nat,ConvSpec.length(weight_values),Buffer.length(~F32,weight_model),weight_length),Equal.sym(Nat,ConvSpec.length(bias_values),Buffer.length(~F32,bias_model),bias_length),
-    weight_ready,bias_ready,weight_exact,Parameters.parameter_content(bias_buffer,bias_parameter))
-
-# The values the specification reads from weights and bias: their readers'
-# values at every index of the parameter extents.
-def weight_values(~Context: Data,~value: Context -> U32 -> F32,+context: Context,+input: PublicFrame.NativeInput) -> List<&2,F32>:
-  Contract.listed(~F32,~Context,~value,ShapeLaws.elements(weight_extents(input)),0n,context)
-
-def bias_values(~Context: Data,~value: Context -> U32 -> F32,+context: Context,+input: PublicFrame.NativeInput) -> List<&2,F32>:
-  Contract.listed(~F32,~Context,~value,ShapeLaws.elements(bias_extents(input)),0n,context)
-
-# Storage that holds a reader's values over the extents is the parameter of
-# the reader's values.
-def parameter_of(~Context: Data,~value: Context -> U32 -> F32,+context: Context,+shape: List<&2,U32>,+model: Buffer.Model<F32>,
-  +facts: GatherValues.Facts(~F32,~Context,~value,context,shape,Buffer.content(~F32,model))) ->
-  Parameters.Parameter<Buffer.pack(~F32,model)>:
-  Shape.Both{Contract.WellFormed{length_exact,ready},values} = facts
-  Parameters.observed_parameter(Buffer.pack(~F32,model),
-    %Equal.sym(Buffer.Content<F32>,Buffer.contents(~F32,Buffer.pack(~F32,model)),Buffer.content(~F32,model),Buffer.packed_contents(~F32,model)) : Buffer.ContentReady<F32,_> ready,
-    Buffer.Observation{model,{==}})
-
-def parameter_listed(~Context: Data,~value: Context -> U32 -> F32,+context: Context,+shape: List<&2,U32>,+model: Buffer.Model<F32>,
-  +facts: GatherValues.Facts(~F32,~Context,~value,context,shape,Buffer.content(~F32,model))) ->
-  {Parameters.parameter_values(Buffer.pack(~F32,model),parameter_of(~Context,~value,context,shape,model,facts)) ==
-    Contract.listed(~F32,~Context,~value,ShapeLaws.elements(shape),0n,context) : List<&2,F32>}:
-  Shape.Both{Contract.WellFormed{+length_exact,+ready},+values} = facts
-  %length_exact :
-    {Parameters.parameter_values(Buffer.pack(~F32,model),parameter_of(~Context,~value,context,shape,model,Shape.Both{Contract.WellFormed{length_exact,ready},values})) ==
-      Contract.listed(~F32,~Context,~value,_,0n,context) : List<&2,F32>}
-  Parameters.listed_sequence(~Context,~value,context,Buffer.content(~F32,model),values)
-
-# With the weights and bias as storage holding their readers' values, the
-# call is the native convolution of those values.
-def parameterized(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,~WeightContext: Data,~weight_value: WeightContext -> U32 -> F32,
-  ~BiasContext: Data,~bias_value: BiasContext -> U32 -> F32,+logical: Logical,+weight_context: WeightContext,+bias_context: BiasContext,
-  +activation: Activations.Activation,+input: PublicFrame.NativeInput,+model: Model.Model<F32>,+other: Bands.Geometry,+fill: F32,+input_workers: U32,
-  +contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},input_workers}),
-  +supported: {PublicFrame.machine(input,Default.limits()) == True{} : Bool},
-  +weights: Buffer.Model<F32>,+weight_facts: GatherValues.Facts(~F32,~WeightContext,~weight_value,weight_context,weight_extents(input),Buffer.content(~F32,weights)),+weight_workers: U32,
-  +bias: Buffer.Model<F32>,+bias_facts: GatherValues.Facts(~F32,~BiasContext,~bias_value,bias_context,bias_extents(input),Buffer.content(~F32,bias)),+bias_workers: U32,
-  +validated: {PublicFrame.frame_valid(input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)) == True{} : Bool}) ->
-  Convolved(~custom,~Logical,~original,
-    PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),
-    TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-      Buffer.pack(~F32,weights),weight_extents(input),Buffer.pack(~F32,bias),bias_extents(input),Tensors.first_failure(Tensors.Usable{},Tensors.Usable{}),U32.max(weight_workers,bias_workers),stride(input),padding(input))):
-  +weight_parameter = parameter_of(~WeightContext,~weight_value,weight_context,weight_extents(input),weights,weight_facts)
-  +bias_parameter = parameter_of(~BiasContext,~bias_value,bias_context,bias_extents(input),bias,bias_facts)
-  +weight_listed = parameter_listed(~WeightContext,~weight_value,weight_context,weight_extents(input),weights,weight_facts)
-  +bias_listed = parameter_listed(~BiasContext,~bias_value,bias_context,bias_extents(input),bias,bias_facts)
-  %weight_listed :
-    Convolved(~custom,~Logical,~original,PublicFrame.reference_context(~Logical,logical,activation,input,_,bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),
-      TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-        Buffer.pack(~F32,weights),weight_extents(input),Buffer.pack(~F32,bias),bias_extents(input),Tensors.Usable{},U32.max(weight_workers,bias_workers),stride(input),padding(input)))
-  %bias_listed :
-    Convolved(~custom,~Logical,~original,PublicFrame.reference_context(~Logical,logical,activation,input,Parameters.parameter_values(Buffer.pack(~F32,weights),weight_parameter),_),output_extents(input),
-      TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-        Buffer.pack(~F32,weights),weight_extents(input),Buffer.pack(~F32,bias),bias_extents(input),Tensors.Usable{},U32.max(weight_workers,bias_workers),stride(input),padding(input)))
-  parameters_contract(~custom,~Logical,~original,logical,activation,input,model,other,fill,input_workers,U32.max(weight_workers,bias_workers),contract,supported,
-    Buffer.pack(~F32,weights),Buffer.pack(~F32,bias),weight_parameter,bias_parameter,
-    %Equal.sym(List<&2,F32>,Parameters.parameter_values(Buffer.pack(~F32,weights),weight_parameter),weight_values(~WeightContext,~weight_value,weight_context,input),weight_listed) :
-      {PublicFrame.frame_valid(input,_,Parameters.parameter_values(Buffer.pack(~F32,bias),bias_parameter)) == True{} : Bool}
-    %Equal.sym(List<&2,F32>,Parameters.parameter_values(Buffer.pack(~F32,bias),bias_parameter),bias_values(~BiasContext,~bias_value,bias_context,input),bias_listed) :
-      {PublicFrame.frame_valid(input,weight_values(~WeightContext,~weight_value,weight_context,input),_) == True{} : Bool}
-    validated)
-
-# The bias arrives with the weights already in storage.
-def weighted(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,~WeightContext: Data,~weight_value: WeightContext -> U32 -> F32,
-  ~BiasContext: Data,~bias_value: BiasContext -> U32 -> F32,+logical: Logical,+weight_context: WeightContext,+bias_context: BiasContext,
-  +activation: Activations.Activation,+input: PublicFrame.NativeInput,+model: Model.Model<F32>,+other: Bands.Geometry,+fill: F32,+input_workers: U32,
-  +contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},input_workers}),
-  +supported: {PublicFrame.machine(input,Default.limits()) == True{} : Bool},
-  +weights: Buffer.Model<F32>,+weight_facts: GatherValues.Facts(~F32,~WeightContext,~weight_value,weight_context,weight_extents(input),Buffer.content(~F32,weights)),+weight_workers: U32,
-  +bias_bands: Model.Model<F32>,+bias_geometry: Bands.Geometry,+bias_fill: F32,+bias_workers: U32,
-  +bias_contract: Global.Contract(~F32,~BiasContext,~bias_value,bias_context,Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers}),
-  +validated: {PublicFrame.frame_valid(input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)) == True{} : Bool}) ->
-  Convolved(~custom,~Logical,~original,
-    PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),
-    Tensors.with_whole(~F32,~Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers},
-      bias => bias_shape => bias_fill => bias_status => bias_workers =>
-        TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-          Buffer.pack(~F32,weights),weight_extents(input),bias,bias_shape,Tensors.first_failure(Tensors.Usable{},bias_status),U32.max(weight_workers,bias_workers),stride(input),padding(input)))):
-  WholeLeaf.with_whole(~F32,~BiasContext,~bias_value,~Tensors.Tensor<F32>,
-    ~(result => Convolved(~custom,~Logical,~original,
-      PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),result)),
-    ~(bias => bias_shape => bias_fill => bias_status => bias_workers =>
-      TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-        Buffer.pack(~F32,weights),weight_extents(input),bias,bias_shape,Tensors.first_failure(Tensors.Usable{},bias_status),U32.max(weight_workers,bias_workers),stride(input),padding(input))),
-    bias_context,bias_bands,bias_geometry,bias_extents(input),bias_fill,bias_workers,bias_contract,
-    bias => bias_facts => parameterized(~custom,~Logical,~original,~WeightContext,~weight_value,~BiasContext,~bias_value,logical,weight_context,bias_context,
-      activation,input,model,other,fill,input_workers,contract,supported,weights,weight_facts,weight_workers,bias,bias_facts,bias_workers,validated))
-
-def parameters_arrived(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,~WeightContext: Data,~weight_value: WeightContext -> U32 -> F32,
-  ~BiasContext: Data,~bias_value: BiasContext -> U32 -> F32,+logical: Logical,+weight_context: WeightContext,+bias_context: BiasContext,
-  +activation: Activations.Activation,+input: PublicFrame.NativeInput,+model: Model.Model<F32>,+other: Bands.Geometry,+fill: F32,+input_workers: U32,
-  +contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{Model.pack(~F32,model),other,input_extents(input),fill,Tensors.Usable{},input_workers}),
-  +weight_bands: Model.Model<F32>,+weight_geometry: Bands.Geometry,+weight_fill: F32,+weight_workers: U32,
-  +weight_contract: Global.Contract(~F32,~WeightContext,~weight_value,weight_context,Tensors.Tensor{Model.pack(~F32,weight_bands),weight_geometry,weight_extents(input),weight_fill,Tensors.Usable{},weight_workers}),
-  +bias_bands: Model.Model<F32>,+bias_geometry: Bands.Geometry,+bias_fill: F32,+bias_workers: U32,
-  +bias_contract: Global.Contract(~F32,~BiasContext,~bias_value,bias_context,Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers}),
-  +supported: {PublicFrame.machine(input,Default.limits()) == True{} : Bool},
-  +validated: {PublicFrame.frame_valid(input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)) == True{} : Bool}) ->
-  Convolved(~custom,~Logical,~original,
-    PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),
-    TensorConvolution.conv2d(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-      Tensors.Tensor{Model.pack(~F32,weight_bands),weight_geometry,weight_extents(input),weight_fill,Tensors.Usable{},weight_workers},
-      Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers},stride(input),padding(input))):
-  WholeLeaf.with_whole(~F32,~WeightContext,~weight_value,~Tensors.Tensor<F32>,
-    ~(result => Convolved(~custom,~Logical,~original,
-      PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),result)),
-    ~(weights => weight_shape => weight_fill => weight_status => weight_workers =>
-      Tensors.with_whole(~F32,~Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers},
-        bias => bias_shape => bias_fill => bias_status => bias_workers =>
-          TensorConvolution.input_layout(~custom,activation,source_tensor(model,other,input_extents(input),fill,input_workers),
-            weights,weight_shape,bias,bias_shape,Tensors.first_failure(weight_status,bias_status),U32.max(weight_workers,bias_workers),stride(input),padding(input)))),
-    weight_context,weight_bands,weight_geometry,weight_extents(input),weight_fill,weight_workers,weight_contract,
-    weights => weight_facts => weighted(~custom,~Logical,~original,~WeightContext,~weight_value,~BiasContext,~bias_value,logical,weight_context,bias_context,
-      activation,input,model,other,fill,input_workers,contract,supported,weights,weight_facts,weight_workers,bias_bands,bias_geometry,bias_fill,bias_workers,bias_contract,validated))
-
-def observed(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,~WeightContext: Data,~weight_value: WeightContext -> U32 -> F32,
-  ~BiasContext: Data,~bias_value: BiasContext -> U32 -> F32,+logical: Logical,+weight_context: WeightContext,+bias_context: BiasContext,
-  +activation: Activations.Activation,+input: PublicFrame.NativeInput,-bands: Bands.Bands(~F32),+layout: Bands.Geometry,+fill: F32,+input_workers: U32,
-  observation: Model.Observation<F32,bands>,
-  contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{bands,layout,input_extents(input),fill,Tensors.Usable{},input_workers}),
-  +weight_bands: Model.Model<F32>,+weight_geometry: Bands.Geometry,+weight_fill: F32,+weight_workers: U32,
-  +weight_contract: Global.Contract(~F32,~WeightContext,~weight_value,weight_context,Tensors.Tensor{Model.pack(~F32,weight_bands),weight_geometry,weight_extents(input),weight_fill,Tensors.Usable{},weight_workers}),
-  +bias_bands: Model.Model<F32>,+bias_geometry: Bands.Geometry,+bias_fill: F32,+bias_workers: U32,
-  +bias_contract: Global.Contract(~F32,~BiasContext,~bias_value,bias_context,Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers}),
-  +supported: {PublicFrame.machine(input,Default.limits()) == True{} : Bool},
-  +validated: {PublicFrame.frame_valid(input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)) == True{} : Bool}) ->
-  Convolved(~custom,~Logical,~original,
-    PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),
-    TensorConvolution.conv2d(~custom,activation,Tensors.Tensor{bands,layout,input_extents(input),fill,Tensors.Usable{},input_workers},
-      Tensors.Tensor{Model.pack(~F32,weight_bands),weight_geometry,weight_extents(input),weight_fill,Tensors.Usable{},weight_workers},
-      Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers},stride(input),padding(input))):
-  Model.Observation{+model,+equation} = observation
-  %equation : Convolved(~custom,~Logical,~original,
-    PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),
-    TensorConvolution.conv2d(~custom,activation,Tensors.Tensor{_,layout,input_extents(input),fill,Tensors.Usable{},input_workers},
-      Tensors.Tensor{Model.pack(~F32,weight_bands),weight_geometry,weight_extents(input),weight_fill,Tensors.Usable{},weight_workers},
-      Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers},stride(input),padding(input)))
-  parameters_arrived(~custom,~Logical,~original,~WeightContext,~weight_value,~BiasContext,~bias_value,logical,weight_context,bias_context,activation,input,model,layout,fill,input_workers,
-    %Equal.sym(Bands.Bands(~F32),Model.pack(~F32,model),bands,equation) :
-      Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{_,layout,input_extents(input),fill,Tensors.Usable{},input_workers}) contract,
-    weight_bands,weight_geometry,weight_fill,weight_workers,weight_contract,bias_bands,bias_geometry,bias_fill,bias_workers,bias_contract,supported,validated)
-
-# The public conv2d of a Ready input with Normal state and complete values,
-# whatever its layout, and weights and bias of any layout with their own
-# values. When the native record names the call, the result is Ready in the
-# record's output extents and Normal, and every output cell holds the ordered convolution value of those
-# weights and bias.
-def conv2d(~custom: F32 -> F32,~Logical: Data,~original: Logical -> U32 -> F32,~WeightContext: Data,~weight_value: WeightContext -> U32 -> F32,
-  ~BiasContext: Data,~bias_value: BiasContext -> U32 -> F32,+logical: Logical,+weight_context: WeightContext,+bias_context: BiasContext,
-  +activation: Activations.Activation,+input: PublicFrame.NativeInput,bands: Bands.Bands(~F32),+layout: Bands.Geometry,+fill: F32,+input_workers: U32,
-  contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{bands,layout,input_extents(input),fill,Tensors.Usable{},input_workers}),
-  +weight_bands: Model.Model<F32>,+weight_geometry: Bands.Geometry,+weight_fill: F32,+weight_workers: U32,
-  +weight_contract: Global.Contract(~F32,~WeightContext,~weight_value,weight_context,Tensors.Tensor{Model.pack(~F32,weight_bands),weight_geometry,weight_extents(input),weight_fill,Tensors.Usable{},weight_workers}),
-  +bias_bands: Model.Model<F32>,+bias_geometry: Bands.Geometry,+bias_fill: F32,+bias_workers: U32,
-  +bias_contract: Global.Contract(~F32,~BiasContext,~bias_value,bias_context,Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers}),
-  +supported: {PublicFrame.machine(input,Default.limits()) == True{} : Bool},
-  +validated: {PublicFrame.frame_valid(input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)) == True{} : Bool}) ->
-  Convolved(~custom,~Logical,~original,
-    PublicFrame.reference_context(~Logical,logical,activation,input,weight_values(~WeightContext,~weight_value,weight_context,input),bias_values(~BiasContext,~bias_value,bias_context,input)),output_extents(input),
-    TensorConvolution.conv2d(~custom,activation,Tensors.Tensor{bands,layout,input_extents(input),fill,Tensors.Usable{},input_workers},
-      Tensors.Tensor{Model.pack(~F32,weight_bands),weight_geometry,weight_extents(input),weight_fill,Tensors.Usable{},weight_workers},
-      Tensors.Tensor{Model.pack(~F32,bias_bands),bias_geometry,bias_extents(input),bias_fill,Tensors.Usable{},bias_workers},stride(input),padding(input))):
-  observed(~custom,~Logical,~original,~WeightContext,~weight_value,~BiasContext,~bias_value,logical,weight_context,bias_context,activation,input,bands,layout,fill,input_workers,
-    Model.observe(~F32,bands),contract,weight_bands,weight_geometry,weight_fill,weight_workers,weight_contract,bias_bands,bias_geometry,bias_fill,bias_workers,bias_contract,supported,validated)
-
-# A failed input or parameter stays failed, with the input's owner and the
-# larger worker count.
-def failed(~custom: F32 -> F32,+activation: Activations.Activation,input: Bands.Bands(~F32),+layout: Bands.Geometry,+shape: List<&2,U32>,+fill: F32,+input_status: Tensors.Status,+input_workers: U32,
-  -weights: Bands.Bands(~F32),+weight_geometry: Bands.Geometry,+weight_shape: List<&2,U32>,+weight_fill: F32,+weight_status: Tensors.Status,+weight_workers: U32,
-  -bias: Bands.Bands(~F32),+bias_geometry: Bands.Geometry,+bias_shape: List<&2,U32>,+bias_fill: F32,+bias_status: Tensors.Status,+bias_workers: U32,+stride: U32,+padding: U32,+problem: Tensors.Problem,
-  failure: {Tensors.first_failure(input_status,Tensors.first_failure(weight_status,bias_status)) == Tensors.Failed{problem} : Tensors.Status}) ->
-  {TensorConvolution.conv2d(~custom,activation,Tensors.Tensor{input,layout,shape,fill,input_status,input_workers},
-      Tensors.Tensor{weights,weight_geometry,weight_shape,weight_fill,weight_status,weight_workers},Tensors.Tensor{bias,bias_geometry,bias_shape,bias_fill,bias_status,bias_workers},stride,padding) ==
-    Tensors.Tensor{input,layout,shape,fill,Tensors.Failed{problem},U32.max(input_workers,U32.max(weight_workers,bias_workers))} : Tensors.Tensor<F32>}:
-  %Equal.sym(Tensors.Status,Tensors.first_failure(input_status,Tensors.first_failure(weight_status,bias_status)),Tensors.Failed{problem},failure) :
-    {TensorConvolution.band_status(~custom,activation,_,layout,input,shape,fill,
-        Tensors.whole_storage(~F32,Bands.Geometry{1,1,1,Tensors.count_or_zero(weight_shape)},weight_fill,
-          Tensors.arrive(~F32,Bands.Geometry{1,1,1,Tensors.count_or_zero(weight_shape)},Bands.unsplit(Bands.Geometry{1,1,1,Tensors.count_or_zero(weight_shape)}),
-            Tensors.Tensor{weights,weight_geometry,weight_shape,weight_fill,weight_status,weight_workers})),weight_shape,
-        Tensors.whole_storage(~F32,Bands.Geometry{1,1,1,Tensors.count_or_zero(bias_shape)},bias_fill,
-          Tensors.arrive(~F32,Bands.Geometry{1,1,1,Tensors.count_or_zero(bias_shape)},Bands.unsplit(Bands.Geometry{1,1,1,Tensors.count_or_zero(bias_shape)}),
-            Tensors.Tensor{bias,bias_geometry,bias_shape,bias_fill,bias_status,bias_workers})),bias_shape,
-        stride,padding,U32.max(input_workers,U32.max(weight_workers,bias_workers))) ==
-      Tensors.Tensor{input,layout,shape,fill,Tensors.Failed{problem},U32.max(input_workers,U32.max(weight_workers,bias_workers))} : Tensors.Tensor<F32>}
-  {==}
-
-# A shape that names no convolution, or parameters that do not fit it, fail
-# as an invalid argument.
-def invalid_geometry(~custom: F32 -> F32,+activation: Activations.Activation,input: Bands.Bands(~F32),+layout: Bands.Geometry,weights: Storage.Buffer<F32>,bias: Storage.Buffer<F32>,
-  +shape: List<&2,U32>,+fill: F32,+workers: U32) ->
-  {TensorConvolution.band_checked(~custom,activation,None{},Tensors.Tensor{input,layout,shape,fill,Tensors.Usable{},workers},weights,bias,shape,fill,workers) ==
-    Tensors.Tensor{input,layout,shape,fill,Tensors.Failed{Tensors.Problem{"conv2d",Tensors.InvalidArgument{shape}}},workers} : Tensors.Tensor<F32>}:
-  {==}
-
-def invalid_parameters(~custom: F32 -> F32,+activation: Activations.Activation,geometry: TensorConvolution.Geometry,input: Bands.Bands(~F32),+layout: Bands.Geometry,
-  weights: Storage.Buffer<F32>,bias: Storage.Buffer<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32) ->
-  {TensorConvolution.band_supported(~custom,activation,False{},geometry,Tensors.Tensor{input,layout,shape,fill,Tensors.Usable{},workers},weights,bias,shape,fill,workers) ==
-    Tensors.Tensor{input,layout,shape,fill,Tensors.Failed{Tensors.Problem{"conv2d",Tensors.InvalidArgument{shape}}},workers} : Tensors.Tensor<F32>}:
-  {==}
-
-# A shape the machine guards reject fails as an invalid shape.
-def rejected_machine(~custom: F32 -> F32,+activation: Activations.Activation,geometry: TensorConvolution.Geometry,input: Bands.Bands(~F32),+layout: Bands.Geometry,
-  weights: Storage.Buffer<F32>,bias: Storage.Buffer<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32) ->
-  {TensorConvolution.band_machine(~custom,activation,False{},geometry,Tensors.Tensor{input,layout,shape,fill,Tensors.Usable{},workers},weights,bias,shape,fill,workers) ==
-    Tensors.Tensor{input,layout,shape,fill,Tensors.Failed{Tensors.Problem{"conv2d",Tensors.InvalidShape{shape}}},workers} : Tensors.Tensor<F32>}:
-  {==}
+    case True{}: batch_contract(~custom,~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,default_capacity,valid,activation,count,count_positive,machine,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters,pieces,input_fill,input_status,input_workers,input_shaped,weights,bias,weights_exact,bias_exact,workers)
+    case False{}: single_contract(~custom,~Logical,~original,logical,channels,outputs,height,width,kernel,stride,padding,weight_list,bias_list,limits,default_capacity,valid,activation,count,count_positive,machine,upper,upper_ok,upper_bound,area_positive,area_room,weight_evidence,bias_evidence,parameters,pieces,input_fill,input_status,input_workers,input_shaped,weights,bias,weights_exact,bias_exact,workers)

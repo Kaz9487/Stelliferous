@@ -2,11 +2,24 @@
 # network reads as one step after another and its weights are loaded once.
 import Base
 import ./tensor.bend as Tensors
-import ./tensor_layout.bend as Layout
+import ./tensor_grid.bend as Grid
 import ./tensor_file.bend as Files
+import ./tensor_tiled.bend as Tiled
 
+# The store holds the tensors in their tiled form: a file read tiles once.
 def Tensor() -> Type:
-  Tensors.Tensor<F32>
+  Tiled.Tiled
+
+# A stored tensor is laid out as parameters are read: weights [outputs,
+# inputs,...] with the lanes along the outputs and the groups outermost, as
+# convolutions and matrix products read them.
+def stored_along(single: Bool,tensor: Files.Tensor()) -> Tensor():
+  match single:
+    case True{}: Tiled.tiled(tensor)
+    case False{}: Tiled.tiled_at(tensor,0n,Grid.Outermost{})
+
+def stored(tensor: Files.Tensor()) -> Tensor():
+  Tensors.with_metadata(~F32,~Tensor(),tensor,tensor => shape => fill => status => workers => stored_along(U32.is_eq(Tensors.known_count(List.get(&2,U32,shape,0n)),1),tensor))
 
 # A store that could not be loaded keeps its problem, and every take reports it.
 type Store is Type:
@@ -29,11 +42,11 @@ def Model.bind(-A: Type,-B: Type,step: Model(A),next: A -> Model(B)) -> Model(B)
   store => Model.next(A,B,step(store),next)
 
 def missing(+name: String) -> Tensor():
-  Tensors.failed(~F32,"take",Tensors.MissingName{name},[],0.0,1)
+  Tiled.failed("take",Tensors.MissingName{name},[],1)
 
 def unavailable(problem: Tensors.Problem) -> Tensor():
   Tensors.Problem{operation,reason} = problem
-  Tensors.failed(~F32,operation,reason,[],0.0,1)
+  Tiled.failed(operation,reason,[],1)
 
 def passed(name: String,tensor: Tensor(),pair: Tensor() & Store) -> Tensor() & Store:
   (result,store) = pair
@@ -79,7 +92,7 @@ def listed_names() -> Model(List<&2,String>):
   store => names(store)
 
 def keep(+name: String,tensor: Tensor()) -> Model(Tensor()):
-  store => kept(name,Layout.copy(~F32,tensor),store)
+  store => kept(name,Tiled.copy(tensor),store)
 
 def run(-A: Type,step: Model(A),store: Store) -> A & Store:
   step(store)
@@ -105,7 +118,7 @@ def copy(store: Store) -> Store & Store:
   match store:
     case Empty{}: (Empty{},Empty{})
     case Unavailable{+problem}: (Unavailable{problem},Unavailable{problem})
-    case Entry{+name,tensor,rest}: copied_entry(name,Layout.copy(~F32,tensor),copy(rest))
+    case Entry{+name,tensor,rest}: copied_entry(name,Tiled.copy(tensor),copy(rest))
 
 # Loading: folder/names.txt lists one name per line; folder/<name>.npy holds its tensor.
 
@@ -120,9 +133,9 @@ def load_each(names: List<&2,String>,+folder: String) -> IO(Store):
         case SNil{}: load_each(rest,folder)
         case SCon{head,tail}:
           do IO<Store>:
-            tensor : Tensor() <- Files.load_npy(folder ++ "/" ++ name ++ ".npy")
+            tensor : Files.Tensor() <- Files.load_npy(folder ++ "/" ++ name ++ ".npy")
             store : Store <- load_each(rest,folder)
-            IO.pure(Store,entry(name,tensor,store))
+            IO.pure(Store,entry(name,stored(tensor),store))
 
 def unlisted(+folder: String,detail: String) -> Store:
   Unavailable{Tensors.Problem{"load_weights",Tensors.FileFault{folder ++ "/names.txt",detail}}}
@@ -170,9 +183,9 @@ def save_each(store: Store,+folder: String) -> IO(Store):
     case Unavailable{problem}: IO.pure(Store,Unavailable{problem})
     case Entry{+name,tensor,rest}:
       do IO<Store>:
-        saved : Tensor() <- Files.save_npy(folder ++ "/" ++ name ++ ".npy",tensor)
+        saved : Files.Tensor() <- Files.save_npy(folder ++ "/" ++ name ++ ".npy",Tiled.untiled(tensor))
         others : Store <- save_each(rest,folder)
-        IO.pure(Store,entry(name,saved,others))
+        IO.pure(Store,entry(name,stored(saved),others))
 
 def listing(result: Result<&1,&1,U32 & String,File>,text: String) -> IO(Unit):
   match result:

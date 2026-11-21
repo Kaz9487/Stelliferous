@@ -82,7 +82,7 @@ def build(name, leaves):
 def observe(executable, threads):
     """Run once; return wall milliseconds, leaves in all, leaves in a grow turn, the largest overlap and the threads used."""
     spans = BUILD / 'leaf_spans.txt'
-    subprocess.run([str(executable), '--threads', str(threads)], check=True, capture_output=True,
+    subprocess.run([str(executable), '+RTS', '--threads', str(threads), '-RTS'], check=True, capture_output=True,
                    env=dict(os.environ, LEAF_SPANS=str(spans)))
     rows = [tuple(int(word) for word in line.split()) for line in spans.read_text().splitlines()]
     longest = max(stop - start for start, stop, _, _ in rows)

@@ -69,15 +69,6 @@ def observe_pair(~Element: Data,owners: Storage.Buffer<Element> & Storage.Buffer
   (left,right) = owners
   pair_observed(~Element,left,right,Buffer.observe(~Element,left),Buffer.observe(~Element,right))
 
-def lift_pair(~Element: Data,~Proposition: Storage.Buffer<Element> & Storage.Buffer<Element> -> Type,
-  owners: Storage.Buffer<Element> & Storage.Buffer<Element>,observation: Observation<Element,owners>,
-  canonical: @+left: Buffer.Model<Element> -> @+right: Buffer.Model<Element> ->
-    @equation: {(Buffer.pack(~Element,left),Buffer.pack(~Element,right)) == owners : Storage.Buffer<Element> & Storage.Buffer<Element>} ->
-    Proposition((Buffer.pack(~Element,left),Buffer.pack(~Element,right)))) -> Proposition(owners):
-  Observation{+left,+right,+equation} = observation
-  %equation : Proposition(_)
-  canonical(left,right,equation)
-
 def packed_pair_contents(~Element: Data,+left: Buffer.Model<Element>,+right: Buffer.Model<Element>) ->
   {contents(~Element,(Buffer.pack(~Element,left),Buffer.pack(~Element,right))) ==
     (Buffer.content(~Element,left),Buffer.content(~Element,right)) : Buffer.Content<Element> & Buffer.Content<Element>}:
@@ -114,3 +105,13 @@ def right_contents(~Element: Data,+source: Buffer.Model<Element>,+left: Buffer.M
   Equal.cong(Buffer.Content<Element> & Buffer.Content<Element>,Buffer.Content<Element>,
     owners => TraversalWitness.second(~Buffer.Content<Element>,~Buffer.Content<Element>,owners),
     (Buffer.content(~Element,left),Buffer.content(~Element,right)),(Buffer.content(~Element,source),Buffer.content(~Element,source)),pair_contents(~Element,source,left,right,equation))
+
+# A copy holds the cells of the buffer it copies.
+def copied_tree(~Element: Data,+source: Buffer.Model<Element>,+copy: Buffer.Model<Element>,
+  +same: {Buffer.content(~Element,copy) == Buffer.content(~Element,source) : Buffer.Content<Element>},-cells: Tree.Tree<Element>,
+  +exact: {Buffer.tree(~Element,source) == cells : Tree.Tree<Element>}) -> {Buffer.tree(~Element,copy) == cells : Tree.Tree<Element>}:
+  Equal.trans(Tree.Tree<Element>,Buffer.tree(~Element,copy),Buffer.content_tree(~Element,Buffer.content(~Element,copy)),cells,
+    Equal.sym(Tree.Tree<Element>,Buffer.content_tree(~Element,Buffer.content(~Element,copy)),Buffer.tree(~Element,copy),Buffer.content_tree_of(~Element,copy)),
+    Equal.trans(Tree.Tree<Element>,Buffer.content_tree(~Element,Buffer.content(~Element,copy)),Buffer.content_tree(~Element,Buffer.content(~Element,source)),cells,
+      Equal.cong(Buffer.Content<Element>,Tree.Tree<Element>,content => Buffer.content_tree(~Element,content),Buffer.content(~Element,copy),Buffer.content(~Element,source),same),
+      Equal.trans(Tree.Tree<Element>,Buffer.content_tree(~Element,Buffer.content(~Element,source)),Buffer.tree(~Element,source),cells,Buffer.content_tree_of(~Element,source),exact)))

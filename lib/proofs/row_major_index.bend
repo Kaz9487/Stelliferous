@@ -84,6 +84,12 @@ def right_distrib(+factor: Nat,+left: Nat,+right: Nat) ->
   %multiply_commutative(right,factor) : {Nat.mul(Nat.add(left,right),factor) == Nat.add(Nat.mul(left,factor),_) : Nat}
   distrib(left,right,factor)
 
+def swap_factors(+a: Nat,+b: Nat,+c: Nat) -> {Nat.mul(a,Nat.mul(b,c)) == Nat.mul(b,Nat.mul(a,c)) : Nat}:
+  Equal.trans(Nat,Nat.mul(a,Nat.mul(b,c)),Nat.mul(Nat.mul(a,b),c),Nat.mul(b,Nat.mul(a,c)),
+    Equal.sym(Nat,Nat.mul(Nat.mul(a,b),c),Nat.mul(a,Nat.mul(b,c)),assoc(a,b,c)),
+    %Equal.sym(Nat,Nat.mul(a,b),Nat.mul(b,a),multiply_commutative(a,b)) : {Nat.mul(_,c) == Nat.mul(b,Nat.mul(a,c)) : Nat}
+    assoc(b,a,c))
+
 def mul_le(+a: Nat,+b: Nat,+c: Nat,h: {Nat.is_le(a,b) == True{} : Bool}) -> {Nat.is_le(Nat.mul(a,c),Nat.mul(b,c)) == True{} : Bool}:
   match a b:
     case 0n 0n:
@@ -96,6 +102,11 @@ def mul_le(+a: Nat,+b: Nat,+c: Nat,h: {Nat.is_le(a,b) == True{} : Bool}) -> {Nat
       %Order.commutative(Nat.mul(a,c),c) : {Nat.is_le(_,Nat.add(c,Nat.mul(b,c))) == True{} : Bool}
       %Order.commutative(Nat.mul(b,c),c) : {Nat.is_le(Nat.add(Nat.mul(a,c),c),_) == True{} : Bool}
       Order.add_le(Nat.mul(a,c),Nat.mul(b,c),c,mul_le(a,b,c,h))
+
+def mul_le_left(+a: Nat,+b: Nat,+c: Nat,h: {Nat.is_le(b,c) == True{} : Bool}) -> {Nat.is_le(Nat.mul(a,b),Nat.mul(a,c)) == True{} : Bool}:
+  %multiply_commutative(b,a) : {Nat.is_le(_,Nat.mul(a,c)) == True{} : Bool}
+  %multiply_commutative(c,a) : {Nat.is_le(Nat.mul(b,a),_) == True{} : Bool}
+  mul_le(b,c,a,h)
 
 def radix(+a: Nat,+limit: Nat,+b: Nat,+width: Nat,ab: {Nat.is_lt(a,limit) == True{} : Bool},bw: {Nat.is_lt(b,
       width) == True{} : Bool}) -> {Nat.is_lt(Nat.add(Nat.mul(a,width),b),Nat.mul(limit,width)) == True{} : Bool}:

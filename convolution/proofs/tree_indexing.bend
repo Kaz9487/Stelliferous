@@ -1,6 +1,7 @@
 import Base
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../specification.bend as ConvSpec
+import ../ordered_reference.bend as OrderedReference
 
 # Logical paths and flat indices over the common element-parameterized tree.
 # Invalid-path behavior differs from native wrapping; the container is shared.
@@ -10,22 +11,19 @@ type Path is Data:
   Left{rest: Path}
   Right{rest: Path}
 
-def cat(xs: List<&2,F32>, ys: List<&2,F32>) -> List<&2,F32>:
-  List.append(&2,F32,xs,ys)
-
 def flatten(tree: Tree.Tree<F32>) -> List<&2,F32>:
   match tree:
     case Tree.Leaf{x}:
       x <> Nil{}
     case Tree.Node{l,r}:
-      cat(flatten(l),flatten(r))
+      OrderedReference.cat(flatten(l),flatten(r))
 
 def observe(a: Array<F32>) -> List<&2,F32>:
   match a:
     case ALeaf{x}:
       x <> Nil{}
     case ANode{l,r}:
-      cat(observe(l),observe(r))
+      OrderedReference.cat(observe(l),observe(r))
 
 law Routes:
   for tree: Tree.Tree<F32>

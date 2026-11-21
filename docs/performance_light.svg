@@ -1,31 +1,81 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="290" viewBox="0 0 720 290" role="img" aria-label="YOLOv5n inference time in milliseconds at 1 and 4 threads">
-<rect x="0.5" y="0.5" width="719" height="289" rx="10" fill="#ffffff" stroke="#d1d9e0"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="792" viewBox="0 0 720 792" role="img" aria-label="Performance of Stelliferous 0.0.4: YOLOv5n and ViT-B/16 inference time in milliseconds at 1 and 4 threads, ResNet-20 training epoch time in seconds and test accuracy">
+<rect x="0.5" y="0.5" width="719" height="791" rx="10" fill="#ffffff" stroke="#d1d9e0"/>
 <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans',Helvetica,Arial,sans-serif" font-size="13" fill="#1f2328">
 <text x="28" y="38" font-size="15" font-weight="600">YOLOv5n inference*, 640 × 640, FP32</text>
-<text x="28" y="59" fill="#59636e">Median in milliseconds, both columns on one scale. Shorter is faster.</text>
+<text x="28" y="59" fill="#59636e">Median in ms. Shorter is faster.</text>
 <text x="190" y="96" font-size="12" font-weight="600" fill="#59636e">1 thread</text>
-<text x="455" y="96" font-size="12" font-weight="600" fill="#59636e">4 threads</text>
+<text x="490" y="96" font-size="12" font-weight="600" fill="#59636e">4 threads</text>
 <line x1="189.5" y1="108" x2="189.5" y2="268" stroke="#d1d9e0"/>
-<line x1="454.5" y1="108" x2="454.5" y2="268" stroke="#d1d9e0"/>
-<rect x="28" y="123" width="10" height="10" rx="2" fill="#6929c4"/><text x="46" y="132.5" font-weight="600">Stelliferous 0.0.3</text>
-<path d="M190,118H321Q325,118 325,122V134Q325,138 321,138H190Z" fill="#6929c4"/>
-<text x="333" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">117</text>
-<path d="M455,118H505Q509,118 509,122V134Q509,138 505,138H455Z" fill="#6929c4"/>
-<text x="517" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">47</text>
-<rect x="28" y="163" width="10" height="10" rx="2" fill="#e8daff"/><text x="46" y="172.5" fill="#59636e">Stelliferous 0.0.2</text>
-<path d="M190,158H318Q322,158 322,162V174Q322,178 318,178H190Z" fill="#e8daff"/>
-<text x="330" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">115</text>
-<path d="M455,158H502Q506,158 506,162V174Q506,178 502,178H455Z" fill="#e8daff"/>
-<text x="514" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">44</text>
-<rect x="28" y="203" width="10" height="10" rx="2" fill="#8c959f"/><text x="46" y="212.5" fill="#59636e">NumPy / OpenBLAS</text>
-<path d="M190,198H340Q344,198 344,202V214Q344,218 340,218H190Z" fill="#8c959f"/>
-<text x="352" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">133.7</text>
-<path d="M455,198H585Q589,198 589,202V214Q589,218 585,218H455Z" fill="#8c959f"/>
-<text x="597" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">116.3</text>
-<rect x="28" y="243" width="10" height="10" rx="2" fill="#8c959f"/><text x="46" y="252.5" fill="#59636e">PyTorch</text>
-<path d="M190,238H245Q249,238 249,242V254Q249,258 245,258H190Z" fill="#8c959f"/>
-<text x="257" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">51.1</text>
-<path d="M455,238H468Q472,238 472,242V254Q472,258 468,258H455Z" fill="#8c959f"/>
-<text x="480" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">15.2</text>
+<line x1="489.5" y1="108" x2="489.5" y2="268" stroke="#d1d9e0"/>
+<rect x="28" y="123" width="10" height="10" rx="2" fill="#8c959f"/><text x="46" y="132.5" fill="#59636e">PyTorch</text>
+<path d="M190,118H242Q246,118 246,122V134Q246,138 242,138H190Z" fill="#8c959f"/>
+<text x="254" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">48.5</text>
+<path d="M490,118H503Q507,118 507,122V134Q507,138 503,138H490Z" fill="#8c959f"/>
+<text x="515" y="132.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">14.8</text>
+<rect x="28" y="163" width="10" height="10" rx="2" fill="#6929c4"/><text x="46" y="172.5" font-weight="600">Stelliferous 0.0.4</text>
+<path d="M190,158H278Q282,158 282,162V174Q282,178 278,178H190Z" fill="#6929c4"/>
+<text x="290" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">80</text>
+<path d="M490,158H526Q530,158 530,162V174Q530,178 526,178H490Z" fill="#6929c4"/>
+<text x="538" y="172.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">35</text>
+<rect x="28" y="203" width="10" height="10" rx="2" fill="#e8daff"/><text x="46" y="212.5" fill="#59636e">Stelliferous 0.0.3</text>
+<path d="M190,198H321Q325,198 325,202V214Q325,218 321,218H190Z" fill="#e8daff"/>
+<text x="333" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">117</text>
+<path d="M490,198H541Q545,198 545,202V214Q545,218 541,218H490Z" fill="#e8daff"/>
+<text x="553" y="212.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">48</text>
+<rect x="28" y="243" width="10" height="10" rx="2" fill="#8c959f"/><text x="46" y="252.5" fill="#59636e">NumPy / OpenBLAS</text>
+<path d="M190,238H339Q343,238 343,242V254Q343,258 339,258H190Z" fill="#8c959f"/>
+<text x="351" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">132.5</text>
+<path d="M490,238H625Q629,238 629,242V254Q629,258 625,258H490Z" fill="#8c959f"/>
+<text x="637" y="252.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">120.8</text>
+<path d="M362,208C376,208 376,156 313,168" fill="none" stroke="#6929c4" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M312.0,168.0L318.2,163.3L319.5,170.2Z" fill="#6929c4"/>
+<rect x="378" y="179" width="99" height="18" rx="9" fill="#6929c4"/>
+<text x="427.5" y="192" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff">1.5× faster</text>
+<path d="M575,208C589,208 589,156 561,168" fill="none" stroke="#6929c4" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M560.0,168.0L565.1,162.1L567.8,168.6Z" fill="#6929c4"/>
+<rect x="591" y="179" width="99" height="18" rx="9" fill="#6929c4"/>
+<text x="640.5" y="192" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff">1.4× faster</text>
+<line x1="28" y1="290.5" x2="692" y2="290.5" stroke="#d1d9e0"/>
+<text x="28" y="328" font-size="15" font-weight="600">ViT-B/16 inference*, 224 × 224, FP32</text>
+<text x="28" y="349" fill="#59636e">Median in ms. Shorter is faster.</text>
+<text x="190" y="386" font-size="12" font-weight="600" fill="#59636e">1 thread</text>
+<text x="490" y="386" font-size="12" font-weight="600" fill="#59636e">4 threads</text>
+<line x1="189.5" y1="398" x2="189.5" y2="478" stroke="#d1d9e0"/>
+<line x1="489.5" y1="398" x2="489.5" y2="478" stroke="#d1d9e0"/>
+<rect x="28" y="413" width="10" height="10" rx="2" fill="#8c959f"/><text x="46" y="422.5" fill="#59636e">PyTorch</text>
+<path d="M190,408H362Q366,408 366,412V424Q366,428 362,428H190Z" fill="#8c959f"/>
+<text x="374" y="422.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">353</text>
+<path d="M490,408H546Q550,408 550,412V424Q550,428 546,428H490Z" fill="#8c959f"/>
+<text x="558" y="422.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">121</text>
+<rect x="28" y="453" width="10" height="10" rx="2" fill="#6929c4"/><text x="46" y="462.5" font-weight="600">Stelliferous 0.0.4</text>
+<path d="M190,448H366Q370,448 370,452V464Q370,468 366,468H190Z" fill="#6929c4"/>
+<text x="378" y="462.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">360</text>
+<path d="M490,448H574Q578,448 578,452V464Q578,468 574,468H490Z" fill="#6929c4"/>
+<text x="586" y="462.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">176</text>
+<line x1="28" y1="500.5" x2="692" y2="500.5" stroke="#d1d9e0"/>
+<text x="28" y="538" font-size="15" font-weight="600">ResNet-20 training on CIFAR-10, FP32</text>
+<text x="28" y="559" fill="#59636e">Mean over 160 epochs. Shorter is faster.</text>
+<text x="190" y="596" font-size="12" font-weight="600" fill="#59636e">Epoch with the test, 4 threads</text>
+<text x="490" y="596" font-size="12" font-weight="600" fill="#59636e">Test accuracy, last epoch</text>
+<line x1="189.5" y1="608" x2="189.5" y2="728" stroke="#d1d9e0"/>
+<line x1="489.5" y1="608" x2="489.5" y2="728" stroke="#d1d9e0"/>
+<rect x="28" y="623" width="10" height="10" rx="2" fill="#8c959f"/><text x="46" y="632.5" fill="#59636e">PyTorch</text>
+<path d="M190,618H191Q195,618 195,622V634Q195,638 191,638H190Z" fill="#8c959f"/>
+<text x="203" y="632.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">34.5 s</text>
+<text x="498" y="632.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">91.34%</text>
+<rect x="28" y="663" width="10" height="10" rx="2" fill="#6929c4"/><text x="46" y="672.5" font-weight="600">Stelliferous 0.0.4</text>
+<path d="M190,658H207Q211,658 211,662V674Q211,678 207,678H190Z" fill="#6929c4"/>
+<text x="219" y="672.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">137.5 s</text>
+<text x="498" y="672.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-weight="600">91.40%</text>
+<rect x="28" y="703" width="10" height="10" rx="2" fill="#e8daff"/><text x="46" y="712.5" fill="#59636e">Stelliferous 0.0.3 †</text>
+<path d="M190,698H301Q305,698 305,702V714Q305,718 301,718H190Z" fill="#e8daff"/>
+<text x="313" y="712.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">767 s</text>
+<text x="498" y="712.5" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">—</text>
+<path d="M358,708C372,708 372,656 281,668" fill="none" stroke="#6929c4" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M280.0,668.0L286.5,663.6L287.4,670.6Z" fill="#6929c4"/>
+<rect x="374" y="679" width="99" height="18" rx="9" fill="#6929c4"/>
+<text x="423.5" y="692" text-anchor="middle" font-size="12" font-weight="600" fill="#ffffff">5.6× faster</text>
+<text x="28" y="750" font-size="12" fill="#59636e">† 0.0.3 cannot train ResNet-20. Measured at its release on 2026-10-21: one epoch of 390 steps without the test,</text>
+<text x="28" y="767" font-size="12" fill="#59636e">on the ResNet-20 shape without residual additions or projections, plain SGD, one synthetic batch reused.</text>
 </g>
 </svg>

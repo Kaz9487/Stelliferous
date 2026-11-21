@@ -22,10 +22,6 @@ type Strategy is Data:
 def automatic(worker_limit: U32,workspace_budget: Maybe<&2,Nat>) -> Strategy:
   Automatic{worker_limit,workspace_budget}
 
-def selected(plan: KernelPlanning.Plan) -> Strategy:
-  KernelPlanning.Plan{packed,depth,workspace,time} = plan
-  Bool.pick(Strategy,packed,Packed{depth},Direct{})
-
 def activate(context: Unit,value: F32) -> F32:
   Fp32.activate(value,True{})
 

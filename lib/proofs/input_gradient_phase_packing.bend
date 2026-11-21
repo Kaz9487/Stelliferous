@@ -4,58 +4,17 @@ import ../kernel_input_gradient.bend as Kernel
 import ../kernel_tile.bend as Tile
 import ./storage_buffer_model.bend as Buffer
 import ./storage_tree_model.bend as Tree
-import ./kernel_weight_gradient_packing.bend as Tiles
 import ./kernel_tile_refinement.bend as TileLaws
-import ./nat_order.bend as Order
 import ../math_sequence.bend as Sequence
 import ./indexed_sequence_laws.bend as SequenceLaws
-import ./kernel_accumulator.bend as Accumulator
-import ./kernel_coordinate_refinement.bend as Coordinates
-import ../kernel_rows.bend as Rows
-
-type Sample is Data:
-  Sample{base: U32,row: U32,column: U32,rows: U32,columns: U32}
-
-type WeightSample is Data:
-  WeightSample{channels: U32,channel: U32,base: U32,spatial: U32}
-
-def sample_value(input: Buffer.Model<F32>,context: Sample,lane: Nat) -> F32:
-  Sample{base,+row,+column,+rows,+columns} = context
-  +column = (column + U32.from_nat(lane) : U32)
-  Bool.pick(F32,U32.is_lt(row,rows) && U32.is_lt(column,columns),Tree.read(F32,Buffer.tree(~F32,input),(base + row * columns + column : U32)),0.0)
-
-def sample_tile(input: Buffer.Model<F32>,context: Sample) -> Tile.Tile8:
-  Tiles.tile_value(~Sample,~sample_value,input,context)
-
-def sample_tile_lane(+input: Buffer.Model<F32>,+context: Sample,+lane: Nat,inside: {Nat.is_lt(lane,8n) == True{} : Bool}) ->
-  {TileLaws.select_lane(lane,sample_tile(input,context)) == sample_value(input,context,lane) : F32}:
-  Tiles.tile_value_at(~Sample,~sample_value,input,context,lane,inside)
-
-def tile_value_index(~Context: Data,~sample: Buffer.Model<F32> -> Context -> Nat -> F32,+input: Buffer.Model<F32>,+context: Context,+index: Sequence.Index(8n)) ->
-  {Tile.element_at(index,Tiles.tile_value(~Context,~sample,input,context)) == sample(input,context,Sequence.index_value(8n,index)) : F32}:
-  match index:
-    case Sequence.First{}: {==}
-    case Sequence.Next{+previous}:
-      +position = Sequence.index_value(7n,previous)
-      %Order.commutative(position,1n) :
-        {Tile.element_at(Sequence.Next{previous},Tiles.tile_value(~Context,~sample,input,context)) == sample(input,context,_) : F32}
-      SequenceLaws.get_tabulated(~F32,~TileLaws.SampleContext<Buffer.Model<F32>,Context>,~TileLaws.sample_context(~Buffer.Model<F32>,~Context,~sample),7n,previous,1n,TileLaws.SampleContext{input,context})
-
-def weight_value(input: Buffer.Model<F32>,context: WeightSample,lane: Nat) -> F32:
-  WeightSample{+channels,+channel,+base,+spatial} = context
-  +channel = (channel + U32.from_nat(lane) : U32)
-  Bool.pick(F32,U32.is_lt(channel,channels),Tree.read(F32,Buffer.tree(~F32,input),(base + channel * spatial : U32)),0.0)
-
-def weight_tile(input: Buffer.Model<F32>,context: WeightSample) -> Tile.Tile8:
-  Tiles.tile_value(~WeightSample,~weight_value,input,context)
-
-def weight_tile_half(+upper: Bool,+row: Accumulator.Row,+input: Buffer.Model<F32>,+context: WeightSample) ->
-  {Accumulator.row(~F32,row,Rows.half(upper,weight_tile(input,context))) == weight_value(input,context,Tiles.patch_key(upper,row)) : F32}:
-  Equal.trans(F32,Accumulator.row(~F32,row,Rows.half(upper,weight_tile(input,context))),Tile.element_at(Coordinates.weight_lane(upper,row),weight_tile(input,context)),weight_value(input,context,Tiles.patch_key(upper,row)),
-    Coordinates.weight_sample(upper,row,weight_tile(input,context)),
-    Equal.trans(F32,Tile.element_at(Coordinates.weight_lane(upper,row),weight_tile(input,context)),weight_value(input,context,Sequence.index_value(8n,Coordinates.weight_lane(upper,row))),weight_value(input,context,Tiles.patch_key(upper,row)),
-      tile_value_index(~WeightSample,~weight_value,input,context,Coordinates.weight_lane(upper,row)),
-      Equal.cong(Nat,F32,weight_value(input,context),Sequence.index_value(8n,Coordinates.weight_lane(upper,row)),Tiles.patch_key(upper,row),Coordinates.weight_coordinate(upper,row))))
+import ../tensor_tiled.bend as Tiled
+import ../tensor_tiled_cells.bend as Cells
+import ./natural_addition.bend as Addition
+import ./tensor_tiled_representation.bend as Representation
+import ./tensor_tiled_values.bend as TiledValues
+import ./encoded_coordinates.bend as Encoded
+import ./u32_division.bend as NativeDivision
+import ./row_major_index.bend as RowMajor
 
 def phase_columns(context: Kernel.Phase) -> U32:
   Kernel.Phase{geometry,y,Kernel.Axis{first,count,tap,taps,source},inner} = context
@@ -76,12 +35,13 @@ def phase_rows(context: Kernel.Phase) -> U32:
 def phase_area(+context: Kernel.Phase) -> Nat:
   Nat.mul(U32.to_nat(phase_rows(context)),U32.to_nat(phase_columns(context)))
 
-def gradient_step(+context: Kernel.Phase) -> U32:
-  (gradient_rows(context) * gradient_columns(context) : U32)
-
 def phase_outputs(context: Kernel.Phase) -> U32:
   Kernel.Phase{Kernel.Geometry{c,o,h,w,k,s,p,gh,gw},y,x,inner} = context
   o
+
+# The cells of a gradient pixel: one a group of outputs.
+def gradient_groups(+context: Kernel.Phase) -> U32:
+  Tiled.groups(phase_outputs(context))
 
 def phase_y(context: Kernel.Phase) -> Kernel.Axis:
   Kernel.Phase{geometry,y,x,inner} = context
@@ -98,23 +58,9 @@ def axis_source(axis: Kernel.Axis) -> U32:
 def phase_index(+context: Kernel.Phase,+output: Nat,+row: Nat,+column: Nat) -> Nat:
   Nat.add(Nat.mul(output,phase_area(context)),Nat.add(Nat.mul(row,U32.to_nat(phase_columns(context))),column))
 
-def input_base(+context: Kernel.Phase,+image: U32) -> U32:
-  (image * phase_outputs(context) * gradient_rows(context) * gradient_columns(context) : U32)
-
-# The same base and plane step from the geometry alone: every phase of a
-# geometry reads the same gradient planes.
-def image_base(+geometry: Kernel.Geometry,+image: U32) -> U32:
-  Kernel.Geometry{c,+o,h,w,k,s,p,+gh,+gw} = geometry
-  (image * o * gh * gw : U32)
-def plane_size(+geometry: Kernel.Geometry) -> U32:
-  Kernel.Geometry{c,o,h,w,k,s,p,+gh,+gw} = geometry
-  (gh * gw : U32)
-def input_base_matches(+geometry: Kernel.Geometry,+y: U32,+x: U32,+image: U32) -> {input_base(Kernel.phase(geometry,y,x),image) == image_base(geometry,image) : U32}:
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
-  {==}
-def gradient_step_matches(+geometry: Kernel.Geometry,+y: U32,+x: U32) -> {gradient_step(Kernel.phase(geometry,y,x)) == plane_size(geometry) : U32}:
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
-  {==}
+def output_groups(+geometry: Kernel.Geometry) -> U32:
+  Kernel.Geometry{c,+o,h,w,k,s,p,gh,gw} = geometry
+  Tiled.groups(o)
 
 def input_row(+context: Kernel.Phase,+row: U32) -> U32:
   (axis_source(phase_y(context)) + row : U32)
@@ -122,6 +68,37 @@ def input_row(+context: Kernel.Phase,+row: U32) -> U32:
 def input_column(+context: Kernel.Phase,+column: U32) -> U32:
   (axis_source(phase_x(context)) + column : U32)
 
-def input_tile(+context: Kernel.Phase,+image: U32,+row: U32,+column: U32,+gradient: Buffer.Model<F32>,+output: Nat,+tap_row: Nat,+tap_column: Nat) -> Tile.Tile8:
-  sample_tile(gradient,Sample{(input_base(context,image) + U32.from_nat(Nat.mul(output,U32.to_nat(gradient_step(context)))) : U32),
-    (input_row(context,row) + U32.from_nat(tap_row) : U32),(input_column(context,column) + U32.from_nat(tap_column) : U32),gradient_rows(context),gradient_columns(context)})
+# Lane lane of the pixels of one channel along a row, groups cells apart.
+type CellsSample is Data:
+  CellsSample{base: U32,row: U32,column: U32,rows: U32,columns: U32,channel: U32,groups: U32}
+
+def cells_value(input: Buffer.Model<Tile.Tile8>,context: CellsSample,lane: Nat) -> F32:
+  CellsSample{base,+row,+column,+rows,+columns,channel,groups} = context
+  +column = (column + U32.from_nat(lane) : U32)
+  Bool.pick(F32,U32.is_lt(row,rows) && U32.is_lt(column,columns),
+    Cells.lane_of(Tree.read(Tile.Tile8,Buffer.tree(~Tile.Tile8,input),(base + (row * columns + column) * groups : U32)),(channel % 8 : U32)),0.0)
+
+def cells_tile(+input: Buffer.Model<Tile.Tile8>,+context: CellsSample) -> Tile.Tile8:
+  Tile.from_sequence(Sequence.tabulate(~F32,~TileLaws.SampleContext<Buffer.Model<Tile.Tile8>,CellsSample>,~TileLaws.sample_context(~Buffer.Model<Tile.Tile8>,~CellsSample,~cells_value),8n,0n,TileLaws.SampleContext{input,context}))
+
+def cells_tile_index(+input: Buffer.Model<Tile.Tile8>,+context: CellsSample,+index: Sequence.Index(8n)) ->
+  {Tile.element_at(index,cells_tile(input,context)) == cells_value(input,context,Sequence.index_value(8n,index)) : F32}:
+  %Addition.zero_right(Sequence.index_value(8n,index)) : {Tile.element_at(index,cells_tile(input,context)) == cells_value(input,context,_) : F32}
+  SequenceLaws.get_tabulated(~F32,~TileLaws.SampleContext<Buffer.Model<Tile.Tile8>,CellsSample>,~TileLaws.sample_context(~Buffer.Model<Tile.Tile8>,~CellsSample,~cells_value),8n,index,0n,TileLaws.SampleContext{input,context})
+
+# The first cell of an image of the gradient.
+def cells_base(+context: Kernel.Phase,+image: U32) -> U32:
+  (image * (gradient_rows(context) * gradient_columns(context)) * Tiled.groups(phase_outputs(context)) : U32)
+
+def cells_image_base(+geometry: Kernel.Geometry,+image: U32) -> U32:
+  Kernel.Geometry{c,+o,h,w,k,s,p,+gh,+gw} = geometry
+  (image * (gh * gw) * Tiled.groups(o) : U32)
+
+def cells_base_matches(+geometry: Kernel.Geometry,+y: U32,+x: U32,+image: U32) -> {cells_base(Kernel.phase(geometry,y,x),image) == cells_image_base(geometry,image) : U32}:
+  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
+  {==}
+
+def cells_input_tile(+context: Kernel.Phase,+image: U32,+row: U32,+column: U32,+gradient: Buffer.Model<Tile.Tile8>,+output: Nat,+tap_row: Nat,+tap_column: Nat) -> Tile.Tile8:
+  cells_tile(gradient,CellsSample{(cells_base(context,image) + U32.from_nat(output) / 8 : U32),
+    (input_row(context,row) + U32.from_nat(tap_row) : U32),(input_column(context,column) + U32.from_nat(tap_column) : U32),gradient_rows(context),gradient_columns(context),U32.from_nat(output),
+    gradient_groups(context)})

@@ -12,6 +12,7 @@ import ../../lib/proofs/u32_successor.bend as U32Successor
 import ./storage_capacity.bend as StorageCapacity
 import ../../lib/proofs/u32_division.bend as U32Division
 import ../specification.bend as ConvSpec
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def enumerate(n: Nat,+i: Nat,+xs: List<&2,F32>) -> List<&2,F32>:
   match n:
@@ -22,7 +23,7 @@ def enumerate(n: Nat,+i: Nat,+xs: List<&2,F32>) -> List<&2,F32>:
 
 def small_index(+xs: List<&2,F32>,+i: U32,proof: ListArrayAllocation.Ready(xs),h: {Nat.is_lt(U32.to_nat(i),
       ConvSpec.length(xs)) == True{} : Bool}) -> {U32.is_lt(i,2147483648) == True{} : Bool}:
-  Shape.Both{limit,room} = proof
+  KernelGemm.Both{limit,room} = proof
   Bounds.uint_trans(i,Tree.capacity(F32,ListArrayAllocation.initial(xs)),2147483648,U32Division.nat_lt_native(i,
       Tree.capacity(F32,ListArrayAllocation.initial(xs)),Bounds.nat_trans(U32.to_nat(i),ConvSpec.length(xs),
         U32.to_nat(Tree.capacity(F32,ListArrayAllocation.initial(xs))),h,room)),StorageCapacity.small(ListArrayAllocation.depth(xs),

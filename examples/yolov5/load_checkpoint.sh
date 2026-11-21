@@ -11,4 +11,4 @@ output="out/results/checkpoint/${2:-official}"
 mkdir -p "$output/bend" "$output/folded"
 "$CC" -std=c11 -O3 -march=native -ffp-contract=off out/models/load_checkpoint.c -lpthread -lm -o out/models/load_checkpoint
 CHECKPOINT="$checkpoint" CHECKPOINT_OUTPUT="$output/bend" CHECKPOINT_FOLDED="$output/folded" \
-  out/models/load_checkpoint --threads 1 --gpu off | tee "$output/load.txt"
+  out/models/load_checkpoint +RTS --threads 1 --gpu off -RTS | tee "$output/load.txt"

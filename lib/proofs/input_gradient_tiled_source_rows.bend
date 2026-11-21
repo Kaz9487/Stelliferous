@@ -1,5 +1,7 @@
 # A retained gradient row slice has the same padded reads as its original image.
 import Base
+import ../kernel_tile.bend as Tile
+import ../tensor_tiled_cells.bend as Cells
 import ../kernel_input_gradient.bend as Kernel
 import ../machine_limits.bend as Machine
 import ../kernel_packing_samples.bend as Masks
@@ -10,7 +12,6 @@ import ./input_gradient_tiled_extents.bend as Extents
 import ./input_gradient_phase_domain.bend as Domain
 import ./storage_tree_model.bend as Tree
 import ./storage_buffer_model.bend as Buffer
-import ./kernel_spatial_packing_samples.bend as Samples
 import ./padded_interval.bend as Padded
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
@@ -21,7 +22,7 @@ import ./u32_comparison.bend as Comparison
 import ./word_encoding.bend as Words
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./boolean_logic.bend as Boolean
-import ./storage_shape.bend as Shape
+import ../kernel_gemm.bend as KernelGemm
 
 type Range<-first: U32,-rows: U32,-height: U32> is Data:
   EmptyRows{empty: {rows == 0 : U32}}
@@ -34,9 +35,9 @@ def range_room(+first: U32,+rows: U32,+height: U32,+limits: Machine.Limits,
 def local_image_global(+first: U32,+rows: U32,+height: U32,+limits: Machine.Limits,+row: U32,
   +contained: {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),U32.to_nat(height)) == True{} : Bool},
   +height_room: {Nat.is_le(U32.to_nat(height),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool},
-  interval: Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
+  interval: KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>) -> {U32.is_lt(row,height) == True{} : Bool}:
-  Shape.Both{lower,+upper} = interval
+  KernelGemm.Both{lower,+upper} = interval
   %Equal.sym(Bool,U32.is_lt(row,height),Nat.is_lt(U32.to_nat(row),U32.to_nat(height)),Comparison.lt(row,height)) : {_ == True{} : Bool}
   Bounds.nat_trans(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows)),U32.to_nat(height),upper,contained)
 def local_implies_global(+first: U32,+rows: U32,+height: U32,+limits: Machine.Limits,+row: U32,+range: Range<first,rows,height>,
@@ -66,40 +67,42 @@ def covered_local(+first: U32,+rows: U32,+height: U32,+limits: Machine.Limits,+r
       Padded.backward(row,first,rows,Machine.coordinate(limits),Limits.coordinate_fits(limits),range_room(first,rows,height,limits,contained,height_room),lower,upper)
 def coverage_local(+first: U32,+rows: U32,+height: U32,+limits: Machine.Limits,+row: U32,+range: Range<first,rows,height>,
   +height_room: {Nat.is_le(U32.to_nat(height),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool},
-  interval: Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
+  interval: KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>) ->
   {U32.is_lt((row - first : U32),rows) == True{} : Bool}:
-  Shape.Both{+lo,+hi} = interval
+  KernelGemm.Both{+lo,+hi} = interval
   covered_local(first,rows,height,limits,row,range,height_room,lo,hi)
 def row_mask_equal(+first: U32,+rows: U32,+height: U32,+limits: Machine.Limits,+row: U32,+range: Range<first,rows,height>,
   +height_room: {Nat.is_le(U32.to_nat(height),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool},
   coverage: {U32.is_lt(row,height) == True{} : Bool} ->
-    Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
+    KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
       {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>) ->
   {U32.is_lt((row - first : U32),rows) == U32.is_lt(row,height) : Bool}:
   Boolean.equivalent(U32.is_lt((row - first : U32),rows),U32.is_lt(row,height),
     local => local_implies_global(first,rows,height,limits,row,range,height_room,local),
     global => coverage_local(first,rows,height,limits,row,range,height_room,coverage(global)))
 
+# Gradient rows of one image and the image they were taken from: the cells
+# of a pixel are groups cells, one a group of outputs.
 type Slice is Data:
-  Slice{source: Execution.Source,original: Buffer.Model<F32>,global_base: U32,global_plane: U32,height: U32,width: U32}
+  Slice{source: Execution.Source,original: Buffer.Model<Tile.Tile8>,global_base: U32,groups: U32,height: U32,width: U32}
 def source(image: Slice) -> Execution.Source:
-  Slice{source,original,base,plane,h,w} = image
+  Slice{source,original,base,groups,h,w} = image
   source
-def original(image: Slice) -> Buffer.Model<F32>:
-  Slice{source,original,base,plane,h,w} = image
+def original(image: Slice) -> Buffer.Model<Tile.Tile8>:
+  Slice{source,original,base,groups,h,w} = image
   original
 def global_base(image: Slice) -> U32:
-  Slice{source,original,base,plane,h,w} = image
+  Slice{source,original,base,groups,h,w} = image
   base
-def global_plane(image: Slice) -> U32:
-  Slice{source,original,base,plane,h,w} = image
-  plane
+def groups(image: Slice) -> U32:
+  Slice{source,original,base,groups,h,w} = image
+  groups
 def height(image: Slice) -> U32:
-  Slice{source,original,base,plane,h,w} = image
+  Slice{source,original,base,groups,h,w} = image
   h
 def width(image: Slice) -> U32:
-  Slice{source,original,base,plane,h,w} = image
+  Slice{source,original,base,groups,h,w} = image
   w
 def local_row(+image: Slice,+row: U32) -> U32:
   (row - Execution.source_first(source(image)) : U32)
@@ -108,13 +111,13 @@ def local_mask(+image: Slice,+row: U32,+column: U32) -> Bool:
 def global_mask(+image: Slice,+row: U32,+column: U32) -> Bool:
   U32.is_lt(row,height(image)) && U32.is_lt(column,width(image))
 def local_read(+image: Slice,+output: U32,+row: U32,+column: U32) -> F32:
-  Tree.read(F32,Execution.source_data(source(image)),(Execution.source_base(source(image)) + output * Execution.source_plane(source(image)) + local_row(image,row) * width(image) + column : U32))
+  Cells.lane_of(Tree.read(Tile.Tile8,Execution.source_data(source(image)),((Execution.source_base(source(image)) + output / 8 : U32) + (local_row(image,row) * width(image) + column) * groups(image) : U32)),(output % 8 : U32))
 def global_read(+image: Slice,+output: U32,+row: U32,+column: U32) -> F32:
-  Tree.read(F32,Buffer.tree(~F32,original(image)),(global_base(image) + output * global_plane(image) + row * width(image) + column : U32))
+  Cells.lane_of(Tree.read(Tile.Tile8,Buffer.tree(~Tile.Tile8,original(image)),((global_base(image) + output / 8 : U32) + (row * width(image) + column) * groups(image) : U32)),(output % 8 : U32))
 def local_pixel(+image: Slice,+output: U32,+row: U32,+column: U32) -> F32:
-  Samples.value(Execution.source_data(source(image)),local_row(image,row),column,(Execution.source_base(source(image)) + output * Execution.source_plane(source(image)) : U32),Execution.source_rows(source(image)),width(image))
+  Masks.masked(local_read(image,output,row,column),local_mask(image,row,column))
 def global_pixel(+image: Slice,+output: U32,+row: U32,+column: U32) -> F32:
-  Samples.value(Buffer.tree(~F32,original(image)),row,column,(global_base(image) + output * global_plane(image) : U32),height(image),width(image))
+  Masks.masked(global_read(image,output,row,column),global_mask(image,row,column))
 def pixel_same_case(enabled: Bool,+image: Slice,+output: U32,+row: U32,+column: U32,
   +local_same: {local_mask(image,row,column) == enabled : Bool},+global_same: {global_mask(image,row,column) == enabled : Bool},
   +correct: Boolean.When(enabled,{local_read(image,output,row,column) == global_read(image,output,row,column) : F32})) ->
@@ -140,7 +143,7 @@ def pixel_same(+image: Slice,+limits: Machine.Limits,+output: U32,+row: U32,+col
   +range: Range<Execution.source_first(source(image)),Execution.source_rows(source(image)),height(image)>,
   +height_room: {Nat.is_le(U32.to_nat(height(image)),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool},
   coverage: {U32.is_lt(row,height(image)) == True{} : Bool} ->
-    Shape.Both<{Nat.is_le(U32.to_nat(Execution.source_first(source(image))),U32.to_nat(row)) == True{} : Bool},
+    KernelGemm.Both<{Nat.is_le(U32.to_nat(Execution.source_first(source(image))),U32.to_nat(row)) == True{} : Bool},
       {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(Execution.source_first(source(image))),U32.to_nat(Execution.source_rows(source(image))))) == True{} : Bool}>,
   correct: {global_mask(image,row,column) == True{} : Bool} -> {local_read(image,output,row,column) == global_read(image,output,row,column) : F32}) ->
   {local_pixel(image,output,row,column) == global_pixel(image,output,row,column) : F32}:
@@ -153,7 +156,7 @@ type Covers<-query: Bands.Query,-first: U32,-rows: U32> is Type:
   Covers{at: @+row: U32 ->
     @+lower: {Nat.is_le(U32.to_nat(Copy.begin(query)),U32.to_nat(row)) == True{} : Bool} ->
     @+upper: {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(Copy.begin(query)),U32.to_nat(Copy.row_count(query)))) == True{} : Bool} ->
-    Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
+    KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
       {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>}
 type Stored<-image: Slice,-outputs: U32> is Type:
   Stored{at: @+output: U32 -> @+row: U32 -> @+column: U32 ->
@@ -166,24 +169,24 @@ type Stored<-image: Slice,-outputs: U32> is Type:
 def covered_row_finish(+query: Bands.Query,+coordinate: U32,+first: U32,+rows: U32,
   at: @+row: U32 -> @+lower: {Nat.is_le(U32.to_nat(Copy.begin(query)),U32.to_nat(row)) == True{} : Bool} ->
     @+upper: {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(Copy.begin(query)),U32.to_nat(Copy.row_count(query)))) == True{} : Bool} ->
-    Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>,
-  interval: Shape.Both<{Nat.is_le(U32.to_nat(Copy.begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+    KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>,
+  interval: KernelGemm.Both<{Nat.is_le(U32.to_nat(Copy.begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),Nat.add(U32.to_nat(Copy.begin(query)),U32.to_nat(Copy.row_count(query)))) == True{} : Bool}>) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>:
-  Shape.Both{+lo,+hi} = interval
+  KernelGemm.Both{+lo,+hi} = interval
   at((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),lo,hi)
 def covered_row(+query: Bands.Query,+coordinate: U32,+first: U32,+rows: U32,covers: Covers<query,first,rows>,
   +lower: {U32.is_le(Kernel.band_low(Bands.geometry(query),Bands.first(query),Bands.last(query)),coordinate) == True{} : Bool},
   +upper: {U32.is_lt(coordinate,Kernel.band_high(Bands.geometry(query),Bands.first(query),Bands.last(query))) == True{} : Bool},
   +row_inside: {U32.is_lt((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),Domain.gradient_rows(Bands.geometry(query))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>:
   Covers{at} = covers
   covered_row_finish(query,coordinate,first,rows,at,Copy.copied_interval(query,coordinate,lower,upper,row_inside))
 
 def Interval(+first: U32,+rows: U32,+row: U32) -> Data:
-  Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>
 def retained_case(enabled: Bool,+query: Bands.Query,+coordinate: U32,+first: U32,+rows: U32,
   covers: Covers<query,first,rows>,
@@ -194,19 +197,13 @@ def retained_case(enabled: Bool,+query: Bands.Query,+coordinate: U32,+first: U32
   match enabled:
     case False{}: Unit{}
     case True{}: covered_row(query,coordinate,first,rows,covers,lower,upper,same)
-def interval_required(enabled: Bool,+first: U32,+rows: U32,+row: U32,
-  interval: Boolean.When(enabled,Interval(first,rows,row)),truth: {enabled == True{} : Bool}) -> Interval(first,rows,row):
-  match enabled:
-    case False{}: Empty.absurd(Interval(first,rows,row),Words.false_true(truth))
-    case True{}: interval
-
 def stored_read(+image: Slice,+outputs: U32,+output: U32,+row: U32,+column: U32,
   stored: Stored<image,outputs>,+output_inside: {U32.is_lt(output,outputs) == True{} : Bool},
   +enabled: {global_mask(image,row,column) == True{} : Bool},
   interval: Interval(Execution.source_first(source(image)),Execution.source_rows(source(image)),row)) ->
   {local_read(image,output,row,column) == global_read(image,output,row,column) : F32}:
   Stored{at} = stored
-  Shape.Both{+lo,+hi} = interval
+  KernelGemm.Both{+lo,+hi} = interval
   at(output,row,column,output_inside,Boolean.left(U32.is_lt(row,height(image)),U32.is_lt(column,width(image)),enabled),
     Boolean.right(U32.is_lt(row,height(image)),U32.is_lt(column,width(image)),enabled),lo,hi)
 def retained_pixel(+image: Slice,+limits: Machine.Limits,+outputs: U32,+output: U32,+row: U32,+column: U32,
@@ -216,15 +213,15 @@ def retained_pixel(+image: Slice,+limits: Machine.Limits,+outputs: U32,+output: 
   stored: Stored<image,outputs>,+output_inside: {U32.is_lt(output,outputs) == True{} : Bool}) ->
   {local_pixel(image,output,row,column) == global_pixel(image,output,row,column) : F32}:
   pixel_same(image,limits,output,row,column,range,height_room,
-    truth => interval_required(U32.is_lt(row,height(image)),Execution.source_first(source(image)),Execution.source_rows(source(image)),row,interval,truth),
+    truth => Boolean.required(Interval(Execution.source_first(source(image)),Execution.source_rows(source(image)),row),U32.is_lt(row,height(image)),interval,truth),
     enabled =>
       +enabled = enabled
       stored_read(image,outputs,output,row,column,stored,output_inside,enabled,
-        interval_required(U32.is_lt(row,height(image)),Execution.source_first(source(image)),Execution.source_rows(source(image)),row,interval,
+        Boolean.required(Interval(Execution.source_first(source(image)),Execution.source_rows(source(image)),row),U32.is_lt(row,height(image)),interval,
           Boolean.left(U32.is_lt(row,height(image)),U32.is_lt(column,width(image)),enabled))))
 
-def query_slice(+query: Bands.Query,input: Execution.Source,original: Buffer.Model<F32>,base: U32,plane: U32) -> Slice:
-  Slice{input,original,base,plane,Domain.gradient_rows(Bands.geometry(query)),Domain.gradient_columns(Bands.geometry(query))}
+def query_slice(+query: Bands.Query,input: Execution.Source,original: Buffer.Model<Tile.Tile8>,base: U32,groups: U32) -> Slice:
+  Slice{input,original,base,groups,Domain.gradient_rows(Bands.geometry(query)),Domain.gradient_columns(Bands.geometry(query))}
 def query_height_room(+query: Bands.Query) ->
   {Nat.is_le(U32.to_nat(Domain.gradient_rows(Bands.geometry(query))),U32.to_nat(Machine.coordinate(Bands.query_limits(query)))) == True{} : Bool}:
   Bands.Query{Extents.Axis{+call,size,size_room,e},first,last,ordered,room} = query
@@ -232,23 +229,23 @@ def query_height_room(+query: Bands.Query) ->
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
   Order.transitive(Domain.gradient_height(g),Nat.add(Domain.gradient_height(g),Domain.kernel(g)),U32.to_nat(Machine.coordinate(Bands.query_limits(query))),
     Order.le_add(Domain.gradient_height(g),Domain.kernel(g)),Copy.query_gradient_kernel_room(query))
-def halo_pixel(+query: Bands.Query,+input: Execution.Source,+original: Buffer.Model<F32>,+base: U32,+plane: U32,
+def halo_pixel(+query: Bands.Query,+input: Execution.Source,+original: Buffer.Model<Tile.Tile8>,+base: U32,+groups: U32,
   +outputs: U32,+output: U32,+coordinate: U32,+column: U32,
   +range: Range<Execution.source_first(input),Execution.source_rows(input),Domain.gradient_rows(Bands.geometry(query))>,
   covers: Covers<query,Execution.source_first(input),Execution.source_rows(input)>,
-  stored: Stored<query_slice(query,input,original,base,plane),outputs>,
+  stored: Stored<query_slice(query,input,original,base,groups),outputs>,
   +output_inside: {U32.is_lt(output,outputs) == True{} : Bool},
   +lower: {U32.is_le(Kernel.band_low(Bands.geometry(query),Bands.first(query),Bands.last(query)),coordinate) == True{} : Bool},
   +upper: {U32.is_lt(coordinate,Kernel.band_high(Bands.geometry(query),Bands.first(query),Bands.last(query))) == True{} : Bool}) ->
-  {local_pixel(query_slice(query,input,original,base,plane),output,(coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),column) ==
-    global_pixel(query_slice(query,input,original,base,plane),output,(coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),column) : F32}:
-  retained_pixel(query_slice(query,input,original,base,plane),Bands.query_limits(query),outputs,output,(coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),column,
+  {local_pixel(query_slice(query,input,original,base,groups),output,(coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),column) ==
+    global_pixel(query_slice(query,input,original,base,groups),output,(coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),column) : F32}:
+  retained_pixel(query_slice(query,input,original,base,groups),Bands.query_limits(query),outputs,output,(coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),column,
     range,query_height_room(query),
     retained_case(U32.is_lt((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),Domain.gradient_rows(Bands.geometry(query))),query,coordinate,Execution.source_first(input),Execution.source_rows(input),covers,lower,upper,{==}),
     stored,output_inside)
 
-def full_source(+query: Bands.Query,original: Buffer.Model<F32>,base: U32,plane: U32) -> Execution.Source:
-  Execution.Source{Buffer.tree(~F32,original),base,plane,0,Domain.gradient_rows(Bands.geometry(query))}
+def full_source(+query: Bands.Query,original: Buffer.Model<Tile.Tile8>,base: U32) -> Execution.Source:
+  Execution.Source{Buffer.tree(~Tile.Tile8,original),base,0,Domain.gradient_rows(Bands.geometry(query))}
 def full_range(+query: Bands.Query) -> Range<0,Domain.gradient_rows(Bands.geometry(query)),Domain.gradient_rows(Bands.geometry(query))>:
   ImageRows{Order.reflexive(U32.to_nat(Domain.gradient_rows(Bands.geometry(query))))}
 def full_cover(+query: Bands.Query) -> Covers<query,0,Domain.gradient_rows(Bands.geometry(query))>:
@@ -257,19 +254,19 @@ def full_cover(+query: Bands.Query) -> Covers<query,0,Domain.gradient_rows(Bands
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
   Covers{row => lower => upper =>
     +row = row
-    Shape.Both{Order.zero_le(U32.to_nat(row)),Copy.required_row_inside(query,row,lower,upper)}}
+    KernelGemm.Both{Order.zero_le(U32.to_nat(row)),Copy.required_row_inside(query,row,lower,upper)}}
 def copy_cover(+query: Bands.Query) -> Covers<query,Kernel.copy_start(Bands.geometry(query),Bands.first(query),Bands.rows_word(query)),Kernel.copy_count(Bands.geometry(query),Bands.first(query),Bands.rows_word(query))>:
   %Equal.sym(U32,Kernel.copy_start(Bands.geometry(query),Bands.first(query),Bands.rows_word(query)),Copy.begin(query),Copy.begin_matches(query)) :
     Covers<query,_,Kernel.copy_count(Bands.geometry(query),Bands.first(query),Bands.rows_word(query))>
   %Equal.sym(U32,Kernel.copy_count(Bands.geometry(query),Bands.first(query),Bands.rows_word(query)),Copy.row_count(query),Copy.count_matches(query)) : Covers<query,Copy.begin(query),_>
-  Covers{row => lower => upper => Shape.Both{lower,upper}}
-def full_read(+query: Bands.Query,+original: Buffer.Model<F32>,+base: U32,+plane: U32,+output: U32,+row: U32,+column: U32) ->
-  {local_read(query_slice(query,full_source(query,original,base,plane),original,base,plane),output,row,column) ==
-    global_read(query_slice(query,full_source(query,original,base,plane),original,base,plane),output,row,column) : F32}:
+  Covers{row => lower => upper => KernelGemm.Both{lower,upper}}
+def full_read(+query: Bands.Query,+original: Buffer.Model<Tile.Tile8>,+base: U32,+groups: U32,+output: U32,+row: U32,+column: U32) ->
+  {local_read(query_slice(query,full_source(query,original,base),original,base,groups),output,row,column) ==
+    global_read(query_slice(query,full_source(query,original,base),original,base,groups),output,row,column) : F32}:
   %Equal.sym(U32,(row - 0 : U32),row,Arithmetic.subtract_zero(row)) :
-    {Tree.read(F32,Buffer.tree(~F32,original),(base + output * plane + _ * Domain.gradient_columns(Bands.geometry(query)) + column : U32)) ==
-      global_read(query_slice(query,full_source(query,original,base,plane),original,base,plane),output,row,column) : F32}
+    {Cells.lane_of(Tree.read(Tile.Tile8,Buffer.tree(~Tile.Tile8,original),((base + output / 8 : U32) + (_ * Domain.gradient_columns(Bands.geometry(query)) + column) * groups : U32)),(output % 8 : U32)) ==
+      global_read(query_slice(query,full_source(query,original,base),original,base,groups),output,row,column) : F32}
   {==}
-def full_stored(+query: Bands.Query,+original: Buffer.Model<F32>,+base: U32,+plane: U32,+outputs: U32) ->
-  Stored<query_slice(query,full_source(query,original,base,plane),original,base,plane),outputs>:
-  Stored{output => row => column => output_inside => row_inside => column_inside => lower => upper => full_read(query,original,base,plane,output,row,column)}
+def full_stored(+query: Bands.Query,+original: Buffer.Model<Tile.Tile8>,+base: U32,+groups: U32,+outputs: U32) ->
+  Stored<query_slice(query,full_source(query,original,base),original,base,groups),outputs>:
+  Stored{output => row => column => output_inside => row_inside => column_inside => lower => upper => full_read(query,original,base,groups,output,row,column)}

@@ -1,6 +1,6 @@
 # The public contract of a tensor states the finite content and allocation of
 # its whole storage, read at contiguous native indices. A whole tensor is its
-# own whole storage. Band operations keep the band invariant beside it.
+# own whole storage. Piece operations keep the piece invariant beside it.
 import Base
 import ../tensor.bend as Tensors
 import ./storage_buffer_model.bend as Buffer
@@ -11,6 +11,7 @@ import ./sequence_membership.bend as Members
 import ./ordered_ranges.bend as Ranges
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
+import ../kernel_gemm.bend as KernelGemm
 
 type WellFormed<-Element: Data,-shape: List<&2,U32>,-content: Buffer.Content<Element>> is Data:
   WellFormed{length_exact: {Buffer.content_length(~Element,content) == ShapeLaws.elements(shape) : Nat},ready: Buffer.ContentReady<Element,content>}
@@ -20,6 +21,10 @@ def At(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logic
 
 def Values(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+content: Buffer.Content<Element>) -> Data:
   Members.All(Nat,{index => At(~Element,~Logical,~original,logical,content,index) : Nat -> Data},Ranges.range(Buffer.content_length(~Element,content),0n))
+
+# Storage of the values of a shape that holds the values of a reader.
+def Facts(~Element: Data,~Context: Data,~reader: Context -> U32 -> Element,+context: Context,+shape: List<&2,U32>,-content: Buffer.Content<Element>) -> Data:
+  KernelGemm.Both<WellFormed<Element,shape,content>,Values(~Element,~Context,~reader,context,content)>
 
 def read(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Element,+logical: Logical,+content: Buffer.Content<Element>,+index: Nat,
   values: Values(~Element,~Logical,~original,logical,content),inside: {Nat.is_lt(index,Buffer.content_length(~Element,content)) == True{} : Bool}) ->
@@ -56,24 +61,13 @@ def read_listed(~Element: Data,~Logical: Data,~original: Logical -> U32 -> Eleme
 def stored(~Element: Data,content: Buffer.Content<Element>,index: U32) -> Element:
   Buffer.value(~Element,index,content)
 
-def StoredAt(~Element: Data,+content: Buffer.Content<Element>,+index: Nat) -> Data:
-  At(~Element,~Buffer.Content<Element>,~stored(~Element),content,content,index)
-
-def stored_at(~Element: Data,+content: Buffer.Content<Element>,+index: Nat,+inside: {Nat.is_lt(index,Buffer.content_length(~Element,content)) == True{} : Bool}) ->
-  StoredAt(~Element,content,index):
-  {==}
-
-def stored_values(~Element: Data,+content: Buffer.Content<Element>) -> Values(~Element,~Buffer.Content<Element>,~stored(~Element),content,content):
-  Members.range_all(~Buffer.Content<Element>,~StoredAt(~Element),~Buffer.content_length(~Element),~stored_at(~Element),
-    Buffer.content_length(~Element,content),0n,content,Order.reflexive(Buffer.content_length(~Element,content)))
-
 def tensor_ready(~Element: Data,tensor: Tensors.Tensor<Element>) -> Bool:
   match tensor:
-    case Tensors.Tensor{bands,geometry,shape,fill,status,workers}: Tensors.usable(status)
+    case Tensors.Tensor{pieces,shape,fill,status,workers}: Tensors.usable(status)
 
 def extents(~Element: Data,tensor: Tensors.Tensor<Element>) -> List<&2,U32>:
   match tensor:
-    case Tensors.Tensor{bands,geometry,shape,fill,status,workers}: shape
+    case Tensors.Tensor{pieces,shape,fill,status,workers}: shape
 
 def empty_contents(~Element: Data,+fill: Element) ->
   {Buffer.contents(~Element,Tensors.buffer(~Element,fill,0)) == Buffer.Content{Tree.fresh(Element,Tensors.depth_for(0),fill),0n} : Buffer.Content<Element>}:

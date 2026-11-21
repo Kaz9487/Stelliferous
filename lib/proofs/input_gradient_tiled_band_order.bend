@@ -28,6 +28,7 @@ import ./machine_limit_bounds.bend as Limits
 import ./storage_shape.bend as Shape
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
+import ../kernel_gemm.bend as KernelGemm
 
 # The pure sample bounds of one phase move with the band ends.
 def pure_low_monotone(+axis: Kernel.Axis,+stride: U32,+parent_first: U32,+parent_last: U32,+child_first: U32,+child_last: U32,
@@ -83,14 +84,14 @@ def used_monotone_from(+axis: Kernel.Axis,+stride: U32,+parent_first: U32,+paren
   lower: {Nat.is_le(U32.to_nat(parent_first),U32.to_nat(child_first)) == True{} : Bool},
   upper: {Nat.is_le(U32.to_nat(child_last),U32.to_nat(parent_last)) == True{} : Bool},
   +child_used: {Samples.native_used(axis,stride,child_first,child_last) == True{} : Bool},
-  parent_facts: Shape.Both<{U32.to_nat(Samples.low(Samples.indices(axis,stride,parent_first,parent_last))) == PureBands.low(Samples.model(axis,stride,parent_first,parent_last,positive)) : Nat},
+  parent_facts: KernelGemm.Both<{U32.to_nat(Samples.low(Samples.indices(axis,stride,parent_first,parent_last))) == PureBands.low(Samples.model(axis,stride,parent_first,parent_last,positive)) : Nat},
     {U32.to_nat(Samples.high(Samples.indices(axis,stride,parent_first,parent_last))) == PureBands.high(Samples.model(axis,stride,parent_first,parent_last,positive)) : Nat}>,
-  child_facts: Shape.Both<{U32.to_nat(Samples.low(Samples.indices(axis,stride,child_first,child_last))) == PureBands.low(Samples.model(axis,stride,child_first,child_last,positive)) : Nat},
+  child_facts: KernelGemm.Both<{U32.to_nat(Samples.low(Samples.indices(axis,stride,child_first,child_last))) == PureBands.low(Samples.model(axis,stride,child_first,child_last,positive)) : Nat},
     {U32.to_nat(Samples.high(Samples.indices(axis,stride,child_first,child_last))) == PureBands.high(Samples.model(axis,stride,child_first,child_last,positive)) : Nat}>) ->
   {Samples.native_used(axis,stride,parent_first,parent_last) == True{} : Bool}:
   Kernel.Axis{+start,+count,tap,+taps,source} = axis
-  Shape.Both{+parent_low,+parent_high} = parent_facts
-  Shape.Both{+child_low,+child_high} = child_facts
+  KernelGemm.Both{+parent_low,+parent_high} = parent_facts
+  KernelGemm.Both{+child_low,+child_high} = child_facts
   +phase = U32.to_nat(start)
   +divisor = U32.to_nat(stride)
   +low_parent = Samples.clipped(start,parent_first,stride)
@@ -167,7 +168,7 @@ def pure_low(+shared: Shared,+band: Band<shared>) -> Nat:
 def pure_high(+shared: Shared,+band: Band<shared>) -> Nat:
   PureBands.sample_high(Samples.selection_model(selected(shared,band)),Samples.selection_padding(selected(shared,band)),Samples.selection_kernel(selected(shared,band)))
 def Readback(+shared: Shared,+band: Band<shared>) -> Data:
-  Shape.Both<{native_low(shared,band) == pure_low(shared,band) : Nat},{native_high(shared,band) == pure_high(shared,band) : Nat}>
+  KernelGemm.Both<{native_low(shared,band) == pure_low(shared,band) : Nat},{native_high(shared,band) == pure_high(shared,band) : Nat}>
 def readback(+shared: Shared,+band: Band<shared>) -> Readback(shared,band):
   Samples.readback(selected(shared,band))
 
@@ -180,8 +181,8 @@ def phase_low_from(+shared: Shared,+parent: Band<shared>,+child: Band<shared>,
   Kernel.Geometry{c,o,h,w,+k,+s,+p,gh,gw} = geometry
   Band{+parent_first,+parent_last,parent_first_room,parent_last_room,parent_used} = parent
   Band{+child_first,+child_last,child_first_room,child_last_room,child_used} = child
-  Shape.Both{+parent_low,parent_high} = parent_facts
-  Shape.Both{+child_low,child_high} = child_facts
+  KernelGemm.Both{+parent_low,parent_high} = parent_facts
+  KernelGemm.Both{+child_low,child_high} = child_facts
   +axis = {Kernel.axis(phase,size,k,s,p) : Kernel.Axis}
   +positive = Domain.stride_positive(Domain.Call{Kernel.Geometry{c,o,h,w,k,s,p,gh,gw},batch,limits,facts})
   +padding = U32.to_nat(p)
@@ -205,8 +206,8 @@ def phase_high_from(+shared: Shared,+parent: Band<shared>,+child: Band<shared>,
   Kernel.Geometry{c,o,h,w,+k,+s,+p,gh,gw} = geometry
   Band{+parent_first,+parent_last,parent_first_room,parent_last_room,parent_used} = parent
   Band{+child_first,+child_last,child_first_room,child_last_room,child_used} = child
-  Shape.Both{parent_low,+parent_high} = parent_facts
-  Shape.Both{child_low,+child_high} = child_facts
+  KernelGemm.Both{parent_low,+parent_high} = parent_facts
+  KernelGemm.Both{child_low,+child_high} = child_facts
   +axis = {Kernel.axis(phase,size,k,s,p) : Kernel.Axis}
   +positive = Domain.stride_positive(Domain.Call{Kernel.Geometry{c,o,h,w,k,s,p,gh,gw},batch,limits,facts})
   +padding = U32.to_nat(p)
@@ -270,7 +271,7 @@ def last_exact(+call: Domain.Call,+first: U32,+count: U32,
 
 # Every phase the inner band uses samples between the outer band's extrema.
 def both_bounds(+pair: Nested,+index: Nat,inside: {Nat.is_lt(index,phases(pair)) == True{} : Bool},enabled: {active(pair,U32.from_nat(index)) == True{} : Bool}) ->
-  Shape.Both<Folds.natural_bound(False{},low_sample(pair,U32.from_nat(index)),low_boundary(pair)),Folds.natural_bound(True{},high_sample(pair,U32.from_nat(index)),high_boundary(pair))>:
+  KernelGemm.Both<Folds.natural_bound(False{},low_sample(pair,U32.from_nat(index)),low_boundary(pair)),Folds.natural_bound(True{},high_sample(pair,U32.from_nat(index)),high_boundary(pair))>:
   Nested{call,+envelope,+parent_first,+parent_rows,+parent_room,+child_first,+child_rows,+child_room,+lower,+upper} = pair
   Domain.Call{geometry,+batch,+limits,+facts} = call
   Kernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+gh,+gw} = geometry
@@ -294,7 +295,7 @@ def both_bounds(+pair: Nested,+index: Nat,inside: {Nat.is_lt(index,phases(pair))
   +shared = {Shared{whole,phase,h,envelope,Domain.height_room(whole),Extents.index_inside_extent(Extents.rows(whole,envelope),index,inside)} : Shared}
   +parent_band = {Band{parent_first,parent_last,Bands.first_room(parent),Bands.last_room(parent),parent_native} : Band<shared>}
   +child_band = {Band{child_first,child_last,Bands.first_room(child),Bands.last_room(child),child_native} : Band<shared>}
-  Shape.Both{
+  KernelGemm.Both{
     Order.transitive(U32.to_nat(Bands.low_fold(parent)),U32.to_nat(Axes.band_low(Bands.context(parent),phase)),U32.to_nat(Axes.band_low(Bands.context(child),phase)),
       Bounds.as_nat_le(Bands.low_fold(parent),Axes.band_low(Bands.context(parent),phase),Bands.contains_low(parent,index,inside,parent_enabled)),
       phase_low(shared,parent_band,child_band,lower)),
@@ -353,77 +354,6 @@ def stop_monotone(+pair: Nested) -> {Nat.is_le(U32.to_nat(Copy.stop(child(pair))
     Order.transitive(Nat.min(child_end,height),child_end,parent_end,Extrema.minimum_left(child_end,height),
       DivisionOrder.subtract_le(U32.to_nat(Bands.high_fold(child)),U32.to_nat(Bands.high_fold(parent)),kernel,ordered)),
     Extrema.minimum_right(child_end,height))
-def end_bound(+pair: Nested,same: {U32.is_lt(Copy.begin(child(pair)),Copy.stop(child(pair))) == True{} : Bool}) ->
-  {Nat.is_le(Nat.add(U32.to_nat(Copy.begin(child(pair))),U32.to_nat(Copy.row_count(child(pair)))),Nat.add(U32.to_nat(Copy.begin(parent(pair))),U32.to_nat(Copy.row_count(parent(pair))))) == True{} : Bool}:
-  +child_begin = U32.to_nat(Copy.begin(child(pair)))
-  +child_stop = U32.to_nat(Copy.stop(child(pair)))
-  +parent_begin = U32.to_nat(Copy.begin(parent(pair)))
-  +parent_stop = U32.to_nat(Copy.stop(parent(pair)))
-  +ordered = Bounds.strict_le(child_begin,child_stop,Bounds.as_nat_lt(Copy.begin(child(pair)),Copy.stop(child(pair)),same))
-  %Equal.sym(Nat,U32.to_nat(Copy.row_count(child(pair))),Nat.sub(child_stop,child_begin),Copy.count_exact(child(pair))) : {Nat.is_le(Nat.add(child_begin,_),Nat.add(parent_begin,U32.to_nat(Copy.row_count(parent(pair))))) == True{} : Bool}
-  %Equal.sym(Nat,Nat.add(child_begin,Nat.sub(child_stop,child_begin)),child_stop,Order.restore_shift(child_begin,child_stop,ordered)) : {Nat.is_le(_,Nat.add(parent_begin,U32.to_nat(Copy.row_count(parent(pair))))) == True{} : Bool}
-  %Equal.sym(Nat,U32.to_nat(Copy.row_count(parent(pair))),Nat.sub(parent_stop,parent_begin),Copy.count_exact(parent(pair))) : {Nat.is_le(child_stop,Nat.add(parent_begin,_)) == True{} : Bool}
-  %Equal.sym(Nat,Nat.add(parent_begin,Nat.sub(parent_stop,parent_begin)),Nat.max(parent_begin,parent_stop),Extrema.clipped_end(parent_begin,parent_stop)) : {Nat.is_le(child_stop,_) == True{} : Bool}
-  Order.transitive(child_stop,parent_stop,Nat.max(parent_begin,parent_stop),stop_monotone(pair),Extrema.maximum_right(parent_begin,parent_stop))
-
-# Rows that contain the outer band's copy contain the inner band's copy.
-def restricted(selected: Bool,+pair: Nested,+first: U32,+rows: U32,same: {U32.is_lt(Copy.begin(child(pair)),Copy.stop(child(pair))) == selected : Bool},
-  contains: Coverage.Contains<Copy.begin(parent(pair)),Copy.row_count(parent(pair)),first,rows,Domain.gradient_rows(Bands.geometry(parent(pair)))>) ->
-  Coverage.Contains<Copy.begin(child(pair)),Copy.row_count(child(pair)),first,rows,Domain.gradient_rows(Bands.geometry(parent(pair)))>:
-  match selected:
-    case False{}:
-      Coverage.Empty{%Equal.sym(Bool,U32.is_lt(Copy.begin(child(pair)),Copy.stop(child(pair))),False{},same) : {Bool.pick(U32,_,(Copy.stop(child(pair)) - Copy.begin(child(pair)) : U32),0) == 0 : U32} {==}}
-    case True{}:
-      match contains:
-        case Coverage.Full{first_zero,whole}: Coverage.Full{first_zero,whole}
-        case Coverage.Exact{+first_equal,+rows_equal}:
-          Coverage.Superset{
-            %Equal.sym(U32,first,Copy.begin(parent(pair)),first_equal) : {Nat.is_le(U32.to_nat(_),U32.to_nat(Copy.begin(child(pair)))) == True{} : Bool} begin_monotone(pair),
-            %Equal.sym(U32,first,Copy.begin(parent(pair)),first_equal) : {Nat.is_le(Nat.add(U32.to_nat(Copy.begin(child(pair))),U32.to_nat(Copy.row_count(child(pair)))),Nat.add(U32.to_nat(_),U32.to_nat(rows))) == True{} : Bool}
-            %Equal.sym(U32,rows,Copy.row_count(parent(pair)),rows_equal) : {Nat.is_le(Nat.add(U32.to_nat(Copy.begin(child(pair))),U32.to_nat(Copy.row_count(child(pair)))),Nat.add(U32.to_nat(Copy.begin(parent(pair))),U32.to_nat(_))) == True{} : Bool}
-            end_bound(pair,same)}
-        case Coverage.Superset{+lower,+upper}:
-          Coverage.Superset{
-            Order.transitive(U32.to_nat(first),U32.to_nat(Copy.begin(parent(pair))),U32.to_nat(Copy.begin(child(pair))),lower,begin_monotone(pair)),
-            Order.transitive(Nat.add(U32.to_nat(Copy.begin(child(pair))),U32.to_nat(Copy.row_count(child(pair)))),Nat.add(U32.to_nat(Copy.begin(parent(pair))),U32.to_nat(Copy.row_count(parent(pair)))),Nat.add(U32.to_nat(first),U32.to_nat(rows)),end_bound(pair,same),upper)}
-        case Coverage.Empty{+none}:
-          +child_begin = U32.to_nat(Copy.begin(child(pair)))
-          +child_stop = U32.to_nat(Copy.stop(child(pair)))
-          +parent_begin = U32.to_nat(Copy.begin(parent(pair)))
-          +parent_stop = U32.to_nat(Copy.stop(parent(pair)))
-          +parent_lt = Order.le_lt_trans(parent_begin,child_begin,parent_stop,begin_monotone(pair),
-            Bounds.nat_trans(child_begin,child_stop,parent_stop,Bounds.as_nat_lt(Copy.begin(child(pair)),Copy.stop(child(pair)),same),stop_monotone(pair)))
-          +difference_zero = Equal.trans(Nat,Nat.sub(parent_stop,parent_begin),U32.to_nat(Copy.row_count(parent(pair))),0n,
-            Equal.sym(Nat,U32.to_nat(Copy.row_count(parent(pair))),Nat.sub(parent_stop,parent_begin),Copy.count_exact(parent(pair))),
-            Equal.cong(U32,Nat,U32.to_nat,Copy.row_count(parent(pair)),0,none))
-          +padded = {%Equal.sym(Nat,Nat.sub(parent_stop,parent_begin),0n,difference_zero) : {parent_begin == Nat.add(parent_begin,_) : Nat}
-            Equal.sym(Nat,Nat.add(parent_begin,0n),parent_begin,Addition.zero_right(parent_begin)) : {parent_begin == Nat.add(parent_begin,Nat.sub(parent_stop,parent_begin)) : Nat}}
-          +collapsed = Equal.trans(Nat,parent_begin,Nat.add(parent_begin,Nat.sub(parent_stop,parent_begin)),parent_stop,padded,
-            Order.restore_shift(parent_begin,parent_stop,Bounds.strict_le(parent_begin,parent_stop,parent_lt)))
-          Empty.absurd(Coverage.Contains<Copy.begin(child(pair)),Copy.row_count(child(pair)),first,rows,Domain.gradient_rows(Bands.geometry(parent(pair)))>,
-            WordEncoding.false_true(
-              %Order.not_below(parent_stop,parent_stop,Order.reflexive(parent_stop)) : {_ == True{} : Bool}
-              %collapsed : {Nat.is_lt(_,parent_stop) == True{} : Bool}
-              parent_lt))
-def restrict(+pair: Nested,+first: U32,+rows: U32,
-  contains: Coverage.Contains<Copy.begin(parent(pair)),Copy.row_count(parent(pair)),first,rows,Domain.gradient_rows(Bands.geometry(parent(pair)))>) ->
-  Coverage.Contains<Copy.begin(child(pair)),Copy.row_count(child(pair)),first,rows,Domain.gradient_rows(Bands.geometry(parent(pair)))>:
-  restricted(U32.is_lt(Copy.begin(child(pair)),Copy.stop(child(pair))),pair,first,rows,{==},contains)
-
-# A band copies rows exactly when its copy begins before it stops.
-def positive_count_case(selected: Bool,+query: Bands.Query,+compared: {U32.is_lt(Copy.begin(query),Copy.stop(query)) == selected : Bool},
-  positive: {Nat.is_lt(0n,U32.to_nat(Copy.row_count(query))) == True{} : Bool}) -> {selected == True{} : Bool}:
-  match selected:
-    case True{}: {==}
-    case False{}:
-      Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(
-        %compared : {Nat.is_lt(0n,U32.to_nat(Bool.pick(U32,_,(Copy.stop(query) - Copy.begin(query) : U32),0))) == True{} : Bool}
-        positive))
-def positive_count(+query: Bands.Query,positive: {Nat.is_lt(0n,U32.to_nat(Copy.row_count(query))) == True{} : Bool}) ->
-  {U32.is_lt(Copy.begin(query),Copy.stop(query)) == True{} : Bool}:
-  positive_count_case(U32.is_lt(Copy.begin(query),Copy.stop(query)),query,{==},positive)
-
-# The copied rows of a band end inside the gradient image.
 def end_inside_from(+query: Bands.Query,same: {U32.is_lt(Copy.begin(query),Copy.stop(query)) == True{} : Bool}) ->
   {Nat.is_le(Nat.add(U32.to_nat(Copy.begin(query)),U32.to_nat(Copy.row_count(query))),Domain.gradient_height(Bands.geometry(query))) == True{} : Bool}:
   +begin = U32.to_nat(Copy.begin(query))
@@ -433,11 +363,6 @@ def end_inside_from(+query: Bands.Query,same: {U32.is_lt(Copy.begin(query),Copy.
   %Equal.sym(Nat,Nat.add(begin,Nat.sub(stop,begin)),stop,Order.restore_shift(begin,stop,Bounds.strict_le(begin,stop,Bounds.as_nat_lt(Copy.begin(query),Copy.stop(query),same)))) :
     {Nat.is_le(_,Domain.gradient_height(Bands.geometry(query))) == True{} : Bool}
   Copy.stop_bounded(query)
-def end_inside(+query: Bands.Query,positive: {Nat.is_lt(0n,U32.to_nat(Copy.row_count(query))) == True{} : Bool}) ->
-  {Nat.is_le(Nat.add(U32.to_nat(Copy.begin(query)),U32.to_nat(Copy.row_count(query))),Domain.gradient_height(Bands.geometry(query))) == True{} : Bool}:
-  end_inside_from(query,positive_count(query,positive))
-
-# The copied rows of a band are gradient rows, or there are none.
 def copy_range_case(selected: Bool,+query: Bands.Query,compared: {U32.is_lt(Copy.begin(query),Copy.stop(query)) == selected : Bool}) ->
   Rows.Range<Copy.begin(query),Copy.row_count(query),Domain.gradient_rows(Bands.geometry(query))>:
   match selected:

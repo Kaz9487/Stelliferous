@@ -7,7 +7,6 @@ import ../../lib/tensor.bend as Tensors
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/kernel_block_geometry.bend as Geometry
 import ../../lib/proofs/tensor_allocation_depth.bend as Depth
-import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
@@ -23,6 +22,8 @@ import ./supported_padded_coordinates.bend as Padded
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./native_weight_refinement.bend as NativeWeightRefinement
 import ../../lib/proofs/array_allocation_bounds.bend as ArrayAllocation
+import ../../lib/kernel_gemm.bend as KernelGemm
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
 
 def blocks(problem: ConvSpec.Problem) -> U32:
   ((U32.from_nat(Guards.output_channel_count(problem)) + 7) / 8 : U32)
@@ -70,7 +71,7 @@ def count_exact(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Guard
   +inner_exact = Coordinates.inner_exact(limits,problem,valid,Padded.scalar(limits,problem,supported))
   %blocks_exact : {U32.to_nat(count(problem)) == Nat.mul(_,Coordinates.inner(problem)) : Nat}
   %inner_exact : {U32.to_nat(count(problem)) == Nat.mul(U32.to_nat(blocks(problem)),_) : Nat}
-  Arithmetic.multiply(blocks(problem),Coordinates.native_inner(problem),Machine.capacity(limits),Limits.capacity_fits(limits),
+  WordMultiplication.bounded_multiply(blocks(problem),Coordinates.native_inner(problem),Machine.capacity(limits),Limits.capacity_fits(limits),
     %Equal.sym(Nat,U32.to_nat(blocks(problem)),Geometry.blocks(Guards.output_channel_count(problem)),blocks_exact) :
       {Nat.is_le(Nat.mul(_,U32.to_nat(Coordinates.native_inner(problem))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(Coordinates.native_inner(problem)),Coordinates.inner(problem),inner_exact) :
@@ -87,13 +88,13 @@ def count_positive(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Gu
       Order.product_positive(Guards.kernel(problem),Guards.kernel(problem),v4,v4)))
 
 def Ready(+problem: ConvSpec.Problem) -> Data:
-  Shape.Both<{Nat.is_le(Tensors.depth_for(count(problem)),30n) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(Tensors.depth_for(count(problem)),30n) == True{} : Bool},
     {Nat.is_le(U32.to_nat(count(problem)),U32.to_nat(U32.shln(1,Tensors.depth_for(count(problem))))) == True{} : Bool}>
 
 def allocated(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: Guards.Valid<problem>,+supported: Support.FastSupported<limits,problem>) -> Ready(problem):
   +positive = count_positive(limits,problem,valid,supported)
   %Equal.sym(Nat,Tensors.depth_for(count(problem)),Storage.allocation_depth(count(problem)),Depth.positive_depth(count(problem),positive)) :
-    Shape.Both<{Nat.is_le(_,30n) == True{} : Bool},{Nat.is_le(U32.to_nat(count(problem)),U32.to_nat(U32.shln(1,_))) == True{} : Bool}>
+    KernelGemm.Both<{Nat.is_le(_,30n) == True{} : Bool},{Nat.is_le(U32.to_nat(count(problem)),U32.to_nat(U32.shln(1,_))) == True{} : Bool}>
   ArrayAllocation.allocated(count(problem),Machine.capacity(limits),Limits.capacity_fits(limits),Limits.capacity_allocatable(limits),positive,
     %Equal.sym(Nat,U32.to_nat(count(problem)),Nat.mul(Geometry.blocks(Guards.output_channel_count(problem)),Coordinates.inner(problem)),count_exact(limits,problem,valid,supported)) :
       {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}

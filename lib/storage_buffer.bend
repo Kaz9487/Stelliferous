@@ -6,24 +6,33 @@ import ./proofs/storage_certificate.bend as Certificate
 type Buffer<-Element: Data> is Type:
   Buffer{storage: Array<Element>,length: Nat,certificate: Certificate.Certificate<Element,storage>}
 
-# Construction records evidence once, without visiting the owner or carrying
-# certificates through the elementwise loop.
+# Construction records evidence once, without visiting the owner.
 def allocate(~Element: Data,+depth: Nat,+value: Element,length: Nat) -> Buffer<Element>:
   Buffer{Array.new(Element,depth,value),length,Certificate.allocated(Element,depth,value)}
-
-def from_list(~Element: Data,+values: List<&2,Element>,+depth: Nat,+fallback: Element,length: Nat) -> Buffer<Element>:
-  Buffer{Traversal.write_list(~Element,values,0,Array.new(Element,depth,fallback)),length,
-    Certificate.write_list(~Element,values,0,Array.new(Element,depth,fallback),Certificate.allocated(Element,depth,fallback))}
-
-# The values written from the offset on; the certificate follows the storage.
-def write_at(~Element: Data,+values: List<&2,Element>,+offset: U32,buffer: Buffer<Element>) -> Buffer<Element>:
-  Buffer{storage,length,certificate} = buffer
-  Buffer{Traversal.write_list(~Element,values,offset,storage),length,Certificate.write_list(~Element,values,offset,storage,certificate)}
 
 # One value written at index; the certificate follows the storage.
 def write(~Element: Data,+index: U32,value: Element,buffer: Buffer<Element>) -> Buffer<Element>:
   Buffer{storage,length,certificate} = buffer
   Buffer{Array.set(Element,storage,index,value),length,Certificate.set(~Element,index,value,storage,certificate)}
+
+# The values written from the offset on, one write a value: the list is read
+# once.
+def write_at(~Element: Data,values: List<&2,Element>,+offset: U32,buffer: Buffer<Element>) -> Buffer<Element>:
+  match values:
+    case []: buffer
+    case head <> tail: write_at(~Element,tail,(offset + 1 : U32),write(~Element,offset,head,buffer))
+
+def from_list(~Element: Data,values: List<&2,Element>,+depth: Nat,+fallback: Element,length: Nat) -> Buffer<Element>:
+  write_at(~Element,values,0,allocate(~Element,depth,fallback,length))
+
+# The values written from the offset on while expected lasts, and whether the
+# list held exactly expected values. A longer list stops being written there.
+def write_exactly(~Element: Data,values: List<&2,Element>,+offset: U32,expected: Nat,buffer: Buffer<Element>) -> Buffer<Element> & Bool:
+  match values expected:
+    case [] 0n: (buffer,True{})
+    case [] 1n+rest: (buffer,False{})
+    case head <> tail 0n: (buffer,False{})
+    case head <> tail 1n+rest: write_exactly(~Element,tail,(offset + 1 : U32),rest,write(~Element,offset,head,buffer))
 
 def capacity(~Element: Data,-storage: Array<Element>,certificate: Certificate.Certificate<Element,storage>) -> U32:
   Certificate.Certificate{depth,equation} = certificate

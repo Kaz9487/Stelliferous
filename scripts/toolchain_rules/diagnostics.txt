@@ -1,5 +1,7 @@
+ (arguments are read left to right: each passed unchanged until one shrinks)
  (missing, or already matched)
  + (a in p.al ? a + 
+ + OP_SPACES + 
  + String(ctr.n) + (ctr.n === 1 ? 
  + line + 
  + m[1] + 
@@ -13,26 +15,35 @@
  field
  fields
  is a constructor: write 
+ is a def
  is a variable here, not comptime: pass it at run time)
  is in scope)
  names an earlier import)
  parameter
  parameters
- patterns (one per scrutinee)
+ patterns (one per scrutinee
  shadows 
  takes 
  with 
 ' cannot head one)
 '->' (a def with no return type fills a law; no law named 
+'<' (a do block is written do 
 '>' or ',' (a compound type argument takes parens: F<(A & B)>)
 'def' (@unsafe marks the def below it)
 'def', 'type' or 'law'
 'unsafe' (the one decorator)
+) => Err(book, ctx_nil(), 
++D<..> sets D's leading quantities to &2
+; a successor takes no spaces: 
+<...>:)
 <..> is Kind(g))
+Note: 
+Note: the left side of the equality is the expected, the right side is the observed.
 a .c or .js path
 a body (a template is not foreign)
 a bound variable
 a braced constructor pattern (
+a call smaller than 
 a case (this match has no row to return)
 a character
 a closing '
@@ -42,14 +53,16 @@ a datatype
 a declared constructor
 a declared constructor (
 a declared constructor (unknown: 
+a declared datatype
 a declared datatype (unknown: 
 a decreasing self-call (arguments are read left to right: each passed unchanged until one shrinks)
+a def whose body is implemented before the def is used (defs are checked in file order, and an unfilled law has none)
 a defined name
 a do-block heading this return
+a do-block let with its type (write \"x : T = ...\")
 a family instance (write 
 a family name before <..> (a comparison here needs parens)
 a file at 
-a filled definition (an unfilled law is a dead claim: live code cannot use it)
 a float literal with a finite f32 value (got 
 a foreign definition returning base IO(...) directly (return type aliases are not unfolded)
 a fresh alias (
@@ -75,10 +88,11 @@ a package named
 a parameter or field scrutinee (a match cannot scrutinize a computed value: give it its own def)
 a parameter or field scrutinee (a match cannot scrutinize a local binder: give it its own def)
 a pattern (a binder or a constructor)
+a pattern (a successor takes no spaces: 
 a plain binder (only leading binders take ~)
 a plain clause (only leading clauses take ~)
 a power of two count (^d takes a depth)
-a quantified datatype after + (+D<..> sets D's leading quantities to &2)
+a quantified datatype after + (
 a template applied to closed ~ arguments (
 a template applied to closed ~ arguments (a def parameter is not comptime)
 a template that stops instantiating itself (64 levels at most)
@@ -97,11 +111,11 @@ an escape (\\n \\t \\r \\0 \\\\ \\' \\\" \\u{1F600})
 an import ('import Base', or 'import <path> as <Name>')
 an import cycle through 
 an import of a .bend file
-an import path of plain names (letters, digits, _ and -; the hub's files import the hub's)
+an import on its side of the hub (a hub file imports only hub files, and a local path stays out of the hub's store)
 an unambiguous name (the alias 
-cases for 
 duplicate declaration: 
 no such file: 
 non-inferrable term
+this match doesn't cover 
 unreachable (a telescope binds its parameters and fields)
 {}, or rename the binder)

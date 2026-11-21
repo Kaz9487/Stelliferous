@@ -6,19 +6,26 @@ import ./proofs/kernel_packing_certificate.bend as PackingCertificate
 import ./proofs/storage_certificate.bend as Certificate
 import ./proofs/traversal_certificate.bend as TraversalCertificate
 
-def buffers(input_length: Nat,output_length: Nat,result: Array<F32> & Array<Tile.Tile8>,
-  certificates: TraversalCertificate.Certificates<Array<F32>,Tile.Tile8,Certificate.family(~F32),result>) ->
-  Storage.Buffer<F32> & Storage.Buffer<Tile.Tile8>:
-  (input,output) = result
+def buffers(~Source: Data,~Element: Data,source_length: Nat,output_length: Nat,result: Array<Source> & Array<Element>,
+  certificates: TraversalCertificate.Certificates<Array<Source>,Element,Certificate.family(~Source),result>) ->
+  Storage.Buffer<Source> & Storage.Buffer<Element>:
+  (source,output) = result
   TraversalCertificate.Certificates{source_certificate,output_certificate} = certificates
-  (Storage.Buffer{input,input_length,source_certificate},Storage.Buffer{output,output_length,output_certificate})
+  (Storage.Buffer{source,source_length,source_certificate},Storage.Buffer{output,output_length,output_certificate})
 
-def run(+call: Packing.Call,input: Storage.Buffer<F32>,output: Storage.Buffer<Tile.Tile8>) -> Storage.Buffer<F32> & Storage.Buffer<Tile.Tile8>:
+# The planes of a call from its input cells; the input comes back.
+def transpose(+window: Packing.Stencil,+planes: Packing.Planes,input: Storage.Buffer<Tile.Tile8>,pairs: Storage.Buffer<Tile.Tile16>) ->
+  Storage.Buffer<Tile.Tile8> & Storage.Buffer<Tile.Tile16>:
   Storage.Buffer{input,input_length,input_certificate} = input
-  Storage.Buffer{output,output_length,output_certificate} = output
-  buffers(input_length,output_length,Packing.run(call,input,output),PackingCertificate.certificates(call,input,output,input_certificate,output_certificate))
+  Storage.Buffer{pairs,pairs_length,pairs_certificate} = pairs
+  buffers(~Tile.Tile8,~Tile.Tile16,input_length,pairs_length,Packing.transpose(window,planes,input,pairs),
+    PackingCertificate.transpose_certificates(window,planes,input,pairs,input_certificate,pairs_certificate))
 
-def run_window(+window: Packing.Stencil,+count: Nat,+start: U32,input: Storage.Buffer<F32>,output: Storage.Buffer<Tile.Tile8>) -> Storage.Buffer<F32> & Storage.Buffer<Tile.Tile8>:
-  Storage.Buffer{input,input_length,input_certificate} = input
-  Storage.Buffer{output,output_length,output_certificate} = output
-  buffers(input_length,output_length,Packing.pack_window(window,count,start,input,output),PackingCertificate.window_certificates(window,count,start,input,output,input_certificate,output_certificate))
+# count entries of the positions from start packed from the planes; the
+# planes come back.
+def pack(+window: Packing.Stencil,+planes: Packing.Planes,+count: Nat,+start: U32,pairs: Storage.Buffer<Tile.Tile16>,tiles: Storage.Buffer<Tile.Tile8>) ->
+  Storage.Buffer<Tile.Tile16> & Storage.Buffer<Tile.Tile8>:
+  Storage.Buffer{pairs,pairs_length,pairs_certificate} = pairs
+  Storage.Buffer{tiles,tiles_length,tiles_certificate} = tiles
+  buffers(~Tile.Tile16,~Tile.Tile8,pairs_length,tiles_length,Packing.pack(window,planes,count,start,pairs,tiles),
+    PackingCertificate.pack_certificates(window,planes,count,start,pairs,tiles,pairs_certificate,tiles_certificate))

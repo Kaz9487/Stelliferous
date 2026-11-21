@@ -2,7 +2,7 @@
 import Base
 import ../tensor_shape.bend as Shapes
 import ../tensor_layout.bend as Layout
-import ./tensor_band_shape_refinement.bend as BandShape
+import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
@@ -33,7 +33,7 @@ def self_rank(+shape: List<&2,U32>) -> {Shapes.broadcast_same_rank(shape,shape) 
   match shape:
     case Nil{}: {==}
     case Con{+head,+tail}:
-      %Equal.sym(Bool,U32.is_eq(head,head),True{},BandShape.equal_words(head,head,{==})) : {Shapes.prepend_extent(Shapes.broadcast_extent(_,U32.is_eq(head,1),U32.is_eq(head,1),head,head),Shapes.broadcast_same_rank(tail,tail)) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
+      %Equal.sym(Bool,U32.is_eq(head,head),True{},Arithmetic.equal_reflexive(head)) : {Shapes.prepend_extent(Shapes.broadcast_extent(_,U32.is_eq(head,1),U32.is_eq(head,1),head,head),Shapes.broadcast_same_rank(tail,tail)) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
       %Equal.sym(Maybe<&2,List<&2,U32>>,Shapes.broadcast_same_rank(tail,tail),Some{tail},self_rank(tail)) : {Shapes.prepend_extent(Some{head},_) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
       {==}
 
@@ -46,12 +46,12 @@ def same_rank(+shape: List<&2,U32>,axis: Nat) -> {Shapes.broadcast_same_rank(sha
   match shape axis:
     case Nil{} axis: {==}
     case Con{+head,+tail} 0n:
-      %Equal.sym(Bool,U32.is_eq(1,1),True{},BandShape.equal_words(1,1,{==})) : {Shapes.prepend_extent(Shapes.broadcast_extent(U32.is_eq(head,1),U32.is_eq(head,1),_,head,1),Shapes.broadcast_same_rank(tail,tail)) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
+      %Equal.sym(Bool,U32.is_eq(1,1),True{},Arithmetic.equal_reflexive(1)) : {Shapes.prepend_extent(Shapes.broadcast_extent(U32.is_eq(head,1),U32.is_eq(head,1),_,head,1),Shapes.broadcast_same_rank(tail,tail)) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
       %Equal.sym(Maybe<&2,U32>,Shapes.broadcast_extent(U32.is_eq(head,1),U32.is_eq(head,1),True{},head,1),Some{head},singleton(head,U32.is_eq(head,1),U32.is_eq(head,1),{==},{==})) : {Shapes.prepend_extent(_,Shapes.broadcast_same_rank(tail,tail)) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
       %Equal.sym(Maybe<&2,List<&2,U32>>,Shapes.broadcast_same_rank(tail,tail),Some{tail},self_rank(tail)) : {Shapes.prepend_extent(Some{head},_) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
       {==}
     case Con{+head,+tail} 1n+ +rest:
-      %Equal.sym(Bool,U32.is_eq(head,head),True{},BandShape.equal_words(head,head,{==})) : {Shapes.prepend_extent(Shapes.broadcast_extent(_,U32.is_eq(head,1),U32.is_eq(head,1),head,head),Shapes.broadcast_same_rank(tail,Layout.with_extent(tail,rest,1))) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
+      %Equal.sym(Bool,U32.is_eq(head,head),True{},Arithmetic.equal_reflexive(head)) : {Shapes.prepend_extent(Shapes.broadcast_extent(_,U32.is_eq(head,1),U32.is_eq(head,1),head,head),Shapes.broadcast_same_rank(tail,Layout.with_extent(tail,rest,1))) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
       %Equal.sym(Maybe<&2,List<&2,U32>>,Shapes.broadcast_same_rank(tail,Layout.with_extent(tail,rest,1)),Some{tail},same_rank(tail,rest)) : {Shapes.prepend_extent(Some{head},_) == Some{Con{head,tail}} : Maybe<&2,List<&2,U32>>}
       {==}
 

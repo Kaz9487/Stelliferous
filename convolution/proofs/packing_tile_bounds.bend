@@ -12,7 +12,11 @@ import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/u32_division.bend as U32Division
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
+
+# The positions of the output grid of a problem.
+def grid(+p: ConvSpec.Problem) -> Nat:
+  Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p))
 
 def groups(span: U32) -> Nat:
   Nat.div(U32.to_nat(span),8n)
@@ -28,7 +32,7 @@ def packing_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,support: Support.
   p>) -> {Nat.is_le(Nat.mul(Support.padded(p),Coordinates.inner(p)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
   ConvSpec.Problem{shape,+input,+weights,+bias} = p
   ConvSpec.Shape{+channels,+outputs,+height,+width,+kernel,+stride,+padding} = shape
-  Support.FastSupported{scalar,packing,output} = support
+  Support.FastSupported{scalar,packing,output,planes} = support
   packing
 
 def elements_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,+span: U32,support: Support.FastSupported<limits,p>,
@@ -47,7 +51,7 @@ def count_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+span: U32,+valid: 
   +inner_exact = Coordinates.inner_exact(limits,p,valid,Padded.scalar(limits,p,support))
   %group_exact : {U32.to_nat(count(span,p)) == Nat.mul(_,Coordinates.inner(p)) : Nat}
   %inner_exact : {U32.to_nat(count(span,p)) == Nat.mul(U32.to_nat((span / 8 : U32)),_) : Nat}
-  Arithmetic.multiply((span / 8 : U32),Coordinates.native_inner(p),Machine.capacity(limits),Limits.capacity_fits(limits),
+  WordMultiplication.bounded_multiply((span / 8 : U32),Coordinates.native_inner(p),Machine.capacity(limits),Limits.capacity_fits(limits),
     %Equal.sym(Nat,U32.to_nat((span / 8 : U32)),groups(span),group_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(Coordinates.native_inner(p))),
         U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(Coordinates.native_inner(p)),Coordinates.inner(p),inner_exact) : {Nat.is_le(Nat.mul(groups(span),_),

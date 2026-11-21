@@ -38,140 +38,116 @@ Numerical checks cover what the proofs do not: generated code, model wiring, act
 |---|---|
 | Direct (scalar) execution | [scalar_inference_refinement.bend](../convolution/proofs/scalar_inference_refinement.bend) |
 | Packed execution | [packed_inference_refinement.bend](../convolution/proofs/packed_inference_refinement.bend) |
-| The actual pipeline: reorder, partition, pack and GEMM, gather | [microkernel_inference_refinement.bend](../convolution/proofs/microkernel_inference_refinement.bend), [microkernel_storage_execution.bend](../convolution/proofs/microkernel_storage_execution.bend) |
-| Weight reorder into eight-row tiles | [weight_reorder_readback.bend](../convolution/proofs/weight_reorder_readback.bend) |
-| Packing, and the input it leaves unchanged | [packing_storage_refinement.bend](../convolution/proofs/packing_storage_refinement.bend), [packing_contents.bend](../convolution/proofs/packing_contents.bend) |
-| GEMM storage as the writes of each job's view, with bounds, values and coverage | [kernel_gemm_writes.bend](../lib/proofs/kernel_gemm_writes.bend), [kernel_gemm_readback.bend](../lib/proofs/kernel_gemm_readback.bend), [view_writes.bend](../lib/proofs/view_writes.bend) |
+| Array boundaries, cells partition and GEMM, cells gather, output untile | [array_cell_execution.bend](../convolution/proofs/array_cell_execution.bend), [microkernel_storage_execution.bend](../convolution/proofs/microkernel_storage_execution.bend) |
+| Array boundary packing into eight-lane cells | [kernel_weights_refinement.bend](../lib/proofs/kernel_weights_refinement.bend), [window_cell_values.bend](../convolution/proofs/window_cell_values.bend) |
+| The transpose and pack of a leaf fill its tiles with the problem values | [kernel_spatial_packing_pixels.bend](../lib/proofs/kernel_spatial_packing_pixels.bend), [window_leaf_readback.bend](../convolution/proofs/window_leaf_readback.bend), [array_leaf_cells.bend](../convolution/proofs/array_leaf_cells.bend) |
+| GEMM storage as the writes of each job's view, with bounds, values and coverage | [kernel_gemm_writes.bend](../lib/proofs/kernel_gemm_writes.bend), [kernel_gemm_jobs.bend](../lib/proofs/kernel_gemm_jobs.bend), [kernel_gemm_readback.bend](../lib/proofs/kernel_gemm_readback.bend), [view_writes.bend](../lib/proofs/view_writes.bend) |
 | The accumulator equals the matrix dot | [gemm_dot_matches_matrix.bend](../convolution/proofs/gemm_dot_matches_matrix.bend) |
 | Every leaf output equals the matrix value | [microkernel_leaf_readback.bend](../convolution/proofs/microkernel_leaf_readback.bend) |
 | Input row windows of every split | [window_partition.bend](../convolution/proofs/window_partition.bend), [window_leaf_readback.bend](../convolution/proofs/window_leaf_readback.bend) |
-| Gather writes and shared clipping bounds | [gather_write_program.bend](../convolution/proofs/gather_write_program.bend), [kernel_gather_width.bend](../lib/proofs/kernel_gather_width.bend) |
+| Cell write bounds, coverage and lane readback | [cell_gather_leaf.bend](../convolution/proofs/cell_gather_leaf.bend), [gather_tree_readback.bend](../convolution/proofs/gather_tree_readback.bend), [write_program_observation.bend](../lib/proofs/write_program_observation.bend) |
 | Arbitrary caller array capacities | [array_api_validation.bend](../convolution/proofs/array_api_validation.bend) |
 | Shared storage contracts | [storage_refinement.bend](../lib/proofs/storage_refinement.bend) |
 
 The pattern is the same throughout: describe what a loop stores as a list of writes, prove every write is in bounds, prove the value written, and prove that later writes do not disturb it.
 
-## The shared stencil pipeline
+## The tensor contract
 
-The common pipeline accepts rectangular taps and independent row and column origins. Its square wrappers keep the forward convolution interfaces. The following modules describe the shared packing and GEMM operations:
+A public tensor holds `TiledPublic.Contract` of a value reader ([tensor_tiled_public.bend](../lib/proofs/tensor_tiled_public.bend)): its cells are the canonical pieces of its shape, laid out along the lane axis, Usable, and every lane is the value the reader gives at its index. Lanes past the length of the lane axis hold +0. A value reader is a context and a function from an index to a value, and each operand has its own.
 
-| Obligation | Source |
-|---|---|
-| Stencil samples and native packed-tile readback | [kernel_spatial_packing_samples.bend](../lib/proofs/kernel_spatial_packing_samples.bend), [kernel_packing_window_coordinates.bend](../lib/proofs/kernel_packing_window_coordinates.bend), [kernel_packing_window_readback.bend](../lib/proofs/kernel_packing_window_readback.bend) |
-| Ordered stencil dot and bounded block readback | [kernel_pipeline_window_values.bend](../lib/proofs/kernel_pipeline_window_values.bend), [kernel_pipeline_window_readback.bend](../lib/proofs/kernel_pipeline_window_readback.bend) |
+Each theorem below takes the contract of every operand and gives the contract of the result. Most also take these premises:
 
-## The public convolution
+- no extent is zero (an empty tensor takes another route),
+- the rank is at most the machine capacity, and the limits have the default capacity,
+- the checks the operation makes itself, such as the view it builds, `count_of` of the result and `Views.fits`,
+- for an operation that adds along lines, `2 * elements + 4 <= cap <= 2^31` for some `cap`.
 
-`F.conv2d` runs the same kernel through buffers that carry storage certificates ([kernel_pipeline.bend](../lib/kernel_pipeline.bend)). The root theorem is stated for the Array engine. The public path has its own theorems:
+## Convolution
 
-- **Band path:** every call runs it. The input arrives in the layout the planner chooses: again from its own plan when it holds the input geometry, otherwise the first split. For the plan the code selects, the output bands cover every row and stay inside their allocations ([band_pipeline_well_formed.bend](../convolution/proofs/band_pipeline_well_formed.bend)), and every stored value is the ordered matrix value of its output point ([convolution_leaf_contract.bend](../convolution/proofs/convolution_leaf_contract.bend), [band_pipeline_execution.bend](../convolution/proofs/band_pipeline_execution.bend)).
-- **The call:** for a Usable input of any layout, and weights and bias of any layout, each holding the values of its own value reader, the tensor `F.conv2d` returns is Ready in the output shape of the call, well formed and holds at every element the ordered convolution value of those values. A failed input or parameter stays failed, and an invalid geometry, parameters that do not fit it or a shape the machine guards reject give a Failed result ([convolution_public.bend](../convolution/proofs/convolution_public.bend)).
+| Function | What the result holds | Source |
+|---|---|---|
+| `conv2d`, `conv2d_custom` | for an input `[C, H, W]` or `[N, C, H, W]`, weights `[O, C, K, K]` and bias `[O]`: the activation of the ordered convolution value at every index. Premises: the problem is valid, the machine supports it and there is an image | [convolution_call.bend](../convolution/proofs/convolution_call.bend) (`conv2d_contract`), [convolution_public.bend](../convolution/proofs/convolution_public.bend) |
+| `Gradient.input` | the gradient of the input of [input_gradient_specification.bend](../convolution/input_gradient_specification.bend), and the weights back. Premises: `Call.checks` and an image | [input_gradient_public.bend](../convolution/proofs/input_gradient_public.bend) (`tiled_input`) |
+| `Gradient.weight`, `Gradient.bias` | the gradients of [parameter_gradient_specification.bend](../convolution/parameter_gradient_specification.bend), and x and the output gradient back. Premises: `Parameter.valid` and `Parameter.positive`, the checks the runtime makes | [parameter_gradient_public.bend](../convolution/proofs/parameter_gradient_public.bend) (`tiled_weight`, `tiled_bias`) |
 
-These are separate from the unconditional root. Their premises are a Usable input in a well-formed layout with finite values, matching shapes, and the machine guards the code checks.
+The input gradient adds, for each input element, the products from +0.0 over the output channel increasing and the kernel row and column decreasing, keeping the taps congruent to its padded position modulo the stride, then adds +0.0. A weight or bias gradient adds the terms of consecutive output rows in groups from +0.0, then the groups and the images by a tree of adjacent pairs.
 
-## The input gradient
+Each task of a convolution or a gradient reads a window of the input rows and writes its output pieces ([window_windowed.bend](../convolution/proofs/window_windowed.bend), [input_gradient_windowed.bend](../convolution/proofs/input_gradient_windowed.bend), [tensor_parameter_gradient_cells.bend](../lib/proofs/tensor_parameter_gradient_cells.bend)).
 
-[input_gradient_specification.bend](../convolution/input_gradient_specification.bend) defines the gradient of the input of a convolution of any stride: each input element adds its products from +0.0 over the output channel increasing and the kernel row and column decreasing, keeping the taps congruent to its padded position modulo the stride, then adds +0.0. A congruent tap outside the output gradient counts as zero.
+## Training
 
-`input` in [input_gradient_public.bend](../convolution/proofs/input_gradient_public.bend) proves it of the tensor that `Gradient.input` returns, for an output gradient and weights of any layout, each holding the values of its own value reader: a Ready result is Normal and every element is the specification value of the readers' values at its image, and the weights come back as a tensor of their shape that holds their values. It covers batches with or without the batch axis, including a batch of no image.
+| Function | What the result holds | Source |
+|---|---|---|
+| `Layer.forward`, `Layer.backward`, `Layer.backward_parameters` | the activation of the convolution, the saved input and convolution value, and the input, weight and bias gradients of `dz = dy * activation'(z)`. Premises: those of `conv2d` or of the gradients, and an activation other than `Custom` | [layer_public.bend](../convolution/proofs/layer_public.bend) |
+| `Train.forward`, `Train.evaluate`, `Train.backward`, `Train.sgd_step_with` of a convolution | what `conv2d`, `Gradient.*` and `Optimizer.sgd_with` give, with the layer back and its parameters in their slots. The step takes nonempty weights and bias | [training_convolution_public.bend](../convolution/proofs/training_convolution_public.bend) |
+| the same of an activation, a batch normalization, a layer normalization and the average pool | what the operation they call gives, with the layer back | [tensor_training_layer_values.bend](../lib/proofs/tensor_training_layer_values.bend) |
+| `forward_network`, `evaluate_network`, `backward_network`, `sgd_network_with` | see below | [training_network_public.bend](../convolution/proofs/training_network_public.bend) |
 
-| File | Statement |
-|------|-----------|
-| [tensor_full_values.bend](../lib/proofs/tensor_full_values.bend) | A Ready `full` tensor holds its value at every element. |
-| [tensor_row_major_coordinates.bend](../lib/proofs/tensor_row_major_coordinates.bend) | The address a copy or a flip reads at a row-major index, from the digits of that index. |
-| [input_gradient_call.bend](../convolution/proofs/input_gradient_call.bend) | When `Gradient.input` accepts its arguments, every shape and machine bound it checks holds. |
-| [input_gradient_tiled_run.bend](../convolution/proofs/input_gradient_tiled_run.bend) | The kernel run gives the weights back, and its bands are the bands of the batch. |
-| [input_gradient_tiled_images.bend](../convolution/proofs/input_gradient_tiled_images.bend) | The bands of the batch are well formed and every cell holds the specification value of the kernel's buffers. |
-| [input_gradient_tiled_leaves.bend](../convolution/proofs/input_gradient_tiled_leaves.bend) | Every leaf of the kernel holds the specification value at every cell of its band. |
+A network theorem takes a description of the network: a value for each parameter of each layer, and the facts each layer needs of the extents of its input. A block also takes that its branch and its shortcut give the same extents, nonempty and within the machine. Then:
 
-The leaf proof rests on these obligations.
-
-| Obligation | Source |
-|---|---|
-| Actual tile, offset-table and weight packing readback | [input_gradient_tiled_chunk_reads.bend](../lib/proofs/input_gradient_tiled_chunk_reads.bend), [input_gradient_tiled_weight_reads.bend](../lib/proofs/input_gradient_tiled_weight_reads.bend), [input_gradient_tiled_pack_values.bend](../lib/proofs/input_gradient_tiled_pack_values.bend) |
-| Source rows and actual MAC operands | [input_gradient_tiled_source_rows.bend](../lib/proofs/input_gradient_tiled_source_rows.bend), [input_gradient_tiled_product_reads.bend](../lib/proofs/input_gradient_tiled_product_reads.bend), [input_gradient_tiled_products.bend](../convolution/proofs/input_gradient_tiled_products.bend) |
-| Ordered MAC value of every write, and the requested point is written | [input_gradient_tiled_dot.bend](../convolution/proofs/input_gradient_tiled_dot.bend), [input_gradient_tiled_written.bend](../convolution/proofs/input_gradient_tiled_written.bend), [input_gradient_tiled_coverage.bend](../lib/proofs/input_gradient_tiled_coverage.bend) |
-| Chunk geometry, capacity and source owner preservation | [input_gradient_tiled_chunk_geometry.bend](../lib/proofs/input_gradient_tiled_chunk_geometry.bend), [input_gradient_tiled_capacity.bend](../lib/proofs/input_gradient_tiled_capacity.bend), [input_gradient_tiled_leaf_execution.bend](../lib/proofs/input_gradient_tiled_leaf_execution.bend) |
-
-## Weight and bias gradients
-
-[parameter_gradient_specification.bend](../convolution/parameter_gradient_specification.bend) defines the gradient of each weight and each bias: per image, the terms of consecutive output rows form groups, each group is added in order from +0.0, and the groups, then the images, are added by a tree of adjacent pairs.
-
-[parameter_gradient_ready.bend](../convolution/proofs/parameter_gradient_ready.bend) proves that a Ready result of `Gradient.weight` or `Gradient.bias` holds that value at every index for the values of the input and output gradient value readers, for operands of any layout and any group length. The operands come back as tensors of their shapes that hold their values.
-
-| File | Statement |
-|------|-----------|
-| [grouped_reduction_refinement.bend](../lib/proofs/grouped_reduction_refinement.bend) | The grouped traversal is the ordered fold of each group and the tree of the groups. |
-| [list_storage_readback.bend](../lib/proofs/list_storage_readback.bend), [tensor_list_values.bend](../lib/proofs/tensor_list_values.bend) | A Ready tensor made from a list holds the items of the list, and the values of any value reader that agrees with the list inside its shape. |
-| [parameter_gradient_bridge.bend](../convolution/proofs/parameter_gradient_bridge.bend) | Packed lanes and ordered group/image reductions equal the specification. |
-
-The weight kernel packs gradient channels and input taps, multiplies them with the shared GEMM kernel without bias, and adds groups and images with the library's adjacent-pair tree. The bias gradient uses the scalar kernel.
-
-| File | Statement |
-|---|---|
-| [kernel_weight_gradient_packing.bend](../lib/proofs/kernel_weight_gradient_packing.bend) | Native masked readers and both packing traversals refine the canonical storage model. |
-| [kernel_weight_gradient_group.bend](../lib/proofs/kernel_weight_gradient_group.bend) | Bounded blocks, partial tiles and ordered continuation execute the shared GEMM model with the no-bias specialization. |
-| [kernel_weight_gradient_refinement.bend](../lib/proofs/kernel_weight_gradient_refinement.bend) | Complete group and image pair trees and transposed readback refine the native weight kernel. |
-
-## The training layer
-
-The layer theorems compose the public convolution, activation, product and gradient theorems. Every operand may be in any layout and holds the values of its own value reader. Forward has the premises of the public convolution.
-
-| File | Statement |
-|---|---|
-| [layer_public.bend](../convolution/proofs/layer_public.bend) | With any activation but `Custom`, `Layer.forward` returns an output that is Ready in the output shape of the call and holds the activation of the ordered convolution value at every index. The saved pair holds the input and that convolution value, Ready in the same shape, and the weights and bias come back. Ready gradients of `Layer.backward` and `Layer.backward_parameters` hold the input, weight and bias gradient specifications of x, dz = dy * activation'(z) and the weights, and the weights come back. |
-
-`Train.forward`, `Train.backward` and `Train.evaluate` pass a convolution to `Layer.forward` and `Layer.backward` with the identity activation and to `conv2d`, a batch normalization to `BatchNorm`, and an activation to `activate_forward`, `activate_backward` and `activate`. `Train.sgd_step` applies `Optimizer.sgd`.
+- `forward` gives an output that holds the values of the layers applied in order, a block the sum of its branch and its shortcut, and a tape that holds what each layer saved.
+- `evaluate` gives the same in inference mode, with the running statistics, and the network back as described.
+- `backward` of a tape that holds such a record gives the gradient of the input, and the network with the gradients of every parameter.
+- `sgd` moves every parameter that has a gradient by `Optimizer.sgd_with` and clears the gradients.
 
 ## Tensor operations
 
-Each theorem has one premise about the call: it returned a Usable result. Operands may be in any layout. Every operand and the result hold the contract of [tensor_global_shape_count.bend](../lib/proofs/tensor_global_shape_count.bend): the tensor is Normal, and every element of its bands is the value a value reader gives at its index. A value reader is a context and a function from an index to a value. Each operand has its own.
-
-| Operation | What a Usable result holds | Source |
+| Operation | What the result holds | Source |
 |---|---|---|
-| `add`, `sub`, `mul`, `div`, `maximum`, `minimum`, with broadcasting | `operation(left, right)` at every index, in that argument order | [tensor_combine_public.bend](../lib/proofs/tensor_combine_public.bend) for inputs of one shape, [tensor_combine_broadcast.bend](../lib/proofs/tensor_combine_broadcast.bend) for broadcasting |
-| `add_scalar`, `mul_scalar`, ... | `operation(x, scalar)` | [tensor_band_normal_unary.bend](../lib/proofs/tensor_band_normal_unary.bend) |
-| `less`, `less_equal`, `greater`, `greater_equal`, `equal`, `not_equal` | 1.0 or 0.0 by the comparison of `left` and `right` at every index | [tensor_comparison_values.bend](../lib/proofs/tensor_comparison_values.bend) |
-| `sigmoid`, `silu`, `tanh`, `gelu_tanh`, `exp`, `log`, `sqrt` | the ordered map of the scalar function in [math_fp32.bend](../lib/math_fp32.bend) | [tensor_function_values.bend](../lib/proofs/tensor_function_values.bend), [tensor_band_normal_unary.bend](../lib/proofs/tensor_band_normal_unary.bend) |
-| `activate`, `activate_derivative` | the activation of [math_activation.bend](../lib/math_activation.bend), or its derivative, of the value at every index | [tensor_function_values.bend](../lib/proofs/tensor_function_values.bend) |
-| `activate_forward`, `activate_backward` | with any activation but `Custom`, the activation at every index beside the input with its values, both Ready in its shape. For a gradient and an input of one shape, the gradient times the derivative at the input | [tensor_function_values.bend](../lib/proofs/tensor_function_values.bend) |
-| `Optimizer.sgd` | `parameter - gradient * rate` at every index, for a parameter and a gradient of one shape | [tensor_optimizer_values.bend](../lib/proofs/tensor_optimizer_values.bend) |
-| `BatchNorm.forward`, `BatchNorm.backward`, `BatchNorm.evaluate` | for x in `[N, C, H, W]` and per-channel tensors in `[C]`: forward gives `xhat * gamma + beta` with `xhat = (x - mean) * deviation`, `mean = sum_axes(x, [0, 2, 3]) / M`, `deviation = 1 / sqrt(s / M + epsilon)` of `s = sum_axes(d * d, [0, 2, 3])`, and the running statistics moved towards `mean` and `s / (M - 1)` by `momentum`. Backward gives `dbeta`, `dgamma` and `dx` from the saved `xhat` and `deviation` in the same steps. Evaluate gives the affine output of the running statistics | [tensor_batch_norm_values.bend](../lib/proofs/tensor_batch_norm_values.bend) |
-| `Loss.mse`, `Loss.cross_entropy` | for a prediction or logits and a target of one shape: the loss, its gradient and the target. With `d = prediction - target`, `mse` gives `sum(d * d)` and `d * 2`, both divided by the count for `mean`. `cross_entropy` takes logits `[N, K]`: `p = c - log(sum(exp(c)))` along each row of `c = x - max`, the loss `-sum(target * p) / N` and the gradient `(exp(p) - target) / N`. Sums use [math_sum.bend](../lib/math_sum.bend) | [tensor_loss_values.bend](../lib/proofs/tensor_loss_values.bend), [tensor_cross_entropy_values.bend](../lib/proofs/tensor_cross_entropy_values.bend) |
-| `Train.forward`, `Train.evaluate`, `Train.backward` of the average pool | forward and evaluate: at each image and channel of `[N, C, H, W]` the sum of its positions divided by `H * W`, in `[N, C, 1, 1]`. backward: `dy / (H * W)` at the address the view of `broadcast_to` gives to each index of `[N, C, H, W]` | [tensor_training_pool_values.bend](../lib/proofs/tensor_training_pool_values.bend) |
-| `copy`, `reshape` | Both copy results preserve the original values, reshape preserves their order | [tensor_copy_contract.bend](../lib/proofs/tensor_copy_contract.bend), [tensor_reshape_values.bend](../lib/proofs/tensor_reshape_values.bend) |
+| `add`, `sub`, `mul`, `div`, `maximum`, `minimum`, with broadcasting | `operation(left, right)` at every index, in that argument order | [tensor_binary_values.bend](../lib/proofs/tensor_binary_values.bend), [tensor_tiled_map.bend](../lib/proofs/tensor_tiled_map.bend), [tensor_tiled_broadcast.bend](../lib/proofs/tensor_tiled_broadcast.bend) |
+| `add_scalar`, `mul_scalar`, ... | `operation(x, scalar)` | [tensor_function_values.bend](../lib/proofs/tensor_function_values.bend) |
+| `less`, `less_equal`, `greater`, `greater_equal`, `equal`, `not_equal`, their `_scalar` forms, `clamp` | 1.0 or 0.0 by the comparison at every index, and for `clamp` the value clamped to the bounds | [tensor_comparison_values.bend](../lib/proofs/tensor_comparison_values.bend) |
+| `sigmoid`, `silu`, `tanh`, `gelu`, `gelu_tanh`, `exp`, `log`, `sqrt`, `apply` | the scalar function of [math_fp32.bend](../lib/math_fp32.bend) or [math_activation.bend](../lib/math_activation.bend) at every index | [tensor_function_values.bend](../lib/proofs/tensor_function_values.bend) |
+| `activate`, `activate_derivative`, `activate_forward`, `activate_backward` | the activation or its derivative at every index, and for backward the gradient times the derivative at the input. The activation is not `Custom` | [tensor_function_values.bend](../lib/proofs/tensor_function_values.bend) |
+| `Optimizer.sgd`, `Optimizer.sgd_with` | `parameter - applied * rate` at every index, with `direction = gradient + parameter * decay` and `applied = velocity * momentum + direction` (`direction` on the first step). The velocity left holds `applied`, and remains exactly when the momentum is not zero | [tensor_optimizer_values.bend](../lib/proofs/tensor_optimizer_values.bend) |
+| `BatchNorm.forward`, `BatchNorm.backward`, `BatchNorm.evaluate` | for x in `[N, C, H, W]` and per-channel tensors in `[C]`: `xhat * gamma + beta` with `xhat = (x - mean) * deviation`, `deviation = 1 / sqrt(s / M + epsilon)`, the sums along `[0, 2, 3]` with rows of H × W planes, an image and a channel each, merged over the images (a sum can differ from `F.sum` along `[0, 2, 3]` in the last bit), and the running statistics moved towards the mean and `s / (M - 1)`. Backward gives `dbeta`, `dgamma` and `dx` in the runtime's FP32 order | [tensor_batch_norm_public.bend](../lib/proofs/tensor_batch_norm_public.bend) |
+| `LayerNorm.forward`, `LayerNorm.backward`, `LayerNorm.evaluate` | for x in `[..., D]` and gamma, beta in `[D]`: `xhat * gamma + beta` with the means along the last axis. Backward gives `dx = (dz - mean(dz) - xhat * mean(dz * xhat)) * deviation` of `dz = dy * gamma`, and the sums of `dy * xhat` and `dy` over the other axes | [tensor_layer_norm_values.bend](../lib/proofs/tensor_layer_norm_values.bend) |
+| `Loss.mse`, `Loss.cross_entropy` | for a prediction and a target of one shape: the loss, its gradient and the target. `cross_entropy` takes logits `[N, K]` | [tensor_loss_values.bend](../lib/proofs/tensor_loss_values.bend), [tensor_cross_entropy_values.bend](../lib/proofs/tensor_cross_entropy_values.bend) |
+| `Train.one_hot` | at row `i` and column `j` of `[N, K]`, the `equal` of label `i` and `j` | [tensor_one_hot_values.bend](../lib/proofs/tensor_one_hot_values.bend) |
+| `copy`, `reshape` | the values of the input, reshape in their row-major order | [tensor_copy_contract.bend](../lib/proofs/tensor_copy_contract.bend), [tensor_tiled_reshape.bend](../lib/proofs/tensor_tiled_reshape.bend) |
 | `softmax` | FP32 `exp(x[i] - m) / s`, with `m` the fold of the axis in increasing index and `s` the sum of [math_sum.bend](../lib/math_sum.bend) along the axis | [tensor_softmax_values.bend](../lib/proofs/tensor_softmax_values.bend) |
-| `select` | The mask's magnitude bits choose yes or no and preserve all 32 bits of the chosen word | [tensor_select_public.bend](../lib/proofs/tensor_select_public.bend) for inputs of one shape, [tensor_select_broadcast.bend](../lib/proofs/tensor_select_broadcast.bend) for broadcasting |
-| `transpose`, `slice`, `broadcast_to` | the input at the address the view gives to that index | [tensor_gather_public.bend](../lib/proofs/tensor_gather_public.bend), [tensor_band_view_values.bend](../lib/proofs/tensor_band_view_values.bend) |
-| `flip` | the input at the address its view gives to the digits of that index, with the digit `d` of every listed axis replaced by `extent - 1 - d` | [tensor_gather_public.bend](../lib/proofs/tensor_gather_public.bend), [tensor_band_view_values.bend](../lib/proofs/tensor_band_view_values.bend) |
-| `set_slice`, `pad` | the part written through its view, the rest unchanged | [tensor_set_slice_values.bend](../lib/proofs/tensor_set_slice_values.bend), [tensor_band_view_writes.bend](../lib/proofs/tensor_band_view_writes.bend), [view_writes.bend](../lib/proofs/view_writes.bend) |
-| `concat` | the part that covers the place of that index along the axis, read at that place of `[outer, extent, inner]` | [tensor_concat_public.bend](../lib/proofs/tensor_concat_public.bend), [tensor_band_concat_semantics.bend](../lib/proofs/tensor_band_concat_semantics.bend) |
-| `max_axes`, `min_axes`, `max`, `min` | at each index of the kept axes, the fold of the values of the listed axes in row-major order, from the initial value. `max` and `min` list every axis and give a rank-0 result | [tensor_reduce_values.bend](../lib/proofs/tensor_reduce_values.bend) |
-| `sum_axes`, `mean_axes`, `sum`, `mean` | the same values added by [math_sum.bend](../lib/math_sum.bend). A mean divides the sum by the number of values | [tensor_reduce_values.bend](../lib/proofs/tensor_reduce_values.bend) |
-| `upsample_nearest` | the input at the nearest index of the last two axes | [tensor_gather_public.bend](../lib/proofs/tensor_gather_public.bend) |
-| `max_pool2d` | the fold of each window, rows then columns, in increasing index, from -inf | [tensor_band_pool_public.bend](../lib/proofs/tensor_band_pool_public.bend) |
+| `matmul`, `linear` | at row `i` and column `j` of each matrix, the products added in increasing `k` from +0.0, then +0.0 or the bias of `j` | [matmul_call.bend](../convolution/proofs/matmul_call.bend), [linear_call.bend](../convolution/proofs/linear_call.bend), [product_values.bend](../convolution/proofs/product_values.bend) |
+| `apply_indexed`, `random_uniform`, `random_below`, `arange` | the function of the row-major index and the value there, the generator of [math_random.bend](../lib/math_random.bend) at the seed, the stream and the index, and the index plus the start | [tensor_tiled_indexed_values.bend](../lib/proofs/tensor_tiled_indexed_values.bend), [tensor_random_values.bend](../lib/proofs/tensor_random_values.bend) |
+| `select` | the mask's magnitude bits choose yes or no and keep all 32 bits of the chosen word | [tensor_select_public.bend](../lib/proofs/tensor_select_public.bend), [math_select_values.bend](../lib/proofs/math_select_values.bend) |
+| `transpose`, `slice`, `flip`, `broadcast_to` | the input at the address the view gives to that index | [tensor_tiled_view.bend](../lib/proofs/tensor_tiled_view.bend) |
+| `upsample_nearest` | the input at the nearest index of the last two axes | [tensor_tiled_reshape.bend](../lib/proofs/tensor_tiled_reshape.bend) |
+| `set_slice` | the part from its start along the axis, the rest unchanged | [tensor_tiled_set_slice.bend](../lib/proofs/tensor_tiled_set_slice.bend) |
+| `pad`, `pad_edge` | the input after the padding before it, the constant or the nearest element elsewhere | [tensor_tiled_pad.bend](../lib/proofs/tensor_tiled_pad.bend) |
+| `concat` | each part at its place along the axis | [tensor_tiled_concat.bend](../lib/proofs/tensor_tiled_concat.bend) |
+| `sum_axes`, `mean_axes`, `max_axes`, `min_axes`, `argmax`, `sum`, `mean`, `max`, `min` | at each index of the kept axes, the fold of the listed axes in row-major order, the sums by [math_sum.bend](../lib/math_sum.bend). The axes are distinct and inside the shape | [tensor_tiled_reduce.bend](../lib/proofs/tensor_tiled_reduce.bend), [tensor_reduce_values.bend](../lib/proofs/tensor_reduce_values.bend) |
+| `max_pool2d`, `max_pool2d_with` | the fold of each window, rows then columns, in increasing index, from -inf. The window is valid and the input has two axes or more | [tensor_tiled_pool.bend](../lib/proofs/tensor_tiled_pool.bend) |
+| `depthwise_conv2d` | at each image and channel `c`, the bias of `c` plus the taps of channel `c` times its weights, rows then columns. The cells of the result are usable | [tensor_tiled_depthwise.bend](../lib/proofs/tensor_tiled_depthwise.bend) |
 
-The `softmax` value is that FP32 sequence, with the library `exp`. Nothing is claimed about the real-number normalization. [math_select_values.bend](../lib/proofs/math_select_values.bend) states the word `select` returns: `yes` when the mask has a nonzero magnitude bit, `no` otherwise.
-
-A band input gives the same values. Functions, operations with a scalar and indexed maps run on each band and keep the band layout well formed ([tensor_band_map.bend](../lib/proofs/tensor_band_map.bend), [tensor_band_indexed.bend](../lib/proofs/tensor_band_indexed.bend), [tensor_band_normal_unary.bend](../lib/proofs/tensor_band_normal_unary.bend)). Max pooling runs on the planes of the last two axes: bands that split the image rows stay, any other input arrives as one band of its planes, and each band pools the rows its outputs read. Transpose, slice, nearest upsampling, `set_slice` and `pad` go through a view: bands whose images and rows the view keeps in place run it on their own rows, other inputs first arrive as one band ([tensor_band_view_values.bend](../lib/proofs/tensor_band_view_values.bend), [tensor_band_view_writes.bend](../lib/proofs/tensor_band_view_writes.bend)). Two operands of one shape, and the parts of a `concat` along any axis, meet in the plan one of them offers, arrive in it and run band by band ([tensor_band_combine.bend](../lib/proofs/tensor_band_combine.bend), [tensor_concat_public.bend](../lib/proofs/tensor_concat_public.bend)). The pooling and `concat` statements are for a nonempty result. A reduction arrives as lines of `[kept, listed]`, through the view that moves the listed axes last unless they are last already, and folds the lines band by band ([tensor_reduce_values.bend](../lib/proofs/tensor_reduce_values.bend)). The other layout operations run on their operands arrived as one whole band. Each statement gives that band's buffer the operand's values and reads the result, one whole band, as the contract ([tensor_whole_leaf.bend](../lib/proofs/tensor_whole_leaf.bend)).
+The `softmax` value is that FP32 sequence, with the library `exp`. Nothing is claimed about the real-number normalization.
 
 Underneath:
 
 | Subject | What is shown | Source |
 |---|---|---|
-| Bounds and non-overlap | From the guards the code checks: every read and write is in range, and source and destination do not overlap | [tensor_operation_bounds.bend](../lib/proofs/tensor_operation_bounds.bend) |
-| Cursor | The native cursor visits coordinates in row-major order. Copying in runs of the innermost axis equals visiting each element | [tensor_cursor_refinement.bend](../lib/proofs/tensor_cursor_refinement.bend), [tensor_cursor_order.bend](../lib/proofs/tensor_cursor_order.bend), [tensor_access_refinement.bend](../lib/proofs/tensor_access_refinement.bend) |
-| Storage certificates | A buffer carries a proof that its array has the shape the model says. Certificate work is constant per operation | [storage_buffer_refinement.bend](../lib/proofs/storage_buffer_refinement.bend) |
-| Failure | Which checked call each public function makes. A failed input stays failed | [tensor_public_refinement.bend](../lib/proofs/tensor_public_refinement.bend) |
-| Plan recursion | `Bands.each_part` runs every band operation and the parts of the array convolution and input gradient over one plan, and is proved once. Each operation proves only its leaf and its split | [tensor_band_walk.bend](../lib/proofs/tensor_band_walk.bend), [tensor_band_each.bend](../lib/proofs/tensor_band_each.bend) |
-| Band layout | When a band tensor is well formed, and its values by channel, row and column | [tensor_band_shape_refinement.bend](../lib/proofs/tensor_band_shape_refinement.bend), [tensor_band_values.bend](../lib/proofs/tensor_band_values.bend) |
-| Arrival | A tensor brought to the layout an operation runs in keeps its values: bands of the same geometry are aligned, others are read in row-major order and cut | [tensor_band_arrive.bend](../lib/proofs/tensor_band_arrive.bend), [tensor_band_target.bend](../lib/proofs/tensor_band_target.bend) |
-| Indexed maps | Running an indexed map in blocks equals running it element by element | [tensor_indexed_refinement.bend](../lib/proofs/tensor_indexed_refinement.bend), [tensor_operations_refinement.bend](../lib/proofs/tensor_operations_refinement.bend) |
-| Axis order | `permute` with order `[1, 0, 2, 3]` exchanges the first two axes of a four-axis kernel view and their strides | [tensor_adjoint_index.bend](../lib/proofs/tensor_adjoint_index.bend) |
+| Pieces and tasks | The pieces of a shape and their ranges, the tasks a decision groups them into, and that the tasks write every piece once | [tensor_grid_pieces.bend](../lib/proofs/tensor_grid_pieces.bend), [tensor_grid_ranges.bend](../lib/proofs/tensor_grid_ranges.bend), [tensor_task_runs.bend](../lib/proofs/tensor_task_runs.bend), [tensor_pieces_grouped_with.bend](../lib/proofs/tensor_pieces_grouped_with.bend), [tensor_placed.bend](../lib/proofs/tensor_placed.bend) |
+| Maps | A map or a combine of pieces holds the function of the values | [tensor_pieces_map.bend](../lib/proofs/tensor_pieces_map.bend), [tensor_pieces_combine.bend](../lib/proofs/tensor_pieces_combine.bend) |
+| Moves | Every component of a move takes its source pieces once and writes its target pieces, and a run of any step reads the source it names | [tensor_moved.bend](../lib/proofs/tensor_moved.bend), [tensor_components.bend](../lib/proofs/tensor_components.bend), [tensor_move_readback.bend](../lib/proofs/tensor_move_readback.bend) |
+| Views, placing and relane | The gather law of a view, a placing and a move of the lane axis | [tensor_view_gather.bend](../lib/proofs/tensor_view_gather.bend), [tensor_placing_law.bend](../lib/proofs/tensor_placing_law.bend), [tensor_relane_gather.bend](../lib/proofs/tensor_relane_gather.bend), [tensor_tiled_relane.bend](../lib/proofs/tensor_tiled_relane.bend) |
+| Split of the lane axis | The gather law of a reshape that splits the lane axis in two, and the contract of its result | [tensor_split_law.bend](../lib/proofs/tensor_split_law.bend), [tensor_tiled_split.bend](../lib/proofs/tensor_tiled_split.bend) |
+| Windows | Each task of a stencil holds the input rows it reads | [tensor_halo_windows.bend](../lib/proofs/tensor_halo_windows.bend), [tensor_window_windowed.bend](../lib/proofs/tensor_window_windowed.bend) |
+| Lines | A reduction folds each line in one order, whether the line lies within a piece or across pieces | [tensor_partials_values.bend](../lib/proofs/tensor_partials_values.bend) |
+| Bounds | From the guards the code checks: every read and write is in range | [tensor_operation_bounds.bend](../lib/proofs/tensor_operation_bounds.bend) |
+
+## Making a tensor
+
+[tensor_entry_values.bend](../lib/proofs/tensor_entry_values.bend) makes a tensor of the contract of the values it is given.
+
+| Function | What the result holds |
+|---|---|
+| `from_list` | the values of any reader that agrees with the list at every index of the shape |
+| `from_storage` | for storage that holds a sized model, its values at their flat index, in the shape |
+| `full`, `zeros`, `ones` | the value at every index ([tensor_full_values.bend](../lib/proofs/tensor_full_values.bend)) |
+
+`read_storage` of such storage gives the storage back with its value at the index, or 0.0 past its end.
 
 ## Reading a tensor
 
-[tensor_exit_values.bend](../lib/proofs/tensor_exit_values.bend) reads a tensor of the contract of a value reader, in any layout, as the reader's values in flat index order.
+[tensor_exit_values.bend](../lib/proofs/tensor_exit_values.bend) reads a tensor of the contract as the reader's values in flat index order.
 
 | Function | What it gives |
 |---|---|
@@ -180,15 +156,23 @@ Underneath:
 | `item` | For a tensor of one element, the reader's value at `0` |
 | `save_raw`, `save_npy` | They write that storage, after the `.npy` header for `save_npy`, and return a tensor of the same contract |
 
+## A store of named tensors
+
+[tensor_model_values.bend](../lib/proofs/tensor_model_values.bend) describes a store as named tensors in order, each holding its values.
+
+| Function | What it gives |
+|---|---|
+| `take` | the first tensor of the name, holding its values, and the store of the other entries |
+| `keep` | the tensor back and the store with a copy in front, both holding its values |
+
 ## What is not proved
 
-- The planner's cost estimates, latency and workspace accounting. They cannot affect a result.
+- The cost model and the parallel decisions. They choose how the pieces are grouped, never a result.
 - Real-number accuracy. [math_accuracy.py](../benchmarks/checks/math_accuracy.py) measures it.
-- A closed form of which indices a slice view reaches. The statements follow the cursor's coordinates.
 - The YOLO example's graph, I/O and detection decoding.
-- `Train.one_hot`. The classifier case of `python run.py gradients` compares it with PyTorch.
 - Compiler and runtime behaviour.
+- The text of `describe`, and `shape`, `check` and `workers`, which read metadata.
 
 ## Inspecting
 
-`python run.py proofs` also writes the list of declarations with their premises, and a reference graph from the root, under `out/results/proof-audit/`. They are for navigation. The verdict is the checker's.
+`python run.py proofs` also writes the list of declarations with their premises under `out/results/proof-audit/`, and `python run.py dependencies` the references of every declaration. They are for navigation. The verdict is the checker's.

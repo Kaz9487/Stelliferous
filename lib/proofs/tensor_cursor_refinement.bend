@@ -4,7 +4,6 @@
 import Base
 import ../tensor_cursor.bend as Cursor
 import ./tensor_cursor_model.bend as CursorModel
-import ./storage_shape.bend as Shape
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
@@ -17,6 +16,7 @@ import ./u32_full_range.bend as FullRange
 import ./word_multiplication.bend as Multiplication
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./nat_division_order.bend as DivisionOrder
+import ../kernel_gemm.bend as KernelGemm
 
 law Valid:
   for axes: List<&2,CursorModel.Coordinate>
@@ -26,7 +26,7 @@ def Valid(axes):
   match axes:
     case []: Unit
     case CursorModel.Coordinate{extent,coordinate,stride} <> tail:
-      Shape.Both<{Nat.is_lt(coordinate,extent) == True{} : Bool},Valid(tail)>
+      KernelGemm.Both<{Nat.is_lt(coordinate,extent) == True{} : Bool},Valid(tail)>
 
 def represent_outer(axes: List<&2,CursorModel.Coordinate>) -> List<&2,Cursor.Axis>:
   match axes:
@@ -173,7 +173,7 @@ def level(~Rest: Data,~next: Rest -> U32 -> Rest & U32,~represent_rest: List<&2,
   match axes:
     case []: {==}
     case CursorModel.Coordinate{+extent,+coordinate,+stride} <> +tail:
-      Shape.Both{+inside,tail_valid} = valid
+      KernelGemm.Both{+inside,tail_valid} = valid
       %Subtraction.restore(extent,coordinate,Bounds.strict_le(coordinate,extent,inside)) :
         {Cursor.step(~Rest,~next,represent_level(~Rest,~represent_rest,CursorModel.Coordinate{_,coordinate,stride} <> tail),U32.from_nat(Nat.add(Nat.mul(coordinate,stride),CursorModel.address(tail,offset)))) ==
           placed(~Cursor.Level<Rest>,~represent_level(~Rest,~represent_rest),CursorModel.advance(CursorModel.Coordinate{_,coordinate,stride} <> tail),offset) : Cursor.Level<Rest> & U32}
@@ -287,7 +287,7 @@ def reference(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,valid: Valid(a
   match axes:
     case []: {==}
     case CursorModel.Coordinate{+extent,+coordinate,+stride} <> +tail:
-      Shape.Both{+inside,tail_valid} = valid
+      KernelGemm.Both{+inside,tail_valid} = valid
       %Subtraction.restore(extent,coordinate,Bounds.strict_le(coordinate,extent,inside)) :
         {carry_reference(represent_outer(CursorModel.Coordinate{_,coordinate,stride} <> tail),U32.from_nat(Nat.add(Nat.mul(coordinate,stride),CursorModel.address(tail,offset)))) ==
           placed(~List<&2,Cursor.Axis>,~represent_outer,CursorModel.advance(CursorModel.Coordinate{_,coordinate,stride} <> tail),offset) : List<&2,Cursor.Axis> & U32}
@@ -350,14 +350,14 @@ def selected_valid(+selected: Bool,+extent: Nat,+coordinate: Nat,+stride: Nat,+t
   Valid(Bool.pick(List<&2,CursorModel.Coordinate>,selected,CursorModel.Coordinate{extent,1n+coordinate,stride} <> tail,
     CursorModel.Coordinate{extent,0n,stride} <> CursorModel.advance(tail))):
   match selected:
-    case True{}: Shape.Both{guard,tail_valid}
-    case False{}: Shape.Both{Order.le_lt_trans(0n,coordinate,extent,Order.zero_le(coordinate),inside),next_valid}
+    case True{}: KernelGemm.Both{guard,tail_valid}
+    case False{}: KernelGemm.Both{Order.le_lt_trans(0n,coordinate,extent,Order.zero_le(coordinate),inside),next_valid}
 
 def advance_valid(+axes: List<&2,CursorModel.Coordinate>,valid: Valid(axes)) -> Valid(CursorModel.advance(axes)):
   match axes:
     case []: Unit{}
     case CursorModel.Coordinate{+extent,+coordinate,+stride} <> +tail:
-      Shape.Both{inside,+tail_valid} = valid
+      KernelGemm.Both{inside,+tail_valid} = valid
       selected_valid(Nat.is_lt(1n+coordinate,extent),extent,coordinate,stride,tail,inside,{==},tail_valid,advance_valid(tail,tail_valid))
 
 def rewind(+extent: U32,+stride: U32,active: {Nat.is_lt(1n,U32.to_nat(extent)) == True{} : Bool}) ->
@@ -402,7 +402,7 @@ def selected_initial_valid(+selected: Bool,+extent: Nat,+stride: Nat,+reversed: 
   Valid(Bool.pick(List<&2,CursorModel.Coordinate>,selected,CursorModel.Coordinate{extent,0n,stride} <> reversed,reversed)):
   match selected:
     case False{}: valid
-    case True{}: Shape.Both{Order.le_lt_trans(0n,1n,extent,{==},guard),valid}
+    case True{}: KernelGemm.Both{Order.le_lt_trans(0n,1n,extent,{==},guard),valid}
 
 def prepared_valid(+source: List<&2,Views.Axis>,+reversed: List<&2,CursorModel.Coordinate>,valid: Valid(reversed)) -> Valid(CursorModel.prepare_axes(source,reversed)):
   match source:

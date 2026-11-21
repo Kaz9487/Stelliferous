@@ -6,13 +6,17 @@ Host copies made by Tensor.get_buffer are timed separately. A diagnostic copy of
 official generated C carries the timers; its saved tensors must match an
 uninstrumented run of the same C bitwise. The dependency graph gives the critical path, which bounds the
 speedup available from running independent operations at the same time.
+The same copy records every estimate of the task planner (lib/tensor_tasks.bend)
+in the first forward, so each operation's predicted time stands next to its time.
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import statistics
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -27,9 +31,82 @@ from yolo_graph import input_slots  # noqa: E402
 WARMUPS = 2
 SAMPLES = 7
 
-DECLARATIONS = """static unsigned profile_operation;
-static u64 profile_mark, profile_sample, profile_operation_ns[@PHASES@], profile_copy_ns[@PHASES@];
+DECLARATIONS = """static u64 profile_mark, profile_operation_ns[@PHASES@], profile_copy_ns[@PHASES@];
 """
+# Before the generated types: the planner taps sit in spin functions.
+PLAN_DECLARATIONS = """
+#if !DEVICE
+static unsigned profile_operation, plan_count, plan_words[@PLANS@][9];
+static unsigned long long profile_sample;
+static void plan_add(unsigned kind, unsigned workers, unsigned a, unsigned b, unsigned c, unsigned d, unsigned f, unsigned decided) {
+  if (profile_sample != 0) return;
+  unsigned slot = __atomic_fetch_add(&plan_count, 1, __ATOMIC_RELAXED);
+  if (slot >= @PLANS@) return;
+  unsigned* w = plan_words[slot];
+  w[0] = kind; w[1] = profile_operation; w[2] = workers; w[3] = a; w[4] = b; w[5] = c; w[6] = d; w[7] = f; w[8] = decided;
+}
+#endif
+"""
+PLANS = 65536
+PLAN_END = r"""if(profile_sample==0){char plan_path[4096];snprintf(plan_path,sizeof(plan_path),"%s/planner_estimates.jsonl",tensor_outdir());
+FILE*plans=fopen(plan_path,"w");if(!plans||plan_count>@PLANS@)exit(2);
+for(unsigned j=0;j<plan_count;j++){fprintf(plans,"[");for(unsigned k=0;k<9;k++)fprintf(plans,"%s%u",k?",":"",plan_words[j][k]);fprintf(plans,"]\n");}
+fclose(plans);}"""
+# A tap records, after its kind, operation and worker count, five words and
+# the result. F32 words are their bits.
+#   worth: cell_ns, cells, tasks, cells of the largest task, parallel estimate; parallel
+#   plan_ns: the same, without a result
+#   picked: serial estimate, whole-piece plan, cut plan; parallel
+TAPS = [
+    ('worth', 1, 'parallel_ns(e, _o_1,', 'r1, r11, r12, r13, (u32)_o_1[0], (u32)o[0]'),
+    ('plan_ns', 2, 'parallel_ns(e, _o_0,', 'r1, r11, r12, r13, (u32)_o_0[0], 0'),
+    ('picked', 3, None, 'r1, r2, r3, 0, 0, (u32)o[0]'),
+]
+
+
+def tap_planner(source):
+    """Record every planner estimate in the host spin of each tapped function."""
+    for name, kind, check, words in TAPS:
+        pattern = re.compile(r'^INLINE Term spin_+lib_tensor_tasks_' + name + r'\(Env e, THR Term\* o,[^\n]*\{$', re.M)
+        found = list(pattern.finditer(source))
+        assert found, f'no spin for {name}'
+        first = found[0]
+        end = source.index('\n  break;\n  }\n  return 1;\n}', first.end())
+        assert check is None or check in source[first.end():end], f'{name} no longer reads its parallel estimate there'
+        call = f'\n#if !DEVICE\n    plan_add({kind}, r0, {words});\n#endif'
+        source = source[:end] + call + source[end:]
+    return source
+
+
+def f32(word):
+    return struct.unpack('<f', struct.pack('<I', word))[0]
+
+
+def planner_rows(lines, count):
+    """Per operation: the serial estimate, the estimate of the chosen plan and its tasks."""
+    rows = [dict(predicted_serial_ms=0.0, predicted_ms=0.0, decisions=[]) for _ in range(count)]
+    pending = []
+    for line in lines:
+        kind, operation, workers, a, b, c, d, f, decided = json.loads(line)
+        if kind == 2:
+            pending.append(dict(tasks=c, largest_cells=d, parallel_ns=f32(f)))
+            continue
+        if operation >= count:
+            continue
+        if kind == 1:
+            serial = f32(a) * b
+            plan = dict(tasks=c, largest_cells=d, parallel_ns=f32(f))
+        else:
+            serial, whole, cut = f32(a), f32(b), f32(c)
+            plan = pending[-1] if cut < whole else pending[-2]
+            plan = dict(plan, parallel_ns=min(cut, whole))
+        pending = []
+        row = rows[operation]
+        row['predicted_serial_ms'] += serial / 1e6
+        row['predicted_ms'] += (plan['parallel_ns'] if decided else serial) / 1e6
+        # A serial decision runs one task; the parallel plan it rejected stays as the candidate.
+        row['decisions'].append(dict(parallel=bool(decided), serial_ns=serial, **(plan if decided else dict(candidate=plan))))
+    return rows
 TIMED_COPY = """{u64 profile_start=io_tick();Term profile_copy=blk_copy(environment,tensor_slots[tensor_id]);
 if(profile_operation<@PHASES@)profile_copy_ns[profile_operation]+=io_tick()-profile_start;return profile_copy;}"""
 SAVE_START = """if(profile_operation<@PHASES@)profile_operation_ns[profile_operation]=io_tick()-profile_mark;
@@ -51,6 +128,8 @@ def instrument_timing(source, phases):
     def fill(text):
         return text.replace('@PHASES@', str(phases))
 
+    source = tap_planner(source)
+    source = replace_once(source, '// Types\n// =====', PLAN_DECLARATIONS.replace('@PLANS@', str(PLANS)) + '\n// Types\n// =====')
     operation_begin = 'Term tensor_operation_begin_run(Env environment, Term *arguments, IoWork *work) {'
     source = replace_once(source, operation_begin, fill(DECLARATIONS) + operation_begin)
     source = replace_once(
@@ -62,7 +141,7 @@ def instrument_timing(source, phases):
     begin = 'tensor_dump_seconds=0;tensor_started=io_tick();'
     source = replace_once(source, begin, begin + fill(BEGIN))
     elapsed = 'double elapsed=(io_tick()-tensor_started)/1e9;'
-    return replace_once(source, elapsed, elapsed + fill(END))
+    return replace_once(source, elapsed, elapsed + PLAN_END.replace('@PLANS@', str(PLANS)) + fill(END))
 
 
 def classify(operation):
@@ -122,11 +201,11 @@ def summarize(rows, key):
         name = key(row)
         if name is None:
             continue
-        group = groups.setdefault(name, dict(operations=0, ms=0.0, copy_ms=0.0, work=0, work_unit=row['work_unit']))
+        group = groups.setdefault(name, dict(operations=0, ms=0.0, copy_ms=0.0, work=0, work_unit=row['work_unit'],
+                                             predicted_ms=0.0, predicted_serial_ms=0.0))
         group['operations'] += 1
-        group['ms'] += row['ms']
-        group['copy_ms'] += row['copy_ms']
-        group['work'] += row['work']
+        for field in ('ms', 'copy_ms', 'work', 'predicted_ms', 'predicted_serial_ms'):
+            group[field] += row[field]
     for group in groups.values():
         compute_seconds = (group['ms'] - group['copy_ms']) / 1e3
         if group['work_unit'] == 'multiply_adds':
@@ -145,7 +224,6 @@ def main():
         parser.error('--threads must be positive')
     stem = args.case + (f'_cpu_{args.threads}t' if args.threads != 1 else '')
     generated = ROOT / f'out/models/{stem}.c'
-    subprocess.run([sys.executable, '-B', str(ROOT / 'benchmarks/convolution/report_plans.py'), str(ROOT / f'out/models/{stem}.json')], check=True)
     graph = json.loads((ROOT / f'out/models/{stem}.json').read_text())
     operations, tensors = graph['ops'], graph['tensors']
 
@@ -169,12 +247,12 @@ def main():
     # from the handwritten example's, so the example's snapshots do not apply.
     reference = directory / f'{stem}_reference'
     reference.mkdir(parents=True, exist_ok=True)
-    subprocess.run([str(normal), '--threads', str(args.threads), '--gpu', 'off'], cwd=ROOT, check=True,
+    subprocess.run([str(normal), '+RTS', '--threads', str(args.threads), '--gpu', 'off', '-RTS'], cwd=ROOT, check=True,
                    stdout=subprocess.DEVNULL,
                    env=dict(os.environ, BEND_OUTDIR=str(reference), BEND_DUMP='1', BEND_REPETITIONS='1'))
     report = ROOT / 'out/results/model_operations' / stem
     report.mkdir(parents=True, exist_ok=True)
-    command = [str(executable), '--threads', str(args.threads), '--gpu', 'off']
+    command = [str(executable), '+RTS', '--threads', str(args.threads), '--gpu', 'off', '-RTS']
     subprocess.run(command, cwd=ROOT, check=True, stdout=subprocess.DEVNULL,
                    env=dict(os.environ, BEND_OUTDIR=str(report), BEND_DUMP='1', BEND_REPETITIONS='1'))
     for label in graph['snapshots']:
@@ -189,7 +267,8 @@ def main():
     samples = [json.loads(line) for line in lines]
     assert [sample['sample'] for sample in samples] == list(range(WARMUPS + SAMPLES)), 'Incomplete samples'
     samples = samples[WARMUPS:]
-    for name in ['operation_times.jsonl', 'native_run.json', 'native_samples.jsonl']:
+    planned = planner_rows((report / 'planner_estimates.jsonl').read_text().splitlines(), len(operations))
+    for name in ['operation_times.jsonl', 'native_run.json', 'native_samples.jsonl', 'planner_estimates.jsonl']:
         (report / name).unlink()
 
     rows = []
@@ -197,6 +276,7 @@ def main():
         category, size = classify(operation)
         unit, amount = work(operation, tensors)
         rows.append(dict(
+            **planned[index],
             operation=index,
             category=category,
             size_class=size,
@@ -236,12 +316,14 @@ def main():
               'path excludes those copies and assumes unlimited workers without memory contention.',
     )
     (report / 'results.json').write_text(json.dumps(result, indent=2))
-    print(f'{stem}: forward {forward_ms:.1f} ms; operations {operation_ms:.1f} ms; ownership copies {copy_ms:.1f} ms')
+    predicted_ms = sum(row['predicted_ms'] for row in rows)
+    print(f'{stem}: forward {forward_ms:.1f} ms; operations {operation_ms:.1f} ms; ownership copies {copy_ms:.1f} ms; '
+          f'planner predicts {predicted_ms:.1f} ms')
     for name, group in result['categories'].items():
         rate = group.get('gmac_per_second') or group.get('gb_per_second')
         unit = 'GMAC/s' if 'gmac_per_second' in group else 'GB/s'
         print(f'  {name:22} {group["operations"]:3} ops {group["ms"]:8.2f} ms '
-              f'({100 * group["ms"] / operation_ms:4.1f}%) {rate:7.2f} {unit}')
+              f'({100 * group["ms"] / operation_ms:4.1f}%) {rate:7.2f} {unit}, predicted {group["predicted_ms"]:7.2f} ms')
     bound = result['critical_path']
     print(f'  critical path {bound["compute_ms"]:.1f} of {bound["sequential_compute_ms"]:.1f} ms '
           f'(inter-operation bound {bound["speedup_bound"]:.2f}x)')

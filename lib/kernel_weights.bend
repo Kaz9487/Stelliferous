@@ -109,10 +109,6 @@ def copy_mapped_with(~Context: Data,~offset: Context -> U32 -> U32,~row_bases: C
     Traversal.run(~Array<F32>,~Tile.Tile8,~MappedRows<Context>,~read_mapped_rows(~Context,~offset),~destination_rows(~Context),U32.to_nat(inner),
       Traversal.State{input,output,0,MappedRows{rows,row,(block * inner : U32),context,bases}}))
 
-def source(pair: Array<F32> & Array<Tile.Tile8>) -> Array<F32>:
-  (input,output) = pair
-  input
-
 def reordered(pair: Array<F32> & Array<Tile.Tile8>) -> Array<Tile.Tile8>:
   (input,output) = pair
   output

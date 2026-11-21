@@ -12,8 +12,8 @@ import ./u32_full_range.bend as FullRange
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
-import ./storage_shape.bend as Shape
 import ./bounded_u32_arithmetic.bend as Arithmetic
+import ../kernel_gemm.bend as KernelGemm
 
 def stride_guard(+extent: U32,+stride: U32,+count: U32,
   valid: {U32.is_le(extent,1) || U32.is_eq(stride,count) == True{} : Bool}) ->
@@ -49,7 +49,7 @@ law SpanCount:
 def SpanCount(result,product,span):
   match result:
     case None{}: Unit
-    case Some{count}: Shape.Both<{product == U32.to_nat(count) : Nat},{1n+span == U32.to_nat(count) : Nat}>
+    case Some{count}: KernelGemm.Both<{product == U32.to_nat(count) : Nat},{1n+span == U32.to_nat(count) : Nat}>
 
 def multiplied(+result: Maybe<&2,U32>,+extent: U32,+count: U32,+stride: U32,+tail_product: Nat,+tail_span: Nat,
   computed: {Shapes.checked_multiply(extent,count) == result : Maybe<&2,U32>},
@@ -61,7 +61,7 @@ def multiplied(+result: Maybe<&2,U32>,+extent: U32,+count: U32,+stride: U32,+tai
     case None{}: Unit{}
     case Some{+output}:
       +product = Checked.multiply_sound(extent,count,output,computed)
-      Shape.Both{Equal.trans(Nat,Nat.mul(U32.to_nat(extent),tail_product),Nat.mul(U32.to_nat(extent),U32.to_nat(count)),U32.to_nat(output),
+      KernelGemm.Both{Equal.trans(Nat,Nat.mul(U32.to_nat(extent),tail_product),Nat.mul(U32.to_nat(extent),U32.to_nat(count)),U32.to_nat(output),
         Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(extent),value),tail_product,U32.to_nat(count),product_equal),product),{
         %Equal.sym(Nat,U32.to_nat((extent - 1 : U32)),Nat.sub(U32.to_nat(extent),1n),
           FullRange.subtract(extent,1,extent,Order.strict_follow(0n,U32.to_nat(extent),positive),Order.sub_le(U32.to_nat(extent),1n))) :
@@ -85,80 +85,19 @@ def axis(+inner: Maybe<&2,U32>,+extent: U32,+stride: U32,+tail_product: Nat,+tai
   match inner:
     case None{}: Unit{}
     case Some{+count}:
-      Shape.Both{product_equal,span_equal} = previous
+      KernelGemm.Both{product_equal,span_equal} = previous
       selected(U32.is_le(extent,1) || U32.is_eq(stride,count),extent,count,stride,tail_product,tail_span,positive,{==},product_equal,span_equal)
 
 def contiguous(+axes: List<&2,Views.Axis>,nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool}) ->
   SpanCount(Views.contiguous_size(axes),ShapeLaws.elements(Views.axis_extents(axes)),ViewBounds.last_span(axes)):
   match axes:
-    case []: Shape.Both{{==},{==}}
+    case []: KernelGemm.Both{{==},{==}}
     case Views.Axis{+extent,+stride} <> +tail:
       +nonempty = nonempty
       axis(Views.contiguous_size(tail),extent,stride,ShapeLaws.elements(Views.axis_extents(tail)),ViewBounds.last_span(tail),
         Arithmetic.word_nonzero_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)),
         contiguous(tail,Boolean.or_false_right(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)))
 
-def accepted_span(+result: Maybe<&2,U32>,+product: Nat,+span: Nat,
-  accepted: {Views.has_count(result) == True{} : Bool},evidence: SpanCount(result,product,span)) -> {product == 1n+span : Nat}:
-  match result:
-    case None{}: Empty.absurd({product == 1n+span : Nat},WordEncoding.false_true(accepted))
-    case Some{+count}:
-      Shape.Both{product_equal,span_equal} = evidence
-      Equal.trans(Nat,product,U32.to_nat(count),1n+span,product_equal,Equal.sym(Nat,1n+span,U32.to_nat(count),span_equal))
-
-def contiguous_span(+axes: List<&2,Views.Axis>,+offset: U32,
-  +nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},
-  accepted: {Views.is_contiguous(Views.View{axes,offset}) == True{} : Bool}) ->
-  {ShapeLaws.elements(Views.axis_extents(axes)) == 1n+ViewBounds.last_span(axes) : Nat}:
-  accepted_span(Views.contiguous_size(axes),ShapeLaws.elements(Views.axis_extents(axes)),ViewBounds.last_span(axes),{
-    %nonempty : {Views.contiguous_nonempty(_,axes) == True{} : Bool}
-    accepted : {Views.has_count(Views.contiguous_size(axes)) == True{} : Bool}},contiguous(axes,nonempty))
-
-def interval(+axes: List<&2,Views.Axis>,+offset: U32,+count: U32,+length: U32,
-  +nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},
-  contiguous: {Views.is_contiguous(Views.View{axes,offset}) == True{} : Bool},
-  counted: {Views.numel(Views.View{axes,offset}) == Some{count} : Maybe<&2,U32>},
-  fits: {Views.fits(Views.View{axes,offset},length) == True{} : Bool}) ->
-  {Nat.is_le(Nat.add(U32.to_nat(offset),U32.to_nat(count)),U32.to_nat(length)) == True{} : Bool}:
-  +count_equal = {
-    %counted : ShapeLaws.Count(_,ShapeLaws.elements(Views.axis_extents(axes)))
-    ShapeLaws.nonempty_numel(Views.axis_extents(axes),nonempty) : {ShapeLaws.elements(Views.axis_extents(axes)) == U32.to_nat(count) : Nat}}
-  %count_equal : {Nat.is_le(Nat.add(U32.to_nat(offset),_),U32.to_nat(length)) == True{} : Bool}
-  %Equal.sym(Nat,ShapeLaws.elements(Views.axis_extents(axes)),1n+ViewBounds.last_span(axes),contiguous_span(axes,offset,nonempty,contiguous)) :
-    {Nat.is_le(Nat.add(U32.to_nat(offset),_),U32.to_nat(length)) == True{} : Bool}
-  %Equal.sym(Nat,Nat.add(U32.to_nat(offset),1n+ViewBounds.last_span(axes)),1n+Nat.add(U32.to_nat(offset),ViewBounds.last_span(axes)),
-    Addition.successor_right(U32.to_nat(offset),ViewBounds.last_span(axes))) : {Nat.is_le(_,U32.to_nat(length)) == True{} : Bool}
-  Order.strict_follow(Nat.add(U32.to_nat(offset),ViewBounds.last_span(axes)),U32.to_nat(length),{
-    %ViewBounds.last_location(axes,U32.to_nat(offset)) : {Nat.is_lt(_,U32.to_nat(length)) == True{} : Bool}
-    ViewBounds.last_address(axes,offset,length,{
-      %nonempty : {Views.fits_nonempty(_,Views.View{axes,offset},length) == True{} : Bool}
-      fits : {Views.fits_nonempty(False{},Views.View{axes,offset},length) == True{} : Bool}}) :
-      {Nat.is_lt(Nat.add(U32.to_nat(offset),ViewBounds.last_span(axes)),U32.to_nat(length)) == True{} : Bool}})
-
-def selected_interval(+empty: Bool,+axes: List<&2,Views.Axis>,+offset: U32,+count: U32,+length: U32,
-  +classified: {Shapes.has_zero(Views.axis_extents(axes)) == empty : Bool},
-  contiguous: {Views.is_contiguous(Views.View{axes,offset}) == True{} : Bool},
-  counted: {Views.numel(Views.View{axes,offset}) == Some{count} : Maybe<&2,U32>},
-  fits: {Views.fits(Views.View{axes,offset},length) == True{} : Bool}) ->
-  {Nat.is_le(Nat.add(U32.to_nat(offset),U32.to_nat(count)),U32.to_nat(length)) == True{} : Bool}:
-  match empty:
-    case False{}: interval(axes,offset,count,length,classified,contiguous,counted,fits)
-    case True{}:
-      %Equal.sym(Nat,U32.to_nat(count),0n,ShapeLaws.count_zero(count,{
-        %classified : {Shapes.count_nonempty(_,Views.axis_extents(axes)) == Some{count} : Maybe<&2,U32>}
-        counted : {Some{0} == Some{count} : Maybe<&2,U32>}})) : {Nat.is_le(Nat.add(U32.to_nat(offset),_),U32.to_nat(length)) == True{} : Bool}
-      %Equal.sym(Nat,Nat.add(U32.to_nat(offset),0n),U32.to_nat(offset),Addition.zero_right(U32.to_nat(offset))) : {Nat.is_le(_,U32.to_nat(length)) == True{} : Bool}
-      Bounds.as_nat_le(offset,length,{
-        %classified : {Views.fits_nonempty(_,Views.View{axes,offset},length) == True{} : Bool}
-        fits : {U32.is_le(offset,length) == True{} : Bool}})
-
 def offset(view: Views.View) -> U32:
   Views.View{axes,offset} = view
   offset
-
-def checked_interval(+view: Views.View,+count: U32,+length: U32,
-  contiguous: {Views.is_contiguous(view) == True{} : Bool},counted: {Views.numel(view) == Some{count} : Maybe<&2,U32>},
-  fits: {Views.fits(view,length) == True{} : Bool}) ->
-  {Nat.is_le(Nat.add(U32.to_nat(offset(view)),U32.to_nat(count)),U32.to_nat(length)) == True{} : Bool}:
-  Views.View{+axes,offset} = view
-  selected_interval(Shapes.has_zero(Views.axis_extents(axes)),axes,offset,count,length,{==},contiguous,counted,fits)

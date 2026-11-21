@@ -8,7 +8,7 @@
 
 [開始使用](docs/getting_started.zh-TW.md) | [API 參考](lib/README.zh-TW.md) | [證明](docs/proofs.zh-TW.md) | [效能](docs/performance.zh-TW.md)
 
-[![Bend](https://img.shields.io/badge/Bend-v2.0.37-7c3aed)](scripts/toolchain.json)
+[![Bend](https://img.shields.io/badge/Bend-v2.0.40-7c3aed)](scripts/toolchain.json)
 [![Proofs](https://img.shields.io/badge/proofs-official%20checker-16a34a)](docs/proofs.zh-TW.md)
 [![Results](https://img.shields.io/badge/results-bit--exact%20across%20threads-0ea5e9)](docs/design.zh-TW.md)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-64748b)](#授權)
@@ -26,12 +26,12 @@ Stelliferous 是基於 Bend 2 的張量函式庫，提供執行與訓練卷積�
 安裝 [Bend](https://github.com/bendlang/bend) 與 Clang，然後從 BendHub 匯入函式庫：
 
 ```python
-import stelliferous@0.0.3.0/tensor_f32.bend as F
-import stelliferous@0.0.3.0/math_activation.bend as Act
-import stelliferous@0.0.3.0/tensor_training.bend as Train
+import stelliferous@0.0.4.0/tensor_f32.bend as F
+import stelliferous@0.0.4.0/math_activation.bend as Act
+import stelliferous@0.0.4.0/tensor_training.bend as Train
 ```
 
-套件以官方 Bend v2.0.37 檢查。要執行本庫的證明與效能量測，請見[開始使用](docs/getting_started.zh-TW.md)。
+套件以官方 Bend v2.0.40 檢查。要執行本庫的證明與效能量測，請見[開始使用](docs/getting_started.zh-TW.md)。
 
 ## 範例
 
@@ -39,8 +39,8 @@ import stelliferous@0.0.3.0/tensor_training.bend as Train
 
 ```python
 import Base
-import stelliferous@0.0.3.0/tensor_f32.bend as F
-import stelliferous@0.0.3.0/math_activation.bend as Act
+import stelliferous@0.0.4.0/tensor_f32.bend as F
+import stelliferous@0.0.4.0/math_activation.bend as Act
 
 def main() -> List<&2,F32>:
   # 1.0 到 16.0，排成 [batch, channels, height, width]
@@ -64,7 +64,7 @@ bend array_basics.bend -o array_basics
 ./array_basics
 ```
 
-其他：[小型網路](examples/small_network.bend)、[儲存與載入](examples/save_and_load.bend)、[訓練](examples/training/learning.bend)、[YOLOv5n](examples/yolov5/README.zh-TW.md)。
+其他：[小型網路](examples/small_network.bend)、[儲存與載入](examples/save_and_load.bend)、[訓練](examples/training/learning.bend)、[在 CIFAR-10 上訓練 ResNet-20](examples/resnet20/README.zh-TW.md)、[YOLOv5n](examples/yolov5/README.zh-TW.md)、[ViT-B/16](examples/vit_b16/README.zh-TW.md)。
 
 ## 證明
 
@@ -84,10 +84,10 @@ law native_inference_matches_matrix:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/performance_dark.svg">
-  <img alt="YOLOv5n inference 時間：1 與 4 執行緒，Stelliferous 0.0.3 為 117 與 47 毫秒，Stelliferous 0.0.2 為 115 與 44 毫秒，NumPy 133.7 與 116.3 毫秒，PyTorch 51.1 與 15.2 毫秒" src="docs/performance_light.svg" width="720">
+  <img alt="Stelliferous 0.0.4 的效能。YOLOv5n inference，1 與 4 執行緒：Stelliferous 0.0.4 為 80 與 35 毫秒，Stelliferous 0.0.3 為 117 與 48 毫秒，NumPy 132.5 與 120.8 毫秒，PyTorch 48.5 與 14.8 毫秒。ViT-B/16 inference，1 與 4 執行緒：Stelliferous 0.0.4 為 360 與 176 毫秒，PyTorch 353 與 121 毫秒。ResNet-20 在 CIFAR-10 上以 4 執行緒訓練：Stelliferous 0.0.4 每個 epoch 137.5 秒、測試準確率 91.40%，PyTorch 34.5 秒、91.34%。Stelliferous 0.0.3 不能訓練 ResNet-20，發布時在相同形狀但沒有殘差相加的網路上，用一個合成 batch 跑 390 步、不含測試，花了 767 秒" src="docs/performance_light.svg" width="720">
 </picture>
 
-\* 只含模型計算，不包含影像載入、前處理與 NMS。
+\* 只含模型計算，不包含影像載入、前處理與 YOLOv5n 的 NMS。
 
 在 Google Cloud 的 `c4d-standard-8` 虛擬機（AMD EPYC 9B45，8 個虛擬 CPU）上量測。量測方式與樣本見[效能](docs/performance.zh-TW.md)。
 

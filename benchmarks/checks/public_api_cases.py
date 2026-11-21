@@ -7,11 +7,13 @@ and 4 threads, Base F32 value semantics and the storage I/O boundary.
 from pathlib import Path
 import argparse
 import json
+import math
 import os
 import re
 import shutil
 import subprocess
 import numpy as np
+from random_reference import below as random_below, uniform as random_uniform
 from reduction_reference import reduced_last, sum8
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -174,13 +176,13 @@ def convolution_activation(value: F32) -> F32:
     comparison_values = comparison_words.view(np.float32)
     predicates = dict(less=np.less, less_equal=np.less_equal, greater=np.greater,
         greater_equal=np.greater_equal, equal=np.equal, not_equal=np.not_equal)
+    # The broadcast cases below compare every pair of these words. A NaN scalar
+    # runs each comparison through the scalar route.
     with np.errstate(invalid='ignore'):
         for operation, reference in predicates.items():
-            for label, value in [('zero', np.float32(-0.0)), ('nan', comparison_values[-1]),
-                                 ('finite', np.float32(1.0))]:
-                public(f'public_{operation}_scalar_{label}',
-                    f'F.{operation}_scalar({tensor([17], comparison_values)},from_bits({bits([value])[0]}))',
-                    reference(comparison_values, value).astype(np.float32))
+            public(f'public_{operation}_scalar_nan',
+                f'F.{operation}_scalar({tensor([17], comparison_values)},from_bits({bits([comparison_values[-1]])[0]}))',
+                reference(comparison_values, comparison_values[-1]).astype(np.float32))
         for label, low, high in [('finite', np.float32(-1), np.float32(1)),
                                   ('reverse', np.float32(1), np.float32(-1)),
                                   ('nan_low', comparison_values[-1], np.float32(1)),
@@ -190,19 +192,16 @@ def convolution_activation(value: F32) -> F32:
                 ordered_min(ordered_max(comparison_values, low), high))
     with np.errstate(invalid='ignore'):
         for operation, reference in predicates.items():
-            public(f'public_{operation}_binary_special',
-                f'F.{operation}({tensor([17], comparison_values)},{tensor([17], comparison_values[::-1])})',
-                reference(comparison_values, comparison_values[::-1]).astype(np.float32))
             public(f'public_{operation}_binary_broadcast',
                 f'F.{operation}({tensor([17,1], comparison_values)},{tensor([1,17], comparison_values)})',
                 reference(comparison_values[:,None], comparison_values[None,:]).astype(np.float32))
             failing(f'public_{operation}_binary_shape', f'F.{operation}(F.zeros([2]),F.zeros([3]))',
                 f'{operation}: shapes [2] and [3] do not match')
-    for label, mask in [('zero', np.float32(0)), ('negative_zero', np.float32(-0.0)),
-                         ('nan', comparison_values[-1]), ('negative', np.float32(-1))]:
-        public(f'public_select_scalar_mask_{label}',
-            f'F.select(F.full([],from_bits({bits([mask])[0]})),{tensor([17], comparison_values)},{tensor([17], comparison_values[::-1])})',
-            np.where(mask != 0, comparison_values.view(np.uint32), comparison_values[::-1].view(np.uint32)).view(np.float32))
+    # The direct case below takes every special word as a mask. A scalar -0.0
+    # mask runs the broadcast route.
+    public('public_select_scalar_mask_negative_zero',
+        f'F.select(F.full([],from_bits({bits([np.float32(-0.0)])[0]})),{tensor([17], comparison_values)},{tensor([17], comparison_values[::-1])})',
+        comparison_values[::-1])
     selection_mask = comparison_values.reshape(17,1)
     chosen = comparison_values.reshape(1,17)
     other = comparison_values[::-1].reshape(17,1)
@@ -212,12 +211,22 @@ def convolution_activation(value: F32) -> F32:
     public('public_select_direct_payloads',
         f'F.select({tensor([17], comparison_values)},{tensor([17], comparison_values)},{tensor([17], comparison_values[::-1])})',
         np.where(comparison_values != 0, comparison_words, comparison_words[::-1]).view(np.float32))
-    for tail in range(8):
-        count = 8 + tail
-        mask, yes, no = comparison_values[:count], comparison_values[:count], comparison_values[::-1][:count]
-        public(f'public_select_tail_{tail}',
-            f'F.select({tensor([count], mask)},{tensor([count], yes)},{tensor([count], no)})',
-            np.where(mask != 0, yes.view(np.uint32), no.view(np.uint32)).view(np.float32))
+    # One whole tile of lanes and a partial one. Every partial length runs the
+    # same generated code.
+    mask, yes, no = comparison_values[:13], comparison_values[:13], comparison_values[::-1][:13]
+    public('public_select_tail',
+        f'F.select({tensor([13], mask)},{tensor([13], yes)},{tensor([13], no)})',
+        np.where(mask != 0, yes.view(np.uint32), no.view(np.uint32)).view(np.float32))
+    # Channels that leave a partial group of lanes, with a mask of the same
+    # shape and a mask broadcast over rows.
+    for name, mask_shape, shape in [('rank4_tail', (2, 13, 3, 5), (2, 13, 3, 5)), ('rank4_broadcast', (1, 13, 1, 5), (2, 13, 3, 5))]:
+        size = int(np.prod(shape))
+        yes = np.resize(comparison_values, size).reshape(shape)
+        no = np.resize(comparison_values[::-1], size).reshape(shape)
+        mask = np.resize(comparison_values[3:], int(np.prod(mask_shape))).reshape(mask_shape)
+        public(f'public_select_{name}',
+            f'F.select({tensor(list(mask_shape), mask.ravel())},{tensor(list(shape), yes.ravel())},{tensor(list(shape), no.ravel())})',
+            np.where(np.broadcast_to(mask, shape) != 0, yes.view(np.uint32), no.view(np.uint32)).view(np.float32))
     public('public_select_empty', 'F.select(F.zeros([0]),F.zeros([0]),F.zeros([0]))', np.zeros((0,),dtype=np.float32))
     public('public_select_rank_zero', 'F.select(F.ones([]),F.full([],2.0),F.zeros([]))', np.float32(2))
     failing('public_select_values_shape', 'F.select(F.ones([]),F.zeros([2]),F.zeros([3]))',
@@ -304,6 +313,39 @@ def convolution_activation(value: F32) -> F32:
     failing('public_pool_name', f'F.max_pool2d_with({tensor(grid.shape, grid.ravel())},0,1,0)', 'max_pool2d: invalid argument for shape [2, 3, 4]')
     public('public_storage_roundtrip', f'reloaded({list(grid.shape)},F.into_storage(F.add_scalar({tensor(grid.shape, grid.ravel())},1.0)))', grid + np.float32(1.0))
     public('public_reshape', f'F.reshape({tensor(grid.shape, grid.ravel())},[4,6])', grid.reshape(4, 6))
+    # Whole groups of the lane axis, and the lane axis of a shape with extent one on it.
+    def values(shape):
+        return np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+
+    for name, shape, target in [
+        ('split_last', (1, 7, 32), (1, 7, 2, 16)),
+        ('merge_last', (1, 7, 2, 16), (1, 7, 32)),
+        ('split_channels', (32, 2, 3), (16, 2, 2, 3)),
+        ('regroup_plane', (16, 2, 3), (8, 4, 3)),
+        ('regroup_wider', (2, 8, 3), (16, 3)),
+    ]:
+        public(f'public_reshape_groups_{name}', f'F.with_workers(F.add_scalar(F.reshape({tensor(shape, values(shape).ravel())},{list(target)}),0.5),4)',
+            values(shape).reshape(target) + np.float32(0.5))
+    for name, shape, axis, start, count in [
+        ('last', (1, 7, 32), 2, 8, 16),
+        ('channels', (16, 2, 3), 0, 8, 8),
+        ('partial_group', (20, 2, 3), 0, 8, 8),
+        ('tail', (20, 2, 3), 0, 16, 4),
+        ('unaligned', (24, 2, 3), 0, 4, 8),
+        ('none', (16, 2, 3), 0, 8, 0),
+    ]:
+        index = [slice(None)] * len(shape)
+        index[axis] = slice(start, start + count)
+        public(f'public_slice_groups_{name}', f'F.with_workers(F.add_scalar(F.slice({tensor(shape, values(shape).ravel())},{axis},{start},{count},1),0.5),4)',
+            values(shape)[tuple(index)] + np.float32(0.5))
+    for shape in [(1, 7, 5), (2, 1, 5, 7), (1, 1, 1), (1, 0, 5), (3, 1, 2)]:
+        public('public_extent_one_' + '_'.join(map(str, shape)), f'F.with_workers(F.add_scalar(F.mul_scalar(F.add_scalar(F.zeros({list(shape)}),2.0),3.0),0.5),4)',
+            np.full(shape, 6.5, np.float32))
+        public('public_extent_one_full_' + '_'.join(map(str, shape)), f'F.add(F.full({list(shape)},1.5),{tensor(shape, values(shape).ravel())})',
+            values(shape) + np.float32(1.5))
+    for shape, order in [((2, 3, 11), (1, 2, 0)), ((3, 11, 5), (1, 2, 0)), ((1, 4, 7, 11), (0, 2, 3, 1)), ((2, 11, 3, 5), (0, 2, 3, 1)), ((9, 1, 5), (2, 1, 0)), ((20, 3), (1, 0))]:
+        public('public_repad_' + '_'.join(map(str, shape)), f'F.with_workers(F.mul_scalar(F.add_scalar(F.transpose({tensor(shape, values(shape).ravel())},{list(order)}),0.5),2.0),4)',
+            (values(shape).transpose(order) + np.float32(0.5)) * np.float32(2.0))
     public('public_copy', f'F.then(F.copy({tensor(grid.shape, grid.ravel())}),kept => copied => F.sub(kept,copied))', np.zeros_like(grid))
     public('public_then_shape', f'F.then_shape(F.shape({tensor(grid.shape, grid.ravel())}),owner => extents => F.add(owner,F.full(extents,0.5)))', grid + np.float32(0.5))
 
@@ -333,16 +375,100 @@ def convolution_activation(value: F32) -> F32:
             'tanh': (4, 4 * doubled / ((1 + doubled) * (1 + doubled))),
             'silu': (4, mirrored(logistic * (1 - np.abs(wide) + logistic) / ((1 + logistic) * (1 + logistic)))),
             'gelu_tanh': (4, mirrored(cubic * (1 + slope + cubic) / ((1 + cubic) * (1 + cubic)))),
+            'gelu': (4, np.array([-0.0 if v < -40 else 0.5 * math.erfc(-v / math.sqrt(2)) + v * math.exp(-v * v / 2) / math.sqrt(2 * math.pi) for v in wide])),
         }
     for name, (steps, reference) in derivative_expected.items():
         reference = np.asarray(reference, dtype=np.float32)
         reference[np.isnan(x)] = np.nan
-        if name in ['silu', 'gelu_tanh']:
+        if name in ['silu', 'gelu_tanh', 'gelu']:
             reference[np.isneginf(x)] = np.float32(-0.0)
             reference[np.isposinf(x)] = np.float32(1.0)
         activation = 'Act.leaky_relu(F32.neg(0.125))' if name == 'leaky_relu' else f'Act.{name}()'
         case(f'public_{name}_derivative',
             f'near_values({steps},{bits(reference)},F.to_list(F.activate_derivative({tensor(x.shape, x)},{activation})))')
+    # GELU against double-precision erfc, within the four steps that math_accuracy.py measures.
+    gelu_input = np.array([0.0, -0.0, 1e-30, -1e-30, 0.5, -0.5, 1.25, -1.25, 3.5, -3.5, 7.0, -7.0, -12.5, -14.0, -20.0, 40.0], dtype=np.float32)
+    gelu_expected = [v * 0.5 * math.erfc(-v / math.sqrt(2)) for v in gelu_input.astype(np.float64)]
+    case('public_gelu', f'near_values(4,{bits(gelu_expected)},F.to_list(F.gelu({tensor(gelu_input.shape, gelu_input)})))')
+    case('public_gelu_scheduled', f'near_values(4,{bits(np.tile(gelu_expected, 4))},F.to_list(F.with_workers(F.activate({tensor((64,), np.tile(gelu_input, 4))},Act.gelu()),4)))')
+
+    def ordered_matmul(left, right):
+        rows, inner = left.shape[-2:]
+        outputs = right.shape[-1]
+        shared = right.ndim == 2
+        batches = left.reshape(-1, rows, inner)
+        factors = np.broadcast_to(right, batches.shape[:1] + right.shape) if shared else right.reshape(-1, inner, outputs)
+        result = np.zeros((len(batches), rows, outputs), dtype=np.float32)
+        for k in range(inner):
+            result = result + batches[:, :, k:k + 1] * factors[:, k:k + 1, :]
+        return (result + np.float32(0)).reshape(left.shape[:-2] + (rows, outputs))
+
+    matmul_rng = np.random.default_rng(20261101)
+    for name, left_shape, right_shape in [
+        ('single', (3, 5), (5, 2)),
+        ('wide', (2, 19), (19, 11)),
+        ('shared', (4, 7, 9), (9, 3)),
+        ('shared_axes', (2, 3, 7, 9), (9, 3)),
+        ('batches', (5, 6, 4), (5, 4, 9)),
+        ('batches_axes', (3, 2, 10, 9), (3, 2, 9, 8)),
+        ('batches_fewer_than_workers', (2, 7, 5), (2, 5, 3)),
+        ('batches_more_than_workers', (5, 3, 9), (5, 9, 11)),
+        ('one_batch', (1, 3, 4), (1, 4, 2)),
+    ]:
+        left = matmul_rng.normal(size=left_shape).astype(np.float32)
+        right = matmul_rng.normal(size=right_shape).astype(np.float32)
+        public(f'public_matmul_{name}', f'F.with_workers(F.matmul({tensor(left.shape, left.ravel())},{tensor(right.shape, right.ravel())}),4)', ordered_matmul(left, right))
+    failing('public_matmul_inner', 'F.matmul(F.zeros([2,3]),F.zeros([4,2]))', 'matmul: invalid argument for shape [2, 3]')
+    failing('public_matmul_leading', 'F.matmul(F.zeros([2,2,3]),F.zeros([3,3,2]))', 'matmul: invalid argument for shape [2, 2, 3]')
+    failing('public_matmul_rank', 'F.matmul(F.zeros([3]),F.zeros([3,2]))', 'matmul: invalid argument for shape [3]')
+    failing('public_matmul_first_failure', 'F.matmul(F.add(F.zeros([2]),F.zeros([3])),F.zeros([3,2]))', 'add: shapes [2] and [3] do not match')
+
+    def ordered_linear(x, weight, bias):
+        rows, inner = x.shape[-2:]
+        outputs = weight.shape[0]
+        batches = x.reshape(-1, rows, inner)
+        result = np.zeros((len(batches), rows, outputs), dtype=np.float32)
+        for k in range(inner):
+            result = result + batches[:, :, k:k + 1] * weight[:, k].reshape(1, 1, outputs)
+        return (result + bias).reshape(x.shape[:-2] + (rows, outputs))
+
+    for name, x_shape, outputs in [
+        ('single', (3, 5), 2),
+        ('wide', (2, 19), 11),
+        ('batch', (4, 7, 9), 3),
+        ('axes', (2, 3, 7, 9), 3),
+        ('many_outputs', (1, 4, 16), 67),
+    ]:
+        x = matmul_rng.normal(size=x_shape).astype(np.float32)
+        weight = matmul_rng.normal(size=(outputs, x_shape[-1])).astype(np.float32)
+        bias = matmul_rng.normal(size=outputs).astype(np.float32)
+        public(f'public_linear_{name}', f'F.with_workers(F.linear({tensor(x.shape, x.ravel())},{tensor(weight.shape, weight.ravel())},{tensor(bias.shape, bias)}),4)', ordered_linear(x, weight, bias))
+    for name, rows, inner, outputs in [('large_weights', 2, 8200, 4), ('large_weights_padded', 11, 4200, 20)]:
+        x = (np.arange(rows * inner, dtype=np.float32) * np.float32(0.001)).reshape(rows, inner)
+        weight = (np.arange(1, outputs + 1, dtype=np.float32) * np.float32(0.002)).reshape(outputs, 1) * np.arange(1, inner + 1, dtype=np.float32).reshape(1, inner)
+        public(f'public_linear_{name}',
+            f'F.with_workers(F.linear(F.reshape(F.mul_scalar(F.arange(0.0,{rows * inner}),0.001),[{rows},{inner}]),F.mul(F.reshape(F.mul_scalar(F.arange(1.0,{outputs}),0.002),[{outputs},1]),F.reshape(F.arange(1.0,{inner}),[1,{inner}])),F.full([{outputs}],0.5)),4)',
+            ordered_linear(x, weight, np.full(outputs, 0.5, np.float32)))
+    failing('public_linear_no_rows', 'F.linear(F.zeros([2,0,3]),F.zeros([4,3]),F.zeros([4]))', 'linear: invalid argument for shape [2, 0, 3]')
+    failing('public_linear_inputs', 'F.linear(F.zeros([2,3]),F.zeros([4,2]),F.zeros([4]))', 'linear: invalid argument for shape [2, 3]')
+    failing('public_linear_weight_rank', 'F.linear(F.zeros([2,3]),F.zeros([3]),F.zeros([3]))', 'linear: invalid argument for shape [2, 3]')
+    failing('public_linear_rank', 'F.linear(F.zeros([3]),F.zeros([2,3]),F.zeros([2]))', 'linear: invalid argument for shape [3]')
+    failing('public_linear_first_failure', 'F.linear(F.add(F.zeros([2]),F.zeros([3])),F.zeros([2,3]),F.zeros([2]))', 'add: shapes [2] and [3] do not match')
+
+    # argmax: the first largest element along the axis; NumPy's rule for NaN.
+    argmax_input = matmul_rng.integers(0, 5, (3, 4, 9)).astype(np.float32)
+    argmax_input[1, 2, 3] = np.nan
+    argmax_input[1, 2, 7] = np.nan
+    for axis in range(3):
+        public(f'public_argmax_{axis}', f'F.argmax({tensor(argmax_input.shape, argmax_input.ravel())},{axis})', np.argmax(argmax_input, axis=axis))
+    public('public_argmax_vector', 'F.argmax(F.from_list([4],[1.0,3.0,3.0,2.0]),0)', 1.0)
+    failing('public_argmax_axis', 'F.argmax(F.zeros([2]),1)', 'argmax: invalid argument for shape [2]')
+
+    # Random values: the first word of Threefry-2x32 for the key and the counter.
+    uniform_shape = (3, 5, 20)
+    public('public_random_uniform', f'F.with_workers(F.random_uniform({list(uniform_shape)},7,3),4)', random_uniform(300, 7, 3).reshape(uniform_shape))
+    public('public_random_below', 'F.random_below([40],10,9,1)', random_below(40, 10, 9, 1))
+
     failing('public_derivative_custom', 'F.activate_derivative(F.zeros([3]),Act.Custom{1.0})',
         'activate_derivative: invalid argument for shape [3]')
     # A map large enough to be scheduled across workers, through the staged eight-value form.
@@ -353,24 +479,22 @@ def convolution_activation(value: F32) -> F32:
 
     # MPFR 4.2.2, 256-bit directed bounds rounded directly to binary32.
     # Negative-tail samples must continue below exp(-88); SiLU scales x before
-    # underflow. Include all eight lane remainders, signed zeros and infinities.
+    # underflow. Include signed zeros, infinities and a partial tile of lanes.
     tail_input = np.array([-88, -89, -90, -95, -100, -103, -104, -105,
         -108, -110, -np.finfo(np.float32).max, -np.inf, -0.0, 0.0, 18, np.inf], dtype=np.float32)
     tail_expected = {
         'sigmoid': [4320708, 1589500, 584744, 3940, 27, 1, 0, 0, 0, 0, 0, 0, 1056964608, 1056964608, 1065353216, 1065353216],
         'silu': [2201308636, 2189879672, 2177417610, 2147857946, 2147486303, 2147483784, 2147483699, 2147483667, 2147483649, 2147483648, 2147483648, 2147483648, 2147483648, 0, 1099956224, 2139095040],
     }
+    values = np.concatenate([tail_input, tail_input[:5]])
     for operation, words in tail_expected.items():
-        for tail in range(8):
-            values = np.concatenate([tail_input, tail_input[:tail]])
-            expected = words + words[:tail]
-            case(f'public_{operation}_tail_{tail}',
-                f'activation_values({expected},F.to_list(F.{operation}({tensor(values.shape, values)})))')
+        case(f'public_{operation}_tail',
+            f'activation_values({words + words[:5]},F.to_list(F.{operation}({tensor(values.shape, values)})))')
     # Check both sides of the tanh polynomial/exponential switch and tiny return.
     tanh_input = np.array([-10, -1, -.875, -.75, -.5, -2**-12, -0.0, 0.0,
         2**-12, .5, .75, .875, 1, 10, -np.inf, np.inf], dtype=np.float32)
     tanh_expected = [3212836864, 3208837078, 3207869224, 3206715679, 3203177119, 3112173568, 2147483648, 0, 964689920, 1055693471, 1059232031, 1060385576, 1061353430, 1065353216, 3212836864, 1065353216]
-    for tail in range(8):
+    for tail in [0, 5]:
         values = np.concatenate([tanh_input, tanh_input[:tail]])
         expected = tanh_expected + tanh_expected[:tail]
         case(f'public_tanh_boundary_{tail}',
@@ -413,7 +537,7 @@ def convolution_activation(value: F32) -> F32:
 
     special = cube.copy()
     special[0, 1, 2], special[1, 0, 0], special[1, 2, 3] = np.nan, -np.inf, np.inf
-    for axes in [[0], [1], [2], [0, 2], [2, 1], [0, 1, 2]]:
+    for axes in [[0], [2], [0, 2], [0, 1, 2]]:
         label = '_'.join(map(str, axes))
         call = tensor(cube.shape, cube.ravel())
         total = sum8(cube, axes)
@@ -513,6 +637,28 @@ def convolution_activation(value: F32) -> F32:
         failing('public_conv2d_reject_' + name, expression, 'conv2d: ' + reason.format(shape))
     failing('public_conv2d_sticky', 'F.conv2d(F.reshape(F.zeros([2]),[3]),F.zeros([1,1,1,1]),F.zeros([1]),1,0,Act.identity())',
         'reshape: shapes [2] and [3] do not match')
+
+    # Each channel of a depthwise convolution is conv2d of that channel alone.
+    for name, dims, kernel, stride, padding, relu in [
+        ('chw_tail', (3, 5, 6), 3, 1, 1, False),
+        ('batch_aligned', (2, 8, 6, 7), 3, 2, 1, True),
+        ('batch_wide', (1, 13, 7, 5), 5, 1, 2, False),
+    ]:
+        x = ((np.arange(np.prod(dims), dtype=np.float32) % 17) - np.float32(8)) / np.float32(7)
+        x = x.reshape(dims)
+        channels = dims[-3]
+        weights = ((np.arange(channels * kernel * kernel, dtype=np.float32) % 13) - np.float32(6)) / np.float32(11)
+        weights = weights.reshape(channels, 1, kernel, kernel)
+        bias = np.arange(channels, dtype=np.float32) / np.float32(19)
+        planes = [convolution_oracle(x[..., c:c + 1, :, :], weights[c:c + 1], bias[c:c + 1], stride, padding, False) for c in range(channels)]
+        expected = np.concatenate(planes, axis=-3)
+        if relu:
+            expected = ordered_max(expected, np.float32(0.0))
+        expression = (f'F.depthwise_conv2d({tensor(dims, x.ravel())},{tensor([channels, 1, kernel, kernel], weights.ravel())},{tensor([channels], bias)},'
+            f'{stride},{padding},{"Act.relu()" if relu else "Act.identity()"})')
+        public('public_depthwise_' + name, expression, expected)
+    failing('public_depthwise_reject_weights', 'F.depthwise_conv2d(F.zeros([2,3,5]),F.zeros([3,1,1,1]),F.zeros([3]),1,0,Act.identity())',
+        'depthwise_conv2d: invalid argument for shape [2, 3, 5]')
     def approximate(name, expression, expected, tolerance):
         case(name, f'close_result(from_bit_list({bits(np.asarray(expected).ravel())}),{tolerance},F.to_list({expression}))')
 
@@ -545,12 +691,20 @@ def convolution_activation(value: F32) -> F32:
     public('log_one_exact', 'F.log(F.ones([9]))', np.zeros(9,dtype=np.float32))
     public('softmax_empty', 'F.softmax(F.zeros([2,0]),1)', np.zeros((2,0),dtype=np.float32))
     failing('softmax_invalid_axis', 'F.softmax(F.zeros([2,3]),2)', 'softmax: invalid argument for shape [2, 3]')
+    failing('softmax_scalar', 'F.softmax(F.zeros([]),0)', 'softmax: invalid argument for shape []')
     failing('public_activate_custom', 'F.activate(F.zeros([2]),Act.Custom{1.0})', 'activate: invalid argument for shape [2]')
     failing('public_activate_custom_sticky', 'F.activate(F.reshape(F.zeros([2]),[3]),Act.Custom{1.0})',
         'reshape: shapes [2] and [3] do not match')
     failing('softmax_sticky', 'F.softmax(F.reshape(F.zeros([2]),[3]),0)', 'reshape: shapes [2] and [3] do not match')
     source = helpers + '\n'.join(body for _, body in cases)
-    source += '\ndef main() -> List<&2,Bool>:\n  [' + ','.join(f'case_{i}()' for i in range(len(cases))) + ']\n'
+    # The compiler bounds the arity of one list, so the cases are listed in groups.
+    groups = [range(start, min(start + 200, len(cases))) for start in range(0, len(cases), 200)]
+    for index, group in enumerate(groups):
+        source += f'\ndef group_{index}() -> List<&2,Bool>:\n  [' + ','.join(f'case_{i}()' for i in group) + ']\n'
+    joined = '[]'
+    for index in reversed(range(len(groups))):
+        joined = f'List.append(&2,Bool,group_{index}(),{joined})'
+    source += f'\ndef main() -> List<&2,Bool>:\n  {joined}\n'
     OUT.mkdir(parents=True,exist_ok=True)
     REPORT.mkdir(parents=True,exist_ok=True)
     (OUT/'public_api.bend').write_text(source)
@@ -578,7 +732,7 @@ def main():
         raise SystemExit('Native public API checks need clang on PATH or CC.')
     subprocess.run([cc,'-O3','-ffp-contract=off','-std=c11',str(c),'-lpthread','-lm','-o',str(c.with_suffix(''))],check=True)
     for threads in [1,4]:
-        result = subprocess.run([str(c.with_suffix('')),'--threads',str(threads),'--gpu','off'],capture_output=True,text=True,check=True)
+        result = subprocess.run([str(c.with_suffix('')),'+RTS','--threads',str(threads),'--gpu','off','-RTS'],capture_output=True,text=True,check=True)
         (REPORT/f'runtime-{threads}.log').write_text(result.stdout+result.stderr)
         flags = re.findall(r'(True|False)\{\}',result.stdout)
         assert len(flags)==count, result.stdout

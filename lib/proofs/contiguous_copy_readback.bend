@@ -3,6 +3,7 @@
 import Base
 import ./storage_tree_model.bend as Tree
 import ./storage_shape.bend as Shape
+import ./write_program.bend as Writes
 import ./contiguous_copy.bend as Contiguous
 import ./write_program_readback.bend as Readback
 import ./bounded_u32_arithmetic.bend as Arithmetic
@@ -14,6 +15,7 @@ import ./nat_division.bend as Division
 import ./word_encoding.bend as WordEncoding
 import ./nat_interval.bend as Interval
 import ./boolean_logic.bend as Boolean
+import ../kernel_gemm.bend as KernelGemm
 
 def offset_exact(+base: U32,+position: Nat,+capacity: U32,+capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
   +room: {Nat.is_le(Nat.add(U32.to_nat(base),position),U32.to_nat(capacity)) == True{} : Bool}) ->
@@ -51,7 +53,7 @@ def writes_inside(~Element: Data,count: Nat,+position: Nat,+input: Tree.Tree<Ele
   match count:
     case 0n: Unit{}
     case 1n+ +rest:
-      Shape.Both{offset_inside(destination,position,capacity,capacity_ok,Order.room_index(Nat.add(U32.to_nat(destination),position),rest,U32.to_nat(capacity),room)),
+      KernelGemm.Both{offset_inside(destination,position,capacity,capacity_ok,Order.room_index(Nat.add(U32.to_nat(destination),position),rest,U32.to_nat(capacity),room)),
         %Equal.sym(U32,(U32.from_nat(position) + 1 : U32),U32.from_nat(1n+position),Bounds.add_one(U32.from_nat(position))) :
           Readback.Inside(~Element,capacity,Contiguous.writes(~Element,rest,input,_,source,destination))
         writes_inside(~Element,rest,1n+position,input,source,destination,capacity,capacity_ok,next_room(destination,position,rest,capacity,room))}
@@ -124,26 +126,25 @@ def selected_inside(~Element: Data,count: Nat,+position: Nat,index: Nat,+input: 
       selected_inside(~Element,rest,1n+position,index,input,source,destination,capacity,capacity_ok,next_room(destination,position,rest,capacity,room),inside,
         Bool.pick(Element,U32.is_eq((destination + U32.from_nat(position) : U32),(destination + U32.from_nat(Nat.add(1n+position,index)) : U32)),Tree.read(Element,input,(source + U32.from_nat(position) : U32)),previous))
 
-def covered(~Element: Data,count: Nat,+position: Nat,index: Nat,+input: Tree.Tree<Element>,+source: U32,+destination: U32,
-  inside: {Nat.is_lt(index,count) == True{} : Bool}) ->
-  {Readback.contains(~Element,(destination + U32.from_nat(Nat.add(position,index)) : U32),Contiguous.writes(~Element,count,input,U32.from_nat(position),source,destination)) == True{} : Bool}:
-  match count index:
-    case 0n +index:
-      Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(index,0n),True{},Equal.sym(Bool,Nat.is_lt(index,0n),False{},Division.lt_zero(index)),inside)))
-    case 1n+ +rest 0n:
-      %Equal.sym(Nat,Nat.add(position,0n),position,Addition.zero_right(position)) :
-        {Readback.contains(~Element,(destination + U32.from_nat(_) : U32),Contiguous.writes(~Element,1n+rest,input,U32.from_nat(position),source,destination)) == True{} : Bool}
-      %Equal.sym(Bool,U32.is_eq((destination + U32.from_nat(position) : U32),(destination + U32.from_nat(position) : U32)),True{},Arithmetic.equal_reflexive((destination + U32.from_nat(position) : U32))) :
-        {_ || Readback.contains(~Element,(destination + U32.from_nat(position) : U32),Contiguous.writes(~Element,rest,input,(U32.from_nat(position) + 1 : U32),source,destination)) == True{} : Bool}
-      {==}
-    case 1n+ +rest 1n+ +index:
-      %Equal.sym(U32,(U32.from_nat(position) + 1 : U32),U32.from_nat(1n+position),Bounds.add_one(U32.from_nat(position))) :
-        {U32.is_eq((destination + U32.from_nat(position) : U32),(destination + U32.from_nat(Nat.add(position,1n+index)) : U32)) ||
-          Readback.contains(~Element,(destination + U32.from_nat(Nat.add(position,1n+index)) : U32),Contiguous.writes(~Element,rest,input,_,source,destination)) == True{} : Bool}
-      %Equal.sym(Nat,Nat.add(position,1n+index),Nat.add(1n+position,index),Addition.successor_right(position,index)) :
-        {U32.is_eq((destination + U32.from_nat(position) : U32),(destination + U32.from_nat(_) : U32)) ||
-          Readback.contains(~Element,(destination + U32.from_nat(_) : U32),Contiguous.writes(~Element,rest,input,U32.from_nat(1n+position),source,destination)) == True{} : Bool}
-      %Equal.sym(Bool,Readback.contains(~Element,(destination + U32.from_nat(Nat.add(1n+position,index)) : U32),Contiguous.writes(~Element,rest,input,U32.from_nat(1n+position),source,destination)),True{},
-        covered(~Element,rest,1n+position,index,input,source,destination,inside)) :
-        {U32.is_eq((destination + U32.from_nat(position) : U32),(destination + U32.from_nat(Nat.add(1n+position,index)) : U32)) || _ == True{} : Bool}
-      Boolean.or_true_right(U32.is_eq((destination + U32.from_nat(position) : U32),(destination + U32.from_nat(Nat.add(1n+position,index)) : U32)))
+def fresh_read(~Element: Data,+count: Nat,+index: Nat,+input: Tree.Tree<Element>,+source: U32,+depth: Nat,+fill: Element,
+  +depth_ok: {Nat.is_le(depth,30n) == True{} : Bool},
+  +capacity_ok: {U32.is_le(Tree.capacity(Element,Tree.fresh(Element,depth,fill)),2147483648) == True{} : Bool},
+  +room: {Nat.is_le(count,U32.to_nat(Tree.capacity(Element,Tree.fresh(Element,depth,fill)))) == True{} : Bool},
+  +inside: {Nat.is_lt(index,count) == True{} : Bool}) ->
+  {Tree.read(Element,Writes.pure(Element,Contiguous.writes(~Element,count,input,0,source,0),Tree.fresh(Element,depth,fill)),U32.from_nat(index)) ==
+    Tree.read(Element,input,(source + U32.from_nat(index) : U32)) : Element}:
+  +fresh = Tree.fresh(Element,depth,fill)
+  +capacity = Tree.capacity(Element,fresh)
+  +query = U32.from_nat(index)
+  +writes = Contiguous.writes(~Element,count,input,0,source,0)
+  +index_small = Order.transitive(index,count,U32.to_nat(capacity),Bounds.strict_le(index,count,inside),room)
+  +query_inside = {
+    %Equal.sym(Bool,U32.is_lt(query,capacity),Nat.is_lt(U32.to_nat(query),U32.to_nat(capacity)),Comparison.lt(query,capacity)) : {_ == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(query),index,Bounds.roundtrip(index,capacity,capacity_ok,index_small)) : {Nat.is_lt(_,U32.to_nat(capacity)) == True{} : Bool}
+    Bounds.nat_trans(index,count,U32.to_nat(capacity),inside,room) : {U32.is_lt(query,capacity) == True{} : Bool}}
+  Equal.trans(Element,Tree.read(Element,Writes.pure(Element,writes,fresh),query),Readback.selected(~Element,writes,query,Tree.read(Element,fresh,query)),
+    Tree.read(Element,input,(source + query : U32)),
+    Readback.program(~Element,writes,depth,fresh,query,Shape.fresh(Element,depth,fill),depth_ok,query_inside,
+      writes_inside(~Element,count,0n,input,source,0,capacity,capacity_ok,room)),
+    %Arithmetic.add_zero_left(query) : {Readback.selected(~Element,writes,_,Tree.read(Element,fresh,query)) == Tree.read(Element,input,(source + query : U32)) : Element}
+    selected_inside(~Element,count,0n,index,input,source,0,capacity,capacity_ok,room,inside,Tree.read(Element,fresh,query)))

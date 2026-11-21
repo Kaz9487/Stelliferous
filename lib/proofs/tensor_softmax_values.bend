@@ -1,386 +1,261 @@
-# Source-level FP32 softmax: ordered max, library exp, the sum of math_sum.bend, division.
+# Softmax along one axis of a tensor of a nonempty shape: each line along the
+# axis less its maximum, folded in increasing index from -inf, then the
+# exponentials of those differences divided by their sum along the line, the
+# sum of math_sum.bend. The maximum and the sum of a line reach every element
+# of it through the view that stretches the shape with the axis of extent 1.
 import Base
-import ../tensor_f32.bend as F
 import ../tensor.bend as Tensors
-import ../tensor_layout.bend as Layout
-import ../tensor_operations.bend as Operations
+import ../tensor_f32.bend as F32Tensor
+import ../tensor_view.bend as Views
 import ../tensor_access.bend as Access
-import ../tensor_band.bend as Bands
+import ../tensor_grid.bend as Grid
+import ../tensor_layout.bend as Layout
+import ../tensor_shape.bend as Shapes
+import ../tensor_tiled.bend as Tiled
+import ../tensor_tiled_map.bend as TiledMap
+import ../tensor_tiled_reduce.bend as TiledReduce
+import ../math_choice.bend as Choice
 import ../math_fp32.bend as Arithmetic
 import ../math_sum.bend as Sum
-import ../storage_buffer.bend as Storage
-import ./tensor_contract.bend as Contract
-import ./tensor_copy_contract.bend as CopyContract
-import ./tensor_reshape_values.bend as ReshapeValues
+import ../kernel_tile.bend as Tile
+import ../kernel_gemm.bend as KernelGemm
+import ../machine_limits.bend as Machine
+import ../default_machine_limits.bend as Default
+import ./tensor_contract.bend as TensorContract
+import ./tensor_pieces_model.bend as PiecesModel
+import ./tensor_pieces_map.bend as PiecesMap
+import ./tensor_pieces_combine_leaf.bend as CombineLeaf
+import ./tensor_view_gather.bend as ViewGather
+import ./tensor_view_part.bend as ViewPart
+import ./tensor_grid_box.bend as Box
 import ./tensor_reduce_values.bend as Reduce
 import ./tensor_shape_refinement.bend as ShapeLaws
-import ./tensor_operations_refinement.bend as OperationLaws
-import ./tensor_ready_flow.bend as ReadyFlow
-import ./tensor_global_shape_count.bend as Global
-import ./tensor_band_model.bend as Model
-import ./tensor_band_map.bend as BandMap
-import ./tensor_band_normal_unary.bend as NormalUnary
-import ./tensor_band_combine_leaf.bend as Leaf
-import ./tensor_broadcast_public.bend as Broadcast
-import ./tensor_combine_public.bend as CombinePublic
-import ./tensor_combine_broadcast.bend as CombineBroadcast
+import ./tensor_count_completion.bend as CountCompletion
 import ./tensor_unit_broadcast.bend as UnitBroadcast
-import ./storage_shape.bend as Shape
-import ./tensor_band_concat_execution.bend as Observation
+import ./tensor_unit_line.bend as UnitLine
+import ./tensor_tiled_public.bend as Public
+import ./tensor_tiled_representation.bend as Representation
+import ./tensor_tiled_map.bend as TiledMaps
+import ./tensor_tiled_reduce.bend as ReduceLaws
+import ./tensor_tiled_reshape.bend as TiledReshape
+import ./tensor_binary_values.bend as Binary
+import ./tensor_copy_contract.bend as Copy
 
-type Softmax<-Logical: Data> is Data:
-  Softmax{logical: Logical,shape: List<&2,U32>,axis: U32}
+# The result at i is exp(x[i] - m) / s, with m the maximum of the line of i
+# and s the sum of the exponentials of that line.
+def Softmax(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,result: Tiled.Tiled) -> Data:
+  Public.Contract(~CombineLeaf.Context<ViewGather.Viewing<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>,ViewGather.Viewing<Reduce.Lines<Sum.Lanes,Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>>>>,~CombineLeaf.value(~F32,~ViewGather.Viewing<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>,~ViewGather.Viewing<Reduce.Lines<Sum.Lanes,Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>>>,~F32.div,~ViewGather.viewed(~F32,~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original)))))),~ViewGather.viewed(~F32,~Reduce.Lines<Sum.Lanes,Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>>,~Reduce.line_value(~F32,~Sum.Lanes,~Sum.step,~Sum.total,~Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>,~Reduce.through(~F32,~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))))))),CombineLeaf.Context{ViewGather.Viewing{PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{Sum.zero(),Reduce.Ordered{PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}},shape,result)
 
-# The extents of a reduction that keeps its axis.
-def unit(+shape: List<&2,U32>,+axis: U32) -> List<&2,U32>:
-  Layout.with_extent(shape,U32.to_nat(axis),1)
-
-# The reduction of one axis: the other axes kept, the line of the axis folded.
-def Fold(~Accumulator: Data,~Context: Data) -> Data:
-  Reduce.Lines<Accumulator,Reduce.Ordered<Context>>
-
-def fold_context(~Accumulator: Data,~Context: Data,+initial: Accumulator,+context: Context,+shape: List<&2,U32>,+axis: U32) -> Fold(~Accumulator,~Context):
-  +kept = Reduce.kept_axes(shape,[axis])
-  +reduced = Reduce.reduced_axes(shape,[axis])
-  Reduce.Lines{initial,Reduce.source(~Context,context,shape,kept,reduced),ShapeLaws.elements(Layout.extents_at(shape,reduced))}
-
-def fold_value(~Accumulator: Data,~Context: Data,~reader: Context -> U32 -> F32,~fold: Accumulator -> F32 -> Accumulator,~finish: Accumulator -> F32,
-  context: Fold(~Accumulator,~Context),index: U32) -> F32:
-  Reduce.value(~F32,~Accumulator,~Reduce.Ordered<Context>,~Reduce.ordered_value(~F32,~Context,~reader),~fold,~finish,context,index)
-
-def same_fold(~Accumulator: Data,~Context: Data,before: Fold(~Accumulator,~Context),after: Fold(~Accumulator,~Context)) -> Data:
-  {before == after : Fold(~Accumulator,~Context)}
-
-def same_fold_agrees(~Accumulator: Data,~Context: Data,~reader: Context -> U32 -> F32,~fold: Accumulator -> F32 -> Accumulator,~finish: Accumulator -> F32,
-  +before: Fold(~Accumulator,~Context),+after: Fold(~Accumulator,~Context),+related: same_fold(~Accumulator,~Context,before,after),+index: U32) ->
-  {Reduce.value(~F32,~Accumulator,~Reduce.Ordered<Context>,~Reduce.ordered_value(~F32,~Context,~reader),~fold,~finish,before,index) ==
-    fold_value(~Accumulator,~Context,~reader,~fold,~finish,after,index) : F32}:
-  %Equal.sym(Fold(~Accumulator,~Context),before,after,related) : {Reduce.value(~F32,~Accumulator,~Reduce.Ordered<Context>,~Reduce.ordered_value(~F32,~Context,~reader),~fold,~finish,_,index) ==
-    fold_value(~Accumulator,~Context,~reader,~fold,~finish,after,index) : F32}
+# The axis is a valid axis of the reduction.
+def axis_below(+shape: List<&2,U32>,+axis: U32,+inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool}) ->
+  {Layout.all_below([axis],List.length(&2,U32,shape)) == True{} : Bool}:
+  %Equal.sym(Bool,Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)),True{},inside) : {(_ && True{}) == True{} : Bool}
   {==}
 
-def Centered(~Logical: Data) -> Data:
-  Leaf.Context<Broadcast.Expanded<Logical>,Broadcast.Expanded<Fold(~F32,~Logical)>>
+# ---- The exponentials divided by their sum ----
 
-def Exponential(~Logical: Data) -> Data:
-  BandMap.Context<Unit,Centered(~Logical)>
+def divided(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  +em1: PiecesModel.Model<Tile.Tile8>,+em2: PiecesModel.Model<Tile.Tile8>,+es: List<&2,U32>,+ef: Tile.Tile8,+ew: U32,+ea: Nat,+el: U32,+ep: Grid.Position,+e1_contract: Public.Contract(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))),PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em1),es,ef,Tensors.Usable{},ew},ea,el,ep}),+e2_contract: Public.Contract(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))),PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em2),es,ef,Tensors.Usable{},ew},ea,el,ep})) -> Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em1),es,ef,Tensors.Usable{},ew},ea,el,ep},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em2),es,ef,Tensors.Usable{},ew},ea,el,ep}))):
+  KernelGemm.Both{+e1_global,Public.Laid{+e1_inside,+e1_shaped,+e1_restored,+e1_counted,+e1_pinned}} = e1_contract
+  +nonzero = CountCompletion.positive_not_zero(shape,nonempty)
+  +summed = ReduceLaws.reduce_axes(~Sum.Lanes,~Sum.step,~Sum.total,~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))),PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},limits,"softmax",6.0,Sum.zero(),[axis],shape,
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em2),es,ef,Tensors.Usable{},ew},ea,el,ep},e2_contract,{==},axis_below(shape,axis,inside),default_capacity,rank_room,nonempty,cap,cap_ok,count_room)
+  +reshaped = UnitLine.kept_reshaped(~Reduce.Lines<Sum.Lanes,Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>>,~Reduce.line_value(~F32,~Sum.Lanes,~Sum.step,~Sum.total,~Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>,~Reduce.through(~F32,~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))))),Reduce.Lines{Sum.zero(),Reduce.Ordered{PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},limits,shape,U32.to_nat(axis),TiledReduce.reduce_axes(~Sum.Lanes,~Sum.step,~Sum.total,"softmax",6.0,Sum.zero(),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em2),es,ef,Tensors.Usable{},ew},ea,el,ep},[axis]),default_capacity,rank_room,inside,nonempty,summed)
+  Binary.broadcast(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))),~Reduce.Lines<Sum.Lanes,Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>>,~Reduce.line_value(~F32,~Sum.Lanes,~Sum.step,~Sum.total,~Reduce.Ordered<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>,~Reduce.through(~F32,~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))))),~F32.div,PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},Reduce.Lines{Sum.zero(),Reduce.Ordered{PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},"div",1.0,limits,default_capacity,shape,Layout.with_extent(shape,U32.to_nat(axis),1),shape,
+    laxes,loffset,raxes,roffset,UnitBroadcast.broadcast(shape,U32.to_nat(axis)),own_stretched,unit_stretched,nonzero,UnitLine.unit_nonzero(shape,U32.to_nat(axis),inside,nonempty),nonzero,rank_room,UnitLine.unit_room(limits,shape,U32.to_nat(axis),rank_room),rank_room,e1_counted,
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em1),es,ef,Tensors.Usable{},ew},ea,el,ep},e1_contract,F32Tensor.reshape(TiledReduce.reduce_axes(~Sum.Lanes,~Sum.step,~Sum.total,"softmax",6.0,Sum.zero(),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em2),es,ef,Tensors.Usable{},ew},ea,el,ep},[axis]),Layout.with_extent(shape,U32.to_nat(axis),1)),reshaped)
 
-def Normalized(~Logical: Data) -> Data:
-  Leaf.Context<Broadcast.Expanded<Exponential(~Logical)>,Broadcast.Expanded<Fold(~Sum.Lanes,~Exponential(~Logical))>>
+def exponentials_copies(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  +em: PiecesModel.Model<Tile.Tile8>,+es: List<&2,U32>,+ef: Tile.Tile8,+ew: U32,+ea: Nat,+el: U32,+ep: Grid.Position,exponentials: Copy.Copied<Tile.Tile8,em>,+exponentials_contract: Public.Contract(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))),PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em),es,ef,Tensors.Usable{},ew},ea,el,ep})) ->
+  Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),F32Tensor.copy(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em),es,ef,Tensors.Usable{},ew},ea,el,ep}))):
+  Copy.Copied{+em1,+em2,+exponentials_equation,+exponentials_first_content,+exponentials_second_content} = exponentials
+  KernelGemm.Both{+exponentials_global,+exponentials_laid} = exponentials_contract
+  +exponentials_pair = Copy.copied_equation(~Tile.Tile8,32.0,em,es,ef,ew,em1,em2,exponentials_equation)
+  +exponentials_before = {Representation.Lifted{PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},Public.geometry_of(shape,ea,ep)} : Representation.Lifted<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>}
+  %Equal.sym(Tensors.Tensor<Tile.Tile8> & Tensors.Tensor<Tile.Tile8>,Tensors.copied(~Tile.Tile8,32.0,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em),es,ef,Tensors.Usable{},ew}),(Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em1),es,ef,Tensors.Usable{},ew},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em2),es,ef,Tensors.Usable{},ew}),exponentials_pair) :
+    Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),Tiled.copied(ea,el,ep,_)))
+  divided(~Logical,~original,logical,limits,shape,axis,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,inside,laxes,loffset,raxes,roffset,own_stretched,unit_stretched,em1,em2,es,ef,ew,ea,el,ep,
+    KernelGemm.Both{Copy.kept(~Tile.Tile8,~Representation.Lifted<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>,~Representation.lifted(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original)))))),exponentials_before,em,em1,es,ef,ew,exponentials_first_content,exponentials_global),exponentials_laid},
+    KernelGemm.Both{Copy.kept(~Tile.Tile8,~Representation.Lifted<PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>>,~Representation.lifted(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original)))))),exponentials_before,em,em2,es,ef,ew,exponentials_second_content,exponentials_global),exponentials_laid})
 
-def centered_context(~Logical: Data,context: Softmax<Logical>) -> Centered(~Logical):
-  Softmax{+logical,+shape,+axis} = context
-  Leaf.Context{Broadcast.Expanded{logical,Broadcast.expansion(shape,shape)},
-    Broadcast.Expanded{fold_context(~F32,~Logical,F32.div(F32.neg(1.0),0.0),logical,shape,axis),Broadcast.expansion(unit(shape,axis),shape)}}
+def exponentials_packed(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  -e_tiled: Tiled.Tiled,e_packed: Public.Packed<e_tiled>,+e_contract: Public.Contract(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))),PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},shape,e_tiled)) -> Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),F32Tensor.copy(e_tiled))):
+  Public.Packed{+em,+es,+ef,+ew,+ea,+el,+ep,+e_equation} = e_packed
+  %e_equation : Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),F32Tensor.copy(_)))
+  exponentials_copies(~Logical,~original,logical,limits,shape,axis,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,inside,laxes,loffset,raxes,roffset,own_stretched,unit_stretched,em,es,ef,ew,ea,el,ep,Copy.copied(~Tile.Tile8,em),
+    %Equal.sym(Tiled.Tiled,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,em),es,ef,Tensors.Usable{},ew},ea,el,ep},e_tiled,e_equation) : Public.Contract(~PiecesMap.Context<Unit,CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>>,~PiecesMap.value(~F32,~Unit,~CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>,~Access.apply_element(~F32,~Arithmetic.exp),~CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~F32.sub,~ViewGather.viewed(~F32,~Logical,~original),~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32.max,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))),PiecesMap.Context{Unit{},CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},raxes,roffset,[]}}},shape,_) e_contract)
 
-def exponential_context(~Logical: Data,context: Softmax<Logical>) -> Exponential(~Logical):
-  BandMap.Context{Unit{},centered_context(~Logical,context)}
+# ---- The lines less their maximum and their exponentials ----
 
-def normalized_context(~Logical: Data,context: Softmax<Logical>) -> Normalized(~Logical):
-  Softmax{+logical,+shape,+axis} = context
-  Leaf.Context{Broadcast.Expanded{exponential_context(~Logical,Softmax{logical,shape,axis}),Broadcast.expansion(shape,shape)},
-    Broadcast.Expanded{fold_context(~Sum.Lanes,~Exponential(~Logical),Sum.zero(),exponential_context(~Logical,Softmax{logical,shape,axis}),shape,axis),Broadcast.expansion(unit(shape,axis),shape)}}
+def Centering(~Logical: Data) -> Data:
+  CombineLeaf.Context<ViewGather.Viewing<Logical>,ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>>
 
-# At i: exp(x[i] - m(i)) / s(i). m folds the line of i in increasing index
-# from -infinity; s adds the exponentials of the line in eight TwoSum lanes.
-def value(~Logical: Data,~original: Logical -> U32 -> F32,context: Softmax<Logical>,index: U32) -> F32:
-  Leaf.value(~F32,~Broadcast.Expanded<Exponential(~Logical)>,~Broadcast.Expanded<Fold(~Sum.Lanes,~Exponential(~Logical))>,~F32.div,~Broadcast.value(~F32,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32)))))),~Broadcast.value(~F32,~Fold(~Sum.Lanes,~Exponential(~Logical)),~fold_value(~Sum.Lanes,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),~Sum.step,~Sum.total)),normalized_context(~Logical,context),index)
+def centered_value(~Logical: Data,~original: Logical -> U32 -> F32,~operation: F32 -> F32 -> F32,~maximum: F32 -> F32 -> F32) -> Centering(~Logical) -> U32 -> F32:
+  CombineLeaf.value(~F32,~ViewGather.Viewing<Logical>,~ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>,~operation,~ViewGather.viewed(~F32,~Logical,~original),
+    ~ViewGather.viewed(~F32,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~maximum,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original))))
 
-# Names for the steps of the public pipeline.
-def reduced(~Accumulator: Data,~fold: Accumulator -> F32 -> Accumulator,~finish: Accumulator -> F32,+reduction: String,+operations: F32,+initial: Accumulator,tensor: Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> Tensors.Tensor<F32>:
-  F.reshape(Layout.reduce_axes(~F32,~Accumulator,~fold,~finish,reduction,operations,initial,tensor,[axis]),unit(shape,axis))
+def ExpMap(~Logical: Data) -> Data:
+  PiecesMap.Context<Unit,Centering(~Logical)>
 
-def centered_call(left: Tensors.Tensor<F32>,right: Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> Tensors.Tensor<F32>:
-  F.sub(left,reduced(~F32,~F32.max,~Tensors.same(~F32),"softmax",1.0,F32.div(F32.neg(1.0),0.0),right,shape,axis))
+def exponentiated(~Logical: Data,~original: Logical -> U32 -> F32) -> ExpMap(~Logical) -> U32 -> F32:
+  PiecesMap.value(~F32,~Unit,~Centering(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~centered_value(~Logical,~original,~F32.sub,~F32.max))
 
-def exponential_call(left: Tensors.Tensor<F32>,right: Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> Tensors.Tensor<F32>:
-  F.exp(centered_call(left,right,shape,axis))
+def maximum_selected(flag: Bool,+left: F32,+right: F32) ->
+  {Choice.chosen(~F32,flag,right,left) == Bool.pick(F32,flag,right,left) : F32}:
+  match flag:
+    case False{}: {==}
+    case True{}: {==}
 
-def normalized(pair: Tensors.Tensor<F32> & Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> Tensors.Tensor<F32>:
-  (left,right) = pair
-  F.div(left,reduced(~Sum.Lanes,~Sum.step,~Sum.total,"softmax",6.0,Sum.zero(),right,shape,axis))
+def maximum_same(+left: F32,+right: F32) -> {F32Tensor.softmax_maximum(left,right) == F32.max(left,right) : F32}:
+  match left right:
+    case F32{+x} F32{+y}: maximum_selected(F32.is_lt(F32{x},F32{y}),F32{x},F32{y})
 
-def after_first(pair: Tensors.Tensor<F32> & Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> Tensors.Tensor<F32>:
-  (left,right) = pair
-  normalized(F.copy(exponential_call(left,right,shape,axis)),shape,axis)
+def maximum_fold(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,count: Nat,+position: Nat,+state: F32) ->
+  {Reduce.line_fold(~F32,~F32,~F32Tensor.softmax_maximum,~Logical,~original,logical,count,position,state) ==
+    Reduce.line_fold(~F32,~F32,~F32.max,~Logical,~original,logical,count,position,state) : F32}:
+  match count:
+    case 0n: {==}
+    case 1n+ +rest:
+      +value = original(logical,U32.from_nat(position))
+      +plain = F32.max(state,value)
+      +specialized = F32Tensor.softmax_maximum(state,value)
+      Equal.trans(F32,Reduce.line_fold(~F32,~F32,~F32Tensor.softmax_maximum,~Logical,~original,logical,rest,1n+position,specialized),
+        Reduce.line_fold(~F32,~F32,~F32Tensor.softmax_maximum,~Logical,~original,logical,rest,1n+position,plain),
+        Reduce.line_fold(~F32,~F32,~F32.max,~Logical,~original,logical,rest,1n+position,plain),
+        Equal.cong(F32,F32,maximum => Reduce.line_fold(~F32,~F32,~F32Tensor.softmax_maximum,~Logical,~original,logical,rest,1n+position,maximum),
+          specialized,plain,maximum_same(state,value)),
+        maximum_fold(~Logical,~original,logical,rest,1n+position,plain))
 
-def normalized_public(pair: Tensors.Tensor<F32> & Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> Tensors.Tensor<F32>:
-  F.then(pair,left => right => F.div(left,reduced(~Sum.Lanes,~Sum.step,~Sum.total,"softmax",6.0,Sum.zero(),right,shape,axis)))
+def ExpAgreement(~Logical: Data,values: Centering(~Logical),mapped: ExpMap(~Logical)) -> Data:
+  {PiecesMap.Context{Unit{},values} == mapped : ExpMap(~Logical)}
 
-def normalized_call(pair: Tensors.Tensor<F32> & Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> {normalized(pair,shape,axis) == normalized_public(pair,shape,axis) : Tensors.Tensor<F32>}:
-  (left,right) = pair
-  {==}
+def exp_agrees(~Logical: Data,~original: Logical -> U32 -> F32,+before: Centering(~Logical),+after: ExpMap(~Logical),
+  +related: ExpAgreement(~Logical,before,after),+index: U32) ->
+  {centered_value(~Logical,~original,~F32Tensor.exp_centered,~F32Tensor.softmax_maximum)(before,index) == exponentiated(~Logical,~original)(after,index) : F32}:
+  match before:
+    case CombineLeaf.Context{+left,ViewGather.Viewing{Reduce.Lines{+initial,+logical,+length},+axes,+offset,+flags}}:
+      +right = {ViewGather.Viewing{Reduce.Lines{initial,logical,length},axes,offset,flags} : ViewGather.Viewing<Reduce.Lines<F32,Reduce.Ordered<Logical>>>}
+      %related : {centered_value(~Logical,~original,~F32Tensor.exp_centered,~F32Tensor.softmax_maximum)(CombineLeaf.Context{left,right},index) == exponentiated(~Logical,~original)(_,index) : F32}
+      +line = (Views.mirrored_offset(axes,flags,offset) + Box.stepped_sum(Views.axis_extents(axes),ViewPart.view_steps(Views.mirrored_axes(axes,flags)),U32.to_nat(index)) : U32)
+      Equal.cong(F32,F32,maximum => F32Tensor.exp_centered(ViewGather.viewed(~F32,~Logical,~original,left,index),maximum),
+        Reduce.line_fold(~F32,~F32,~F32Tensor.softmax_maximum,~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original),logical,length,Nat.mul(U32.to_nat(line),length),initial),
+        Reduce.line_fold(~F32,~F32,~F32.max,~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original),logical,length,Nat.mul(U32.to_nat(line),length),initial),
+        maximum_fold(~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original),logical,length,Nat.mul(U32.to_nat(line),length),initial))
 
-def after_first_public(pair: Tensors.Tensor<F32> & Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> Tensors.Tensor<F32>:
-  F.then(pair,left => right => normalized_public(F.copy(exponential_call(left,right,shape,axis)),shape,axis))
+# The two copies of the input: the maximum of the lines of the second, and
+# the exponential of each difference written by the binary pass.
+def centered(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  +om1: PiecesModel.Model<Tile.Tile8>,+om2: PiecesModel.Model<Tile.Tile8>,+os: List<&2,U32>,+of: Tile.Tile8,+ow: U32,+oa: Nat,+ol: U32,+op: Grid.Position,+o1_contract: Public.Contract(~Logical,~original,logical,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om1),os,of,Tensors.Usable{},ow},oa,ol,op}),+o2_contract: Public.Contract(~Logical,~original,logical,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op})) ->
+  Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),F32Tensor.copy(F32Tensor.softmax_exponentials(axis,Layout.with_extent(shape,U32.to_nat(axis),1),(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om1),os,of,Tensors.Usable{},ow},oa,ol,op},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op}))))):
+  KernelGemm.Both{+o1_global,Public.Laid{+o1_inside,+o1_shaped,+o1_restored,+o1_counted,+o1_pinned}} = o1_contract
+  +nonzero = CountCompletion.positive_not_zero(shape,nonempty)
+  +maximum = ReduceLaws.reduce_axes(~F32,~F32Tensor.softmax_maximum,~Tensors.same(~F32),~Logical,~original,logical,limits,"softmax",1.0,F32.div(F32.neg(1.0),0.0),[axis],shape,
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op},o2_contract,{==},axis_below(shape,axis,inside),default_capacity,rank_room,nonempty,cap,cap_ok,count_room)
+  +reshaped = UnitLine.kept_reshaped(~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32Tensor.softmax_maximum,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original)),Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))},limits,shape,U32.to_nat(axis),TiledReduce.reduce_axes(~F32,~F32Tensor.softmax_maximum,~Tensors.same(~F32),"softmax",1.0,F32.div(F32.neg(1.0),0.0),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op},[axis]),default_capacity,rank_room,inside,nonempty,maximum)
+  +maxima = {Reduce.Lines{F32.div(F32.neg(1.0),0.0),Reduce.Ordered{logical,Layout.line_view(shape,List.append(&2,Nat,Reduce.kept_axes(shape,[axis]),Reduce.reduced_axes(shape,[axis])))},
+    ShapeLaws.elements(Layout.extents_at(shape,Reduce.reduced_axes(shape,[axis])))} : Reduce.Lines<F32,Reduce.Ordered<Logical>>}
+  +views = {CombineLeaf.Context{ViewGather.Viewing{logical,laxes,loffset,[]},ViewGather.Viewing{maxima,raxes,roffset,[]}} : Centering(~Logical)}
+  +unit = Layout.with_extent(shape,U32.to_nat(axis),1)
+  +fused = Binary.broadcast(~Logical,~original,~Reduce.Lines<F32,Reduce.Ordered<Logical>>,~Reduce.line_value(~F32,~F32,~F32Tensor.softmax_maximum,~Tensors.same(~F32),~Reduce.Ordered<Logical>,~Reduce.through(~F32,~Logical,~original)),
+    ~F32Tensor.exp_centered,logical,maxima,"sub",5.5,limits,default_capacity,shape,unit,shape,laxes,loffset,raxes,roffset,UnitBroadcast.broadcast(shape,U32.to_nat(axis)),own_stretched,unit_stretched,
+    nonzero,UnitLine.unit_nonzero(shape,U32.to_nat(axis),inside,nonempty),nonzero,rank_room,UnitLine.unit_room(limits,shape,U32.to_nat(axis),rank_room),rank_room,o1_counted,
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om1),os,of,Tensors.Usable{},ow},oa,ol,op},o1_contract,
+    F32Tensor.reshape(TiledReduce.reduce_axes(~F32,~F32Tensor.softmax_maximum,~Tensors.same(~F32),"softmax",1.0,F32.div(F32.neg(1.0),0.0),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op},[axis]),unit),reshaped)
+  +exp_context = {PiecesMap.Context{Unit{},views} : ExpMap(~Logical)}
+  +exp_contract = Public.reread(~Centering(~Logical),~ExpMap(~Logical),~centered_value(~Logical,~original,~F32Tensor.exp_centered,~F32Tensor.softmax_maximum),
+    ~exponentiated(~Logical,~original),~ExpAgreement(~Logical),~exp_agrees(~Logical,~original),views,exp_context,{==},shape,
+    F32Tensor.softmax_exponentials(axis,unit,(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om1),os,of,Tensors.Usable{},ow},oa,ol,op},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op})),fused)
+  +exp_packed = Public.packed(~ExpMap(~Logical),~exponentiated(~Logical,~original),exp_context,shape,
+    F32Tensor.softmax_exponentials(axis,unit,(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om1),os,of,Tensors.Usable{},ow},oa,ol,op},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op})),exp_contract)
+  exponentials_packed(~Logical,~original,logical,limits,shape,axis,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,inside,laxes,loffset,raxes,roffset,own_stretched,unit_stretched,
+    F32Tensor.softmax_exponentials(axis,unit,(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om1),os,of,Tensors.Usable{},ow},oa,ol,op},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow},oa,ol,op})),exp_packed,exp_contract)
 
-def after_first_call(pair: Tensors.Tensor<F32> & Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32) -> {after_first(pair,shape,axis) == after_first_public(pair,shape,axis) : Tensors.Tensor<F32>}:
-  (left,right) = pair
-  normalized_call(F.copy(exponential_call(left,right,shape,axis)),shape,axis)
 
-# A Ready result had Ready steps.
-def normalized_owners(+left: Observation.TensorOwnerModel<F32>,+right: Observation.TensorOwnerModel<F32>,+shape: List<&2,U32>,+axis: U32,
-  ready: {Contract.tensor_ready(~F32,normalized((Observation.tensor_owner_pack(~F32,left),Observation.tensor_owner_pack(~F32,right)),shape,axis)) == True{} : Bool}) -> {Contract.tensor_ready(~F32,Observation.tensor_owner_pack(~F32,right)) == True{} : Bool}:
-  ReadyFlow.reduced(~F32,~Sum.Lanes,~Sum.step,~Sum.total,Observation.tensor_owner_pack(~F32,right),"softmax",6.0,Sum.zero(),[axis],
-    ReadyFlow.reshaped(~F32,Layout.reduce_axes(~F32,~Sum.Lanes,~Sum.step,~Sum.total,"softmax",6.0,Sum.zero(),Observation.tensor_owner_pack(~F32,right),[axis]),unit(shape,axis),
-      ReadyFlow.combine_right(~F32,~F32.div,Observation.tensor_owner_pack(~F32,left),reduced(~Sum.Lanes,~Sum.step,~Sum.total,"softmax",6.0,Sum.zero(),Observation.tensor_owner_pack(~F32,right),shape,axis),"div",1.0,ready)))
+def input_copies(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  +om: PiecesModel.Model<Tile.Tile8>,+os: List<&2,U32>,+of: Tile.Tile8,+ow: U32,+oa: Nat,+ol: U32,+op: Grid.Position,input: Copy.Copied<Tile.Tile8,om>,+input_contract: Public.Contract(~Logical,~original,logical,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op})) ->
+  Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),F32Tensor.copy(F32Tensor.softmax_exponentials(axis,Layout.with_extent(shape,U32.to_nat(axis),1),F32Tensor.copy(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op}))))):
+  Copy.Copied{+om1,+om2,+input_equation,+input_first_content,+input_second_content} = input
+  KernelGemm.Both{+input_global,+input_laid} = input_contract
+  +input_pair = Copy.copied_equation(~Tile.Tile8,32.0,om,os,of,ow,om1,om2,input_equation)
+  +input_before = {Representation.Lifted{logical,Public.geometry_of(shape,oa,op)} : Representation.Lifted<Logical>}
+  %Equal.sym(Tensors.Tensor<Tile.Tile8> & Tensors.Tensor<Tile.Tile8>,Tensors.copied(~Tile.Tile8,32.0,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow}),(Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om1),os,of,Tensors.Usable{},ow},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om2),os,of,Tensors.Usable{},ow}),input_pair) :
+    Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_divided(axis,Layout.with_extent(shape,U32.to_nat(axis),1),F32Tensor.copy(F32Tensor.softmax_exponentials(axis,Layout.with_extent(shape,U32.to_nat(axis),1),Tiled.copied(oa,ol,op,_)))))
+  centered(~Logical,~original,logical,limits,shape,axis,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,inside,laxes,loffset,raxes,roffset,own_stretched,unit_stretched,om1,om2,os,of,ow,oa,ol,op,
+    KernelGemm.Both{Copy.kept(~Tile.Tile8,~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),input_before,om,om1,os,of,ow,input_first_content,input_global),input_laid},
+    KernelGemm.Both{Copy.kept(~Tile.Tile8,~Representation.Lifted<Logical>,~Representation.lifted(~Logical,~original),input_before,om,om2,os,of,ow,input_second_content,input_global),input_laid})
 
-def normalized_observed(-left: Tensors.Tensor<F32>,-right: Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32,
-  left_observation: Observation.TensorObservation<F32,left>,right_observation: Observation.TensorObservation<F32,right>,
-  ready: {Contract.tensor_ready(~F32,normalized((left,right),shape,axis)) == True{} : Bool}) -> {Contract.tensor_ready(~F32,right) == True{} : Bool}:
-  Observation.TensorObservation{+left_model,+left_equation} = left_observation
-  Observation.TensorObservation{+right_model,+right_equation} = right_observation
-  %right_equation : {Contract.tensor_ready(~F32,_) == True{} : Bool}
-  normalized_owners(left_model,right_model,shape,axis,
-    %Equal.sym(Tensors.Tensor<F32>,Observation.tensor_owner_pack(~F32,right_model),right,right_equation) : {Contract.tensor_ready(~F32,normalized((Observation.tensor_owner_pack(~F32,left_model),_),shape,axis)) == True{} : Bool}
-    %Equal.sym(Tensors.Tensor<F32>,Observation.tensor_owner_pack(~F32,left_model),left,left_equation) : {Contract.tensor_ready(~F32,normalized((_,right),shape,axis)) == True{} : Bool}
-    ready)
+# ---- The input ----
 
-def normalized_ready(pair: Tensors.Tensor<F32> & Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32,
-  ready: {Contract.tensor_ready(~F32,normalized(pair,shape,axis)) == True{} : Bool}) -> {CopyContract.pair_ready(~F32,pair) == True{} : Bool}:
-  (left,right) = pair
-  normalized_observed(left,right,shape,axis,Observation.observe_tensor(~F32,left),Observation.observe_tensor(~F32,right),ready)
+def softmax_model(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  +om: PiecesModel.Model<Tile.Tile8>,+os: List<&2,U32>,+of: Tile.Tile8,+ow: U32,+oa: Nat,+ol: U32,+op: Grid.Position,+contract: Public.Contract(~Logical,~original,logical,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op})) -> Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op},axis)):
+  KernelGemm.Both{+global,Public.Laid{+within,+shaped,+restored,+counted,+pinned}} = contract
+  +to_shape = Equal.cong(List<&2,U32>,Tiled.Tiled,extents => F32Tensor.softmax_valid(Tensors.usable(Tensors.Usable{}) && Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,extents)),Shapes.has_zero(extents),extents,axis,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op}),Tiled.logical_shape(os,oa,ol,op),shape,restored)
+  +empty = CountCompletion.positive_not_zero(shape,nonempty)
+  %Equal.sym(Tiled.Tiled,F32Tensor.softmax_valid(Tensors.usable(Tensors.Usable{}) && Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,Tiled.logical_shape(os,oa,ol,op))),Shapes.has_zero(Tiled.logical_shape(os,oa,ol,op)),Tiled.logical_shape(os,oa,ol,op),axis,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op}),F32Tensor.softmax_valid(Tensors.usable(Tensors.Usable{}) && Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)),Shapes.has_zero(shape),shape,axis,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op}),to_shape) : Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,_)
+  %Equal.sym(Bool,Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)),True{},inside) : Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_valid(Tensors.usable(Tensors.Usable{}) && _,Shapes.has_zero(shape),shape,axis,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op}))
+  %Equal.sym(Bool,Shapes.has_zero(shape),False{},empty) : Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax_valid(Tensors.usable(Tensors.Usable{}) && True{},_,shape,axis,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op}))
+  input_copies(~Logical,~original,logical,limits,shape,axis,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,inside,laxes,loffset,raxes,roffset,own_stretched,unit_stretched,om,os,of,ow,oa,ol,op,Copy.copied(~Tile.Tile8,om),contract)
 
-def exponential_owners(+left: Observation.TensorOwnerModel<F32>,+right: Observation.TensorOwnerModel<F32>,+shape: List<&2,U32>,+axis: U32,
-  ready: {Contract.tensor_ready(~F32,normalized(F.copy(exponential_call(Observation.tensor_owner_pack(~F32,left),Observation.tensor_owner_pack(~F32,right),shape,axis)),shape,axis)) == True{} : Bool}) -> {Contract.tensor_ready(~F32,exponential_call(Observation.tensor_owner_pack(~F32,left),Observation.tensor_owner_pack(~F32,right),shape,axis)) == True{} : Bool}:
-  ReadyFlow.copied(~F32,exponential_call(Observation.tensor_owner_pack(~F32,left),Observation.tensor_owner_pack(~F32,right),shape,axis),normalized_ready(F.copy(exponential_call(Observation.tensor_owner_pack(~F32,left),Observation.tensor_owner_pack(~F32,right),shape,axis)),shape,axis,ready))
+def softmax_packed(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  -tiled: Tiled.Tiled,packed: Public.Packed<tiled>,+contract: Public.Contract(~Logical,~original,logical,shape,tiled)) ->
+  Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax(tiled,axis)):
+  Public.Packed{+om,+os,+of,+ow,+oa,+ol,+op,+equation} = packed
+  %equation : Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax(_,axis))
+  softmax_model(~Logical,~original,logical,limits,shape,axis,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,inside,laxes,loffset,raxes,roffset,own_stretched,unit_stretched,om,os,of,ow,oa,ol,op,
+    %Equal.sym(Tiled.Tiled,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,om),os,of,Tensors.Usable{},ow},oa,ol,op},tiled,equation) : Public.Contract(~Logical,~original,logical,shape,_) contract)
 
-def exponential_observed(-left: Tensors.Tensor<F32>,-right: Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32,
-  left_observation: Observation.TensorObservation<F32,left>,right_observation: Observation.TensorObservation<F32,right>,
-  ready: {Contract.tensor_ready(~F32,normalized(F.copy(exponential_call(left,right,shape,axis)),shape,axis)) == True{} : Bool}) -> {Contract.tensor_ready(~F32,exponential_call(left,right,shape,axis)) == True{} : Bool}:
-  Observation.TensorObservation{+left_model,+left_equation} = left_observation
-  Observation.TensorObservation{+right_model,+right_equation} = right_observation
-  %left_equation : {Contract.tensor_ready(~F32,exponential_call(_,right,shape,axis)) == True{} : Bool}
-  %right_equation : {Contract.tensor_ready(~F32,exponential_call(Observation.tensor_owner_pack(~F32,left_model),_,shape,axis)) == True{} : Bool}
-  exponential_owners(left_model,right_model,shape,axis,
-    %Equal.sym(Tensors.Tensor<F32>,Observation.tensor_owner_pack(~F32,right_model),right,right_equation) : {Contract.tensor_ready(~F32,normalized(F.copy(exponential_call(Observation.tensor_owner_pack(~F32,left_model),_,shape,axis)),shape,axis)) == True{} : Bool}
-    %Equal.sym(Tensors.Tensor<F32>,Observation.tensor_owner_pack(~F32,left_model),left,left_equation) : {Contract.tensor_ready(~F32,normalized(F.copy(exponential_call(_,right,shape,axis)),shape,axis)) == True{} : Bool}
-    ready)
-
-def exponential_ready(left: Tensors.Tensor<F32>,right: Tensors.Tensor<F32>,+shape: List<&2,U32>,+axis: U32,
-  ready: {Contract.tensor_ready(~F32,normalized(F.copy(exponential_call(left,right,shape,axis)),shape,axis)) == True{} : Bool}) -> {Contract.tensor_ready(~F32,exponential_call(left,right,shape,axis)) == True{} : Bool}:
-  exponential_observed(left,right,shape,axis,Observation.observe_tensor(~F32,left),Observation.observe_tensor(~F32,right),ready)
-
-# left operation reshape(reduce_axes(fold, initial, right, [axis])): the reduction
-# keeps its axis and broadcasts back along it.
-def Folded(~Accumulator: Data,~Context: Data,~reader: Context -> U32 -> F32,~operation: F32 -> F32 -> F32,~fold: Accumulator -> F32 -> Accumulator,~finish: Accumulator -> F32,+context: Context,+initial: Accumulator,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>) -> Data:
-  CombineBroadcast.Combined(~F32,~Context,~Fold(~Accumulator,~Context),~operation,~reader,~fold_value(~Accumulator,~Context,~reader,~fold,~finish),
-    Broadcast.Expanded{context,Broadcast.expansion(shape,shape)},Broadcast.Expanded{fold_context(~Accumulator,~Context,initial,context,shape,axis),Broadcast.expansion(unit(shape,axis),shape)},tensor)
-
-def Extents(-tensor: Tensors.Tensor<F32>,+shape: List<&2,U32>) -> Data:
-  {Contract.extents(~F32,tensor) == shape : List<&2,U32>}
-
-def reshaped(~Accumulator: Data,~Context: Data,~reader: Context -> U32 -> F32,~operation: F32 -> F32 -> F32,~fold: Accumulator -> F32 -> Accumulator,~finish: Accumulator -> F32,+context: Context,+name: String,+initial: Accumulator,
-  +left: Model.Model<F32>,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: F32,+workers: U32,+axis: U32,-right: Tensors.Tensor<F32>,
-  left_contract: Global.Contract(~F32,~Context,~reader,context,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers)),
-  evidence: Global.Shaped(~F32,~Fold(~Accumulator,~Context),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),fold_context(~Accumulator,~Context,initial,context,shape,axis),unit(shape,axis),right)) ->
-  Shape.Both<Folded(~Accumulator,~Context,~reader,~operation,~fold,~finish,context,initial,shape,axis,Tensors.combine(~F32,~operation,name,1.0,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),right)),
-    Extents(Tensors.combine(~F32,~operation,name,1.0,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),right),shape)>:
-  Shape.Both{Shape.Both{+well_formed,Shape.Both{+counted,+coherent}},+values} = left_contract
-  Shape.Both{usable,right_contract} = evidence
-  Global.Usable{+right_bands,+right_geometry,+right_fill,+right_workers,+equation} = usable
-  %equation :
-    Shape.Both<Folded(~Accumulator,~Context,~reader,~operation,~fold,~finish,context,initial,shape,axis,Tensors.combine(~F32,~operation,name,1.0,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),_)),
-      Extents(Tensors.combine(~F32,~operation,name,1.0,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),_),shape)>
-  Shape.Both{
-    CombineBroadcast.broadcast(~F32,~Context,~Fold(~Accumulator,~Context),~operation,~Operations.combine_kernel(~F32,~operation),~OperationLaws.scalar_kernel(~F32,~operation),
-      ~reader,~fold_value(~Accumulator,~Context,~reader,~fold,~finish),context,fold_context(~Accumulator,~Context,initial,context,shape,axis),name,1.0,
-      shape,unit(shape,axis),shape,geometry,right_geometry,fill,right_fill,workers,right_workers,
-      Model.pack(~F32,left),Model.pack(~F32,right_bands),UnitBroadcast.broadcast(shape,U32.to_nat(axis)),counted,
-      Shape.Both{Shape.Both{well_formed,Shape.Both{counted,coherent}},values},
-      %Equal.sym(Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,right_bands),right_geometry,unit(shape,axis),right_fill,Tensors.Usable{},right_workers},right,equation) :
-        Global.Contract(~F32,~Fold(~Accumulator,~Context),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),fold_context(~Accumulator,~Context,initial,context,shape,axis),_)
-      right_contract),
-    ReadyFlow.combined_extents(~F32,~Operations.combine_kernel(~F32,~operation),name,1.0,Model.pack(~F32,left),geometry,shape,fill,Tensors.Usable{},workers,
-      Model.pack(~F32,right_bands),right_geometry,unit(shape,axis),right_fill,Tensors.Usable{},right_workers,
-      UnitBroadcast.broadcast(shape,U32.to_nat(axis)))}
-
-# The reduction reshaped to keep its axis as a unit extent.
-def reduced_shaped(~Accumulator: Data,~Context: Data,~reader: Context -> U32 -> F32,~fold: Accumulator -> F32 -> Accumulator,~finish: Accumulator -> F32,+context: Context,+initial: Accumulator,+shape: List<&2,U32>,+axis: U32,tensor: Tensors.Tensor<F32>,
-  usable: Global.Usable<F32,Contract.extents(~F32,tensor),tensor>,
-  contract: Global.Contract(~F32,~Fold(~Accumulator,~Context),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),fold_context(~Accumulator,~Context,initial,context,shape,axis),tensor),
-  accepted: {Contract.tensor_ready(~F32,F.reshape(tensor,unit(shape,axis))) == True{} : Bool}) ->
-  Global.Shaped(~F32,~Fold(~Accumulator,~Context),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),fold_context(~Accumulator,~Context,initial,context,shape,axis),unit(shape,axis),F.reshape(tensor,unit(shape,axis))):
-  Global.Usable{+bands,+reduced_geometry,+reduced_fill,+reduced_workers,+equation} = usable
-  +back = Equal.sym(Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bands),reduced_geometry,Contract.extents(~F32,tensor),reduced_fill,Tensors.Usable{},reduced_workers},tensor,equation)
-  %equation : Global.Shaped(~F32,~Fold(~Accumulator,~Context),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),fold_context(~Accumulator,~Context,initial,context,shape,axis),unit(shape,axis),F.reshape(_,unit(shape,axis)))
-  ReshapeValues.reshape(~F32,~Fold(~Accumulator,~Context),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),fold_context(~Accumulator,~Context,initial,context,shape,axis),unit(shape,axis),
-    bands,reduced_geometry,Contract.extents(~F32,tensor),reduced_fill,reduced_workers,
-    %back : Global.Contract(~F32,~Fold(~Accumulator,~Context),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),fold_context(~Accumulator,~Context,initial,context,shape,axis),_) contract,
-    %back : {Contract.tensor_ready(~F32,F.reshape(_,unit(shape,axis))) == True{} : Bool} accepted)
-
-def folded(~Accumulator: Data,~Context: Data,~reader: Context -> U32 -> F32,~operation: F32 -> F32 -> F32,~fold: Accumulator -> F32 -> Accumulator,~finish: Accumulator -> F32,+context: Context,+name: String,+reduction: String,+operations: F32,+initial: Accumulator,
-  +left: Model.Model<F32>,+right: Model.Model<F32>,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: F32,+workers: U32,+axis: U32,
-  left_contract: Global.Contract(~F32,~Context,~reader,context,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers)),
-  right_contract: Global.Contract(~F32,~Context,~reader,context,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers)),
-  ready: {Contract.tensor_ready(~F32,Tensors.combine(~F32,~operation,name,1.0,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),
-    reduced(~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis))) == True{} : Bool}) ->
-  Shape.Both<Folded(~Accumulator,~Context,~reader,~operation,~fold,~finish,context,initial,shape,axis,Tensors.combine(~F32,~operation,name,1.0,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),
-      reduced(~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis))),
-    Extents(Tensors.combine(~F32,~operation,name,1.0,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),
-      reduced(~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis)),shape)>:
-  +folded_ready = ReadyFlow.combine_right(~F32,~operation,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),
-    reduced(~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis),name,1.0,ready)
-  +reduction_ready = ReadyFlow.reshaped(~F32,Layout.reduce_axes(~F32,~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),[axis]),unit(shape,axis),folded_ready)
-  reshaped(~Accumulator,~Context,~reader,~operation,~fold,~finish,context,name,initial,left,geometry,shape,fill,workers,axis,
-    reduced(~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis),left_contract,
-    reduced_shaped(~Accumulator,~Context,~reader,~fold,~finish,context,initial,shape,axis,Layout.reduce_axes(~F32,~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),[axis]),
-      Global.usable(~F32,Layout.reduce_axes(~F32,~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),[axis]),reduction_ready),
-      Reduce.relabel(~F32,~Fold(~Accumulator,~Context),~Fold(~Accumulator,~Context),
-        ~Reduce.value(~F32,~Accumulator,~Reduce.Ordered<Context>,~Reduce.ordered_value(~F32,~Context,~reader),~fold,~finish),~fold_value(~Accumulator,~Context,~reader,~fold,~finish),
-        ~same_fold(~Accumulator,~Context),~same_fold_agrees(~Accumulator,~Context,~reader,~fold,~finish),
-        fold_context(~Accumulator,~Context,initial,context,shape,axis),fold_context(~Accumulator,~Context,initial,context,shape,axis),{==},Layout.reduce_axes(~F32,~Accumulator,~fold,~finish,reduction,operations,initial,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),[axis]),
-        Reduce.reduce_axes(~F32,~Accumulator,~Context,~reader,~fold,~finish,context,reduction,operations,initial,[axis],right,geometry,shape,fill,workers,right_contract,reduction_ready)),
-      folded_ready))
-
-def CenteredContract(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>) -> Data:
-  Folded(~F32,~Logical,~original,~F32.sub,~F32.max,~Tensors.same(~F32),logical,F32.div(F32.neg(1.0),0.0),shape,axis,tensor)
-
-def ExponentialContract(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>) -> Data:
-  Global.Contract(~F32,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),exponential_context(~Logical,Softmax{logical,shape,axis}),tensor)
-
-def NormalizedContract(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>) -> Data:
-  Folded(~Sum.Lanes,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),~F32.div,~Sum.step,~Sum.total,exponential_context(~Logical,Softmax{logical,shape,axis}),Sum.zero(),shape,axis,tensor)
-
-def SoftmaxContract(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>) -> Data:
-  Global.Contract(~F32,~Softmax<Logical>,~value(~Logical,~original),Softmax{logical,shape,axis},tensor)
-
-def Normalizing(~Logical: Data,before: Normalized(~Logical),after: Softmax<Logical>) -> Data:
-  {normalized_context(~Logical,after) == before : Normalized(~Logical)}
-
-def normalizing_agrees(~Logical: Data,~original: Logical -> U32 -> F32,+before: Normalized(~Logical),+after: Softmax<Logical>,+related: Normalizing(~Logical,before,after),+index: U32) ->
-  {Leaf.value(~F32,~Broadcast.Expanded<Exponential(~Logical)>,~Broadcast.Expanded<Fold(~Sum.Lanes,~Exponential(~Logical))>,~F32.div,~Broadcast.value(~F32,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32)))))),~Broadcast.value(~F32,~Fold(~Sum.Lanes,~Exponential(~Logical)),~fold_value(~Sum.Lanes,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),~Sum.step,~Sum.total)),before,index) == value(~Logical,~original,after,index) : F32}:
-  %related : {Leaf.value(~F32,~Broadcast.Expanded<Exponential(~Logical)>,~Broadcast.Expanded<Fold(~Sum.Lanes,~Exponential(~Logical))>,~F32.div,~Broadcast.value(~F32,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32)))))),~Broadcast.value(~F32,~Fold(~Sum.Lanes,~Exponential(~Logical)),~fold_value(~Sum.Lanes,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),~Sum.step,~Sum.total)),_,index) == value(~Logical,~original,after,index) : F32}
-  {==}
-
-# The normalized values are the softmax values at its context.
-def relabeled(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>,
-  usable: Global.Usable<F32,shape,tensor>,contract: NormalizedContract(~Logical,~original,logical,shape,axis,tensor)) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,tensor):
-  Global.Usable{+bands,+geometry,+fill,+workers,+equation} = usable
-  %equation : SoftmaxContract(~Logical,~original,logical,shape,axis,_)
-  Global.relabeled(~F32,~Normalized(~Logical),~Softmax<Logical>,~Leaf.value(~F32,~Broadcast.Expanded<Exponential(~Logical)>,~Broadcast.Expanded<Fold(~Sum.Lanes,~Exponential(~Logical))>,~F32.div,~Broadcast.value(~F32,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32)))))),~Broadcast.value(~F32,~Fold(~Sum.Lanes,~Exponential(~Logical)),~fold_value(~Sum.Lanes,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),~Sum.step,~Sum.total))),~value(~Logical,~original),~Normalizing(~Logical),~normalizing_agrees(~Logical,~original),
-    normalized_context(~Logical,Softmax{logical,shape,axis}),Softmax{logical,shape,axis},{==},Tensors.Tensor{Model.pack(~F32,bands),geometry,shape,fill,Tensors.Usable{},workers},
-    %Equal.sym(Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bands),geometry,shape,fill,Tensors.Usable{},workers},tensor,equation) :
-      NormalizedContract(~Logical,~original,logical,shape,axis,_) contract)
-
-def normalized_parts(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>,
-  usable: Global.Usable<F32,Contract.extents(~F32,tensor),tensor>,parts: Shape.Both<NormalizedContract(~Logical,~original,logical,shape,axis,tensor),Extents(tensor,shape)>) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,tensor):
-  Shape.Both{contract,+extents} = parts
-  relabeled(~Logical,~original,logical,shape,axis,tensor,%extents : Global.Usable<F32,_,tensor> usable,contract)
-
-def normalized_models(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,
-  +left: Model.Model<F32>,+right: Model.Model<F32>,+geometry: Bands.Geometry,+fill: F32,+workers: U32,
-  left_contract: ExponentialContract(~Logical,~original,logical,shape,axis,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers)),
-  right_contract: ExponentialContract(~Logical,~original,logical,shape,axis,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers)),
-  +ready: {Contract.tensor_ready(~F32,normalized((CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers)),shape,axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,normalized((CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers)),shape,axis)):
-  normalized_parts(~Logical,~original,logical,shape,axis,normalized((CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers)),shape,axis),
-    Global.usable(~F32,normalized((CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers)),shape,axis),ready),
-    folded(~Sum.Lanes,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),~F32.div,~Sum.step,~Sum.total,exponential_context(~Logical,Softmax{logical,shape,axis}),"div","softmax",6.0,Sum.zero(),left,right,geometry,shape,fill,workers,axis,
-      left_contract,right_contract,ready))
-
-def copies_models(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,+model: Model.Model<F32>,+geometry: Bands.Geometry,+fill: F32,+workers: U32,
-  evidence: CopyContract.Copied<F32,model>,+contract: ExponentialContract(~Logical,~original,logical,shape,axis,CombinePublic.tensor(~F32,model,geometry,shape,fill,workers)),
-  ready: {Contract.tensor_ready(~F32,normalized(F.copy(CombinePublic.tensor(~F32,model,geometry,shape,fill,workers)),shape,axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(CombinePublic.tensor(~F32,model,geometry,shape,fill,workers)),shape,axis)):
-  CopyContract.Copied{+left,+right,+equation,+left_content,+right_content} = evidence
-  %equation : SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Tensors.Tensor<F32> & Tensors.Tensor<F32>),_,
-    first => second => (Tensors.Tensor{first,geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{second,geometry,shape,fill,Tensors.Usable{},workers})),shape,axis))
-  normalized_models(~Logical,~original,logical,shape,axis,left,right,geometry,fill,workers,
-    CopyContract.kept(~F32,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),exponential_context(~Logical,Softmax{logical,shape,axis}),model,left,geometry,shape,fill,workers,left_content,contract),
-    CopyContract.kept(~F32,~Exponential(~Logical),~BandMap.value(~F32,~Unit,~Centered(~Logical),~Access.apply_element(~F32,~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32))))),exponential_context(~Logical,Softmax{logical,shape,axis}),model,right,geometry,shape,fill,workers,right_content,contract),
-    %Equal.sym(Bands.Bands(~F32) & Bands.Bands(~F32),(Model.pack(~F32,left),Model.pack(~F32,right)),Bands.copy(~F32,Model.pack(~F32,model)),equation) :
-      {Contract.tensor_ready(~F32,normalized(Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Tensors.Tensor<F32> & Tensors.Tensor<F32>),_,
-        first => second => (Tensors.Tensor{first,geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{second,geometry,shape,fill,Tensors.Usable{},workers})),shape,axis)) == True{} : Bool}
-      ready)
-
-def copies_usable(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>,
-  usable: Global.Usable<F32,shape,tensor>,contract: ExponentialContract(~Logical,~original,logical,shape,axis,tensor),
-  ready: {Contract.tensor_ready(~F32,normalized(F.copy(tensor),shape,axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(tensor),shape,axis)):
-  Global.Usable{+bands,+geometry,+fill,+workers,+equation} = usable
-  %equation : SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(_),shape,axis))
-  copies_models(~Logical,~original,logical,shape,axis,bands,geometry,fill,workers,CopyContract.copied(~F32,bands),
-    %Equal.sym(Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bands),geometry,shape,fill,Tensors.Usable{},workers},tensor,equation) : ExponentialContract(~Logical,~original,logical,shape,axis,_) contract,
-    %Equal.sym(Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bands),geometry,shape,fill,Tensors.Usable{},workers},tensor,equation) : {Contract.tensor_ready(~F32,normalized(F.copy(_),shape,axis)) == True{} : Bool} ready)
-
-def exponential_models(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,+centered: Model.Model<F32>,+geometry: Bands.Geometry,+fill: F32,+workers: U32,
-  contract: CenteredContract(~Logical,~original,logical,shape,axis,CombinePublic.tensor(~F32,centered,geometry,shape,fill,workers)),
-  +ready: {Contract.tensor_ready(~F32,normalized(F.copy(F.exp(CombinePublic.tensor(~F32,centered,geometry,shape,fill,workers))),shape,axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(F.exp(CombinePublic.tensor(~F32,centered,geometry,shape,fill,workers))),shape,axis)):
-  copies_usable(~Logical,~original,logical,shape,axis,F.exp(CombinePublic.tensor(~F32,centered,geometry,shape,fill,workers)),
-    Global.usable(~F32,F.exp(CombinePublic.tensor(~F32,centered,geometry,shape,fill,workers)),
-      ReadyFlow.copied(~F32,F.exp(CombinePublic.tensor(~F32,centered,geometry,shape,fill,workers)),
-        normalized_ready(F.copy(F.exp(CombinePublic.tensor(~F32,centered,geometry,shape,fill,workers))),shape,axis,ready))),
-    NormalUnary.apply(~F32,~Centered(~Logical),~Arithmetic.exp,~Operations.mapped_lanes(~Arithmetic.exp),~OperationLaws.mapped_lanes(~Arithmetic.exp),~Leaf.value(~F32,~Broadcast.Expanded<Logical>,~Broadcast.Expanded<Fold(~F32,~Logical)>,~F32.sub,~Broadcast.value(~F32,~Logical,~original),~Broadcast.value(~F32,~Fold(~F32,~Logical),~fold_value(~F32,~Logical,~original,~F32.max,~Tensors.same(~F32)))),
-      centered_context(~Logical,Softmax{logical,shape,axis}),4.5,centered,geometry,shape,fill,workers,contract),
-    ready)
-
-def exponential_usable(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>,
-  usable: Global.Usable<F32,shape,tensor>,contract: CenteredContract(~Logical,~original,logical,shape,axis,tensor),
-  ready: {Contract.tensor_ready(~F32,normalized(F.copy(F.exp(tensor)),shape,axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(F.exp(tensor)),shape,axis)):
-  Global.Usable{+bands,+geometry,+fill,+workers,+equation} = usable
-  %equation : SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(F.exp(_)),shape,axis))
-  exponential_models(~Logical,~original,logical,shape,axis,bands,geometry,fill,workers,
-    %Equal.sym(Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bands),geometry,shape,fill,Tensors.Usable{},workers},tensor,equation) : CenteredContract(~Logical,~original,logical,shape,axis,_) contract,
-    %Equal.sym(Tensors.Tensor<F32>,Tensors.Tensor{Model.pack(~F32,bands),geometry,shape,fill,Tensors.Usable{},workers},tensor,equation) : {Contract.tensor_ready(~F32,normalized(F.copy(F.exp(_)),shape,axis)) == True{} : Bool} ready)
-
-def exponential_parts(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,-tensor: Tensors.Tensor<F32>,
-  usable: Global.Usable<F32,Contract.extents(~F32,tensor),tensor>,parts: Shape.Both<CenteredContract(~Logical,~original,logical,shape,axis,tensor),Extents(tensor,shape)>,
-  ready: {Contract.tensor_ready(~F32,normalized(F.copy(F.exp(tensor)),shape,axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(F.exp(tensor)),shape,axis)):
-  Shape.Both{contract,+extents} = parts
-  exponential_usable(~Logical,~original,logical,shape,axis,tensor,%extents : Global.Usable<F32,_,tensor> usable,contract,ready)
-
-def exponential(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+shape: List<&2,U32>,+axis: U32,
-  +left: Model.Model<F32>,+right: Model.Model<F32>,+geometry: Bands.Geometry,+fill: F32,+workers: U32,
-  left_contract: Global.Contract(~F32,~Logical,~original,logical,CombinePublic.tensor(~F32,left,geometry,shape,fill,workers)),
-  right_contract: Global.Contract(~F32,~Logical,~original,logical,CombinePublic.tensor(~F32,right,geometry,shape,fill,workers)),
-  +ready: {Contract.tensor_ready(~F32,normalized(F.copy(exponential_call(CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis)),shape,axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,normalized(F.copy(exponential_call(CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis)),shape,axis)):
-  +centered_ready = ReadyFlow.applied(~F32,~Operations.mapped_lanes(~Arithmetic.exp),centered_call(CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis),4.5,
-    exponential_ready(CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis,ready))
-  exponential_parts(~Logical,~original,logical,shape,axis,centered_call(CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis),
-    Global.usable(~F32,centered_call(CombinePublic.tensor(~F32,left,geometry,shape,fill,workers),CombinePublic.tensor(~F32,right,geometry,shape,fill,workers),shape,axis),centered_ready),
-    folded(~F32,~Logical,~original,~F32.sub,~F32.max,~Tensors.same(~F32),logical,"sub","softmax",1.0,F32.div(F32.neg(1.0),0.0),left,right,geometry,shape,fill,workers,axis,left_contract,right_contract,centered_ready),
-    ready)
-
-def modeled(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+model: Model.Model<F32>,+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: F32,+workers: U32,+axis: U32,
-  evidence: CopyContract.Copied<F32,model>,+contract: Global.Contract(~F32,~Logical,~original,logical,CombinePublic.tensor(~F32,model,geometry,shape,fill,workers)),
-  ready: {Contract.tensor_ready(~F32,F.softmax(CombinePublic.tensor(~F32,model,geometry,shape,fill,workers),axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,F.softmax(CombinePublic.tensor(~F32,model,geometry,shape,fill,workers),axis)):
-  CopyContract.Copied{+left,+right,+equation,+left_content,+right_content} = evidence
-  +call = after_first_call(F.copy(CombinePublic.tensor(~F32,model,geometry,shape,fill,workers)),shape,axis)
-  %call : SoftmaxContract(~Logical,~original,logical,shape,axis,_)
-  %equation : SoftmaxContract(~Logical,~original,logical,shape,axis,after_first(Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Tensors.Tensor<F32> & Tensors.Tensor<F32>),_,
-    first => second => (Tensors.Tensor{first,geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{second,geometry,shape,fill,Tensors.Usable{},workers})),shape,axis))
-  exponential(~Logical,~original,logical,shape,axis,left,right,geometry,fill,workers,
-    CopyContract.kept(~F32,~Logical,~original,logical,model,left,geometry,shape,fill,workers,left_content,contract),
-    CopyContract.kept(~F32,~Logical,~original,logical,model,right,geometry,shape,fill,workers,right_content,contract),
-    %Equal.sym(Bands.Bands(~F32) & Bands.Bands(~F32),(Model.pack(~F32,left),Model.pack(~F32,right)),Bands.copy(~F32,Model.pack(~F32,model)),equation) :
-      {Contract.tensor_ready(~F32,after_first(Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Tensors.Tensor<F32> & Tensors.Tensor<F32>),_,
-        first => second => (Tensors.Tensor{first,geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{second,geometry,shape,fill,Tensors.Usable{},workers})),shape,axis)) == True{} : Bool}
-    %Equal.sym(Tensors.Tensor<F32>,after_first(F.copy(CombinePublic.tensor(~F32,model,geometry,shape,fill,workers)),shape,axis),
-        after_first_public(F.copy(CombinePublic.tensor(~F32,model,geometry,shape,fill,workers)),shape,axis),call) :
-      {Contract.tensor_ready(~F32,_) == True{} : Bool}
-    ready)
-
-def observed(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,-bands: Bands.Bands(~F32),+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: F32,+workers: U32,+axis: U32,
-  observation: Model.Observation<F32,bands>,contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Usable{},workers}),
-  ready: {Contract.tensor_ready(~F32,F.softmax(Tensors.Tensor{bands,geometry,shape,fill,Tensors.Usable{},workers},axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,F.softmax(Tensors.Tensor{bands,geometry,shape,fill,Tensors.Usable{},workers},axis)):
-  Model.Observation{+model,+equation} = observation
-  %equation : SoftmaxContract(~Logical,~original,logical,shape,axis,F.softmax(Tensors.Tensor{_,geometry,shape,fill,Tensors.Usable{},workers},axis))
-  modeled(~Logical,~original,logical,model,geometry,shape,fill,workers,axis,CopyContract.copied(~F32,model),
-    %Equal.sym(Bands.Bands(~F32),Model.pack(~F32,model),bands,equation) : Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{_,geometry,shape,fill,Tensors.Usable{},workers}) contract,
-    %Equal.sym(Bands.Bands(~F32),Model.pack(~F32,model),bands,equation) : {Contract.tensor_ready(~F32,F.softmax(Tensors.Tensor{_,geometry,shape,fill,Tensors.Usable{},workers},axis)) == True{} : Bool} ready)
-
-# The premises are the contract of the input bands and a Ready result.
-def softmax(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,bands: Bands.Bands(~F32),+geometry: Bands.Geometry,+shape: List<&2,U32>,+fill: F32,+workers: U32,+axis: U32,
-  contract: Global.Contract(~F32,~Logical,~original,logical,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Usable{},workers}),
-  ready: {Contract.tensor_ready(~F32,F.softmax(Tensors.Tensor{bands,geometry,shape,fill,Tensors.Usable{},workers},axis)) == True{} : Bool}) ->
-  SoftmaxContract(~Logical,~original,logical,shape,axis,F.softmax(Tensors.Tensor{bands,geometry,shape,fill,Tensors.Usable{},workers},axis)):
-  observed(~Logical,~original,logical,bands,geometry,shape,fill,workers,axis,Model.observe(~F32,bands),contract,ready)
+# A tensor of its contract, of a nonempty shape with the axis inside it, and
+# the views that read the shape and the shape with the axis of extent 1
+# stretched to the shape: the softmax holds Softmax.
+def softmax(~Logical: Data,~original: Logical -> U32 -> F32,+logical: Logical,+limits: Machine.Limits,+shape: List<&2,U32>,+axis: U32,
+  +default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},
+  +inside: {Nat.is_lt(U32.to_nat(axis),List.length(&2,U32,shape)) == True{} : Bool},
+  +laxes: List<&2,Views.Axis>,+loffset: U32,+raxes: List<&2,Views.Axis>,+roffset: U32,+own_stretched: {Tensors.stretched(Tensors.view_of(shape),shape) == Some{Views.View{laxes,loffset}} : Maybe<&2,Views.View>},
+  +unit_stretched: {Tensors.stretched(Tensors.view_of(Layout.with_extent(shape,U32.to_nat(axis),1)),shape) == Some{Views.View{raxes,roffset}} : Maybe<&2,Views.View>},
+  tiled: Tiled.Tiled,+contract: Public.Contract(~Logical,~original,logical,shape,tiled)) -> Softmax(~Logical,~original,logical,shape,axis,laxes,loffset,raxes,roffset,F32Tensor.softmax(tiled,axis)):
+  softmax_packed(~Logical,~original,logical,limits,shape,axis,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,inside,laxes,loffset,raxes,roffset,own_stretched,unit_stretched,tiled,Public.packed(~Logical,~original,logical,shape,tiled,contract),contract)

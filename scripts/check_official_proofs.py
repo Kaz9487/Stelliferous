@@ -12,14 +12,15 @@ from proof_layout import file_digest, frozen_files
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / 'out/results/matrix'
-COMPONENT_ENTRIES = {
-    'convolution/proofs/reference_refinement.bend': 'reference-contract.log',
-    'convolution/proofs/matrix_matches_convolution.bend': 'convolution.log',
-    'convolution/proofs/matrix_axis_partitions.bend': 'tiles.log',
-    'convolution/proofs/matrix_axis_lengths.bend': 'dimensions.log',
-    'convolution/proofs/array_api_validation.bend': 'api.log',
-    'scripts/check_official.bend': 'native-components.log',
-}
+# One checker run: the entry imports every proof, these roots among them.
+ENTRY = 'scripts/check_official.bend'
+COMPONENT_ROOTS = [
+    'convolution/proofs/reference_refinement.bend',
+    'convolution/proofs/matrix_matches_convolution.bend',
+    'convolution/proofs/matrix_axis_partitions.bend',
+    'convolution/proofs/matrix_axis_lengths.bend',
+    'convolution/proofs/array_api_validation.bend',
+]
 ROOT_LAW = 'convolution/proofs/native_inference_law.bend'
 ROOT_STATEMENT = """law native_inference_matches_matrix:
   for +problem: ConvSpec.Problem
@@ -56,7 +57,6 @@ def check(entry, log):
         ['node', str(ROOT / 'scripts/bend_launcher.mjs'), entry, '--check-only'],
         cwd=ROOT,
         capture_output=True,
-        timeout=120,
     )
     output = (result.stdout + result.stderr).decode('utf-8', errors='replace')
     (REPORT / log).write_text(output, encoding='utf-8')
@@ -102,14 +102,13 @@ def main():
         if file_digest(filename) != expected:
             raise SystemExit('A frozen specification file changed: ' + filename)
 
-    for entry, log in COMPONENT_ENTRIES.items():
-        accepted, output = check(entry, log)
-        if not accepted:
-            raise SystemExit(f'Component proof failed: {entry}\n{output}')
-
-    complete, output = check(ROOT_LAW, 'native-obligation.log')
+    imported = set(re.findall(r'^import \.\./(\S+) as ', (ROOT / ENTRY).read_text(encoding='utf-8'), re.M))
+    missing = [root for root in COMPONENT_ROOTS + [ROOT_LAW] if root not in imported]
+    if missing:
+        raise SystemExit(f'{ENTRY} does not import ' + ', '.join(missing))
+    complete, output = check(ENTRY, 'proofs.log')
     if not complete:
-        raise SystemExit('The complete native-inference root did not pass:\n' + output)
+        raise SystemExit('The official checker did not accept every proof:\n' + output)
 
     status = dict(
         checker='unmodified upstream Bend via bend_launcher.mjs',
@@ -119,7 +118,8 @@ def main():
         ).strip(),
         local_unsafe_definitions=False,
         foreign_io_boundary=foreign_io,
-        component_entries_checked=list(COMPONENT_ENTRIES),
+        entry_checked=ENTRY,
+        component_roots_checked=COMPONENT_ROOTS + [ROOT_LAW],
         all_component_entries_proved=True,
         frozen_contracts_verified=True,
         native_all_split_depths_proved=complete,

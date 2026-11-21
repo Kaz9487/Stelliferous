@@ -7,11 +7,6 @@ import ./storage_buffer_model.bend as Buffer
 type Assignment<-T: Data> is Data:
   Put{index: U32,value: T}
 
-def prepend(~Element: Data,keep: Bool,index: U32,value: Element,rest: List<&2,Assignment<Element>>) -> List<&2,Assignment<Element>>:
-  match keep:
-    case False{}: rest
-    case True{}: Put{index,value} <> rest
-
 def native(-T: Data,writes: List<&2,Assignment<T>>,out: Array<T>) -> Array<T>:
   match writes:
     case []:
@@ -25,17 +20,6 @@ def pure(-T: Data,writes: List<&2,Assignment<T>>,out: Tree.Tree<T>) -> Tree.Tree
       out
     case Put{i,v} <> rest:
       pure(T,rest,Tree.write(T,out,i,v))
-
-def sequence(~Element: Data,values: List<&2,Element>,+offset: U32) -> List<&2,Assignment<Element>>:
-  match values:
-    case Nil{}: []
-    case head <> rest: Put{offset,head} <> sequence(~Element,rest,(offset + 1 : U32))
-
-def sequence_refines(~Element: Data,+values: List<&2,Element>,+offset: U32,+tree: Tree.Tree<Element>) ->
-  {pure(Element,sequence(~Element,values,offset),tree) == Tree.write_sequence(~Element,values,offset,tree) : Tree.Tree<Element>}:
-  match values:
-    case Nil{}: {==}
-    case +head <> +rest: sequence_refines(~Element,rest,(offset + 1 : U32),Tree.write(Element,tree,offset,head))
 
 def concatenated_native(-T: Data,+first: List<&2,Assignment<T>>,+second: List<&2,Assignment<T>>,-output: Array<T>) ->
   {native(T,List.append(&2,Assignment<T>,first,second),output) == native(T,second,native(T,first,output)) : Array<T>}:

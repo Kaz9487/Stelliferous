@@ -175,3 +175,58 @@ def divided_by_one(+value: U32) -> {U32.to_nat((value / 1 : U32)) == U32.to_nat(
   Equal.trans(Nat,U32.to_nat((value / 1 : U32)),Nat.div(U32.to_nat(value),1n),U32.to_nat(value),divide(value,1,2,{==},{==},{==}),
     %Order.times_one(U32.to_nat(value)) : {Nat.div(_,1n) == U32.to_nat(value) : Nat}
     Division.exact_quotient(U32.to_nat(value),1n,{==}))
+
+# The quotient and the remainder of two encoded naturals within a capacity.
+def encoded_divide(+a: Nat,+b: Nat,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +a_room: {Nat.is_le(a,U32.to_nat(cap)) == True{} : Bool},+b_room: {Nat.is_le(b,U32.to_nat(cap)) == True{} : Bool},
+  +divisor_bound: {Nat.is_le(Nat.double(b),U32.to_nat(cap)) == True{} : Bool},+positive: {Nat.is_lt(0n,b) == True{} : Bool}) ->
+  {(U32.from_nat(a) / U32.from_nat(b) : U32) == U32.from_nat(Nat.div(a,b)) : U32}:
+  +a_exact = Bounds.roundtrip(a,cap,cap_ok,a_room)
+  +b_exact = Bounds.roundtrip(b,cap,cap_ok,b_room)
+  +divisor = U32.from_nat(b)
+  +exact = Equal.trans(Nat,U32.to_nat((U32.from_nat(a) / divisor : U32)),Nat.div(U32.to_nat(U32.from_nat(a)),U32.to_nat(divisor)),Nat.div(a,b),
+    divide(U32.from_nat(a),divisor,cap,cap_ok,
+      %Equal.sym(Nat,U32.to_nat(divisor),b,b_exact) : {Nat.is_le(Nat.double(_),U32.to_nat(cap)) == True{} : Bool} divisor_bound,
+      %Equal.sym(Nat,U32.to_nat(divisor),b,b_exact) : {Nat.is_lt(0n,_) == True{} : Bool} positive),
+    %Equal.sym(Nat,U32.to_nat(U32.from_nat(a)),a,a_exact) : {Nat.div(_,U32.to_nat(divisor)) == Nat.div(a,b) : Nat}
+    %Equal.sym(Nat,U32.to_nat(divisor),b,b_exact) : {Nat.div(a,_) == Nat.div(a,b) : Nat}
+    {==})
+  Equal.sym(U32,U32.from_nat(Nat.div(a,b)),(U32.from_nat(a) / divisor : U32),Arithmetic.from_nat_exact((U32.from_nat(a) / divisor : U32),Nat.div(a,b),exact))
+
+def encoded_modulo(+a: Nat,+b: Nat,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +a_room: {Nat.is_le(a,U32.to_nat(cap)) == True{} : Bool},+b_room: {Nat.is_le(b,U32.to_nat(cap)) == True{} : Bool},
+  +divisor_bound: {Nat.is_le(Nat.double(b),U32.to_nat(cap)) == True{} : Bool},+positive: {Nat.is_lt(0n,b) == True{} : Bool}) ->
+  {(U32.from_nat(a) % U32.from_nat(b) : U32) == U32.from_nat(Nat.mod(a,b)) : U32}:
+  +a_exact = Bounds.roundtrip(a,cap,cap_ok,a_room)
+  +b_exact = Bounds.roundtrip(b,cap,cap_ok,b_room)
+  +divisor = U32.from_nat(b)
+  +exact = Equal.trans(Nat,U32.to_nat((U32.from_nat(a) % divisor : U32)),Nat.mod(U32.to_nat(U32.from_nat(a)),U32.to_nat(divisor)),Nat.mod(a,b),
+    modulo(U32.from_nat(a),divisor,cap,cap_ok,
+      %Equal.sym(Nat,U32.to_nat(divisor),b,b_exact) : {Nat.is_le(Nat.double(_),U32.to_nat(cap)) == True{} : Bool} divisor_bound,
+      %Equal.sym(Nat,U32.to_nat(divisor),b,b_exact) : {Nat.is_lt(0n,_) == True{} : Bool} positive),
+    %Equal.sym(Nat,U32.to_nat(U32.from_nat(a)),a,a_exact) : {Nat.mod(_,U32.to_nat(divisor)) == Nat.mod(a,b) : Nat}
+    %Equal.sym(Nat,U32.to_nat(divisor),b,b_exact) : {Nat.mod(a,_) == Nat.mod(a,b) : Nat}
+    {==})
+  Equal.sym(U32,U32.from_nat(Nat.mod(a,b)),(U32.from_nat(a) % divisor : U32),Arithmetic.from_nat_exact((U32.from_nat(a) % divisor : U32),Nat.mod(a,b),exact))
+
+# The quotient of two words equals the quotient of their natural-number values.
+def quotient_exact(+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},+left: U32,+right: U32,+left_value: Nat,+right_value: Nat,
+  +left_exact: {U32.to_nat(left) == left_value : Nat},+right_exact: {U32.to_nat(right) == right_value : Nat},
+  +divisor_bound: {Nat.is_le(Nat.double(right_value),U32.to_nat(cap)) == True{} : Bool},+positive: {Nat.is_lt(0n,right_value) == True{} : Bool}) ->
+  {U32.to_nat((left / right : U32)) == Nat.div(left_value,right_value) : Nat}:
+  %left_exact : {U32.to_nat((left / right : U32)) == Nat.div(_,right_value) : Nat}
+  %right_exact : {U32.to_nat((left / right : U32)) == Nat.div(U32.to_nat(left),_) : Nat}
+  divide(left,right,cap,cap_ok,
+    %Equal.sym(Nat,U32.to_nat(right),right_value,right_exact) : {Nat.is_le(Nat.double(_),U32.to_nat(cap)) == True{} : Bool} divisor_bound,
+    %Equal.sym(Nat,U32.to_nat(right),right_value,right_exact) : {Nat.is_lt(0n,_) == True{} : Bool} positive)
+
+# The remainder of two words equals the remainder of their natural-number values.
+def remainder_exact(+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},+left: U32,+right: U32,+left_value: Nat,+right_value: Nat,
+  +left_exact: {U32.to_nat(left) == left_value : Nat},+right_exact: {U32.to_nat(right) == right_value : Nat},
+  +divisor_bound: {Nat.is_le(Nat.double(right_value),U32.to_nat(cap)) == True{} : Bool},+positive: {Nat.is_lt(0n,right_value) == True{} : Bool}) ->
+  {U32.to_nat((left % right : U32)) == Nat.mod(left_value,right_value) : Nat}:
+  %left_exact : {U32.to_nat((left % right : U32)) == Nat.mod(_,right_value) : Nat}
+  %right_exact : {U32.to_nat((left % right : U32)) == Nat.mod(U32.to_nat(left),_) : Nat}
+  modulo(left,right,cap,cap_ok,
+    %Equal.sym(Nat,U32.to_nat(right),right_value,right_exact) : {Nat.is_le(Nat.double(_),U32.to_nat(cap)) == True{} : Bool} divisor_bound,
+    %Equal.sym(Nat,U32.to_nat(right),right_value,right_exact) : {Nat.is_lt(0n,_) == True{} : Bool} positive)

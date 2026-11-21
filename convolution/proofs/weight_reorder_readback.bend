@@ -7,7 +7,6 @@ import ../../lib/machine_limits.bend as Machine
 import ../../lib/kernel_weights.bend as Weights
 import ../../lib/kernel_tile.bend as Tile
 import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/kernel_block_geometry.bend as Geometry
 import ../../lib/proofs/kernel_weights_refinement.bend as WeightsLaws
 import ../../lib/proofs/kernel_weights_readback.bend as WeightsReadback
@@ -16,6 +15,7 @@ import ./concrete_support_guard.bend as Support
 import ./supported_padded_coordinates.bend as Padded
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./weight_reorder_bounds.bend as WeightBounds
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def Goal(+problem: ConvSpec.Problem,+input: Tree.Tree<F32>,+block: Nat,+tap: Nat) -> Data:
   +rows = U32.from_nat(Guards.output_channel_count(problem))
@@ -27,7 +27,7 @@ def allocated_readback(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid
   +input: Tree.Tree<F32>,+block: Nat,+tap: Nat,
   block_inside: {Nat.is_lt(block,Geometry.blocks(Guards.output_channel_count(problem))) == True{} : Bool},
   tap_inside: {Nat.is_lt(tap,Coordinates.inner(problem)) == True{} : Bool},ready: WeightBounds.Ready(problem)) -> Goal(problem,input,block,tap):
-  Shape.Both{+depth_ok,+room} = ready
+  KernelGemm.Both{+depth_ok,+room} = ready
   +rows = U32.from_nat(Guards.output_channel_count(problem))
   +inner = Coordinates.native_inner(problem)
   +blocks_exact = WeightBounds.blocks_exact(limits,problem,supported)

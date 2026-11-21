@@ -1,4 +1,5 @@
-# Canonical storage readers for gradient and patch tiles share the tile proof.
+# Weight-gradient tiles: the input cells of every phase plane of a band and
+# the gradient cells of every output block, read in position order.
 import Base
 import ../kernel_weight_gradient.bend as Kernel
 import ../kernel_tile.bend as Tile
@@ -7,448 +8,389 @@ import ../math_sequence.bend as Sequence
 import ./storage_buffer_model.bend as Buffer
 import ./storage_tree_model.bend as Tree
 import ./kernel_tile_refinement.bend as Tiles
+import ./tensor_tiled_representation.bend as Representation
+import ./tensor_tiled_values.bend as TiledValues
 
 import ../traversal_loop.bend as Loop
 import ../traversal_array.bend as Traversal
-import ./loop_projection.bend as Projection
 import ./traversal_array_refinement.bend as Traversals
-import ./storage_refinement.bend as StorageLaws
 import ./traversal_indexed_values.bend as IndexedValues
 import ./tensor_access_refinement.bend as AccessLaws
 import ./storage_shape.bend as Shape
-import ./tensor_allocation_depth.bend as AllocationDepth
-import ./word_power_of_two.bend as Power
 import ./nat_order.bend as Order
 import ./nat_ceiling.bend as Ceiling
 import ./nat_extrema.bend as Extrema
 import ./nat_to_u32_bounds.bend as Bounds
 import ./word_encoding.bend as Words
+import ./nat_division.bend as Division
 import ./bounded_u32_arithmetic.bend as Arithmetic
-import ./kernel_accumulator.bend as Accumulator
-import ../kernel_rows.bend as Rows
-import ./kernel_coordinate_refinement.bend as Coordinates
 import ./encoded_coordinates.bend as Encoded
 import ./boolean_logic.bend as Logic
-import ../machine_limits.bend as Machine
-import ./machine_limit_bounds.bend as Limits
-import ./u32_division.bend as NativeDivision
 import ./row_major_index.bend as RowMajor
 import ./list_storage_readback.bend as ListRead
 import ./nat_division_order.bend as DivisionOrder
 import ./u32_full_range.bend as FullRange
 import ./u32_comparison.bend as Comparison
 import ./binary_radix.bend as Radix
-
-def pixel_value(input: Buffer.Model<F32>,+row: U32,+column: U32,height: U32,+width: U32,+stride: U32,+padding: U32,lane: Kernel.Lane) -> F32:
-  Kernel.Lane{base,kr,kc,valid,rf,re,cf,ce} = lane
-  Bool.pick(F32,valid && U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,column) && U32.is_lt(column,ce),
-    Tree.read(F32,Buffer.tree(~F32,input),(base + (row * stride + kr - padding) * width + (column * stride + kc - padding) : U32)),0.0)
-
-def pixel(+input: Buffer.Model<F32>,+row: U32,+column: U32,+height: U32,+width: U32,+stride: U32,+padding: U32,+lane: Kernel.Lane) ->
-  {Kernel.pixel(Buffer.pack(~F32,input),row,column,height,width,stride,padding,lane) ==
-    (Buffer.pack(~F32,input),pixel_value(input,row,column,height,width,stride,padding,lane)) : Storage.Buffer<F32> & F32}:
-  Kernel.Lane{base,kr,kc,valid,rf,re,cf,ce} = lane
-  Buffer.read_masked(~F32,0.0,valid && U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,column) && U32.is_lt(column,ce),input,
-    (base + (row * stride + kr - padding) * width + (column * stride + kc - padding) : U32))
-
-def patch_sample(input: Buffer.Model<F32>,context: Kernel.Pixel,index: Nat) -> F32:
-  Kernel.Pixel{patch,row,column,height,width,stride,padding} = context
-  pixel_value(input,row,column,height,width,stride,padding,Kernel.selected(patch,index))
-
-def patch_read(+input: Buffer.Model<F32>,+context: Kernel.Pixel,+index: Nat) ->
-  {Kernel.read_pixel(Buffer.pack(~F32,input),context,index) == (Buffer.pack(~F32,input),patch_sample(input,context,index)) : Storage.Buffer<F32> & F32}:
-  Kernel.Pixel{patch,row,column,height,width,stride,padding} = context
-  pixel(input,row,column,height,width,stride,padding,Kernel.selected(patch,index))
-
-def tile_value(~Context: Data,~sample: Buffer.Model<F32> -> Context -> Nat -> F32,+input: Buffer.Model<F32>,+context: Context) -> Tile.Tile8:
-  Tile.from_sequence(Sequence.Elements{sample(input,context,0n),
-    Sequence.tabulate(~F32,~Tiles.SampleContext<Buffer.Model<F32>,Context>,~Tiles.sample_context(~Buffer.Model<F32>,~Context,~sample),7n,1n,Tiles.SampleContext{input,context})})
-
-def tile_read(~Context: Data,~read: Storage.Buffer<F32> -> Context -> Nat -> Storage.Buffer<F32> & F32,
-  ~sample: Buffer.Model<F32> -> Context -> Nat -> F32,
-  ~matches: @+input: Buffer.Model<F32> -> @+context: Context -> @+index: Nat ->
-    {read(Buffer.pack(~F32,input),context,index) == (Buffer.pack(~F32,input),sample(input,context,index)) : Storage.Buffer<F32> & F32},
-  +input: Buffer.Model<F32>,+context: Context) ->
-  {Tile.read_tail(~Storage.Buffer<F32>,~Context,~read,read(Buffer.pack(~F32,input),context,0n),context) ==
-    (Buffer.pack(~F32,input),tile_value(~Context,~sample,input,context)) : Storage.Buffer<F32> & Tile.Tile8}:
-  %Equal.sym(Storage.Buffer<F32> & F32,read(Buffer.pack(~F32,input),context,0n),(Buffer.pack(~F32,input),sample(input,context,0n)),matches(input,context,0n)) :
-    {Tile.read_tail(~Storage.Buffer<F32>,~Context,~read,_,context) == (Buffer.pack(~F32,input),tile_value(~Context,~sample,input,context)) : Storage.Buffer<F32> & Tile.Tile8}
-  Tiles.tail_block_refines(~Storage.Buffer<F32>,~Buffer.Model<F32>,~Context,~Buffer.pack(~F32),~read,~sample,~matches,input,context,sample(input,context,0n))
-
-def patch_tile(+input: Buffer.Model<F32>,+context: Kernel.Pixel) ->
-  {Tile.read_tail(~Storage.Buffer<F32>,~Kernel.Pixel,~Kernel.read_pixel,Kernel.read_pixel(Buffer.pack(~F32,input),context,0n),context) ==
-    (Buffer.pack(~F32,input),tile_value(~Kernel.Pixel,~patch_sample,input,context)) : Storage.Buffer<F32> & Tile.Tile8}:
-  tile_read(~Kernel.Pixel,~Kernel.read_pixel,~patch_sample,~patch_read,input,context)
-
-def gradient_value(input: Buffer.Model<F32>,context: Kernel.Gradient,+lane: Nat,+position: U32) -> F32:
-  Kernel.Gradient{outputs,+spatial,+start,+row,destination} = context
-  Bool.pick(F32,U32.is_lt((row + U32.from_nat(lane) : U32),outputs),
-    Tree.read(F32,Buffer.tree(~F32,input),((row + U32.from_nat(lane)) * spatial + start + position : U32)),0.0)
-
-def gradient_pixel(+input: Buffer.Model<F32>,+context: Kernel.Gradient,+lane: Nat,+position: U32) ->
-  {Kernel.gradient_pixel(Buffer.pack(~F32,input),context,lane,position) == (Buffer.pack(~F32,input),gradient_value(input,context,lane,position)) : Storage.Buffer<F32> & F32}:
-  Kernel.Gradient{outputs,spatial,start,row,destination} = context
-  Buffer.read_masked(~F32,0.0,U32.is_lt((row + U32.from_nat(lane) : U32),outputs),input,((row + U32.from_nat(lane)) * spatial + start + position : U32))
-
-def gradient_sample(input: Buffer.Model<F32>,context: Kernel.GradientRead,lane: Nat) -> F32:
-  Kernel.GradientRead{context,position} = context
-  gradient_value(input,context,lane,position)
-
-def gradient_lane(+input: Buffer.Model<F32>,+context: Kernel.GradientRead,+lane: Nat) ->
-  {Kernel.gradient_lane(Buffer.pack(~F32,input),context,lane) == (Buffer.pack(~F32,input),gradient_sample(input,context,lane)) : Storage.Buffer<F32> & F32}:
-  Kernel.GradientRead{context,position} = context
-  gradient_pixel(input,context,lane,position)
-
-def gradient_tile(+input: Buffer.Model<F32>,+context: Kernel.Gradient,+position: U32) ->
-  {Kernel.gradient_tile(Buffer.pack(~F32,input),context,position) ==
-    (Buffer.pack(~F32,input),tile_value(~Kernel.GradientRead,~gradient_sample,input,Kernel.GradientRead{context,position})) : Storage.Buffer<F32> & Tile.Tile8}:
-  tile_read(~Kernel.GradientRead,~Kernel.gradient_lane,~gradient_sample,~gradient_lane,input,Kernel.GradientRead{context,position})
+import ./word_arithmetic.bend as WordArithmetic
+import ./word_multiplication.bend as Multiplication
+import ./natural_addition.bend as Addition
+import ../traversal_blocks.bend as TraversalBlocks
 
 type Packed is Data:
-  Packed{input: Buffer.Model<F32>,output: Tree.Tree<Tile.Tile8>}
+  Packed{input: Buffer.Model<Tile.Tile8>,output: Tree.Tree<Tile.Tile8>}
 
-type Packing is Data:
-  Packing{input: Buffer.Model<F32>,output: Tree.Tree<Tile.Tile8>,index: U32,row: U32,column: U32,columns: U32,patch: Kernel.Patch,height: U32,width: U32,stride: U32,padding: U32}
+def packed_input(state: Packed) -> Buffer.Model<Tile.Tile8>:
+  Packed{input,output} = state
+  input
 
-def represent(state: Packing) -> Kernel.Packing:
-  Packing{input,output,index,row,column,columns,patch,height,width,stride,padding} = state
-  Kernel.Packing{Buffer.pack(~F32,input),Tree.pack(Tile.Tile8,output),index,row,column,columns,patch,height,width,stride,padding}
+def packed_output(state: Packed) -> Tree.Tree<Tile.Tile8>:
+  Packed{input,output} = state
+  output
 
-def advanced(wrap: Bool,input: Buffer.Model<F32>,output: Tree.Tree<Tile.Tile8>,index: U32,+row: U32,column: U32,columns: U32,patch: Kernel.Patch,height: U32,width: U32,stride: U32,padding: U32) -> Packing:
-  match wrap:
-    case False{}: Packing{input,output,index,row,column,columns,patch,height,width,stride,padding}
-    case True{}: Packing{input,output,index,(row + 1 : U32),0,columns,patch,height,width,stride,padding}
-
-def advanced_matches(wrap: Bool,+input: Buffer.Model<F32>,+output: Tree.Tree<Tile.Tile8>,+index: U32,+row: U32,+column: U32,+columns: U32,+patch: Kernel.Patch,+height: U32,+width: U32,+stride: U32,+padding: U32) ->
-  {Kernel.advanced(wrap,Buffer.pack(~F32,input),Tree.pack(Tile.Tile8,output),index,row,column,columns,patch,height,width,stride,padding) ==
-    represent(advanced(wrap,input,output,index,row,column,columns,patch,height,width,stride,padding)) : Kernel.Packing}:
-  match wrap:
-    case False{}: {==}
-    case True{}: {==}
-
-def step(state: Packing) -> Packing:
-  Packing{+input,output,+index,+row,+column,+columns,+patch,+height,+width,+stride,+padding} = state
-  advanced(U32.is_eq((column + 1 : U32),columns),input,
-    Tree.write(Tile.Tile8,output,index,tile_value(~Kernel.Pixel,~patch_sample,input,Kernel.Pixel{patch,row,column,height,width,stride,padding})),
-    (index + 1 : U32),row,(column + 1 : U32),columns,patch,height,width,stride,padding)
-
-def step_matches(+state: Packing) -> {Kernel.pack_step(represent(state)) == represent(step(state)) : Kernel.Packing}:
-  Packing{+input,+output,+index,+row,+column,+columns,+patch,+height,+width,+stride,+padding} = state
-  +context = {Kernel.Pixel{patch,row,column,height,width,stride,padding} : Kernel.Pixel}
-  +tile = tile_value(~Kernel.Pixel,~patch_sample,input,context)
-  %Equal.sym(Storage.Buffer<F32> & Tile.Tile8,
-    Tile.read_tail(~Storage.Buffer<F32>,~Kernel.Pixel,~Kernel.read_pixel,Kernel.read_pixel(Buffer.pack(~F32,input),context,0n),context),
-    (Buffer.pack(~F32,input),tile),patch_tile(input,context)) :
-    {Kernel.packed(Tree.pack(Tile.Tile8,output),index,row,column,columns,patch,height,width,stride,padding,_) == represent(step(state)) : Kernel.Packing}
-  %Equal.sym(Array<Tile.Tile8>,Array.set(Tile.Tile8,Tree.pack(Tile.Tile8,output),index,tile),Tree.pack(Tile.Tile8,Tree.write(Tile.Tile8,output,index,tile)),StorageLaws.write(Tile.Tile8,output,index,tile)) :
-    {Kernel.advanced(U32.is_eq((column + 1 : U32),columns),Buffer.pack(~F32,input),_,(index + 1 : U32),row,(column + 1 : U32),columns,patch,height,width,stride,padding) == represent(step(state)) : Kernel.Packing}
-  advanced_matches(U32.is_eq((column + 1 : U32),columns),input,Tree.write(Tile.Tile8,output,index,tile),(index + 1 : U32),row,(column + 1 : U32),columns,patch,height,width,stride,padding)
-
-def packing_loop(+count: Nat,+state: Packing) ->
-  {Loop.run(~Kernel.Packing,~Kernel.pack_step,count,represent(state)) == represent(Loop.run(~Packing,~step,count,state)) : Kernel.Packing}:
-  Projection.iteration_refines_model(~Kernel.Packing,~Packing,~Kernel.pack_step,~step,~represent,~step_matches,count,state)
-
-def owners(result: Packed) -> Storage.Buffer<F32> & Array<Tile.Tile8>:
+def owners(result: Packed) -> Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>:
   Packed{input,output} = result
-  (Buffer.pack(~F32,input),Tree.pack(Tile.Tile8,output))
+  (Buffer.pack(~Tile.Tile8,input),Tree.pack(Tile.Tile8,output))
 
-def gradient_tile_value(input: Buffer.Model<F32>,context: Kernel.Gradient,position: U32) -> Tile.Tile8:
-  tile_value(~Kernel.GradientRead,~gradient_sample,input,Kernel.GradientRead{context,position})
+# No lane index is eight or more.
+def beyond_eight(+rest: Nat,small: {Nat.is_lt(8n+rest,8n) == True{} : Bool}) -> Empty:
+  Words.false_true(Equal.trans(Bool,False{},Nat.is_lt(rest,0n),True{},Equal.sym(Bool,Nat.is_lt(rest,0n),False{},Division.lt_zero(rest)),small))
 
-def gradient_finished(state: Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>) -> Packed:
-  Traversal.State{input,output,position,context} = state
-  Packed{input,output}
+def filled_lane(+index: Nat,+value: F32,small: {Nat.is_lt(index,8n) == True{} : Bool}) -> {Tiles.select_lane(index,Tile.filled(value)) == value : F32}:
+  match index:
+    case 0n: {==}
+    case 1n: {==}
+    case 2n: {==}
+    case 3n: {==}
+    case 4n: {==}
+    case 5n: {==}
+    case 6n: {==}
+    case 7n: {==}
+    case 8n+rest: Empty.absurd({Tiles.select_lane(8n+rest,Tile.filled(value)) == value : F32},beyond_eight(rest,small))
 
-def gradient_finished_matches(+state: Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>) ->
-  {Traversal.finish(~Storage.Buffer<F32>,~Tile.Tile8,~Kernel.Gradient,
-    Traversals.represent(~Storage.Buffer<F32>,~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~Buffer.pack(~F32),state)) ==
-    owners(gradient_finished(state)) : Storage.Buffer<F32> & Array<Tile.Tile8>}:
-  Traversal.State{input,output,position,context} = state
+# ---- Reading traversals ----
+
+# The model states of a traversal that reads a buffer and stores at its
+# position.
+def trace(~Context: Data,~sample: Buffer.Model<Tile.Tile8> -> Context -> U32 -> Tile.Tile8,count: Nat,position: U32,context: Context,
+  input: Buffer.Model<Tile.Tile8>,output: Tree.Tree<Tile.Tile8>) -> Traversal.State<&2,&2,Buffer.Model<Tile.Tile8>,Tree.Tree<Tile.Tile8>,Context>:
+  Loop.run(~Traversal.State<&2,&2,Buffer.Model<Tile.Tile8>,Tree.Tree<Tile.Tile8>,Context>,
+    ~Traversals.model_step(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~sample,~TraversalBlocks.in_place(~Context)),count,Traversal.State{input,output,position,context})
+
+def read_run(~Context: Data,~sample: Buffer.Model<Tile.Tile8> -> Context -> U32 -> Tile.Tile8,count: Nat,position: U32,context: Context,
+  input: Buffer.Model<Tile.Tile8>,output: Tree.Tree<Tile.Tile8>) -> Tree.Tree<Tile.Tile8>:
+  IndexedValues.run(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~sample,~TraversalBlocks.in_place(~Context),count,position,context,input,output)
+
+def result_parts(~Context: Data,+state: Traversal.State<&2,&2,Buffer.Model<Tile.Tile8>,Tree.Tree<Tile.Tile8>,Context>) ->
+  {AccessLaws.pack_result(~Storage.Buffer<Tile.Tile8>,~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Buffer.pack(~Tile.Tile8),AccessLaws.finish_model(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,state)) ==
+    (Buffer.pack(~Tile.Tile8,Traversals.model_reader(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,state)),
+      Tree.pack(Tile.Tile8,IndexedValues.output_tree(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,AccessLaws.finish_model(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,state)))) :
+    Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>}:
+  Traversal.State{reader,output,position,context} = state
   {==}
 
-def packed_tree(result: Packed) -> Tree.Tree<Tile.Tile8>:
-  Packed{input,output} = result
-  output
+# The buffer read and the model run it stores.
+def owned(~Context: Data,~sample: Buffer.Model<Tile.Tile8> -> Context -> U32 -> Tile.Tile8,count: Nat,position: U32,context: Context,
+  +input: Buffer.Model<Tile.Tile8>,output: Tree.Tree<Tile.Tile8>) -> Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>:
+  (Buffer.pack(~Tile.Tile8,input),Tree.pack(Tile.Tile8,read_run(~Context,~sample,count,position,context,input,output)))
 
-def gradient_model_output(+state: Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>) ->
-  {packed_tree(gradient_finished(state)) == IndexedValues.output_tree(~Buffer.Model<F32>,~Tile.Tile8,AccessLaws.finish_model(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,state)) : Tree.Tree<Tile.Tile8>}:
-  Traversal.State{input,output,position,context} = state
+# A traversal reading a buffer gives the buffer back and stores the model
+# run.
+def read_owners(~Context: Data,~read: Storage.Buffer<Tile.Tile8> -> Context -> U32 -> Storage.Buffer<Tile.Tile8> & Tile.Tile8,
+  ~sample: Buffer.Model<Tile.Tile8> -> Context -> U32 -> Tile.Tile8,
+  ~read_matches: @+reader: Buffer.Model<Tile.Tile8> -> @+context: Context -> @+position: U32 ->
+    {read(Buffer.pack(~Tile.Tile8,reader),context,position) == (Buffer.pack(~Tile.Tile8,reader),sample(reader,context,position)) : Storage.Buffer<Tile.Tile8> & Tile.Tile8},
+  +count: Nat,+position: U32,+context: Context,+input: Buffer.Model<Tile.Tile8>,+output: Tree.Tree<Tile.Tile8>) ->
+  {Traversal.finish(~Storage.Buffer<Tile.Tile8>,~Tile.Tile8,~Context,Traversal.run(~Storage.Buffer<Tile.Tile8>,~Tile.Tile8,~Context,~read,~TraversalBlocks.in_place(~Context),count,
+      Traversal.State{Buffer.pack(~Tile.Tile8,input),Tree.pack(Tile.Tile8,output),position,context})) ==
+    owned(~Context,~sample,count,position,context,input,output) : Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>}:
+  +start = {Traversal.State{input,output,position,context} : Traversal.State<&2,&2,Buffer.Model<Tile.Tile8>,Tree.Tree<Tile.Tile8>,Context>}
+  +model = trace(~Context,~sample,count,position,context,input,output)
+  %Equal.sym(Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>,
+      Traversal.finish(~Storage.Buffer<Tile.Tile8>,~Tile.Tile8,~Context,Traversal.run(~Storage.Buffer<Tile.Tile8>,~Tile.Tile8,~Context,~read,~TraversalBlocks.in_place(~Context),count,
+        Traversal.State{Buffer.pack(~Tile.Tile8,input),Tree.pack(Tile.Tile8,output),position,context})),
+      AccessLaws.pack_result(~Storage.Buffer<Tile.Tile8>,~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Buffer.pack(~Tile.Tile8),AccessLaws.finish_model(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,model)),
+      AccessLaws.finish_relation(~Storage.Buffer<Tile.Tile8>,~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~Context,~Buffer.pack(~Tile.Tile8),
+        ~Traversals.represent(~Storage.Buffer<Tile.Tile8>,~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~Buffer.pack(~Tile.Tile8)),
+        ~AccessLaws.indexed_finished(~Storage.Buffer<Tile.Tile8>,~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~Buffer.pack(~Tile.Tile8)),
+        Traversal.run(~Storage.Buffer<Tile.Tile8>,~Tile.Tile8,~Context,~read,~TraversalBlocks.in_place(~Context),count,
+          Traversal.State{Buffer.pack(~Tile.Tile8,input),Tree.pack(Tile.Tile8,output),position,context}),model,
+        Traversals.traversal_refines_model(~Storage.Buffer<Tile.Tile8>,~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~Buffer.pack(~Tile.Tile8),~read,~sample,~TraversalBlocks.in_place(~Context),
+          ~read_matches,count,start))) :
+    {_ == owned(~Context,~sample,count,position,context,input,output) : Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>}
+  %Equal.sym(Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>,
+      AccessLaws.pack_result(~Storage.Buffer<Tile.Tile8>,~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Buffer.pack(~Tile.Tile8),AccessLaws.finish_model(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,model)),
+      (Buffer.pack(~Tile.Tile8,Traversals.model_reader(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,model)),
+        Tree.pack(Tile.Tile8,IndexedValues.output_tree(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,AccessLaws.finish_model(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,model)))),
+      result_parts(~Context,model)) :
+    {_ == owned(~Context,~sample,count,position,context,input,output) : Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>}
+  %Equal.sym(Buffer.Model<Tile.Tile8>,Traversals.model_reader(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,model),input,
+      Traversals.model_reader_kept(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~sample,~TraversalBlocks.in_place(~Context),count,start)) :
+    {(Buffer.pack(~Tile.Tile8,_),Tree.pack(Tile.Tile8,IndexedValues.output_tree(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,AccessLaws.finish_model(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,model)))) ==
+      owned(~Context,~sample,count,position,context,input,output) : Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>}
   {==}
 
-def gradient_place_identity(+context: Kernel.Gradient,+position: U32) -> {Kernel.gradient_destination(context,position) == position : U32}:
+def zero_base(~Context: Data,context: Context) -> U32:
+  0
+
+def zero_affine(~Context: Data,+context: Context,+position: U32) -> {TraversalBlocks.in_place(~Context,context,position) == (zero_base(~Context,context) + position : U32) : U32}:
+  Equal.sym(U32,(0 + position : U32),position,Arithmetic.add_zero_left(position))
+
+# A run from position first writes its samples in order from first.
+def read_sequence(~Context: Data,~sample: Buffer.Model<Tile.Tile8> -> Context -> U32 -> Tile.Tile8,+count: Nat,+first: Nat,+context: Context,
+  +input: Buffer.Model<Tile.Tile8>,+output: Tree.Tree<Tile.Tile8>) ->
+  {read_run(~Context,~sample,count,U32.from_nat(first),context,input,output) ==
+    Tree.write_sequence(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~IndexedValues.Sampled<Buffer.Model<Tile.Tile8>,Context>,
+      ~IndexedValues.sampled(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~sample),count,first,IndexedValues.Sampled{input,context}),U32.from_nat(first),output) : Tree.Tree<Tile.Tile8>}:
+  +values = ListRead.enumerate(~Tile.Tile8,~IndexedValues.Sampled<Buffer.Model<Tile.Tile8>,Context>,
+    ~IndexedValues.sampled(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~sample),count,first,IndexedValues.Sampled{input,context})
+  %Arithmetic.add_zero_left(U32.from_nat(first)) :
+    {read_run(~Context,~sample,count,U32.from_nat(first),context,input,output) == Tree.write_sequence(~Tile.Tile8,values,_,output) : Tree.Tree<Tile.Tile8>}
+  IndexedValues.sequence(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Context,~sample,~TraversalBlocks.in_place(~Context),~zero_base(~Context),~zero_affine(~Context),count,first,context,input,output)
+
+# ---- Pixel planes ----
+
+def plane_sample(input: Buffer.Model<Tile.Tile8>,plane: Kernel.Plane,position: U32) -> Tile.Tile8:
+  Kernel.Plane{+base,+row,+column,+stride,+width,+groups,+row_first,+row_end,+column_first,+column_end,+first_row,+band_columns,+start} = plane
+  +within = (position - start : U32)
+  +tile_row = (first_row + within / band_columns : U32)
+  +tile_column = (within % band_columns : U32)
+  Bool.pick(Tile.Tile8,U32.is_le(row_first,tile_row) && U32.is_lt(tile_row,row_end) && U32.is_le(column_first,tile_column) && U32.is_lt(tile_column,column_end),
+    Tree.read(Tile.Tile8,Buffer.tree(~Tile.Tile8,input),(base + ((tile_row * stride + row) * width + tile_column * stride + column) * groups : U32)),Tile.filled(0.0))
+
+def plane_read_matches(+input: Buffer.Model<Tile.Tile8>,+plane: Kernel.Plane,+position: U32) ->
+  {Kernel.plane_read(Buffer.pack(~Tile.Tile8,input),plane,position) == (Buffer.pack(~Tile.Tile8,input),plane_sample(input,plane,position)) : Storage.Buffer<Tile.Tile8> & Tile.Tile8}:
+  Kernel.Plane{+base,+row,+column,+stride,+width,+groups,+row_first,+row_end,+column_first,+column_end,+first_row,+band_columns,+start} = plane
+  +within = (position - start : U32)
+  +tile_row = (first_row + within / band_columns : U32)
+  +tile_column = (within % band_columns : U32)
+  Buffer.read_masked(~Tile.Tile8,Tile.filled(0.0),U32.is_le(row_first,tile_row) && U32.is_lt(tile_row,row_end) && U32.is_le(column_first,tile_column) && U32.is_lt(tile_column,column_end),
+    input,(base + ((tile_row * stride + row) * width + tile_column * stride + column) * groups : U32))
+
+def pixel_plane(plane: U32,pixels: Kernel.Pixels,state: Packed) -> Packed:
+  Kernel.Pixels{+geometry,+base,+phases,+first_row,+band_rows,+band_columns} = pixels
+  Packed{+input,output} = state
+  +plane = plane
+  Packed{input,read_run(~Kernel.Plane,~plane_sample,U32.to_nat((band_rows * band_columns : U32)),(plane * band_rows * band_columns : U32),
+    Kernel.plane_of(plane,Kernel.Pixels{geometry,base,phases,first_row,band_rows,band_columns}),input,output)}
+
+def pixel_plane_matches(+plane: U32,+pixels: Kernel.Pixels,+state: Packed) ->
+  {Kernel.pixel_plane(plane,pixels,owners(state)) == owners(pixel_plane(plane,pixels,state)) : Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>}:
+  Kernel.Pixels{+geometry,+base,+phases,+first_row,+band_rows,+band_columns} = pixels
+  Packed{+input,+output} = state
+  read_owners(~Kernel.Plane,~Kernel.plane_read,~plane_sample,~plane_read_matches,U32.to_nat((band_rows * band_columns : U32)),(plane * band_rows * band_columns : U32),
+    Kernel.plane_of(plane,Kernel.Pixels{geometry,base,phases,first_row,band_rows,band_columns}),input,output)
+
+# ---- Blocks of planes ----
+
+# A fold whose step index writes its row of width tiles at index * width
+# writes the rows one after another.
+def blocks_points(~Context: Data,~Ready: Context -> Data,~reader: Context -> Buffer.Model<Tile.Tile8>,~step: U32 -> Context -> Packed -> Packed,~row: Context -> Nat -> List<&2,Tile.Tile8>,
+  ~width: Context -> Nat,~count: Context -> Nat,
+  ~written: @+context: Context -> @+ready: Ready(context) -> @+index: Nat -> @+inside: {Nat.is_lt(index,count(context)) == True{} : Bool} ->
+    @+tree: Tree.Tree<Tile.Tile8> ->
+    {step(U32.from_nat(index),context,Packed{reader(context),tree}) == Packed{reader(context),Tree.write_sequence(~Tile.Tile8,row(context,index),U32.from_nat(Nat.mul(index,width(context))),tree)} : Packed},
+  ~length: @+context: Context -> @+index: Nat -> {List.length(&2,Tile.Tile8,row(context,index)) == width(context) : Nat},
+  n: Nat,+first: Nat,+context: Context,+ready: Ready(context),+tree: Tree.Tree<Tile.Tile8>,
+  +room: {Nat.is_le(Nat.add(first,n),count(context)) == True{} : Bool}) ->
+  {Traversal.indexed_fold(~Packed,~Context,~step,n,U32.from_nat(first),context,Packed{reader(context),tree}) ==
+    Packed{reader(context),Tree.write_sequence(~Tile.Tile8,List.concat(&2,Tile.Tile8,ListRead.enumerate(~List<&2,Tile.Tile8>,~Context,~row,n,first,context)),
+      U32.from_nat(Nat.mul(first,width(context))),tree)} : Packed}:
+  match n:
+    case 0n: {==}
+    case 1n+ +rest:
+      +size = width(context)
+      +here = row(context,first)
+      +offset = U32.from_nat(Nat.mul(first,size))
+      +later = List.concat(&2,Tile.Tile8,ListRead.enumerate(~List<&2,Tile.Tile8>,~Context,~row,rest,1n+first,context))
+      +front = Tree.write_sequence(~Tile.Tile8,here,offset,tree)
+      +input = reader(context)
+      +wanted = {Packed{input,Tree.write_sequence(~Tile.Tile8,List.append(&2,Tile.Tile8,here,later),offset,tree)} : Packed}
+      +ending = Equal.trans(U32,ListRead.end_position(~Tile.Tile8,here,offset),(offset + U32.from_nat(List.length(&2,Tile.Tile8,here)) : U32),U32.from_nat(Nat.mul(1n+first,size)),
+        ListRead.end_position_length(~Tile.Tile8,here,offset),
+        %Equal.sym(Nat,List.length(&2,Tile.Tile8,here),size,length(context,first)) : {(offset + U32.from_nat(_) : U32) == U32.from_nat(Nat.mul(1n+first,size)) : U32}
+        %Order.commutative(Nat.mul(first,size),size) : {(offset + U32.from_nat(size) : U32) == U32.from_nat(_) : U32}
+        WordArithmetic.native_add(Nat.mul(first,size),size))
+      %Equal.sym(Packed,step(U32.from_nat(first),context,Packed{input,tree}),Packed{input,front},
+        written(context,ready,first,Order.room_index(first,rest,count(context),room),tree)) :
+        {Traversal.indexed_fold(~Packed,~Context,~step,rest,(U32.from_nat(first) + 1 : U32),context,_) == wanted : Packed}
+      %Equal.sym(U32,(U32.from_nat(first) + 1 : U32),U32.from_nat(1n+first),Bounds.add_one(U32.from_nat(first))) :
+        {Traversal.indexed_fold(~Packed,~Context,~step,rest,_,context,Packed{input,front}) == wanted : Packed}
+      %Equal.sym(Tree.Tree<Tile.Tile8>,Tree.write_sequence(~Tile.Tile8,List.append(&2,Tile.Tile8,here,later),offset,tree),
+        Tree.write_sequence(~Tile.Tile8,later,ListRead.end_position(~Tile.Tile8,here,offset),front),ListRead.concatenated(~Tile.Tile8,here,later,offset,tree)) :
+        {Traversal.indexed_fold(~Packed,~Context,~step,rest,U32.from_nat(1n+first),context,Packed{input,front}) == Packed{input,_} : Packed}
+      %Equal.sym(U32,ListRead.end_position(~Tile.Tile8,here,offset),U32.from_nat(Nat.mul(1n+first,size)),ending) :
+        {Traversal.indexed_fold(~Packed,~Context,~step,rest,U32.from_nat(1n+first),context,Packed{input,front}) == Packed{input,Tree.write_sequence(~Tile.Tile8,later,_,front)} : Packed}
+      blocks_points(~Context,~Ready,~reader,~step,~row,~width,~count,~written,~length,rest,1n+first,context,ready,front,Order.advance_room(first,rest,count(context),room))
+
+# Tile i of row p of the blocks reads back at p * width + i.
+def blocks_read(~Context: Data,~row: Context -> Nat -> List<&2,Tile.Tile8>,~width: Context -> Nat,
+  ~length: @+context: Context -> @+index: Nat -> {List.length(&2,Tile.Tile8,row(context,index)) == width(context) : Nat},
+  +rows: Nat,+context: Context,+index: Nat,+lane: Nat,+depth: Nat,+tree: Tree.Tree<Tile.Tile8>,+balanced: Shape.Balanced(Tile.Tile8,depth,tree),
+  +limit: {Nat.is_le(depth,30n) == True{} : Bool},+room: {Nat.is_le(Nat.mul(rows,width(context)),U32.to_nat(Tree.capacity(Tile.Tile8,tree))) == True{} : Bool},
+  +inside: {Nat.is_lt(index,rows) == True{} : Bool},+lane_inside: {Nat.is_lt(lane,width(context)) == True{} : Bool}) ->
+  {Tree.read(Tile.Tile8,Tree.write_sequence(~Tile.Tile8,List.concat(&2,Tile.Tile8,ListRead.enumerate(~List<&2,Tile.Tile8>,~Context,~row,rows,0n,context)),U32.from_nat(0n),tree),
+      U32.from_nat(Nat.add(Nat.mul(index,width(context)),lane))) ==
+    ListRead.at(~Tile.Tile8,Tile.filled(0.0),lane,row(context,index)) : Tile.Tile8}:
+  +values = List.concat(&2,Tile.Tile8,ListRead.enumerate(~List<&2,Tile.Tile8>,~Context,~row,rows,0n,context))
+  +position = Nat.add(Nat.mul(index,width(context)),lane)
+  +total = ListRead.concat_enumerate_length(~Tile.Tile8,~Context,~row,~width,~length,rows,0n,context)
+  Equal.trans(Tile.Tile8,Tree.read(Tile.Tile8,Tree.write_sequence(~Tile.Tile8,values,U32.from_nat(0n),tree),U32.from_nat(position)),
+    ListRead.at(~Tile.Tile8,Tile.filled(0.0),position,values),ListRead.at(~Tile.Tile8,Tile.filled(0.0),lane,row(context,index)),
+    ListRead.listed(~Tile.Tile8,values,position,0n,depth,tree,Tile.filled(0.0),balanced,limit,
+      %Equal.sym(Nat,List.length(&2,Tile.Tile8,values),Nat.mul(rows,width(context)),total) : {Nat.is_le(_,U32.to_nat(Tree.capacity(Tile.Tile8,tree))) == True{} : Bool} room,
+      %Equal.sym(Nat,List.length(&2,Tile.Tile8,values),Nat.mul(rows,width(context)),total) : {Nat.is_lt(position,_) == True{} : Bool} RowMajor.radix(index,rows,lane,width(context),inside,lane_inside)),
+    ListRead.concat_enumerate_at(~Tile.Tile8,~Context,~row,~width,~length,Tile.filled(0.0),rows,0n,index,lane,context,inside,lane_inside))
+
+# The planes of a pixel band: plane p holds area samples of its plane from
+# p * area.
+type Planes is Data:
+  Planes{input: Buffer.Model<Tile.Tile8>,pixels: Kernel.Pixels,area: Nat,count: Nat}
+
+def pixels_area(+pixels: Kernel.Pixels) -> U32:
+  Kernel.Pixels{geometry,base,phases,first_row,+band_rows,+band_columns} = pixels
+  (band_rows * band_columns : U32)
+
+type PlanesReady<-pixels: Kernel.Pixels,-area: Nat> is Data:
+  PlanesReady{area_exact: {pixels_area(pixels) == U32.from_nat(area) : U32},area_back: {U32.to_nat(U32.from_nat(area)) == area : Nat}}
+
+def planes_ready(context: Planes) -> Data:
+  Planes{input,+pixels,+area,count} = context
+  PlanesReady<pixels,area>
+
+def planes_reader(context: Planes) -> Buffer.Model<Tile.Tile8>:
+  Planes{input,pixels,area,count} = context
+  input
+
+def planes_step(plane: U32,context: Planes,state: Packed) -> Packed:
+  Planes{input,pixels,area,count} = context
+  pixel_plane(plane,pixels,state)
+
+def planes_project(context: Planes) -> Kernel.Pixels:
+  Planes{input,pixels,area,count} = context
+  pixels
+
+def plane_samples(+input: Buffer.Model<Tile.Tile8>,+pixels: Kernel.Pixels,+plane: Nat) -> IndexedValues.Sampled<Buffer.Model<Tile.Tile8>,Kernel.Plane>:
+  IndexedValues.Sampled{input,Kernel.plane_of(U32.from_nat(plane),pixels)}
+
+def planes_row(context: Planes,plane: Nat) -> List<&2,Tile.Tile8>:
+  Planes{+input,+pixels,+area,count} = context
+  +plane = plane
+  ListRead.enumerate(~Tile.Tile8,~IndexedValues.Sampled<Buffer.Model<Tile.Tile8>,Kernel.Plane>,~IndexedValues.sampled(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Kernel.Plane,~plane_sample),
+    area,Nat.mul(plane,area),plane_samples(input,pixels,plane))
+
+def planes_width(context: Planes) -> Nat:
+  Planes{input,pixels,area,count} = context
+  area
+
+def planes_count(context: Planes) -> Nat:
+  Planes{input,pixels,area,count} = context
+  count
+
+def planes_length(+context: Planes,+plane: Nat) -> {List.length(&2,Tile.Tile8,planes_row(context,plane)) == planes_width(context) : Nat}:
+  Planes{+input,+pixels,+area,+count} = context
+  ListRead.enumerate_length(~Tile.Tile8,~IndexedValues.Sampled<Buffer.Model<Tile.Tile8>,Kernel.Plane>,~IndexedValues.sampled(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Kernel.Plane,~plane_sample),
+    area,Nat.mul(plane,area),plane_samples(input,pixels,plane))
+
+def planes_same(+plane: U32,+context: Planes,+state: Packed) -> {planes_step(plane,context,state) == pixel_plane(plane,planes_project(context),state) : Packed}:
+  Planes{+input,+pixels,+area,+count} = context
   {==}
 
-def window_input(window: Kernel.WeightWindow,+count: U32,input: Buffer.Model<F32>) -> Packing:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  Loop.run(~Packing,~step,U32.to_nat(count),
-    Packing{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,row,column,columns,Kernel.patch(tap,geometry,image),h,w,s,p})
+def planes_written(+context: Planes,+ready: planes_ready(context),+plane: Nat,+inside: {Nat.is_lt(plane,planes_count(context)) == True{} : Bool},+tree: Tree.Tree<Tile.Tile8>) ->
+  {planes_step(U32.from_nat(plane),context,Packed{planes_reader(context),tree}) ==
+    Packed{planes_reader(context),Tree.write_sequence(~Tile.Tile8,planes_row(context,plane),U32.from_nat(Nat.mul(plane,planes_width(context))),tree)} : Packed}:
+  Planes{+input,+pixels,+area,+count} = context
+  Kernel.Pixels{+geometry,+base,+phases,+first_row,+band_rows,+band_columns} = pixels
+  PlanesReady{+area_exact,+area_back} = ready
+  +word = U32.from_nat(plane)
+  +whole = {Kernel.Pixels{geometry,base,phases,first_row,band_rows,band_columns} : Kernel.Pixels}
+  +context_plane = Kernel.plane_of(word,whole)
+  +start = Nat.mul(plane,area)
+  +values = ListRead.enumerate(~Tile.Tile8,~IndexedValues.Sampled<Buffer.Model<Tile.Tile8>,Kernel.Plane>,~IndexedValues.sampled(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Kernel.Plane,~plane_sample),
+    area,start,IndexedValues.Sampled{input,context_plane})
+  +wanted = {Packed{input,Tree.write_sequence(~Tile.Tile8,values,U32.from_nat(start),tree)} : Packed}
+  %Equal.sym(U32,(word * band_rows * band_columns : U32),(word * (band_rows * band_columns : U32) : U32),Arithmetic.multiply_associative(word,band_rows,band_columns)) :
+    {Packed{input,read_run(~Kernel.Plane,~plane_sample,U32.to_nat((band_rows * band_columns : U32)),_,context_plane,input,tree)} == wanted : Packed}
+  %Equal.sym(U32,(band_rows * band_columns : U32),U32.from_nat(area),area_exact) :
+    {Packed{input,read_run(~Kernel.Plane,~plane_sample,U32.to_nat(_),(word * _ : U32),context_plane,input,tree)} == wanted : Packed}
+  %Equal.sym(Nat,U32.to_nat(U32.from_nat(area)),area,area_back) :
+    {Packed{input,read_run(~Kernel.Plane,~plane_sample,_,(word * U32.from_nat(area) : U32),context_plane,input,tree)} == wanted : Packed}
+  %Equal.sym(U32,(word * U32.from_nat(area) : U32),U32.from_nat(start),Multiplication.native_encoded_multiply(plane,area)) :
+    {Packed{input,read_run(~Kernel.Plane,~plane_sample,area,_,context_plane,input,tree)} == wanted : Packed}
+  Equal.cong(Tree.Tree<Tile.Tile8>,Packed,output => Packed{input,output},read_run(~Kernel.Plane,~plane_sample,area,U32.from_nat(start),context_plane,input,tree),
+    Tree.write_sequence(~Tile.Tile8,values,U32.from_nat(start),tree),read_sequence(~Kernel.Plane,~plane_sample,area,start,context_plane,input,tree))
 
-def window_input_matches(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>) ->
-  {Kernel.window_input(window,count,Buffer.pack(~F32,input)) == represent(window_input(window,count,input)) : Kernel.Packing}:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  +depth = Storage.depth_for(count)
-  +initial = {Packing{input,Tree.fresh(Tile.Tile8,depth,Tile.filled(0.0)),0,row,column,columns,Kernel.patch(tap,geometry,image),h,w,s,p} : Packing}
-  %Equal.sym(Array<Tile.Tile8>,Array.new(Tile.Tile8,depth,Tile.filled(0.0)),Tree.pack(Tile.Tile8,Tree.fresh(Tile.Tile8,depth,Tile.filled(0.0))),StorageLaws.fresh(Tile.Tile8,depth,Tile.filled(0.0))) :
-    {Loop.run(~Kernel.Packing,~Kernel.pack_step,U32.to_nat(count),Kernel.Packing{Buffer.pack(~F32,input),_,0,row,column,columns,Kernel.patch(tap,geometry,image),h,w,s,p}) == represent(window_input(window,count,input)) : Kernel.Packing}
-  packing_loop(U32.to_nat(count),initial)
+# The planes of a pixel band are the samples of each plane in plane order.
+def planes_points(+context: Planes,+ready: planes_ready(context),+tree: Tree.Tree<Tile.Tile8>) ->
+  {Traversal.indexed_fold(~Packed,~Kernel.Pixels,~pixel_plane,planes_count(context),U32.from_nat(0n),planes_project(context),Packed{planes_reader(context),tree}) ==
+    Packed{planes_reader(context),Tree.write_sequence(~Tile.Tile8,List.concat(&2,Tile.Tile8,ListRead.enumerate(~List<&2,Tile.Tile8>,~Planes,~planes_row,planes_count(context),0n,context)),
+      U32.from_nat(0n),tree)} : Packed}:
+  +count = planes_count(context)
+  %Traversals.indexed_fold_change_context(~Packed,~Planes,~Kernel.Pixels,~planes_project,~planes_step,~pixel_plane,~planes_same,count,U32.from_nat(0n),context,
+      Packed{planes_reader(context),tree}) :
+    {_ == Packed{planes_reader(context),Tree.write_sequence(~Tile.Tile8,List.concat(&2,Tile.Tile8,ListRead.enumerate(~List<&2,Tile.Tile8>,~Planes,~planes_row,count,0n,context)),
+      U32.from_nat(0n),tree)} : Packed}
+  blocks_points(~Planes,~planes_ready,~planes_reader,~planes_step,~planes_row,~planes_width,~planes_count,~planes_written,~planes_length,count,0n,context,ready,tree,
+    Order.reflexive(count))
 
-def window_gradient(window: Kernel.WeightWindow,+count: U32,input: Buffer.Model<F32>) -> Packed:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,+o,h,w,k,s,p,+rows,+columns,taps} = geometry
-  gradient_finished(Loop.run(~Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>,
-    ~Traversals.model_step(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination),U32.to_nat(count),
-    Traversal.State{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,
-      Kernel.Gradient{o,(rows * columns : U32),(image * o * rows * columns + first : U32),output,0}}))
+# ---- Gradient cells ----
 
-def gradient_context(window: Kernel.WeightWindow) -> Kernel.Gradient:
-  Kernel.WeightWindow{geometry,+image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,+o,h,w,k,s,p,+rows,+columns,taps} = geometry
-  Kernel.Gradient{o,(rows * columns : U32),(image * o * rows * columns + first : U32),output,0}
+def gradient_sample(gradient: Buffer.Model<Tile.Tile8>,context: Kernel.Positions,position: U32) -> Tile.Tile8:
+  Kernel.Positions{+base,+groups,+count} = context
+  +position = position
+  Tree.read(Tile.Tile8,Buffer.tree(~Tile.Tile8,gradient),(base + position % count * groups + position / count : U32))
 
-def window_gradient_output(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>) ->
-  {packed_tree(window_gradient(window,count,input)) == IndexedValues.run(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination,
-    U32.to_nat(count),0,gradient_context(window),input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0))) : Tree.Tree<Tile.Tile8>}:
-  Kernel.WeightWindow{geometry,+image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,+o,h,w,k,s,p,+rows,+columns,taps} = geometry
-  +context = {Kernel.Gradient{o,(rows * columns : U32),(image * o * rows * columns + first : U32),output,0} : Kernel.Gradient}
-  +state = Loop.run(~Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>,~Traversals.model_step(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination),U32.to_nat(count),
-    Traversal.State{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,context})
-  gradient_model_output(state)
+def gradient_read_matches(+gradient: Buffer.Model<Tile.Tile8>,+context: Kernel.Positions,+position: U32) ->
+  {Kernel.gradient_read(Buffer.pack(~Tile.Tile8,gradient),context,position) == (Buffer.pack(~Tile.Tile8,gradient),gradient_sample(gradient,context,position)) :
+    Storage.Buffer<Tile.Tile8> & Tile.Tile8}:
+  Kernel.Positions{+base,+groups,+count} = context
+  +position = position
+  Buffer.read(~Tile.Tile8,gradient,(base + position % count * groups + position / count : U32))
 
-def window_gradient_readback_sized(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,
-  sized: AllocationDepth.Sized<count>,+within: {Nat.is_lt(position,U32.to_nat(count)) == True{} : Bool}) ->
-  {Tree.read(Tile.Tile8,packed_tree(window_gradient(window,count,input)),U32.from_nat(position)) == gradient_tile_value(input,gradient_context(window),U32.from_nat(position)) : Tile.Tile8}:
-  AllocationDepth.Sized{+depth_ok,room} = sized
-  +depth = Storage.depth_for(count)
-  +tree = Tree.fresh(Tile.Tile8,depth,Tile.filled(0.0))
-  +balanced = Shape.fresh(Tile.Tile8,depth,Tile.filled(0.0))
-  +capacity = U32.shln(1,depth)
-  %Equal.sym(Tree.Tree<Tile.Tile8>,packed_tree(window_gradient(window,count,input)),IndexedValues.run(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination,U32.to_nat(count),0,gradient_context(window),input,tree),window_gradient_output(window,count,input)) :
-    {Tree.read(Tile.Tile8,_,U32.from_nat(position)) == gradient_tile_value(input,gradient_context(window),U32.from_nat(position)) : Tile.Tile8}
-  IndexedValues.stored(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination,~gradient_place_identity,U32.to_nat(count),gradient_context(window),input,tree,depth,capacity,position,Shape.capacity(Tile.Tile8,depth,tree,balanced),balanced,depth_ok,Power.native_power_bound(depth,Order.successor(depth,30n,depth_ok)),room,within)
+# The gradient cells of every output block of a group, tile b * count + t
+# the cell of block b at position t.
+def gradients(+context: Kernel.Positions,+count: Nat,gradient: Buffer.Model<Tile.Tile8>,tree: Tree.Tree<Tile.Tile8>) -> Packed:
+  +gradient = gradient
+  Packed{gradient,read_run(~Kernel.Positions,~gradient_sample,count,0,context,gradient,tree)}
 
-def window_gradient_readback(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,
-  bounded: {U32.is_le(count,256) == True{} : Bool},+within: {Nat.is_lt(position,U32.to_nat(count)) == True{} : Bool}) ->
-  {Tree.read(Tile.Tile8,packed_tree(window_gradient(window,count,input)),U32.from_nat(position)) == gradient_tile_value(input,gradient_context(window),U32.from_nat(position)) : Tile.Tile8}:
-  window_gradient_readback_sized(window,count,input,position,AllocationDepth.bounded_with(count,256,{==},{==},{==},bounded),within)
+def gradients_matches(+context: Kernel.Positions,+count: Nat,+gradient: Buffer.Model<Tile.Tile8>,+tree: Tree.Tree<Tile.Tile8>) ->
+  {Traversal.finish(~Storage.Buffer<Tile.Tile8>,~Tile.Tile8,~Kernel.Positions,
+    Traversal.run(~Storage.Buffer<Tile.Tile8>,~Tile.Tile8,~Kernel.Positions,~Kernel.gradient_read,~TraversalBlocks.in_place(~Kernel.Positions),count,
+      Traversal.State{Buffer.pack(~Tile.Tile8,gradient),Tree.pack(Tile.Tile8,tree),0,context})) == owners(gradients(context,count,gradient,tree)) :
+    Storage.Buffer<Tile.Tile8> & Array<Tile.Tile8>}:
+  read_owners(~Kernel.Positions,~Kernel.gradient_read,~gradient_sample,~gradient_read_matches,count,0,context,gradient,tree)
 
-def window_gradient_matches(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>) ->
-  {Kernel.window_gradient(window,count,Buffer.pack(~F32,input)) == owners(window_gradient(window,count,input)) : Storage.Buffer<F32> & Array<Tile.Tile8>}:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,+o,h,w,k,s,p,+rows,+columns,taps} = geometry
-  +depth = Storage.depth_for(count)
-  +context = {Kernel.Gradient{o,(rows * columns : U32),(image * o * rows * columns + first : U32),output,0} : Kernel.Gradient}
-  +initial = {Traversal.State{input,Tree.fresh(Tile.Tile8,depth,Tile.filled(0.0)),0,context} : Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>}
-  +state = Loop.run(~Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>,
-    ~Traversals.model_step(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination),U32.to_nat(count),initial)
-  %Equal.sym(Array<Tile.Tile8>,Array.new(Tile.Tile8,depth,Tile.filled(0.0)),Tree.pack(Tile.Tile8,Tree.fresh(Tile.Tile8,depth,Tile.filled(0.0))),StorageLaws.fresh(Tile.Tile8,depth,Tile.filled(0.0))) :
-    {Traversal.finish(~Storage.Buffer<F32>,~Tile.Tile8,~Kernel.Gradient,
-      Traversal.run(~Storage.Buffer<F32>,~Tile.Tile8,~Kernel.Gradient,~Kernel.gradient_tile,~Kernel.gradient_destination,U32.to_nat(count),Traversal.State{Buffer.pack(~F32,input),_,0,context})) == owners(window_gradient(window,count,input)) : Storage.Buffer<F32> & Array<Tile.Tile8>}
-  %Equal.sym(Traversal.State<&1,&1,Storage.Buffer<F32>,Array<Tile.Tile8>,Kernel.Gradient>,
-    Traversal.run(~Storage.Buffer<F32>,~Tile.Tile8,~Kernel.Gradient,~Kernel.gradient_tile,~Kernel.gradient_destination,U32.to_nat(count),
-      Traversals.represent(~Storage.Buffer<F32>,~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~Buffer.pack(~F32),initial)),
-    Traversals.represent(~Storage.Buffer<F32>,~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~Buffer.pack(~F32),state),
-    Traversals.traversal_refines_model(~Storage.Buffer<F32>,~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~Buffer.pack(~F32),~Kernel.gradient_tile,~gradient_tile_value,~Kernel.gradient_destination,~gradient_tile,U32.to_nat(count),initial)) :
-    {Traversal.finish(~Storage.Buffer<F32>,~Tile.Tile8,~Kernel.Gradient,_) == owners(window_gradient(window,count,input)) : Storage.Buffer<F32> & Array<Tile.Tile8>}
-  gradient_finished_matches(state)
+# Inside the count, gradient tile i holds its sample.
+def gradients_stored(+context: Kernel.Positions,+count: Nat,+gradient: Buffer.Model<Tile.Tile8>,+tree: Tree.Tree<Tile.Tile8>,+depth: Nat,+capacity: U32,+position: Nat,
+  capacity_equal: {Tree.capacity(Tile.Tile8,tree) == capacity : U32},balanced: Shape.Balanced(Tile.Tile8,depth,tree),depth_ok: {Nat.is_le(depth,30n) == True{} : Bool},
+  capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},room: {Nat.is_le(count,U32.to_nat(capacity)) == True{} : Bool},
+  +selected: {Nat.is_lt(position,count) == True{} : Bool}) ->
+  {Tree.read(Tile.Tile8,packed_output(gradients(context,count,gradient,tree)),U32.from_nat(position)) == gradient_sample(gradient,context,U32.from_nat(position)) : Tile.Tile8}:
+  IndexedValues.stored(~Buffer.Model<Tile.Tile8>,~Tile.Tile8,~Kernel.Positions,~gradient_sample,~TraversalBlocks.in_place(~Kernel.Positions),~TiledValues.in_place_identity(~Kernel.Positions),
+    count,context,gradient,tree,depth,capacity,position,capacity_equal,balanced,depth_ok,capacity_ok,room,selected)
 
-# Row-major cursor arithmetic stays exact across every column boundary.
-def encoded_pair(pair: Nat & Nat) -> U32 & U32:
-  (row,column) = pair
-  (U32.from_nat(row),U32.from_nat(column))
+# ---- Packing keeps its reader ----
 
-def next_coordinates(wrap: Bool,+row: U32,column: U32) -> U32 & U32:
-  match wrap:
-    case False{}: (row,column)
-    case True{}: ((row + 1 : U32),0)
+def same_input(~Context: Data,index: U32,context: Context,input: Buffer.Model<Tile.Tile8>) -> Buffer.Model<Tile.Tile8>:
+  input
 
-def next_encoded(wrap: Bool,+row: Nat,+column: Nat) ->
-  {next_coordinates(wrap,U32.from_nat(row),U32.from_nat(1n+column)) == encoded_pair(Bool.pick(Nat & Nat,wrap,(1n+row,0n),(row,1n+column))) : U32 & U32}:
-  match wrap:
-    case False{}: {==}
-    case True{}:
-      %Equal.sym(U32,(U32.from_nat(row) + 1 : U32),U32.from_nat(1n+row),Bounds.increment_encoded(row)) : {(_,0) == (U32.from_nat(1n+row),0) : U32 & U32}
-      {==}
-
-def wrap_exact(+remainder: Nat,+columns: U32,+bound: {Nat.is_le(1n+remainder,U32.to_nat(columns)) == True{} : Bool}) ->
-  {U32.is_eq((U32.from_nat(remainder) + 1 : U32),columns) == Nat.is_eq(1n+remainder,U32.to_nat(columns)) : Bool}:
-  %Equal.sym(U32,(U32.from_nat(remainder) + 1 : U32),U32.from_nat(1n+remainder),Bounds.increment_encoded(remainder)) : {U32.is_eq(_,columns) == Nat.is_eq(1n+remainder,U32.to_nat(columns)) : Bool}
-  %Equal.sym(Bool,U32.is_eq(U32.from_nat(1n+remainder),columns),Nat.is_eq(U32.to_nat(U32.from_nat(1n+remainder)),U32.to_nat(columns)),Comparison.eq(U32.from_nat(1n+remainder),columns)) : {_ == Nat.is_eq(1n+remainder,U32.to_nat(columns)) : Bool}
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(1n+remainder)),1n+remainder,FullRange.roundtrip(1n+remainder,columns,bound)) : {Nat.is_eq(_,U32.to_nat(columns)) == Nat.is_eq(1n+remainder,U32.to_nat(columns)) : Bool}
+def same_input_fixed(~Context: Data,+index: U32,+context: Context,+input: Buffer.Model<Tile.Tile8>) -> {same_input(~Context,index,context,input) == input : Buffer.Model<Tile.Tile8>}:
   {==}
 
-def coordinate_increment(+position: Nat,+columns: U32,+positive: {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool}) ->
-  {next_coordinates(U32.is_eq((U32.from_nat(Nat.mod(position,U32.to_nat(columns))) + 1 : U32),columns),U32.from_nat(Nat.div(position,U32.to_nat(columns))),(U32.from_nat(Nat.mod(position,U32.to_nat(columns))) + 1 : U32)) == encoded_pair(Nat.divmod(1n+position,U32.to_nat(columns))) : U32 & U32}:
-  +divisor = U32.to_nat(columns)
-  +row = Nat.div(position,divisor)
-  +column = Nat.mod(position,divisor)
-  +small = DivisionOrder.remainder_small(position,divisor,positive)
-  +bound = Order.strict_follow(column,divisor,small)
-  %Equal.sym(Bool,U32.is_eq((U32.from_nat(column) + 1 : U32),columns),Nat.is_eq(1n+column,divisor),wrap_exact(column,columns,bound)) :
-    {next_coordinates(_,U32.from_nat(row),(U32.from_nat(column) + 1 : U32)) == encoded_pair(Nat.divmod(1n+position,divisor)) : U32 & U32}
-  %Equal.sym(U32,(U32.from_nat(column) + 1 : U32),U32.from_nat(1n+column),Bounds.increment_encoded(column)) :
-    {next_coordinates(Nat.is_eq(1n+column,divisor),U32.from_nat(row),_) == encoded_pair(Nat.divmod(1n+position,divisor)) : U32 & U32}
-  %Equal.sym(Nat & Nat,Nat.divmod(1n+position,divisor),Bool.pick(Nat & Nat,Nat.is_eq(1n+column,divisor),(1n+row,0n),(row,1n+column)),DivisionOrder.increment_case(position,divisor,row,column,DivisionOrder.quotient_exact(position,divisor,positive),small,positive,Order.upper_bound_cases(1n+column,divisor,bound))) :
-    {next_coordinates(Nat.is_eq(1n+column,divisor),U32.from_nat(row),U32.from_nat(1n+column)) == encoded_pair(_) : U32 & U32}
-  next_encoded(Nat.is_eq(1n+column,divisor),row,column)
+# A fold whose every step keeps the reader keeps it.
+def fold_kept(~Context: Data,~step: U32 -> Context -> Packed -> Packed,
+  ~kept: @+index: U32 -> @+context: Context -> @+state: Packed -> {packed_input(step(index,context,state)) == packed_input(state) : Buffer.Model<Tile.Tile8>},
+  +count: Nat,+first: U32,+context: Context,+state: Packed) ->
+  {packed_input(Traversal.indexed_fold(~Packed,~Context,~step,count,first,context,state)) == packed_input(state) : Buffer.Model<Tile.Tile8>}:
+  Equal.trans(Buffer.Model<Tile.Tile8>,packed_input(Traversal.indexed_fold(~Packed,~Context,~step,count,first,context,state)),
+    Traversal.indexed_fold(~Buffer.Model<Tile.Tile8>,~Context,~same_input(~Context),count,first,context,packed_input(state)),packed_input(state),
+    Traversals.indexed_fold_observes(~Packed,~Buffer.Model<Tile.Tile8>,~Context,~step,~packed_input,~same_input(~Context),~kept,count,first,context,state),
+    Traversals.indexed_fold_fixed(~Buffer.Model<Tile.Tile8>,~Context,~same_input(~Context),~same_input_fixed(~Context),count,first,context,packed_input(state)))
 
-type NaturalPacking is Data:
-  NaturalPacking{input: Buffer.Model<F32>,output: Tree.Tree<Tile.Tile8>,index: Nat,position: Nat,columns: U32,patch: Kernel.Patch,height: U32,width: U32,stride: U32,padding: U32,positive: {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool}}
-
-type PatchContext is Data:
-  PatchContext{input: Buffer.Model<F32>,columns: U32,patch: Kernel.Patch,height: U32,width: U32,stride: U32,padding: U32}
-
-def natural_sample(context: PatchContext,+position: Nat) -> Tile.Tile8:
-  PatchContext{input,+columns,patch,height,width,stride,padding} = context
-  tile_value(~Kernel.Pixel,~patch_sample,input,Kernel.Pixel{patch,U32.from_nat(Nat.div(position,U32.to_nat(columns))),U32.from_nat(Nat.mod(position,U32.to_nat(columns))),height,width,stride,padding})
-
-def natural_value(context: PatchContext,position: Nat) -> Tile.Tile8:
-  natural_sample(context,position)
-
-def natural_represent(state: NaturalPacking) -> Packing:
-  NaturalPacking{input,output,index,+position,+columns,patch,height,width,stride,padding,positive} = state
-  Packing{input,output,U32.from_nat(index),U32.from_nat(Nat.div(position,U32.to_nat(columns))),U32.from_nat(Nat.mod(position,U32.to_nat(columns))),columns,patch,height,width,stride,padding}
-
-def natural_step(state: NaturalPacking) -> NaturalPacking:
-  NaturalPacking{+input,output,+index,+position,+columns,+patch,+height,+width,+stride,+padding,positive} = state
-  NaturalPacking{input,Tree.write(Tile.Tile8,output,U32.from_nat(index),natural_sample(PatchContext{input,columns,patch,height,width,stride,padding},position)),1n+index,1n+position,columns,patch,height,width,stride,padding,positive}
-
-def packing_coordinates(input: Buffer.Model<F32>,output: Tree.Tree<Tile.Tile8>,index: U32,columns: U32,patch: Kernel.Patch,height: U32,width: U32,stride: U32,padding: U32,pair: U32 & U32) -> Packing:
-  (row,column) = pair
-  Packing{input,output,index,row,column,columns,patch,height,width,stride,padding}
-
-def advanced_coordinates(wrap: Bool,+input: Buffer.Model<F32>,+output: Tree.Tree<Tile.Tile8>,+index: U32,+row: U32,+column: U32,+columns: U32,+patch: Kernel.Patch,+height: U32,+width: U32,+stride: U32,+padding: U32) ->
-  {advanced(wrap,input,output,index,row,column,columns,patch,height,width,stride,padding) == packing_coordinates(input,output,index,columns,patch,height,width,stride,padding,next_coordinates(wrap,row,column)) : Packing}:
-  match wrap:
-    case False{}: {==}
-    case True{}: {==}
-
-def packing_encoded(+input: Buffer.Model<F32>,+output: Tree.Tree<Tile.Tile8>,+index: U32,+columns: U32,+patch: Kernel.Patch,+height: U32,+width: U32,+stride: U32,+padding: U32,pair: Nat & Nat) ->
-  {packing_coordinates(input,output,index,columns,patch,height,width,stride,padding,encoded_pair(pair)) == Packing{input,output,index,U32.from_nat(Pair.fst(Nat,Nat,pair)),U32.from_nat(Pair.snd(Nat,Nat,pair)),columns,patch,height,width,stride,padding} : Packing}:
-  (row,column) = pair
+def pixel_plane_kept(+plane: U32,+pixels: Kernel.Pixels,+state: Packed) -> {packed_input(pixel_plane(plane,pixels,state)) == packed_input(state) : Buffer.Model<Tile.Tile8>}:
+  Kernel.Pixels{+geometry,+base,+phases,+first_row,+band_rows,+band_columns} = pixels
+  Packed{+input,+output} = state
   {==}
-
-def natural_step_matches(+state: NaturalPacking) -> {step(natural_represent(state)) == natural_represent(natural_step(state)) : Packing}:
-  NaturalPacking{+input,+output,+index,+position,+columns,+patch,+height,+width,+stride,+padding,+positive} = state
-  +row = U32.from_nat(Nat.div(position,U32.to_nat(columns)))
-  +column = U32.from_nat(Nat.mod(position,U32.to_nat(columns)))
-  +written = Tree.write(Tile.Tile8,output,U32.from_nat(index),natural_sample(PatchContext{input,columns,patch,height,width,stride,padding},position))
-  %Equal.sym(U32,(U32.from_nat(index) + 1 : U32),U32.from_nat(1n+index),Bounds.increment_encoded(index)) :
-    {advanced(U32.is_eq((column + 1 : U32),columns),input,written,_,row,(column + 1 : U32),columns,patch,height,width,stride,padding) == natural_represent(natural_step(state)) : Packing}
-  Equal.trans(Packing,
-    advanced(U32.is_eq((column + 1 : U32),columns),input,written,U32.from_nat(1n+index),row,(column + 1 : U32),columns,patch,height,width,stride,padding),
-    packing_coordinates(input,written,U32.from_nat(1n+index),columns,patch,height,width,stride,padding,next_coordinates(U32.is_eq((column + 1 : U32),columns),row,(column + 1 : U32))),
-    natural_represent(natural_step(state)),
-    advanced_coordinates(U32.is_eq((column + 1 : U32),columns),input,written,U32.from_nat(1n+index),row,(column + 1 : U32),columns,patch,height,width,stride,padding),
-    Equal.trans(Packing,
-      packing_coordinates(input,written,U32.from_nat(1n+index),columns,patch,height,width,stride,padding,next_coordinates(U32.is_eq((column + 1 : U32),columns),row,(column + 1 : U32))),
-      packing_coordinates(input,written,U32.from_nat(1n+index),columns,patch,height,width,stride,padding,encoded_pair(Nat.divmod(1n+position,U32.to_nat(columns)))),
-      natural_represent(natural_step(state)),
-      Equal.cong(U32 & U32,Packing,pair => packing_coordinates(input,written,U32.from_nat(1n+index),columns,patch,height,width,stride,padding,pair),
-        next_coordinates(U32.is_eq((column + 1 : U32),columns),row,(column + 1 : U32)),encoded_pair(Nat.divmod(1n+position,U32.to_nat(columns))),coordinate_increment(position,columns,positive)),
-      packing_encoded(input,written,U32.from_nat(1n+index),columns,patch,height,width,stride,padding,Nat.divmod(1n+position,U32.to_nat(columns)))))
-
-def natural_loop(+count: Nat,+state: NaturalPacking) ->
-  {Loop.run(~Packing,~step,count,natural_represent(state)) == natural_represent(Loop.run(~NaturalPacking,~natural_step,count,state)) : Packing}:
-  Projection.iteration_refines_model(~Packing,~NaturalPacking,~step,~natural_step,~natural_represent,~natural_step_matches,count,state)
-
-def natural_output(index: Unit,state: NaturalPacking) -> Tree.Tree<Tile.Tile8>:
-  NaturalPacking{input,output,offset,position,columns,patch,height,width,stride,padding,positive} = state
-  output
-
-def natural_denote(index: Unit,count: Nat,state: NaturalPacking) -> Tree.Tree<Tile.Tile8>:
-  NaturalPacking{+input,output,offset,position,+columns,+patch,+height,+width,+stride,+padding,positive} = state
-  Tree.write_sequence(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~PatchContext,~natural_value,count,position,PatchContext{input,columns,patch,height,width,stride,padding}),U32.from_nat(offset),output)
-
-def natural_zero(+index: Unit,+state: NaturalPacking) -> {natural_output(index,state) == natural_denote(index,0n,state) : Tree.Tree<Tile.Tile8>}:
-  NaturalPacking{input,output,offset,position,columns,patch,height,width,stride,padding,positive} = state
-  {==}
-
-def natural_after(+index: Unit,+count: Nat,+state: NaturalPacking) -> {natural_denote(index,count,natural_step(state)) == natural_denote(index,1n+count,state) : Tree.Tree<Tile.Tile8>}:
-  NaturalPacking{+input,+output,+offset,+position,+columns,+patch,+height,+width,+stride,+padding,positive} = state
-  %Equal.sym(U32,(U32.from_nat(offset) + 1 : U32),U32.from_nat(1n+offset),Bounds.increment_encoded(offset)) :
-    {natural_denote(index,count,natural_step(state)) == Tree.write_sequence(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~PatchContext,~natural_value,count,1n+position,PatchContext{input,columns,patch,height,width,stride,padding}),_,Tree.write(Tile.Tile8,output,U32.from_nat(offset),natural_sample(PatchContext{input,columns,patch,height,width,stride,padding},position))) : Tree.Tree<Tile.Tile8>}
-  {==}
-
-def natural_written(+count: Nat,+state: NaturalPacking) -> {natural_output(Unit{},Loop.run(~NaturalPacking,~natural_step,count,state)) == natural_denote(Unit{},count,state) : Tree.Tree<Tile.Tile8>}:
-  Projection.iteration_matches_denotation(~Tree.Tree<Tile.Tile8>,~NaturalPacking,~Unit,~natural_step,~natural_output,~natural_denote,~natural_zero,~natural_after,count,Unit{},state)
-
-def packing_output(state: Packing) -> Tree.Tree<Tile.Tile8>:
-  Packing{input,output,index,row,column,columns,patch,height,width,stride,padding} = state
-  output
-
-def represented_output(+state: NaturalPacking) -> {packing_output(natural_represent(state)) == natural_output(Unit{},state) : Tree.Tree<Tile.Tile8>}:
-  NaturalPacking{input,output,index,position,columns,patch,height,width,stride,padding,positive} = state
-  {==}
-
-def natural_packing_written(+count: Nat,+state: NaturalPacking) ->
-  {packing_output(Loop.run(~Packing,~step,count,natural_represent(state))) == natural_denote(Unit{},count,state) : Tree.Tree<Tile.Tile8>}:
-  %Equal.sym(Packing,Loop.run(~Packing,~step,count,natural_represent(state)),natural_represent(Loop.run(~NaturalPacking,~natural_step,count,state)),natural_loop(count,state)) :
-    {packing_output(_) == natural_denote(Unit{},count,state) : Tree.Tree<Tile.Tile8>}
-  Equal.trans(Tree.Tree<Tile.Tile8>,packing_output(natural_represent(Loop.run(~NaturalPacking,~natural_step,count,state))),natural_output(Unit{},Loop.run(~NaturalPacking,~natural_step,count,state)),natural_denote(Unit{},count,state),represented_output(Loop.run(~NaturalPacking,~natural_step,count,state)),natural_written(count,state))
-
-def window_patch_context(window: Kernel.WeightWindow,input: Buffer.Model<F32>) -> PatchContext:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  PatchContext{input,columns,Kernel.patch(tap,geometry,image),h,w,s,p}
-
-def window_columns(window: Kernel.WeightWindow) -> U32:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  columns
-
-def window_row(window: Kernel.WeightWindow) -> U32:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  row
-
-def window_column(window: Kernel.WeightWindow) -> U32:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  column
-
-def window_input_output_natural(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,
-  +positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool},
-  +row_match: {window_row(window) == U32.from_nat(Nat.div(position,U32.to_nat(window_columns(window)))) : U32},
-  +column_match: {window_column(window) == U32.from_nat(Nat.mod(position,U32.to_nat(window_columns(window)))) : U32}) ->
-  {packing_output(window_input(window,count,input)) == Tree.write_sequence(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~PatchContext,~natural_value,U32.to_nat(count),position,window_patch_context(window,input)),0,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0))) : Tree.Tree<Tile.Tile8>}:
-  Kernel.WeightWindow{+geometry,image,tap,output,+row,+column,first} = window
-  Kernel.Geometry{c,o,+h,+w,k,+s,+p,rows,+columns,taps} = geometry
-  %Equal.sym(U32,row,U32.from_nat(Nat.div(position,U32.to_nat(columns))),row_match) :
-    {packing_output(Loop.run(~Packing,~step,U32.to_nat(count),Packing{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,_,column,columns,Kernel.patch(tap,geometry,image),h,w,s,p})) == Tree.write_sequence(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~PatchContext,~natural_value,U32.to_nat(count),position,window_patch_context(window,input)),0,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0))) : Tree.Tree<Tile.Tile8>}
-  %Equal.sym(U32,column,U32.from_nat(Nat.mod(position,U32.to_nat(columns))),column_match) :
-    {packing_output(Loop.run(~Packing,~step,U32.to_nat(count),Packing{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,U32.from_nat(Nat.div(position,U32.to_nat(columns))),_,columns,Kernel.patch(tap,geometry,image),h,w,s,p})) == Tree.write_sequence(~Tile.Tile8,ListRead.enumerate(~Tile.Tile8,~PatchContext,~natural_value,U32.to_nat(count),position,window_patch_context(window,input)),0,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0))) : Tree.Tree<Tile.Tile8>}
-  natural_packing_written(U32.to_nat(count),NaturalPacking{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0n,position,columns,Kernel.patch(tap,geometry,image),h,w,s,p,positive})
-
-def window_input_readback_sized(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,+index: Nat,
-  +positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool},
-  +row_match: {window_row(window) == U32.from_nat(Nat.div(position,U32.to_nat(window_columns(window)))) : U32},
-  +column_match: {window_column(window) == U32.from_nat(Nat.mod(position,U32.to_nat(window_columns(window)))) : U32},
-  sized: AllocationDepth.Sized<count>,+within: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool}) ->
-  {Tree.read(Tile.Tile8,packing_output(window_input(window,count,input)),U32.from_nat(index)) == natural_sample(window_patch_context(window,input),Nat.add(position,index)) : Tile.Tile8}:
-  AllocationDepth.Sized{+depth_ok,+room} = sized
-  +depth = Storage.depth_for(count)
-  +tree = Tree.fresh(Tile.Tile8,depth,Tile.filled(0.0))
-  +balanced = Shape.fresh(Tile.Tile8,depth,Tile.filled(0.0))
-  +context = window_patch_context(window,input)
-  +values = ListRead.enumerate(~Tile.Tile8,~PatchContext,~natural_value,U32.to_nat(count),position,context)
-  +length = ListRead.enumerate_length(~Tile.Tile8,~PatchContext,~natural_value,U32.to_nat(count),position,context)
-  %Equal.sym(Tree.Tree<Tile.Tile8>,packing_output(window_input(window,count,input)),Tree.write_sequence(~Tile.Tile8,values,0,tree),window_input_output_natural(window,count,input,position,positive,row_match,column_match)) :
-    {Tree.read(Tile.Tile8,_,U32.from_nat(index)) == natural_sample(context,Nat.add(position,index)) : Tile.Tile8}
-  Equal.trans(Tile.Tile8,Tree.read(Tile.Tile8,Tree.write_sequence(~Tile.Tile8,values,0,tree),U32.from_nat(index)),ListRead.at(~Tile.Tile8,Tile.filled(0.0),index,values),natural_sample(context,Nat.add(position,index)),
-    ListRead.listed(~Tile.Tile8,values,index,0n,depth,tree,Tile.filled(0.0),balanced,depth_ok,
-      %Equal.sym(U32,Tree.capacity(Tile.Tile8,tree),U32.shln(1,depth),Shape.capacity(Tile.Tile8,depth,tree,balanced)) : {Nat.is_le(List.length(&2,Tile.Tile8,values),U32.to_nat(_)) == True{} : Bool}
-      %Equal.sym(Nat,List.length(&2,Tile.Tile8,values),U32.to_nat(count),length) : {Nat.is_le(_,U32.to_nat(U32.shln(1,depth))) == True{} : Bool} room,
-      %Equal.sym(Nat,List.length(&2,Tile.Tile8,values),U32.to_nat(count),length) : {Nat.is_lt(index,_) == True{} : Bool} within),
-    ListRead.enumerate_at(~Tile.Tile8,~PatchContext,~natural_value,Tile.filled(0.0),U32.to_nat(count),index,position,context,within))
-
-def window_input_readback(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,+index: Nat,
-  +positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool},
-  +row_match: {window_row(window) == U32.from_nat(Nat.div(position,U32.to_nat(window_columns(window)))) : U32},
-  +column_match: {window_column(window) == U32.from_nat(Nat.mod(position,U32.to_nat(window_columns(window)))) : U32},
-  bounded: {U32.is_le(count,256) == True{} : Bool},+within: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool}) ->
-  {Tree.read(Tile.Tile8,packing_output(window_input(window,count,input)),U32.from_nat(index)) == natural_sample(window_patch_context(window,input),Nat.add(position,index)) : Tile.Tile8}:
-  window_input_readback_sized(window,count,input,position,index,positive,row_match,column_match,AllocationDepth.bounded_with(count,256,{==},{==},{==},bounded),within)
 
 # Interval masks use natural cold planning; padding + size never wraps.
 def axis_first_encoded(+offset: U32,+stride: U32,+padding: U32,+positive: {Nat.is_lt(0n,U32.to_nat(stride)) == True{} : Bool}) ->
@@ -506,354 +448,60 @@ def axis_mask(+offset: U32,+stride: U32,+padding: U32,+size: U32,+positions: U32
     Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(position),U32.to_nat(stride)))),
     Equal.trans(Bool,Nat.is_le(Ceiling.ceiling(begin,U32.to_nat(stride)),U32.to_nat(position)),Nat.is_le(begin,Nat.mul(U32.to_nat(position),U32.to_nat(stride))),Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(position),U32.to_nat(stride)))),Ceiling.lower_comparison(begin,U32.to_nat(stride),U32.to_nat(position),positive),Order.subtraction_le(U32.to_nat(padding),U32.to_nat(offset),Nat.mul(U32.to_nat(position),U32.to_nat(stride)))))
 
-# Finite hardware lanes project the existing eight-sample tile reader.
-def tile_value_at(~Context: Data,~sample: Buffer.Model<F32> -> Context -> Nat -> F32,+input: Buffer.Model<F32>,+context: Context,index: Nat,
-  within: {Nat.is_lt(index,8n) == True{} : Bool}) ->
-  {Tiles.select_lane(index,tile_value(~Context,~sample,input,context)) == sample(input,context,index) : F32}:
-  match index:
-    case 0n: {==}
-    case 1n: {==}
-    case 2n: {==}
-    case 3n: {==}
-    case 4n: {==}
-    case 5n: {==}
-    case 6n: {==}
-    case 7n: {==}
-    case 8n+ +rest: Empty.absurd({Tiles.select_lane(8n+rest,tile_value(~Context,~sample,input,context)) == sample(input,context,8n+rest) : F32},Words.false_true(%Order.not_below(0n,rest,Order.zero_le(rest)) : {_ == True{} : Bool} within))
-
-def patch_lane_at(+tap: U32,+geometry: Kernel.Geometry,+image: U32,index: Nat,within: {Nat.is_lt(index,8n) == True{} : Bool}) ->
-  {Kernel.selected(Kernel.patch(tap,geometry,image),index) == Kernel.lane((tap + U32.from_nat(index) : U32),geometry,image) : Kernel.Lane}:
-  match index:
-    case 0n:
-      %Equal.sym(U32,(tap + 0 : U32),tap,Arithmetic.add_zero(tap)) : {Kernel.lane(tap,geometry,image) == Kernel.lane(_,geometry,image) : Kernel.Lane}
-      {==}
-    case 1n: {==}
-    case 2n: {==}
-    case 3n: {==}
-    case 4n: {==}
-    case 5n: {==}
-    case 6n: {==}
-    case 7n: {==}
-    case 8n+ +rest: Empty.absurd({Kernel.selected(Kernel.patch(tap,geometry,image),8n+rest) == Kernel.lane((tap + U32.from_nat(8n+rest) : U32),geometry,image) : Kernel.Lane},Words.false_true(%Order.not_below(0n,rest,Order.zero_le(rest)) : {_ == True{} : Bool} within))
-
-def half_tile_value_at(upper: Bool,row: Accumulator.Row,+input: Buffer.Model<F32>,+context: Kernel.Pixel) ->
-  {Accumulator.row(~F32,row,Rows.half(upper,tile_value(~Kernel.Pixel,~patch_sample,input,context))) == patch_sample(input,context,Nat.add(Bool.pick(Nat,upper,4n,0n),Coordinates.row_number(row))) : F32}:
-  match upper row:
-    case False{} Accumulator.R0{}: {==}
-    case False{} Accumulator.R1{}: {==}
-    case False{} Accumulator.R2{}: {==}
-    case False{} Accumulator.R3{}: {==}
-    case True{} Accumulator.R0{}: {==}
-    case True{} Accumulator.R1{}: {==}
-    case True{} Accumulator.R2{}: {==}
-    case True{} Accumulator.R3{}: {==}
-
-def gradient_tile_element(+input: Buffer.Model<F32>,+context: Kernel.Gradient,+position: U32,+lane: Nat,+within: {Nat.is_lt(lane,8n) == True{} : Bool}) ->
-  {Tile.element_at(Tiles.lane_of(lane),gradient_tile_value(input,context,position)) == gradient_value(input,context,lane,position) : F32}:
-  +tile = gradient_tile_value(input,context,position)
-  Equal.trans(F32,Tile.element_at(Tiles.lane_of(lane),tile),Tiles.select_lane(lane,tile),gradient_value(input,context,lane,position),
-    Equal.sym(F32,Tiles.select_lane(lane,tile),Tile.element_at(Tiles.lane_of(lane),tile),Tiles.selected_lane(lane,tile)),
-    tile_value_at(~Kernel.GradientRead,~gradient_sample,input,Kernel.GradientRead{context,position},lane,within))
-
-def natural_patch_value(context: PatchContext,upper: Bool,row: Accumulator.Row,+position: Nat) -> F32:
-  PatchContext{input,+columns,patch,height,width,stride,padding} = context
-  patch_sample(input,Kernel.Pixel{patch,U32.from_nat(Nat.div(position,U32.to_nat(columns))),U32.from_nat(Nat.mod(position,U32.to_nat(columns))),height,width,stride,padding},Nat.add(Bool.pick(Nat,upper,4n,0n),Coordinates.row_number(row)))
-
-def natural_patch_element(+context: PatchContext,+upper: Bool,+row: Accumulator.Row,+position: Nat) ->
-  {Accumulator.row(~F32,row,Rows.half(upper,natural_sample(context,position))) == natural_patch_value(context,upper,row,position) : F32}:
-  PatchContext{+input,+columns,+patch,+height,+width,+stride,+padding} = context
-  half_tile_value_at(upper,row,input,Kernel.Pixel{patch,U32.from_nat(Nat.div(position,U32.to_nat(columns))),U32.from_nat(Nat.mod(position,U32.to_nat(columns))),height,width,stride,padding})
-
-# A chunk returns the same row-major cursor at its next unconsumed position.
-def natural_position(state: NaturalPacking) -> Nat:
-  NaturalPacking{input,output,index,position,columns,patch,height,width,stride,padding,positive} = state
-  position
-
-def natural_columns(state: NaturalPacking) -> U32:
-  NaturalPacking{input,output,index,position,columns,patch,height,width,stride,padding,positive} = state
-  columns
-
-def natural_position_step(+state: NaturalPacking) -> {natural_position(natural_step(state)) == 1n+natural_position(state) : Nat}:
-  NaturalPacking{input,output,index,position,columns,patch,height,width,stride,padding,positive} = state
-  {==}
-
-def natural_columns_step(+state: NaturalPacking) -> {natural_columns(natural_step(state)) == natural_columns(state) : U32}:
-  NaturalPacking{input,output,index,position,columns,patch,height,width,stride,padding,positive} = state
-  {==}
-
-def natural_position_end(+count: Nat,+state: NaturalPacking) -> {natural_position(Loop.run(~NaturalPacking,~natural_step,count,state)) == Nat.add(natural_position(state),count) : Nat}:
-  %Order.commutative(count,natural_position(state)) : {natural_position(Loop.run(~NaturalPacking,~natural_step,count,state)) == _ : Nat}
-  Projection.natural_counter_progress(~NaturalPacking,~natural_step,~natural_position,~natural_position_step,count,state)
-
-def natural_columns_end(+count: Nat,+state: NaturalPacking) -> {natural_columns(Loop.run(~NaturalPacking,~natural_step,count,state)) == natural_columns(state) : U32}:
-  Projection.preserves_observation(~NaturalPacking,~U32,~natural_step,~natural_columns,~natural_columns_step,count,state)
-
-def packing_row(state: Packing) -> U32:
-  Packing{input,output,index,row,column,columns,patch,height,width,stride,padding} = state
-  row
-
-def packing_column(state: Packing) -> U32:
-  Packing{input,output,index,row,column,columns,patch,height,width,stride,padding} = state
-  column
-
-def natural_row_represented(+state: NaturalPacking) -> {packing_row(natural_represent(state)) == U32.from_nat(Nat.div(natural_position(state),U32.to_nat(natural_columns(state)))) : U32}:
-  NaturalPacking{input,output,index,position,columns,patch,height,width,stride,padding,positive} = state
-  {==}
-
-def natural_column_represented(+state: NaturalPacking) -> {packing_column(natural_represent(state)) == U32.from_nat(Nat.mod(natural_position(state),U32.to_nat(natural_columns(state)))) : U32}:
-  NaturalPacking{input,output,index,position,columns,patch,height,width,stride,padding,positive} = state
-  {==}
-
-def packing_row_end(+count: Nat,+state: NaturalPacking) ->
-  {packing_row(Loop.run(~Packing,~step,count,natural_represent(state))) == U32.from_nat(Nat.div(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}:
-  +result = Loop.run(~NaturalPacking,~natural_step,count,state)
-  %Equal.sym(Packing,Loop.run(~Packing,~step,count,natural_represent(state)),natural_represent(result),natural_loop(count,state)) : {packing_row(_) == U32.from_nat(Nat.div(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  %Equal.sym(U32,packing_row(natural_represent(result)),U32.from_nat(Nat.div(natural_position(result),U32.to_nat(natural_columns(result)))),natural_row_represented(result)) : {_ == U32.from_nat(Nat.div(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  %Equal.sym(Nat,natural_position(result),Nat.add(natural_position(state),count),natural_position_end(count,state)) : {U32.from_nat(Nat.div(_,U32.to_nat(natural_columns(result)))) == U32.from_nat(Nat.div(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  %Equal.sym(U32,natural_columns(result),natural_columns(state),natural_columns_end(count,state)) : {U32.from_nat(Nat.div(Nat.add(natural_position(state),count),U32.to_nat(_))) == U32.from_nat(Nat.div(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  {==}
-
-def packing_column_end(+count: Nat,+state: NaturalPacking) ->
-  {packing_column(Loop.run(~Packing,~step,count,natural_represent(state))) == U32.from_nat(Nat.mod(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}:
-  +result = Loop.run(~NaturalPacking,~natural_step,count,state)
-  %Equal.sym(Packing,Loop.run(~Packing,~step,count,natural_represent(state)),natural_represent(result),natural_loop(count,state)) : {packing_column(_) == U32.from_nat(Nat.mod(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  %Equal.sym(U32,packing_column(natural_represent(result)),U32.from_nat(Nat.mod(natural_position(result),U32.to_nat(natural_columns(result)))),natural_column_represented(result)) : {_ == U32.from_nat(Nat.mod(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  %Equal.sym(Nat,natural_position(result),Nat.add(natural_position(state),count),natural_position_end(count,state)) : {U32.from_nat(Nat.mod(_,U32.to_nat(natural_columns(result)))) == U32.from_nat(Nat.mod(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  %Equal.sym(U32,natural_columns(result),natural_columns(state),natural_columns_end(count,state)) : {U32.from_nat(Nat.mod(Nat.add(natural_position(state),count),U32.to_nat(_))) == U32.from_nat(Nat.mod(Nat.add(natural_position(state),count),U32.to_nat(natural_columns(state)))) : U32}
-  {==}
-
-type NumericPixel is Data:
-  NumericPixel{input: Buffer.Model<F32>,base: Nat,row: U32,column: U32,kernel_row: U32,kernel_column: U32,height: U32,width: U32,stride: U32,padding: U32,rows: U32,columns: U32}
-
-def numeric_native_mask(pixel: NumericPixel) -> Bool:
-  NumericPixel{input,base,+row,+column,+kr,+kc,+h,+w,+s,+p,rows,columns} = pixel
-  U32.is_le(Kernel.axis_first(kr,s,p),row) && U32.is_lt(row,Kernel.axis_end(kr,s,p,h,rows)) && U32.is_le(Kernel.axis_first(kc,s,p),column) && U32.is_lt(column,Kernel.axis_end(kc,s,p,w,columns))
-
-def axis_inside(+offset: U32,+stride: U32,+padding: U32,size: U32,+position: U32) -> Bool:
-  Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(position),U32.to_nat(stride)))) && Nat.is_lt(Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(position),U32.to_nat(stride))),Nat.add(U32.to_nat(padding),U32.to_nat(size)))
-
-def numeric_inside(pixel: NumericPixel) -> Bool:
-  NumericPixel{input,base,row,column,kr,kc,h,w,+s,+p,rows,columns} = pixel
-  axis_inside(kr,s,p,h,row) && axis_inside(kc,s,p,w,column)
-
-def numeric_stride(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  s
-
-def numeric_row_within(pixel: NumericPixel) -> Bool:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  Nat.is_lt(U32.to_nat(row),U32.to_nat(rows))
-
-def numeric_column_within(pixel: NumericPixel) -> Bool:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  Nat.is_lt(U32.to_nat(column),U32.to_nat(columns))
-
-type PixelReady<-pixel: NumericPixel> is Data:
-  PixelReady{positive: {Nat.is_lt(0n,U32.to_nat(numeric_stride(pixel))) == True{} : Bool},row: {numeric_row_within(pixel) == True{} : Bool},column: {numeric_column_within(pixel) == True{} : Bool}}
-
-def numeric_mask_matches(+pixel: NumericPixel,ready: PixelReady<pixel>) -> {numeric_native_mask(pixel) == numeric_inside(pixel) : Bool}:
-  NumericPixel{input,base,+row,+column,+kr,+kc,+h,+w,+s,+p,+rows,+columns} = pixel
-  PixelReady{+positive,row_within,column_within} = ready
-  +rf = U32.is_le(Kernel.axis_first(kr,s,p),row)
-  +re = U32.is_lt(row,Kernel.axis_end(kr,s,p,h,rows))
-  +cf = U32.is_le(Kernel.axis_first(kc,s,p),column)
-  +ce = U32.is_lt(column,Kernel.axis_end(kc,s,p,w,columns))
-  %Equal.sym(Bool,((rf && re) && cf) && ce,(rf && re) && (cf && ce),Logic.and_associative((rf && re),cf,ce)) : {_ == numeric_inside(pixel) : Bool}
-  %Equal.sym(Bool,rf && re,axis_inside(kr,s,p,h,row),axis_mask(kr,s,p,h,rows,row,positive,row_within)) : {_ && (cf && ce) == numeric_inside(pixel) : Bool}
-  %Equal.sym(Bool,cf && ce,axis_inside(kc,s,p,w,column),axis_mask(kc,s,p,w,columns,column,positive,column_within)) : {axis_inside(kr,s,p,h,row) && _ == numeric_inside(pixel) : Bool}
-  {==}
-
-def numeric_native_index(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,height,+width,+stride,+padding,rows,columns} = pixel
-  (U32.from_nat(base) + (row * stride + kr - padding) * width + (column * stride + kc - padding) : U32)
-
-def numeric_index(pixel: NumericPixel) -> Nat:
-  NumericPixel{input,base,row,column,kr,kc,height,width,+stride,+padding,rows,columns} = pixel
-  Nat.add(Nat.add(base,Nat.mul(Nat.sub(Nat.add(U32.to_nat(kr),Nat.mul(U32.to_nat(row),U32.to_nat(stride))),U32.to_nat(padding)),U32.to_nat(width))),Nat.sub(Nat.add(U32.to_nat(kc),Nat.mul(U32.to_nat(column),U32.to_nat(stride))),U32.to_nat(padding)))
-
-def numeric_tree(pixel: NumericPixel) -> Tree.Tree<F32>:
-  NumericPixel{input,base,row,column,kr,kc,height,width,stride,padding,rows,columns} = pixel
-  Buffer.tree(~F32,input)
-
-def numeric_index_matches(+pixel: NumericPixel,+inside: {numeric_inside(pixel) == True{} : Bool}) -> {numeric_native_index(pixel) == U32.from_nat(numeric_index(pixel)) : U32}:
-  NumericPixel{input,+base,+row,+column,+kr,+kc,+height,+width,+stride,+padding,rows,columns} = pixel
-  +row_inside = Logic.left(axis_inside(kr,stride,padding,height,row),axis_inside(kc,stride,padding,width,column),inside)
-  +column_inside = Logic.right(axis_inside(kr,stride,padding,height,row),axis_inside(kc,stride,padding,width,column),inside)
-  Encoded.padded_pixel_address(base,row,column,kr,kc,width,stride,padding,
-    Logic.left(Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(kr),Nat.mul(U32.to_nat(row),U32.to_nat(stride)))),Nat.is_lt(Nat.add(U32.to_nat(kr),Nat.mul(U32.to_nat(row),U32.to_nat(stride))),Nat.add(U32.to_nat(padding),U32.to_nat(height))),row_inside),
-    Logic.left(Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(kc),Nat.mul(U32.to_nat(column),U32.to_nat(stride)))),Nat.is_lt(Nat.add(U32.to_nat(kc),Nat.mul(U32.to_nat(column),U32.to_nat(stride))),Nat.add(U32.to_nat(padding),U32.to_nat(width))),column_inside))
-
-def numeric_selected(inside: Bool,+pixel: NumericPixel,equation: {numeric_inside(pixel) == inside : Bool}) ->
-  {Bool.pick(F32,inside,Tree.read(F32,numeric_tree(pixel),numeric_native_index(pixel)),0.0) == Bool.pick(F32,inside,Tree.read(F32,numeric_tree(pixel),U32.from_nat(numeric_index(pixel))),0.0) : F32}:
-  match inside:
-    case False{}: {==}
-    case True{}:
-      Equal.cong(U32,F32,index => Tree.read(F32,numeric_tree(pixel),index),numeric_native_index(pixel),U32.from_nat(numeric_index(pixel)),numeric_index_matches(pixel,equation))
-
-def numeric_native_value(pixel: NumericPixel) -> F32:
-  NumericPixel{input,base,row,column,+kr,+kc,+h,+w,+s,+p,rows,columns} = pixel
-  pixel_value(input,row,column,h,w,s,p,Kernel.Lane{U32.from_nat(base),kr,kc,True{},Kernel.axis_first(kr,s,p),Kernel.axis_end(kr,s,p,h,rows),Kernel.axis_first(kc,s,p),Kernel.axis_end(kc,s,p,w,columns)})
-
-def numeric_value(pixel: NumericPixel) -> F32:
-  +pixel = pixel
-  Bool.pick(F32,numeric_inside(pixel),Tree.read(F32,numeric_tree(pixel),U32.from_nat(numeric_index(pixel))),0.0)
-
-def numeric_native_expanded(+pixel: NumericPixel) -> {numeric_native_value(pixel) == Bool.pick(F32,numeric_native_mask(pixel),Tree.read(F32,numeric_tree(pixel),numeric_native_index(pixel)),0.0) : F32}:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  {==}
-
-def numeric_pixel_matches(+pixel: NumericPixel,+ready: PixelReady<pixel>) -> {numeric_native_value(pixel) == numeric_value(pixel) : F32}:
-  %Equal.sym(F32,numeric_native_value(pixel),Bool.pick(F32,numeric_native_mask(pixel),Tree.read(F32,numeric_tree(pixel),numeric_native_index(pixel)),0.0),numeric_native_expanded(pixel)) : {_ == numeric_value(pixel) : F32}
-  %Equal.sym(Bool,numeric_native_mask(pixel),numeric_inside(pixel),numeric_mask_matches(pixel,ready)) : {Bool.pick(F32,_,Tree.read(F32,numeric_tree(pixel),numeric_native_index(pixel)),0.0) == numeric_value(pixel) : F32}
-  numeric_selected(numeric_inside(pixel),pixel,{==})
-
-# Cold tap decoding uses the existing radix and checked allocation bounds.
-def kernel_bound(+limits: Machine.Limits,+kernel: U32,+positive: {Nat.is_lt(0n,U32.to_nat(kernel)) == True{} : Bool},+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {Nat.is_le(U32.to_nat(kernel),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
-  Order.transitive(U32.to_nat(kernel),Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits)),RowMajor.product_covers(U32.to_nat(kernel),U32.to_nat(kernel),positive),square_bound)
-
-def kernel_square_exact(+limits: Machine.Limits,+kernel: U32,+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {U32.to_nat((kernel * kernel : U32)) == Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)) : Nat}:
-  Arithmetic.multiply(kernel,kernel,Machine.capacity(limits),Limits.capacity_fits(limits),square_bound)
-
-def kernel_square_positive(+limits: Machine.Limits,+kernel: U32,+positive: {Nat.is_lt(0n,U32.to_nat(kernel)) == True{} : Bool},+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {Nat.is_lt(0n,U32.to_nat((kernel * kernel : U32))) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat((kernel * kernel : U32)),Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),kernel_square_exact(limits,kernel,square_bound)) : {Nat.is_lt(0n,_) == True{} : Bool}
-  Bounds.nat_trans(0n,U32.to_nat(kernel),Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),positive,RowMajor.product_covers(U32.to_nat(kernel),U32.to_nat(kernel),positive))
-
-def kernel_square_bound(+limits: Machine.Limits,+kernel: U32,+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {Nat.is_le(U32.to_nat((kernel * kernel : U32)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat((kernel * kernel : U32)),Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),kernel_square_exact(limits,kernel,square_bound)) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
-  square_bound
-
-def tap_row_decoded(+limits: Machine.Limits,+tap: U32,+kernel: U32,+positive: {Nat.is_lt(0n,U32.to_nat(kernel)) == True{} : Bool},+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {U32.to_nat((tap / kernel % kernel : U32)) == Nat.mod(Nat.div(U32.to_nat(tap),U32.to_nat(kernel)),U32.to_nat(kernel)) : Nat}:
-  +bound = kernel_bound(limits,kernel,positive,square_bound)
-  +doubled = Limits.double_bound(limits,U32.to_nat(kernel),bound)
-  +q = (tap / kernel : U32)
-  Equal.trans(Nat,U32.to_nat((q % kernel : U32)),Nat.mod(U32.to_nat(q),U32.to_nat(kernel)),Nat.mod(Nat.div(U32.to_nat(tap),U32.to_nat(kernel)),U32.to_nat(kernel)),
-    NativeDivision.modulo(q,kernel,Machine.half_word(limits),Limits.half_word_fits(limits),doubled,positive),
-    Equal.cong(Nat,Nat,value => Nat.mod(value,U32.to_nat(kernel)),U32.to_nat(q),Nat.div(U32.to_nat(tap),U32.to_nat(kernel)),NativeDivision.divide(tap,kernel,Machine.half_word(limits),Limits.half_word_fits(limits),doubled,positive)))
-
-def tap_column_decoded(+limits: Machine.Limits,+tap: U32,+kernel: U32,+positive: {Nat.is_lt(0n,U32.to_nat(kernel)) == True{} : Bool},+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {U32.to_nat((tap % kernel : U32)) == Nat.mod(U32.to_nat(tap),U32.to_nat(kernel)) : Nat}:
-  NativeDivision.modulo(tap,kernel,Machine.half_word(limits),Limits.half_word_fits(limits),Limits.double_bound(limits,U32.to_nat(kernel),kernel_bound(limits,kernel,positive,square_bound)),positive)
-
-def tap_channel_decoded(+limits: Machine.Limits,+tap: U32,+kernel: U32,+positive: {Nat.is_lt(0n,U32.to_nat(kernel)) == True{} : Bool},+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {U32.to_nat((tap / (kernel * kernel) : U32)) == Nat.div(U32.to_nat(tap),Nat.mul(U32.to_nat(kernel),U32.to_nat(kernel))) : Nat}:
-  %kernel_square_exact(limits,kernel,square_bound) : {U32.to_nat((tap / (kernel * kernel) : U32)) == Nat.div(U32.to_nat(tap),_) : Nat}
-  NativeDivision.divide(tap,(kernel * kernel : U32),Machine.half_word(limits),Limits.half_word_fits(limits),Limits.double_bound(limits,U32.to_nat((kernel * kernel : U32)),kernel_square_bound(limits,kernel,square_bound)),kernel_square_positive(limits,kernel,positive,square_bound))
-
 def geometry_kernel(geometry: Kernel.Geometry) -> U32:
   Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
   k
-
-def tap_base(geometry: Kernel.Geometry,image: U32,tap: U32) -> Nat:
-  Kernel.Geometry{c,o,h,w,+k,s,p,rows,columns,taps} = geometry
-  Nat.mul(Nat.mul(Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(c)),Nat.div(U32.to_nat(tap),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),U32.to_nat(h)),U32.to_nat(w))
-
-def tap_native_base(geometry: Kernel.Geometry,image: U32,tap: U32) -> U32:
-  Kernel.Geometry{c,o,h,w,+k,s,p,rows,columns,taps} = geometry
-  ((image * c + tap / (k * k)) * h * w : U32)
-
-def tap_base_matches(+limits: Machine.Limits,+geometry: Kernel.Geometry,+image: U32,+tap: U32,+positive: {Nat.is_lt(0n,U32.to_nat(geometry_kernel(geometry))) == True{} : Bool},+square_bound: {Nat.is_le(Nat.mul(U32.to_nat(geometry_kernel(geometry)),U32.to_nat(geometry_kernel(geometry))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
-  {tap_native_base(geometry,image,tap) == U32.from_nat(tap_base(geometry,image,tap)) : U32}:
-  Kernel.Geometry{+c,o,+h,+w,+k,s,p,rows,columns,taps} = geometry
-  +channel = (tap / (k * k) : U32)
-  +natural_channel = Nat.div(U32.to_nat(tap),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
-  Equal.trans(U32,((image * c + channel) * h * w : U32),U32.from_nat(Nat.mul(Nat.mul(Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(c)),U32.to_nat(channel)),U32.to_nat(h)),U32.to_nat(w))),U32.from_nat(tap_base(geometry,image,tap)),
-    Encoded.channel_base_encoded(image,c,channel,h,w),
-    Equal.cong(Nat,U32,value => U32.from_nat(Nat.mul(Nat.mul(Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(c)),value),U32.to_nat(h)),U32.to_nat(w))),U32.to_nat(channel),natural_channel,tap_channel_decoded(limits,tap,k,positive,square_bound)))
-
-def tap_numeric_pixel(input: Buffer.Model<F32>,+geometry: Kernel.Geometry,+image: U32,+tap: U32,row: U32,column: U32) -> NumericPixel:
-  Kernel.Geometry{c,o,h,w,+k,s,p,rows,columns,taps} = geometry
-  NumericPixel{input,tap_base(geometry,image,tap),row,column,(tap / k % k : U32),(tap % k : U32),h,w,s,p,rows,columns}
 
 def geometry_taps(geometry: Kernel.Geometry) -> U32:
   Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
   taps
 
-def tap_pixel_value(input: Buffer.Model<F32>,+geometry: Kernel.Geometry,image: U32,tap: U32,row: U32,column: U32) -> F32:
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  pixel_value(input,row,column,h,w,s,p,Kernel.lane(tap,geometry,image))
-
-def tap_pixel_matches(+limits: Machine.Limits,+input: Buffer.Model<F32>,+geometry: Kernel.Geometry,+image: U32,+tap: U32,+row: U32,+column: U32,
-  +positive: {Nat.is_lt(0n,U32.to_nat(geometry_kernel(geometry))) == True{} : Bool},
-  +square_bound: {Nat.is_le(Nat.mul(U32.to_nat(geometry_kernel(geometry)),U32.to_nat(geometry_kernel(geometry))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
-  +tap_inside: {U32.is_lt(tap,geometry_taps(geometry)) == True{} : Bool},
-  +ready: PixelReady<tap_numeric_pixel(input,geometry,image,tap,row,column)>) ->
-  {tap_pixel_value(input,geometry,image,tap,row,column) == numeric_value(tap_numeric_pixel(input,geometry,image,tap,row,column)) : F32}:
-  Kernel.Geometry{+c,o,+h,+w,+k,+s,+p,+rows,+columns,+taps} = geometry
-  +kr = (tap / k % k : U32)
-  +kc = (tap % k : U32)
-  %Equal.sym(Bool,U32.is_lt(tap,taps),True{},tap_inside) :
-    {pixel_value(input,row,column,h,w,s,p,Kernel.Lane{tap_native_base(geometry,image,tap),kr,kc,_,Kernel.axis_first(kr,s,p),Kernel.axis_end(kr,s,p,h,rows),Kernel.axis_first(kc,s,p),Kernel.axis_end(kc,s,p,w,columns)}) == numeric_value(tap_numeric_pixel(input,geometry,image,tap,row,column)) : F32}
-  %Equal.sym(U32,tap_native_base(geometry,image,tap),U32.from_nat(tap_base(geometry,image,tap)),tap_base_matches(limits,geometry,image,tap,positive,square_bound)) :
-    {pixel_value(input,row,column,h,w,s,p,Kernel.Lane{_,kr,kc,True{},Kernel.axis_first(kr,s,p),Kernel.axis_end(kr,s,p,h,rows),Kernel.axis_first(kc,s,p),Kernel.axis_end(kc,s,p,w,columns)}) == numeric_value(tap_numeric_pixel(input,geometry,image,tap,row,column)) : F32}
-  numeric_pixel_matches(tap_numeric_pixel(input,geometry,image,tap,row,column),ready)
-
 # The scalar address model is used only in proofs; integer products may wrap
 # in the native reader while its final encoded address remains the same.
-def sampled_pixel(input: Tree.Tree<F32>,base: Nat,row: Nat,column: Nat,kr: Nat,kc: Nat,height: Nat,width: Nat,+stride: Nat,padding: Nat) -> F32:
-  +y = Nat.add(kr,Nat.mul(row,stride))
-  +x = Nat.add(kc,Nat.mul(column,stride))
-  +padding = padding
-  +width = width
+# Channel channel at input row y and column x of the cells of a source from
+# base, read cell by cell, the groups of a pixel side by side, zero outside
+# the image.
+def sampled_cell(~Source: Data,~cell: Source -> Nat -> Tile.Tile8,source: Source,base: Nat,+channel: Nat,+y: Nat,+x: Nat,height: Nat,+width: Nat,+padding: Nat,groups: Nat) -> F32:
   Bool.pick(F32,(Nat.is_le(padding,y) && Nat.is_lt(y,Nat.add(padding,height))) && (Nat.is_le(padding,x) && Nat.is_lt(x,Nat.add(padding,width))),
-    Tree.read(F32,input,U32.from_nat(Nat.add(Nat.add(base,Nat.mul(Nat.sub(y,padding),width)),Nat.sub(x,padding)))),0.0)
+    Tiles.select_lane(Nat.mod(channel,8n),cell(source,Nat.add(Nat.add(base,Nat.div(channel,8n)),Nat.mul(Nat.add(Nat.mul(Nat.sub(y,padding),width),Nat.sub(x,padding)),groups)))),0.0)
 
-def numeric_base(pixel: NumericPixel) -> Nat:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  base
+def model_cell(input: Buffer.Model<Tile.Tile8>,index: Nat) -> Tile.Tile8:
+  Tree.read(Tile.Tile8,Buffer.tree(~Tile.Tile8,input),U32.from_nat(index))
 
-def numeric_row(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  row
+def sampled_point(input: Buffer.Model<Tile.Tile8>,base: Nat,+channel: Nat,+y: Nat,+x: Nat,height: Nat,+width: Nat,+padding: Nat,groups: Nat) -> F32:
+  sampled_cell(~Buffer.Model<Tile.Tile8>,~model_cell,input,base,channel,y,x,height,width,padding,groups)
 
-def numeric_column(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  column
+# Two sources read the same sample when they hold the same cell there inside
+# the image.
+def picked_agrees(inside: Bool,+left: F32,+right: F32,same: @inside_true: {inside == True{} : Bool} -> {left == right : F32}) ->
+  {Bool.pick(F32,inside,left,0.0) == Bool.pick(F32,inside,right,0.0) : F32}:
+  match inside:
+    case True{}: same({==})
+    case False{}: {==}
 
-def numeric_kr(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  kr
+def sampled_agrees(~Left: Data,~left_cell: Left -> Nat -> Tile.Tile8,~Right: Data,~right_cell: Right -> Nat -> Tile.Tile8,
+  +left: Left,+right: Right,+left_base: Nat,+right_base: Nat,+channel: Nat,+y: Nat,+x: Nat,+height: Nat,+width: Nat,+padding: Nat,+groups: Nat,
+  same: @inside_true: {(Nat.is_le(padding,y) && Nat.is_lt(y,Nat.add(padding,height))) && (Nat.is_le(padding,x) && Nat.is_lt(x,Nat.add(padding,width))) == True{} : Bool} ->
+    {left_cell(left,Nat.add(Nat.add(left_base,Nat.div(channel,8n)),Nat.mul(Nat.add(Nat.mul(Nat.sub(y,padding),width),Nat.sub(x,padding)),groups))) ==
+      right_cell(right,Nat.add(Nat.add(right_base,Nat.div(channel,8n)),Nat.mul(Nat.add(Nat.mul(Nat.sub(y,padding),width),Nat.sub(x,padding)),groups))) : Tile.Tile8}) ->
+  {sampled_cell(~Left,~left_cell,left,left_base,channel,y,x,height,width,padding,groups) == sampled_cell(~Right,~right_cell,right,right_base,channel,y,x,height,width,padding,groups) : F32}:
+  +offset = Nat.mul(Nat.add(Nat.mul(Nat.sub(y,padding),width),Nat.sub(x,padding)),groups)
+  +left_tile = left_cell(left,Nat.add(Nat.add(left_base,Nat.div(channel,8n)),offset))
+  +right_tile = right_cell(right,Nat.add(Nat.add(right_base,Nat.div(channel,8n)),offset))
+  picked_agrees((Nat.is_le(padding,y) && Nat.is_lt(y,Nat.add(padding,height))) && (Nat.is_le(padding,x) && Nat.is_lt(x,Nat.add(padding,width))),
+    Tiles.select_lane(Nat.mod(channel,8n),left_tile),Tiles.select_lane(Nat.mod(channel,8n),right_tile),
+    inside_true => Equal.cong(Tile.Tile8,F32,tile => Tiles.select_lane(Nat.mod(channel,8n),tile),left_tile,right_tile,same(inside_true)))
 
-def numeric_kc(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  kc
+# The input value that tap tap reads at an output row and column, from the
+# cells of an image of a source from base.
+def tap_cell(~Source: Data,~cell: Source -> Nat -> Tile.Tile8,source: Source,+geometry: Kernel.Geometry,+base: Nat,+tap: U32,row: U32,column: U32) -> F32:
+  Kernel.Geometry{c,o,h,w,+k,+s,p,rows,columns,taps} = geometry
+  sampled_cell(~Source,~cell,source,base,Nat.div(U32.to_nat(tap),Nat.mul(U32.to_nat(k),U32.to_nat(k))),
+    Nat.add(Nat.mod(Nat.div(U32.to_nat(tap),U32.to_nat(k)),U32.to_nat(k)),Nat.mul(U32.to_nat(row),U32.to_nat(s))),
+    Nat.add(Nat.mod(U32.to_nat(tap),U32.to_nat(k)),Nat.mul(U32.to_nat(column),U32.to_nat(s))),U32.to_nat(h),U32.to_nat(w),U32.to_nat(p),U32.to_nat(((c + 7) / 8 : U32)))
 
-def numeric_height(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  h
-
-def numeric_width(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  w
-
-def numeric_padding(pixel: NumericPixel) -> U32:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  p
-
-def numeric_sampled(+pixel: NumericPixel) ->
-  {numeric_value(pixel) == sampled_pixel(numeric_tree(pixel),numeric_base(pixel),U32.to_nat(numeric_row(pixel)),U32.to_nat(numeric_column(pixel)),U32.to_nat(numeric_kr(pixel)),U32.to_nat(numeric_kc(pixel)),U32.to_nat(numeric_height(pixel)),U32.to_nat(numeric_width(pixel)),U32.to_nat(numeric_stride(pixel)),U32.to_nat(numeric_padding(pixel))) : F32}:
-  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,rows,columns} = pixel
-  {==}
-
-def natural_tap_value(input: Buffer.Model<F32>,+geometry: Kernel.Geometry,+image: U32,+tap: U32,row: U32,column: U32) -> F32:
-  Kernel.Geometry{c,o,h,w,+k,s,p,rows,columns,taps} = geometry
-  sampled_pixel(Buffer.tree(~F32,input),tap_base(geometry,image,tap),U32.to_nat(row),U32.to_nat(column),Nat.mod(Nat.div(U32.to_nat(tap),U32.to_nat(k)),U32.to_nat(k)),Nat.mod(U32.to_nat(tap),U32.to_nat(k)),U32.to_nat(h),U32.to_nat(w),U32.to_nat(s),U32.to_nat(p))
-
-def tap_pixel_natural(+limits: Machine.Limits,+input: Buffer.Model<F32>,+geometry: Kernel.Geometry,+image: U32,+tap: U32,+row: U32,+column: U32,
-  +positive: {Nat.is_lt(0n,U32.to_nat(geometry_kernel(geometry))) == True{} : Bool},
-  +square_bound: {Nat.is_le(Nat.mul(U32.to_nat(geometry_kernel(geometry)),U32.to_nat(geometry_kernel(geometry))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
-  +tap_inside: {U32.is_lt(tap,geometry_taps(geometry)) == True{} : Bool},
-  +ready: PixelReady<tap_numeric_pixel(input,geometry,image,tap,row,column)>) ->
-  {tap_pixel_value(input,geometry,image,tap,row,column) == natural_tap_value(input,geometry,image,tap,row,column) : F32}:
-  Kernel.Geometry{c,o,+h,+w,+k,+s,+p,rows,columns,taps} = geometry
-  %Equal.sym(F32,tap_pixel_value(input,geometry,image,tap,row,column),numeric_value(tap_numeric_pixel(input,geometry,image,tap,row,column)),tap_pixel_matches(limits,input,geometry,image,tap,row,column,positive,square_bound,tap_inside,ready)) : {_ == natural_tap_value(input,geometry,image,tap,row,column) : F32}
-  %Equal.sym(F32,numeric_value(tap_numeric_pixel(input,geometry,image,tap,row,column)),sampled_pixel(Buffer.tree(~F32,input),tap_base(geometry,image,tap),U32.to_nat(row),U32.to_nat(column),U32.to_nat((tap / k % k : U32)),U32.to_nat((tap % k : U32)),U32.to_nat(h),U32.to_nat(w),U32.to_nat(s),U32.to_nat(p)),numeric_sampled(tap_numeric_pixel(input,geometry,image,tap,row,column))) : {_ == natural_tap_value(input,geometry,image,tap,row,column) : F32}
-  %Equal.sym(Nat,U32.to_nat((tap / k % k : U32)),Nat.mod(Nat.div(U32.to_nat(tap),U32.to_nat(k)),U32.to_nat(k)),tap_row_decoded(limits,tap,k,positive,square_bound)) : {sampled_pixel(Buffer.tree(~F32,input),tap_base(geometry,image,tap),U32.to_nat(row),U32.to_nat(column),_,U32.to_nat((tap % k : U32)),U32.to_nat(h),U32.to_nat(w),U32.to_nat(s),U32.to_nat(p)) == natural_tap_value(input,geometry,image,tap,row,column) : F32}
-  Equal.cong(Nat,F32,value => sampled_pixel(Buffer.tree(~F32,input),tap_base(geometry,image,tap),U32.to_nat(row),U32.to_nat(column),Nat.mod(Nat.div(U32.to_nat(tap),U32.to_nat(k)),U32.to_nat(k)),value,U32.to_nat(h),U32.to_nat(w),U32.to_nat(s),U32.to_nat(p)),U32.to_nat((tap % k : U32)),Nat.mod(U32.to_nat(tap),U32.to_nat(k)),tap_column_decoded(limits,tap,k,positive,square_bound))
+def natural_tap_value(input: Buffer.Model<Tile.Tile8>,+geometry: Kernel.Geometry,+base: U32,+tap: U32,row: U32,column: U32) -> F32:
+  tap_cell(~Buffer.Model<Tile.Tile8>,~model_cell,input,geometry,U32.to_nat(base),tap,row,column)
 
 def weight_prefix(+output: Nat,+channels: Nat,+kernel: Nat) ->
   {Nat.mul(output,Nat.mul(channels,Nat.mul(kernel,kernel))) == Nat.mul(Nat.mul(Nat.mul(output,channels),kernel),kernel) : Nat}:
@@ -891,191 +539,257 @@ def weight_output_decode(+output: Nat,+channels: Nat,+kernel: Nat,+tap: Nat,
   {Nat.div(Nat.add(Nat.mul(output,Nat.mul(channels,Nat.mul(kernel,kernel))),tap),Nat.mul(channels,Nat.mul(kernel,kernel))) == output : Nat}:
   Radix.quotient(output,tap,Nat.mul(channels,Nat.mul(kernel,kernel)),taps_positive,tap_inside)
 
-def window_natural_state(window: Kernel.WeightWindow,+count: U32,input: Buffer.Model<F32>,position: Nat,positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool}) -> NaturalPacking:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  NaturalPacking{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0n,position,columns,Kernel.patch(tap,geometry,image),h,w,s,p,positive}
+# ---- Pixel samples ----
 
-def window_natural_initial(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,
-  +positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool},
-  +row_match: {window_row(window) == U32.from_nat(Nat.div(position,U32.to_nat(window_columns(window)))) : U32},
-  +column_match: {window_column(window) == U32.from_nat(Nat.mod(position,U32.to_nat(window_columns(window)))) : U32}) ->
-  {window_input(window,count,input) == Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(window_natural_state(window,count,input,position,positive))) : Packing}:
-  Kernel.WeightWindow{+geometry,image,tap,output,+row,+column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,+columns,taps} = geometry
-  %Equal.sym(U32,row,U32.from_nat(Nat.div(position,U32.to_nat(columns))),row_match) :
-    {Loop.run(~Packing,~step,U32.to_nat(count),Packing{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,_,column,columns,Kernel.patch(tap,geometry,image),h,w,s,p}) == Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(window_natural_state(window,count,input,position,positive))) : Packing}
-  %Equal.sym(U32,column,U32.from_nat(Nat.mod(position,U32.to_nat(columns))),column_match) :
-    {Loop.run(~Packing,~step,U32.to_nat(count),Packing{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,U32.from_nat(Nat.div(position,U32.to_nat(columns))),_,columns,Kernel.patch(tap,geometry,image),h,w,s,p}) == Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(window_natural_state(window,count,input,position,positive))) : Packing}
+# Input pixel (row * stride + kernel_row - padding, column * stride +
+# kernel_column - padding) of the cells from base, groups cells a pixel, for a
+# tile row below rows and a tile column below columns; zero outside the image.
+type NumericPixel is Data:
+  NumericPixel{input: Buffer.Model<Tile.Tile8>,base: Nat,row: U32,column: U32,kernel_row: U32,kernel_column: U32,height: U32,width: U32,stride: U32,padding: U32,
+    groups: U32,rows: U32,columns: U32}
+
+def numeric_native_mask(pixel: NumericPixel) -> Bool:
+  NumericPixel{input,base,+row,+column,+kr,+kc,+h,+w,+s,+p,groups,rows,columns} = pixel
+  U32.is_le(Kernel.axis_first(kr,s,p),row) && U32.is_lt(row,Kernel.axis_end(kr,s,p,h,rows)) && U32.is_le(Kernel.axis_first(kc,s,p),column) && U32.is_lt(column,Kernel.axis_end(kc,s,p,w,columns))
+
+def axis_inside(+offset: U32,+stride: U32,+padding: U32,size: U32,+position: U32) -> Bool:
+  Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(position),U32.to_nat(stride)))) && Nat.is_lt(Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat(position),U32.to_nat(stride))),Nat.add(U32.to_nat(padding),U32.to_nat(size)))
+
+def numeric_inside(pixel: NumericPixel) -> Bool:
+  NumericPixel{input,base,row,column,kr,kc,h,w,+s,+p,groups,rows,columns} = pixel
+  axis_inside(kr,s,p,h,row) && axis_inside(kc,s,p,w,column)
+
+def numeric_stride(pixel: NumericPixel) -> U32:
+  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,groups,rows,columns} = pixel
+  s
+
+def numeric_row_within(pixel: NumericPixel) -> Bool:
+  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,groups,rows,columns} = pixel
+  Nat.is_lt(U32.to_nat(row),U32.to_nat(rows))
+
+def numeric_column_within(pixel: NumericPixel) -> Bool:
+  NumericPixel{input,base,row,column,kr,kc,h,w,s,p,groups,rows,columns} = pixel
+  Nat.is_lt(U32.to_nat(column),U32.to_nat(columns))
+
+type PixelReady<-pixel: NumericPixel> is Data:
+  PixelReady{positive: {Nat.is_lt(0n,U32.to_nat(numeric_stride(pixel))) == True{} : Bool},row: {numeric_row_within(pixel) == True{} : Bool},column: {numeric_column_within(pixel) == True{} : Bool}}
+
+def numeric_mask_matches(+pixel: NumericPixel,ready: PixelReady<pixel>) -> {numeric_native_mask(pixel) == numeric_inside(pixel) : Bool}:
+  NumericPixel{input,base,+row,+column,+kr,+kc,+h,+w,+s,+p,groups,+rows,+columns} = pixel
+  PixelReady{+positive,row_within,column_within} = ready
+  +rf = U32.is_le(Kernel.axis_first(kr,s,p),row)
+  +re = U32.is_lt(row,Kernel.axis_end(kr,s,p,h,rows))
+  +cf = U32.is_le(Kernel.axis_first(kc,s,p),column)
+  +ce = U32.is_lt(column,Kernel.axis_end(kc,s,p,w,columns))
+  %Equal.sym(Bool,((rf && re) && cf) && ce,(rf && re) && (cf && ce),Logic.and_associative((rf && re),cf,ce)) : {_ == numeric_inside(pixel) : Bool}
+  %Equal.sym(Bool,rf && re,axis_inside(kr,s,p,h,row),axis_mask(kr,s,p,h,rows,row,positive,row_within)) : {_ && (cf && ce) == numeric_inside(pixel) : Bool}
+  %Equal.sym(Bool,cf && ce,axis_inside(kc,s,p,w,column),axis_mask(kc,s,p,w,columns,column,positive,column_within)) : {axis_inside(kr,s,p,h,row) && _ == numeric_inside(pixel) : Bool}
   {==}
 
-def window_input_row_end(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,
-  +positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool},
-  +row_match: {window_row(window) == U32.from_nat(Nat.div(position,U32.to_nat(window_columns(window)))) : U32},
-  +column_match: {window_column(window) == U32.from_nat(Nat.mod(position,U32.to_nat(window_columns(window)))) : U32}) ->
-  {packing_row(window_input(window,count,input)) == U32.from_nat(Nat.div(Nat.add(position,U32.to_nat(count)),U32.to_nat(window_columns(window)))) : U32}:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  +initial = window_natural_state(window,count,input,position,positive)
-  Equal.trans(U32,packing_row(window_input(window,count,input)),packing_row(Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(initial))),U32.from_nat(Nat.div(Nat.add(position,U32.to_nat(count)),U32.to_nat(columns))),
-    Equal.cong(Packing,U32,packing_row,window_input(window,count,input),Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(initial)),window_natural_initial(window,count,input,position,positive,row_match,column_match)),
-    packing_row_end(U32.to_nat(count),initial))
+def numeric_native_index(pixel: NumericPixel) -> U32:
+  NumericPixel{input,base,row,column,kr,kc,height,+width,+stride,+padding,groups,rows,columns} = pixel
+  (U32.from_nat(base) + ((row * stride + kr - padding) * width + (column * stride + kc - padding)) * groups : U32)
 
-def window_input_column_end(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,
-  +positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool},
-  +row_match: {window_row(window) == U32.from_nat(Nat.div(position,U32.to_nat(window_columns(window)))) : U32},
-  +column_match: {window_column(window) == U32.from_nat(Nat.mod(position,U32.to_nat(window_columns(window)))) : U32}) ->
-  {packing_column(window_input(window,count,input)) == U32.from_nat(Nat.mod(Nat.add(position,U32.to_nat(count)),U32.to_nat(window_columns(window)))) : U32}:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  +initial = window_natural_state(window,count,input,position,positive)
-  Equal.trans(U32,packing_column(window_input(window,count,input)),packing_column(Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(initial))),U32.from_nat(Nat.mod(Nat.add(position,U32.to_nat(count)),U32.to_nat(columns))),
-    Equal.cong(Packing,U32,packing_column,window_input(window,count,input),Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(initial)),window_natural_initial(window,count,input,position,positive,row_match,column_match)),
-    packing_column_end(U32.to_nat(count),initial))
+def numeric_index(pixel: NumericPixel) -> Nat:
+  NumericPixel{input,base,row,column,kr,kc,height,width,+stride,+padding,groups,rows,columns} = pixel
+  Nat.add(base,Nat.mul(Nat.add(Nat.mul(Nat.sub(Nat.add(U32.to_nat(kr),Nat.mul(U32.to_nat(row),U32.to_nat(stride))),U32.to_nat(padding)),U32.to_nat(width)),
+    Nat.sub(Nat.add(U32.to_nat(kc),Nat.mul(U32.to_nat(column),U32.to_nat(stride))),U32.to_nat(padding))),U32.to_nat(groups)))
 
-def window_first(window: Kernel.WeightWindow) -> U32:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  first
+def numeric_tree(pixel: NumericPixel) -> Tree.Tree<Tile.Tile8>:
+  NumericPixel{input,base,row,column,kr,kc,height,width,stride,padding,groups,rows,columns} = pixel
+  Buffer.tree(~Tile.Tile8,input)
 
-def window_output(window: Kernel.WeightWindow) -> U32:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  output
+# The offset of a pixel inside the image within its plane, as a word.
+def offset_word(+row: U32,+column: U32,+kernel_row: U32,+kernel_column: U32,+width: U32,+stride: U32,+padding: U32,
+  +row_lower: {Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(kernel_row),Nat.mul(U32.to_nat(row),U32.to_nat(stride)))) == True{} : Bool},
+  +column_lower: {Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(kernel_column),Nat.mul(U32.to_nat(column),U32.to_nat(stride)))) == True{} : Bool}) ->
+  {((row * stride + kernel_row - padding) * width + (column * stride + kernel_column - padding) : U32) ==
+    U32.from_nat(Nat.add(Nat.mul(Nat.sub(Nat.add(U32.to_nat(kernel_row),Nat.mul(U32.to_nat(row),U32.to_nat(stride))),U32.to_nat(padding)),U32.to_nat(width)),
+      Nat.sub(Nat.add(U32.to_nat(kernel_column),Nat.mul(U32.to_nat(column),U32.to_nat(stride))),U32.to_nat(padding)))) : U32}:
+  +offset = Nat.add(Nat.mul(Nat.sub(Nat.add(U32.to_nat(kernel_row),Nat.mul(U32.to_nat(row),U32.to_nat(stride))),U32.to_nat(padding)),U32.to_nat(width)),
+    Nat.sub(Nat.add(U32.to_nat(kernel_column),Nat.mul(U32.to_nat(column),U32.to_nat(stride))),U32.to_nat(padding)))
+  %Arithmetic.add_zero_left(((row * stride + kernel_row - padding) * width : U32)) :
+    {(_ + (column * stride + kernel_column - padding) : U32) == U32.from_nat(offset) : U32}
+  Encoded.padded_pixel_address(0n,row,column,kernel_row,kernel_column,width,stride,padding,row_lower,column_lower)
 
-def window_outputs(window: Kernel.WeightWindow) -> U32:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  o
+def numeric_index_matches(+pixel: NumericPixel,+inside: {numeric_inside(pixel) == True{} : Bool}) -> {numeric_native_index(pixel) == U32.from_nat(numeric_index(pixel)) : U32}:
+  NumericPixel{input,+base,+row,+column,+kr,+kc,+height,+width,+stride,+padding,+groups,rows,columns} = pixel
+  +row_inside = Logic.left(axis_inside(kr,stride,padding,height,row),axis_inside(kc,stride,padding,width,column),inside)
+  +column_inside = Logic.right(axis_inside(kr,stride,padding,height,row),axis_inside(kc,stride,padding,width,column),inside)
+  +offset = Nat.add(Nat.mul(Nat.sub(Nat.add(U32.to_nat(kr),Nat.mul(U32.to_nat(row),U32.to_nat(stride))),U32.to_nat(padding)),U32.to_nat(width)),
+    Nat.sub(Nat.add(U32.to_nat(kc),Nat.mul(U32.to_nat(column),U32.to_nat(stride))),U32.to_nat(padding)))
+  +wanted = U32.from_nat(Nat.add(base,Nat.mul(offset,U32.to_nat(groups))))
+  %Equal.sym(U32,((row * stride + kr - padding) * width + (column * stride + kc - padding) : U32),U32.from_nat(offset),
+      offset_word(row,column,kr,kc,width,stride,padding,
+        Logic.left(Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(kr),Nat.mul(U32.to_nat(row),U32.to_nat(stride)))),Nat.is_lt(Nat.add(U32.to_nat(kr),Nat.mul(U32.to_nat(row),U32.to_nat(stride))),Nat.add(U32.to_nat(padding),U32.to_nat(height))),row_inside),
+        Logic.left(Nat.is_le(U32.to_nat(padding),Nat.add(U32.to_nat(kc),Nat.mul(U32.to_nat(column),U32.to_nat(stride)))),Nat.is_lt(Nat.add(U32.to_nat(kc),Nat.mul(U32.to_nat(column),U32.to_nat(stride))),Nat.add(U32.to_nat(padding),U32.to_nat(width))),column_inside))) :
+    {(U32.from_nat(base) + _ * groups : U32) == wanted : U32}
+  %Arithmetic.native_roundtrip(groups) : {(U32.from_nat(base) + U32.from_nat(offset) * _ : U32) == wanted : U32}
+  %Equal.sym(U32,(U32.from_nat(offset) * U32.from_nat(U32.to_nat(groups)) : U32),U32.from_nat(Nat.mul(offset,U32.to_nat(groups))),
+      Multiplication.native_encoded_multiply(offset,U32.to_nat(groups))) :
+    {(U32.from_nat(base) + _ : U32) == wanted : U32}
+  WordArithmetic.native_add(base,Nat.mul(offset,U32.to_nat(groups)))
 
-def natural_gradient_value(input: Buffer.Model<F32>,window: Kernel.WeightWindow,lane: Nat,position: Nat) -> F32:
-  Kernel.WeightWindow{geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  Tree.read(F32,Buffer.tree(~F32,input),U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(o)),U32.to_nat((output + U32.from_nat(lane) : U32))),U32.to_nat(rows)),U32.to_nat(columns)),position)))
-
-def window_gradient_natural(+input: Buffer.Model<F32>,+window: Kernel.WeightWindow,+lane: Nat,+first: Nat,+index: Nat,
-  +first_match: {window_first(window) == U32.from_nat(first) : U32},
-  +output_inside: {U32.is_lt((window_output(window) + U32.from_nat(lane) : U32),window_outputs(window)) == True{} : Bool}) ->
-  {gradient_value(input,gradient_context(window),lane,U32.from_nat(index)) == natural_gradient_value(input,window,lane,Nat.add(first,index)) : F32}:
-  Kernel.WeightWindow{geometry,+image,tap,+output,row,column,+start} = window
-  Kernel.Geometry{c,+o,h,w,k,s,p,+rows,+columns,taps} = geometry
-  %Equal.sym(Bool,U32.is_lt((output + U32.from_nat(lane) : U32),o),True{},output_inside) :
-    {Bool.pick(F32,_,Tree.read(F32,Buffer.tree(~F32,input),((output + U32.from_nat(lane)) * (rows * columns) + (image * o * rows * columns + start) + U32.from_nat(index) : U32)),0.0) == natural_gradient_value(input,window,lane,Nat.add(first,index)) : F32}
-  %Equal.sym(U32,start,U32.from_nat(first),first_match) :
-    {Tree.read(F32,Buffer.tree(~F32,input),((output + U32.from_nat(lane)) * (rows * columns) + (image * o * rows * columns + _) + U32.from_nat(index) : U32)) == natural_gradient_value(input,window,lane,Nat.add(first,index)) : F32}
-  Equal.cong(U32,F32,address => Tree.read(F32,Buffer.tree(~F32,input),address),
-    ((output + U32.from_nat(lane)) * (rows * columns) + (image * o * rows * columns + U32.from_nat(first)) + U32.from_nat(index) : U32),
-    U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(o)),U32.to_nat((output + U32.from_nat(lane) : U32))),U32.to_nat(rows)),U32.to_nat(columns)),Nat.add(first,index))),
-    Encoded.nchw_gradient_encoded(image,o,(output + U32.from_nat(lane) : U32),rows,columns,first,index))
-
-def patch_key(+upper: Bool,row: Accumulator.Row) -> Nat:
-  Nat.add(Bool.pick(Nat,upper,4n,0n),Coordinates.row_number(row))
-
-def patch_key_inside(upper: Bool,row: Accumulator.Row) -> {Nat.is_lt(patch_key(upper,row),8n) == True{} : Bool}:
-  match upper row:
-    case False{} Accumulator.R0{}: {==}
-    case False{} Accumulator.R1{}: {==}
-    case False{} Accumulator.R2{}: {==}
-    case False{} Accumulator.R3{}: {==}
-    case True{} Accumulator.R0{}: {==}
-    case True{} Accumulator.R1{}: {==}
-    case True{} Accumulator.R2{}: {==}
-    case True{} Accumulator.R3{}: {==}
-
-def tap_pixel_at(window: Kernel.WeightWindow,input: Buffer.Model<F32>,lane: Nat,+position: Nat) -> F32:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  tap_pixel_value(input,geometry,image,(tap + U32.from_nat(lane) : U32),U32.from_nat(Nat.div(position,U32.to_nat(columns))),U32.from_nat(Nat.mod(position,U32.to_nat(columns))))
-
-def natural_patch_at(+window: Kernel.WeightWindow,+input: Buffer.Model<F32>,+upper: Bool,+row: Accumulator.Row,+position: Nat) ->
-  {natural_patch_value(window_patch_context(window,input),upper,row,position) == tap_pixel_at(window,input,patch_key(upper,row),position) : F32}:
-  Kernel.WeightWindow{+geometry,+image,+tap,output,row0,column,first} = window
-  Kernel.Geometry{c,o,+h,+w,k,+s,+p,rows,+columns,taps} = geometry
-  Equal.cong(Kernel.Lane,F32,lane => pixel_value(input,U32.from_nat(Nat.div(position,U32.to_nat(columns))),U32.from_nat(Nat.mod(position,U32.to_nat(columns))),h,w,s,p,lane),
-    Kernel.selected(Kernel.patch(tap,geometry,image),patch_key(upper,row)),Kernel.lane((tap + U32.from_nat(patch_key(upper,row)) : U32),geometry,image),
-    patch_lane_at(tap,geometry,image,patch_key(upper,row),patch_key_inside(upper,row)))
-
-def position_row_within(+position: Nat,+rows: U32,+columns: U32,+positive: {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool},
-  +within: {Nat.is_lt(position,Nat.mul(U32.to_nat(rows),U32.to_nat(columns))) == True{} : Bool}) ->
-  {Nat.is_lt(U32.to_nat(U32.from_nat(Nat.div(position,U32.to_nat(columns)))),U32.to_nat(rows)) == True{} : Bool}:
-  +quotient = Nat.div(position,U32.to_nat(columns))
-  +inside = DivisionOrder.quotient_below(position,U32.to_nat(rows),U32.to_nat(columns),positive,within)
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(quotient)),quotient,FullRange.roundtrip(quotient,rows,Bounds.strict_le(quotient,U32.to_nat(rows),inside))) : {Nat.is_lt(_,U32.to_nat(rows)) == True{} : Bool}
-  inside
-
-def position_column_within(+position: Nat,+columns: U32,+positive: {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool}) ->
-  {Nat.is_lt(U32.to_nat(U32.from_nat(Nat.mod(position,U32.to_nat(columns)))),U32.to_nat(columns)) == True{} : Bool}:
-  +remainder = Nat.mod(position,U32.to_nat(columns))
-  +inside = DivisionOrder.remainder_small(position,U32.to_nat(columns),positive)
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(remainder)),remainder,FullRange.roundtrip(remainder,columns,Bounds.strict_le(remainder,U32.to_nat(columns),inside))) : {Nat.is_lt(_,U32.to_nat(columns)) == True{} : Bool}
-  inside
-
-def packing_reader(state: Packing) -> Buffer.Model<F32>:
-  Packing{input,output,index,row,column,columns,patch,h,w,s,p} = state
-  input
-
-def advanced_reader(wrap: Bool,+input: Buffer.Model<F32>,+output: Tree.Tree<Tile.Tile8>,+index: U32,+row: U32,+column: U32,+columns: U32,+patch: Kernel.Patch,+height: U32,+width: U32,+stride: U32,+padding: U32) ->
-  {packing_reader(advanced(wrap,input,output,index,row,column,columns,patch,height,width,stride,padding)) == input : Buffer.Model<F32>}:
-  match wrap:
+def numeric_selected(inside: Bool,+pixel: NumericPixel,equation: {numeric_inside(pixel) == inside : Bool}) ->
+  {Bool.pick(Tile.Tile8,inside,Tree.read(Tile.Tile8,numeric_tree(pixel),numeric_native_index(pixel)),Tile.filled(0.0)) ==
+    Bool.pick(Tile.Tile8,inside,Tree.read(Tile.Tile8,numeric_tree(pixel),U32.from_nat(numeric_index(pixel))),Tile.filled(0.0)) : Tile.Tile8}:
+  match inside:
     case False{}: {==}
-    case True{}: {==}
+    case True{}:
+      Equal.cong(U32,Tile.Tile8,index => Tree.read(Tile.Tile8,numeric_tree(pixel),index),numeric_native_index(pixel),U32.from_nat(numeric_index(pixel)),numeric_index_matches(pixel,equation))
 
-def packing_reader_step(+state: Packing) -> {packing_reader(step(state)) == packing_reader(state) : Buffer.Model<F32>}:
-  Packing{+input,+output,+index,+row,+column,+columns,+patch,+height,+width,+stride,+padding} = state
-  advanced_reader(U32.is_eq((column + 1 : U32),columns),input,
-    Tree.write(Tile.Tile8,output,index,tile_value(~Kernel.Pixel,~patch_sample,input,Kernel.Pixel{patch,row,column,height,width,stride,padding})),
-    (index + 1 : U32),row,(column + 1 : U32),columns,patch,height,width,stride,padding)
+def numeric_cell(pixel: NumericPixel) -> Tile.Tile8:
+  +pixel = pixel
+  Bool.pick(Tile.Tile8,numeric_inside(pixel),Tree.read(Tile.Tile8,numeric_tree(pixel),U32.from_nat(numeric_index(pixel))),Tile.filled(0.0))
 
-def window_input_reader(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>) ->
-  {packing_reader(window_input(window,count,input)) == input : Buffer.Model<F32>}:
-  Kernel.WeightWindow{+geometry,+image,+tap,output,+row,+column,first} = window
-  Kernel.Geometry{c,o,+h,+w,k,+s,+p,rows,+columns,taps} = geometry
-  Projection.preserves_observation(~Packing,~Buffer.Model<F32>,~step,~packing_reader,~packing_reader_step,U32.to_nat(count),
-    Packing{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,row,column,columns,Kernel.patch(tap,geometry,image),h,w,s,p})
-
-def natural_reader(state: NaturalPacking) -> Buffer.Model<F32>:
-  NaturalPacking{input,output,index,position,columns,patch,h,w,s,p,positive} = state
-  input
-
-def natural_reader_step(+state: NaturalPacking) -> {natural_reader(natural_step(state)) == natural_reader(state) : Buffer.Model<F32>}:
-  NaturalPacking{input,output,index,position,columns,patch,h,w,s,p,positive} = state
-  {==}
-
-def represented_reader(+state: NaturalPacking) -> {packing_reader(natural_represent(state)) == natural_reader(state) : Buffer.Model<F32>}:
-  NaturalPacking{input,output,index,position,columns,patch,h,w,s,p,positive} = state
-  {==}
-
-def natural_reader_end(+count: Nat,+state: NaturalPacking) ->
-  {packing_reader(Loop.run(~Packing,~step,count,natural_represent(state))) == natural_reader(state) : Buffer.Model<F32>}:
-  +result = Loop.run(~NaturalPacking,~natural_step,count,state)
-  Equal.trans(Buffer.Model<F32>,packing_reader(Loop.run(~Packing,~step,count,natural_represent(state))),packing_reader(natural_represent(result)),natural_reader(state),
-    Equal.cong(Packing,Buffer.Model<F32>,packing_reader,Loop.run(~Packing,~step,count,natural_represent(state)),natural_represent(result),natural_loop(count,state)),
-    Equal.trans(Buffer.Model<F32>,packing_reader(natural_represent(result)),natural_reader(result),natural_reader(state),represented_reader(result),
-      Projection.preserves_observation(~NaturalPacking,~Buffer.Model<F32>,~natural_step,~natural_reader,~natural_reader_step,count,state)))
-
-def window_input_kept(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>,+position: Nat,
-  +positive: {Nat.is_lt(0n,U32.to_nat(window_columns(window))) == True{} : Bool},
-  +row_match: {window_row(window) == U32.from_nat(Nat.div(position,U32.to_nat(window_columns(window)))) : U32},
-  +column_match: {window_column(window) == U32.from_nat(Nat.mod(position,U32.to_nat(window_columns(window)))) : U32}) ->
-  {packing_reader(window_input(window,count,input)) == input : Buffer.Model<F32>}:
-  Kernel.WeightWindow{+geometry,image,tap,output,row,column,first} = window
+# The cell of channel block block in phase (row_offset, column_offset) at a
+# tile row and column of a pixel band, the cells of the image from base.
+def cell_pixel(+input: Buffer.Model<Tile.Tile8>,+block: U32,+row_offset: U32,+column_offset: U32,+row_end: U32,+column_end: U32,+geometry: Kernel.Geometry,+base: U32,
+  +row: U32,+column: U32) -> NumericPixel:
   Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps} = geometry
-  +initial = window_natural_state(window,count,input,position,positive)
-  Equal.trans(Buffer.Model<F32>,packing_reader(window_input(window,count,input)),packing_reader(Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(initial))),input,
-    Equal.cong(Packing,Buffer.Model<F32>,packing_reader,window_input(window,count,input),Loop.run(~Packing,~step,U32.to_nat(count),natural_represent(initial)),window_natural_initial(window,count,input,position,positive,row_match,column_match)),natural_reader_end(U32.to_nat(count),initial))
+  NumericPixel{input,Nat.add(U32.to_nat(base),U32.to_nat(block)),row,column,row_offset,column_offset,h,w,s,p,((c + 7) / 8 : U32),row_end,column_end}
 
-def packed_reader(result: Packed) -> Buffer.Model<F32>:
-  Packed{input,output} = result
-  input
+# The plane of a block and phase in a band from first_row of band_columns
+# columns, its cells from start.
+def block_plane(+block: U32,+row_offset: U32,+column_offset: U32,+row_end: U32,+column_end: U32,+geometry: Kernel.Geometry,+base: U32,
+  +first_row: U32,+band_columns: U32,+start: U32) -> Kernel.Plane:
+  Kernel.Geometry{c,o,h,+w,k,+s,+p,rows,columns,taps} = geometry
+  Kernel.Plane{(base + block : U32),(row_offset - p : U32),(column_offset - p : U32),s,w,((c + 7) / 8 : U32),
+    Kernel.axis_first(row_offset,s,p),Kernel.axis_end(row_offset,s,p,h,row_end),Kernel.axis_first(column_offset,s,p),Kernel.axis_end(column_offset,s,p,w,column_end),
+    first_row,band_columns,start}
 
-def gradient_finished_reader(+state: Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>) ->
-  {packed_reader(gradient_finished(state)) == Traversals.model_reader(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,state) : Buffer.Model<F32>}:
-  Traversal.State{input,output,position,context} = state
+# A position of the plane at a tile row and column reads the masked native
+# cell of its pixel.
+def plane_native(+input: Buffer.Model<Tile.Tile8>,+block: U32,+row_offset: U32,+column_offset: U32,+row_end: U32,+column_end: U32,+geometry: Kernel.Geometry,+base: U32,
+  +first_row: U32,+band_columns: U32,+start: U32,+position: U32,+row: U32,+column: U32,
+  +row_exact: {(first_row + (position - start : U32) / band_columns : U32) == row : U32},+column_exact: {((position - start : U32) % band_columns : U32) == column : U32}) ->
+  {plane_sample(input,block_plane(block,row_offset,column_offset,row_end,column_end,geometry,base,first_row,band_columns,start),position) ==
+    Bool.pick(Tile.Tile8,numeric_native_mask(cell_pixel(input,block,row_offset,column_offset,row_end,column_end,geometry,base,row,column)),
+      Tree.read(Tile.Tile8,numeric_tree(cell_pixel(input,block,row_offset,column_offset,row_end,column_end,geometry,base,row,column)),
+        numeric_native_index(cell_pixel(input,block,row_offset,column_offset,row_end,column_end,geometry,base,row,column))),Tile.filled(0.0)) : Tile.Tile8}:
+  Kernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+rows,+columns,+taps} = geometry
+  +tree = Buffer.tree(~Tile.Tile8,input)
+  +groups = ((c + 7) / 8 : U32)
+  +first_cell = (base + block : U32)
+  +number = Nat.add(U32.to_nat(base),U32.to_nat(block))
+  +rf = Kernel.axis_first(row_offset,s,p)
+  +re = Kernel.axis_end(row_offset,s,p,h,row_end)
+  +cf = Kernel.axis_first(column_offset,s,p)
+  +ce = Kernel.axis_end(column_offset,s,p,w,column_end)
+  +tile_row = (first_row + (position - start : U32) / band_columns : U32)
+  +tile_column = ((position - start : U32) % band_columns : U32)
+  +down = (row * s : U32)
+  +across = (column * s : U32)
+  +wanted = Bool.pick(Tile.Tile8,U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,column) && U32.is_lt(column,ce),
+    Tree.read(Tile.Tile8,tree,(U32.from_nat(number) + ((down + row_offset - p) * w + (across + column_offset - p)) * groups : U32)),Tile.filled(0.0))
+  %Equal.sym(U32,tile_row,row,row_exact) :
+    {Bool.pick(Tile.Tile8,U32.is_le(rf,_) && U32.is_lt(_,re) && U32.is_le(cf,tile_column) && U32.is_lt(tile_column,ce),
+      Tree.read(Tile.Tile8,tree,(first_cell + ((_ * s + (row_offset - p : U32)) * w + tile_column * s + (column_offset - p : U32)) * groups : U32)),Tile.filled(0.0)) == wanted : Tile.Tile8}
+  %Equal.sym(U32,tile_column,column,column_exact) :
+    {Bool.pick(Tile.Tile8,U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,_) && U32.is_lt(_,ce),
+      Tree.read(Tile.Tile8,tree,(first_cell + ((down + (row_offset - p : U32)) * w + _ * s + (column_offset - p : U32)) * groups : U32)),Tile.filled(0.0)) == wanted : Tile.Tile8}
+  %Arithmetic.subtract_from_sum(down,row_offset,p) :
+    {Bool.pick(Tile.Tile8,U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,column) && U32.is_lt(column,ce),
+      Tree.read(Tile.Tile8,tree,(first_cell + (_ * w + across + (column_offset - p : U32)) * groups : U32)),Tile.filled(0.0)) == wanted : Tile.Tile8}
+  +head = ((down + row_offset - p : U32) * w : U32)
+  %Equal.sym(U32,((head + across : U32) + (column_offset - p : U32) : U32),(head + (across + (column_offset - p : U32) : U32) : U32),
+      Arithmetic.add_associative(head,across,(column_offset - p : U32))) :
+    {Bool.pick(Tile.Tile8,U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,column) && U32.is_lt(column,ce),
+      Tree.read(Tile.Tile8,tree,(first_cell + _ * groups : U32)),Tile.filled(0.0)) == wanted : Tile.Tile8}
+  %Arithmetic.subtract_from_sum(across,column_offset,p) :
+    {Bool.pick(Tile.Tile8,U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,column) && U32.is_lt(column,ce),
+      Tree.read(Tile.Tile8,tree,(first_cell + (head + _) * groups : U32)),Tile.filled(0.0)) == wanted : Tile.Tile8}
+  +first_exact = {%Arithmetic.native_roundtrip(base) : {(_ + block : U32) == U32.from_nat(number) : U32}
+    %Arithmetic.native_roundtrip(block) : {(U32.from_nat(U32.to_nat(base)) + _ : U32) == U32.from_nat(number) : U32}
+    WordArithmetic.native_add(U32.to_nat(base),U32.to_nat(block)) : {first_cell == U32.from_nat(number) : U32}}
+  %Equal.sym(U32,first_cell,U32.from_nat(number),first_exact) :
+    {Bool.pick(Tile.Tile8,U32.is_le(rf,row) && U32.is_lt(row,re) && U32.is_le(cf,column) && U32.is_lt(column,ce),
+      Tree.read(Tile.Tile8,tree,(_ + ((down + row_offset - p : U32) * w + (across + column_offset - p : U32)) * groups : U32)),Tile.filled(0.0)) == wanted : Tile.Tile8}
   {==}
 
-def window_gradient_kept(+window: Kernel.WeightWindow,+count: U32,+input: Buffer.Model<F32>) ->
-  {packed_reader(window_gradient(window,count,input)) == input : Buffer.Model<F32>}:
-  Kernel.WeightWindow{geometry,+image,tap,output,row,column,first} = window
-  Kernel.Geometry{c,+o,h,w,k,s,p,+rows,+columns,taps} = geometry
-  +initial = {Traversal.State{input,Tree.fresh(Tile.Tile8,Storage.depth_for(count),Tile.filled(0.0)),0,Kernel.Gradient{o,(rows * columns : U32),(image * o * rows * columns + first : U32),output,0}} : Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>}
-  +result = Loop.run(~Traversal.State<&2,&2,Buffer.Model<F32>,Tree.Tree<Tile.Tile8>,Kernel.Gradient>,~Traversals.model_step(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination),U32.to_nat(count),initial)
-  Equal.trans(Buffer.Model<F32>,packed_reader(gradient_finished(result)),Traversals.model_reader(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,result),input,
-    gradient_finished_reader(result),Traversals.model_reader_kept(~Buffer.Model<F32>,~Tile.Tile8,~Kernel.Gradient,~gradient_tile_value,~Kernel.gradient_destination,U32.to_nat(count),initial))
+# A position of the plane at a tile row and column inside the band holds
+# the cell of its pixel.
+def plane_cell(+input: Buffer.Model<Tile.Tile8>,+block: U32,+row_offset: U32,+column_offset: U32,+row_end: U32,+column_end: U32,+geometry: Kernel.Geometry,+base: U32,
+  +first_row: U32,+band_columns: U32,+start: U32,+position: U32,+row: U32,+column: U32,
+  +row_exact: {(first_row + (position - start : U32) / band_columns : U32) == row : U32},+column_exact: {((position - start : U32) % band_columns : U32) == column : U32},
+  +ready: PixelReady<cell_pixel(input,block,row_offset,column_offset,row_end,column_end,geometry,base,row,column)>) ->
+  {plane_sample(input,block_plane(block,row_offset,column_offset,row_end,column_end,geometry,base,first_row,band_columns,start),position) ==
+    numeric_cell(cell_pixel(input,block,row_offset,column_offset,row_end,column_end,geometry,base,row,column)) : Tile.Tile8}:
+  +pixel = cell_pixel(input,block,row_offset,column_offset,row_end,column_end,geometry,base,row,column)
+  +native = Tree.read(Tile.Tile8,numeric_tree(pixel),numeric_native_index(pixel))
+  %Equal.sym(Tile.Tile8,plane_sample(input,block_plane(block,row_offset,column_offset,row_end,column_end,geometry,base,first_row,band_columns,start),position),
+      Bool.pick(Tile.Tile8,numeric_native_mask(pixel),native,Tile.filled(0.0)),
+      plane_native(input,block,row_offset,column_offset,row_end,column_end,geometry,base,first_row,band_columns,start,position,row,column,row_exact,column_exact)) :
+    {_ == numeric_cell(pixel) : Tile.Tile8}
+  %Equal.sym(Bool,numeric_native_mask(pixel),numeric_inside(pixel),numeric_mask_matches(pixel,ready)) : {Bool.pick(Tile.Tile8,_,native,Tile.filled(0.0)) == numeric_cell(pixel) : Tile.Tile8}
+  numeric_selected(numeric_inside(pixel),pixel,{==})
+
+# A lane of a picked cell is the picked value when the lane of the cell is
+# that value.
+def lane_picked(inside: Bool,+lane: Nat,+tile: Tile.Tile8,+value: F32,+small: {Nat.is_lt(lane,8n) == True{} : Bool},
+  same: @inside_true: {inside == True{} : Bool} -> {Tiles.select_lane(lane,tile) == value : F32}) ->
+  {Tiles.select_lane(lane,Bool.pick(Tile.Tile8,inside,tile,Tile.filled(0.0))) == Bool.pick(F32,inside,value,0.0) : F32}:
+  match inside:
+    case True{}: same({==})
+    case False{}: filled_lane(lane,0.0,small)
+
+# Lane lane of the cell of a pixel of block block is channel 8 * block + lane
+# of the cells from base there, zero outside the image.
+def cell_pixel_lane(+input: Buffer.Model<Tile.Tile8>,+block: U32,+row_offset: U32,+column_offset: U32,+row_end: U32,+column_end: U32,
+  +c: U32,+o: U32,+h: U32,+w: U32,+k: U32,+s: U32,+p: U32,+rows: U32,+columns: U32,+taps: U32,+base: U32,+row: U32,+column: U32,+lane: Nat,
+  +small: {Nat.is_lt(lane,8n) == True{} : Bool}) ->
+  {Tiles.select_lane(lane,numeric_cell(cell_pixel(input,block,row_offset,column_offset,row_end,column_end,Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps},base,row,column))) ==
+    sampled_point(input,U32.to_nat(base),Nat.add(Nat.mul(U32.to_nat(block),8n),lane),
+      Nat.add(U32.to_nat(row_offset),Nat.mul(U32.to_nat(row),U32.to_nat(s))),Nat.add(U32.to_nat(column_offset),Nat.mul(U32.to_nat(column),U32.to_nat(s))),
+      U32.to_nat(h),U32.to_nat(w),U32.to_nat(p),U32.to_nat(((c + 7) / 8 : U32))) : F32}:
+  +pixel = cell_pixel(input,block,row_offset,column_offset,row_end,column_end,Kernel.Geometry{c,o,h,w,k,s,p,rows,columns,taps},base,row,column)
+  +tree = Buffer.tree(~Tile.Tile8,input)
+  +b = U32.to_nat(block)
+  +channel = Nat.add(Nat.mul(b,8n),lane)
+  +offset = Nat.add(Nat.mul(Nat.sub(Nat.add(U32.to_nat(row_offset),Nat.mul(U32.to_nat(row),U32.to_nat(s))),U32.to_nat(p)),U32.to_nat(w)),
+    Nat.sub(Nat.add(U32.to_nat(column_offset),Nat.mul(U32.to_nat(column),U32.to_nat(s))),U32.to_nat(p)))
+  +g = U32.to_nat(((c + 7) / 8 : U32))
+  +read = Tree.read(Tile.Tile8,tree,U32.from_nat(numeric_index(pixel)))
+  lane_picked(numeric_inside(pixel),lane,read,Tiles.select_lane(Nat.mod(channel,8n),Tree.read(Tile.Tile8,tree,U32.from_nat(Nat.add(Nat.add(U32.to_nat(base),Nat.div(channel,8n)),Nat.mul(offset,g))))),
+    small,
+    inside_true =>
+      %Equal.sym(Nat,Nat.mod(channel,8n),lane,Radix.remainder(b,lane,8n,{==},small)) :
+        {Tiles.select_lane(lane,read) == Tiles.select_lane(_,Tree.read(Tile.Tile8,tree,U32.from_nat(Nat.add(Nat.add(U32.to_nat(base),Nat.div(channel,8n)),Nat.mul(offset,g))))) : F32}
+      %Equal.sym(Nat,Nat.div(channel,8n),b,Radix.quotient(b,lane,8n,{==},small)) :
+        {Tiles.select_lane(lane,read) == Tiles.select_lane(lane,Tree.read(Tile.Tile8,tree,U32.from_nat(Nat.add(Nat.add(U32.to_nat(base),_),Nat.mul(offset,g))))) : F32}
+      {==})
+
+# A tap offset below the kernel is its phase plus phases * its tile rows, with
+# phases = min(stride, kernel): the stride when it is below the kernel, else
+# the kernel, which leaves the offset as its own phase.
+def phase_case(choice: Bool,+offset: Nat,+row: Nat,+stride: Nat,+kernel: Nat,+stride_positive: {Nat.is_lt(0n,stride) == True{} : Bool},
+  +below: {Nat.is_lt(offset,kernel) == True{} : Bool}) ->
+  {Nat.add(Nat.mod(offset,Bool.pick(Nat,choice,stride,kernel)),Nat.mul(Nat.add(row,Nat.div(offset,Bool.pick(Nat,choice,stride,kernel))),stride)) ==
+    Nat.add(offset,Nat.mul(row,stride)) : Nat}:
+  match choice:
+    case True{}:
+      +quotient = Nat.div(offset,stride)
+      +remainder = Nat.mod(offset,stride)
+      +lower = Nat.mul(row,stride)
+      +rows = Nat.mul(quotient,stride)
+      +wanted = Nat.add(offset,lower)
+      %Equal.sym(Nat,Nat.mul(Nat.add(row,quotient),stride),Nat.add(lower,rows),RowMajor.distrib(row,quotient,stride)) : {Nat.add(remainder,_) == wanted : Nat}
+      %Equal.sym(Nat,Nat.add(remainder,Nat.add(lower,rows)),Nat.add(lower,Nat.add(remainder,rows)),RowMajor.add_swap(remainder,lower,rows)) : {_ == wanted : Nat}
+      +whole = Equal.trans(Nat,Nat.add(remainder,rows),Nat.add(rows,remainder),offset,Order.commutative(remainder,rows),
+        Equal.sym(Nat,offset,Nat.add(rows,remainder),DivisionOrder.quotient_exact(offset,stride,stride_positive)))
+      %Equal.sym(Nat,Nat.add(remainder,rows),offset,whole) : {Nat.add(lower,_) == wanted : Nat}
+      Order.commutative(lower,offset)
+    case False{}:
+      +parts = Division.small(offset,kernel,below)
+      %Equal.sym(Nat,Nat.div(offset,kernel),0n,Equal.cong(Nat & Nat,Nat,pair => Pair.fst(Nat,Nat,pair),Nat.divmod(offset,kernel),(0n,offset),parts)) :
+        {Nat.add(Nat.mod(offset,kernel),Nat.mul(Nat.add(row,_),stride)) == Nat.add(offset,Nat.mul(row,stride)) : Nat}
+      %Equal.sym(Nat,Nat.mod(offset,kernel),offset,Equal.cong(Nat & Nat,Nat,pair => Pair.snd(Nat,Nat,pair),Nat.divmod(offset,kernel),(0n,offset),parts)) :
+        {Nat.add(_,Nat.mul(Nat.add(row,0n),stride)) == Nat.add(offset,Nat.mul(row,stride)) : Nat}
+      %Equal.sym(Nat,Nat.add(row,0n),row,Addition.zero_right(row)) : {Nat.add(offset,Nat.mul(_,stride)) == Nat.add(offset,Nat.mul(row,stride)) : Nat}
+      {==}
+
+def phase_offset(+offset: Nat,+row: Nat,+stride: Nat,+kernel: Nat,+stride_positive: {Nat.is_lt(0n,stride) == True{} : Bool},+below: {Nat.is_lt(offset,kernel) == True{} : Bool}) ->
+  {Nat.add(Nat.mod(offset,Nat.min(stride,kernel)),Nat.mul(Nat.add(row,Nat.div(offset,Nat.min(stride,kernel))),stride)) == Nat.add(offset,Nat.mul(row,stride)) : Nat}:
+  %Equal.sym(Nat,Nat.min(stride,kernel),Bool.pick(Nat,Nat.is_lt(stride,kernel),stride,kernel),Extrema.minimum_choice(stride,kernel)) :
+    {Nat.add(Nat.mod(offset,_),Nat.mul(Nat.add(row,Nat.div(offset,_)),stride)) == Nat.add(offset,Nat.mul(row,stride)) : Nat}
+  phase_case(Nat.is_lt(stride,kernel),offset,row,stride,kernel,stride_positive,below)

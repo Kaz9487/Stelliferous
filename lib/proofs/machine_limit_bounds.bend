@@ -4,6 +4,7 @@ import ../machine_limits.bend as Machine
 import ./u32_shift.bend as U32Shift
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
+import ./u32_comparison.bend as Comparison
 
 def dimension_fits(+limits: Machine.Limits) -> {U32.is_le(Machine.dimension(limits),2147483648) == True{} : Bool}:
   Machine.Limits{d,c,k,h,Machine.Facts{df,cf,kf,hf,da,ca,db,cb,dc,dk,ddk,ch,sc,sh,chb}} = limits
@@ -44,9 +45,12 @@ def doubled_dimension_within_coordinate(+limits: Machine.Limits) -> {U32.is_le(U
 def capacity_doubles_to_half(+limits: Machine.Limits) -> {U32.shl(Machine.capacity(limits)) == Machine.half_word(limits) : U32}:
   Machine.Limits{d,c,k,h,Machine.Facts{df,cf,kf,hf,da,ca,db,cb,dc,dk,ddk,ch,sc,sh,chb}} = limits
   ch
-def seven_within_capacity(+limits: Machine.Limits) -> {U32.is_le(7,Machine.capacity(limits)) == True{} : Bool}:
+def sixteen_within_capacity(+limits: Machine.Limits) -> {U32.is_le(16,Machine.capacity(limits)) == True{} : Bool}:
   Machine.Limits{d,c,k,h,Machine.Facts{df,cf,kf,hf,da,ca,db,cb,dc,dk,ddk,ch,sc,sh,chb}} = limits
   sc
+def seven_within_capacity(+limits: Machine.Limits) -> {U32.is_le(7,Machine.capacity(limits)) == True{} : Bool}:
+  %Equal.sym(Bool,U32.is_le(7,Machine.capacity(limits)),Nat.is_le(7n,U32.to_nat(Machine.capacity(limits))),Comparison.le(7,Machine.capacity(limits))) : {_ == True{} : Bool}
+  Order.transitive(7n,16n,U32.to_nat(Machine.capacity(limits)),{==},Bounds.as_nat_le(16,Machine.capacity(limits),sixteen_within_capacity(limits)))
 def sixteen_within_half(+limits: Machine.Limits) -> {U32.is_le(16,Machine.half_word(limits)) == True{} : Bool}:
   Machine.Limits{d,c,k,h,Machine.Facts{df,cf,kf,hf,da,ca,db,cb,dc,dk,ddk,ch,sc,sh,chb}} = limits
   sh
@@ -54,6 +58,19 @@ def capacity_within_half(+limits: Machine.Limits) -> {U32.is_le(Machine.capacity
     Machine.half_word(limits)) == True{} : Bool}:
   Machine.Limits{d,c,k,h,Machine.Facts{df,cf,kf,hf,da,ca,db,cb,dc,dk,ddk,ch,sc,sh,chb}} = limits
   chb
+
+# A number within the capacity is within half a word.
+def within_half(+limits: Machine.Limits,+value: Nat,+room: {Nat.is_le(value,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
+  {Nat.is_le(value,U32.to_nat(Machine.half_word(limits))) == True{} : Bool}:
+  Order.transitive(value,U32.to_nat(Machine.capacity(limits)),U32.to_nat(Machine.half_word(limits)),room,
+    Bounds.as_nat_le(Machine.capacity(limits),Machine.half_word(limits),capacity_within_half(limits)))
+
+# A count no larger than the machine can be allocated.
+def count_allocatable(+limits: Machine.Limits,+count: U32,+room: {Nat.is_le(U32.to_nat(count),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
+  {U32.is_le(count,1073741824) == True{} : Bool}:
+  Order.word_le(count,Machine.capacity(limits),1073741824,
+    {%Equal.sym(Bool,U32.is_le(count,Machine.capacity(limits)),Nat.is_le(U32.to_nat(count),U32.to_nat(Machine.capacity(limits))),Comparison.le(count,Machine.capacity(limits))) :
+      {_ == True{} : Bool} room : {U32.is_le(count,Machine.capacity(limits)) == True{} : Bool}},capacity_allocatable(limits))
 
 def doubled_capacity(+limits: Machine.Limits) -> {U32.to_nat(Machine.half_word(limits)) == Nat.double(U32.to_nat(Machine.capacity(limits))) : Nat}:
   %capacity_doubles_to_half(limits) : {U32.to_nat(_) == Nat.double(U32.to_nat(Machine.capacity(limits))) : Nat}

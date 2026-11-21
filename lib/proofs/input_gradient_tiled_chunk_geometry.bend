@@ -1,6 +1,7 @@
 # Native group and chunk coordinates refine the shared ceiling partition.
 import Base
 import ../kernel_input_gradient.bend as Kernel
+import ../kernel_input_gradient_fill.bend as Fill
 import ../machine_limits.bend as Machine
 import ../kernel_pipeline.bend as Pipeline
 import ./input_gradient_phase_domain.bend as Domain
@@ -25,6 +26,9 @@ import ./machine_limit_bounds.bend as Limits
 import ./encoded_coordinates.bend as Encoded
 import ./u32_extrema.bend as NativeExtrema
 import ./nat_extrema.bend as Extrema
+import ./word_multiplication.bend as WordMultiplication
+import ./input_gradient_phase_packing.bend as Packing
+import ../tensor_tiled.bend as Tiled
 
 def groups_expression(+call: Domain.Call,+envelope: Geometry.WordEnvelope) ->
   {Capacity.layout_groups(Kernel.tiling(Domain.geometry(call))) == ((Bands.count_fold(Columns.whole(call,envelope)) + 7) / 8 : U32) : U32}:
@@ -201,20 +205,20 @@ def grid_product_room(+call: Domain.Call,+envelope: Geometry.WordEnvelope,+count
       %RowMajor.multiply_commutative(Domain.width(geometry),Domain.height(geometry)) : {Nat.is_le(Nat.mul(gc,Domain.height(geometry)),_) == True{} : Bool} RowMajor.mul_le(gc,Domain.width(geometry),Domain.height(geometry),gbound)),
     Domain.plane_room(call))
 
-def leaf_count_expression(+geometry: Kernel.Geometry,+count: U32,+first: U32,+target: U32,+plane: U32) ->
-  {Execution.chunk_count(Kernel.LeafContext{Kernel.Task{geometry,Kernel.tiling(geometry)},first,count,target,plane}) == U32.to_nat((row_chunks(geometry,count) * group_chunks(geometry) : U32)) : Nat}:
+def leaf_count_expression(+geometry: Kernel.Geometry,+count: U32,+first: U32,+target: U32) ->
+  {Execution.chunk_count(Kernel.LeafContext{Kernel.Task{geometry,Kernel.tiling(geometry)},first,count,target}) == U32.to_nat((row_chunks(geometry,count) * group_chunks(geometry) : U32)) : Nat}:
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
   {==}
 
-def leaf_count_exact(+call: Domain.Call,+envelope: Geometry.WordEnvelope,+count: U32,+first: U32,+target: U32,+plane: U32,
+def leaf_count_exact(+call: Domain.Call,+envelope: Geometry.WordEnvelope,+count: U32,+first: U32,+target: U32,
   +contained: {Nat.is_le(U32.to_nat(count),Domain.height(Domain.geometry(call))) == True{} : Bool},
   +positive: {Nat.is_lt(0n,U32.to_nat(Capacity.layout_chunk_rows(Kernel.tiling(Domain.geometry(call))))) == True{} : Bool},
   +room: {Nat.is_le(U32.to_nat(Capacity.layout_chunk_rows(Kernel.tiling(Domain.geometry(call)))),U32.to_nat(Capacity.quarter(envelope))) == True{} : Bool}) ->
-  {Execution.chunk_count(Kernel.LeafContext{Kernel.Task{Domain.geometry(call),Kernel.tiling(Domain.geometry(call))},first,count,target,plane}) == Chunks.chunk_count(chunk_query(Domain.geometry(call),count,0n,0n)) : Nat}:
+  {Execution.chunk_count(Kernel.LeafContext{Kernel.Task{Domain.geometry(call),Kernel.tiling(Domain.geometry(call))},first,count,target}) == Chunks.chunk_count(chunk_query(Domain.geometry(call),count,0n,0n)) : Nat}:
   Domain.Call{geometry,batch,limits,facts} = call
-  Equal.trans(Nat,Execution.chunk_count(Kernel.LeafContext{Kernel.Task{geometry,Kernel.tiling(geometry)},first,count,target,plane}),U32.to_nat((row_chunks(geometry,count) * group_chunks(geometry) : U32)),Chunks.chunk_count(chunk_query(geometry,count,0n,0n)),leaf_count_expression(geometry,count,first,target,plane),
+  Equal.trans(Nat,Execution.chunk_count(Kernel.LeafContext{Kernel.Task{geometry,Kernel.tiling(geometry)},first,count,target}),U32.to_nat((row_chunks(geometry,count) * group_chunks(geometry) : U32)),Chunks.chunk_count(chunk_query(geometry,count,0n,0n)),leaf_count_expression(geometry,count,first,target),
     Equal.trans(Nat,U32.to_nat((row_chunks(geometry,count) * group_chunks(geometry) : U32)),Nat.mul(U32.to_nat(row_chunks(geometry,count)),U32.to_nat(group_chunks(geometry))),Chunks.chunk_count(chunk_query(geometry,count,0n,0n)),
-      Arithmetic.multiply(row_chunks(geometry,count),group_chunks(geometry),Machine.capacity(limits),Limits.capacity_fits(limits),grid_product_room(call,envelope,count,contained,positive,room)),
+      WordMultiplication.bounded_multiply(row_chunks(geometry,count),group_chunks(geometry),Machine.capacity(limits),Limits.capacity_fits(limits),grid_product_room(call,envelope,count,contained,positive,room)),
       %row_chunks_exact(call,envelope,count,contained,positive,room) : {Nat.mul(U32.to_nat(row_chunks(geometry,count)),U32.to_nat(group_chunks(geometry))) == Nat.mul(_,Chunks.group_chunks(chunk_query(geometry,count,0n,0n))) : Nat}
       Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(row_chunks(geometry,count)),value),U32.to_nat(group_chunks(geometry)),Chunks.group_chunks(chunk_query(geometry,count,0n,0n)),group_chunks_exact(call,envelope))))
 
@@ -345,7 +349,7 @@ def row_offset_exact(+grid: Grid,+row: Nat,+group: Nat,+inside: Chunks.Inside<qu
   +e = grid_envelope(grid)
   +coordinate = (native_producer(grid,row,group) / grid_groups(grid) : U32)
   %native_producer_row(grid,row,group,inside) : {U32.to_nat(row_offset(grid,row,group)) == Nat.mul(_,Chunks.chunk_rows(query(grid,row,group))) : Nat}
-  Arithmetic.multiply(coordinate,Capacity.layout_chunk_rows(Kernel.tiling(g)),Capacity.half(e),Capacity.half_fits(e),
+  WordMultiplication.bounded_multiply(coordinate,Capacity.layout_chunk_rows(Kernel.tiling(g)),Capacity.half(e),Capacity.half_fits(e),
     %Equal.sym(Nat,U32.to_nat(coordinate),Chunks.row_chunk(query(grid,row,group)),native_producer_row(grid,row,group,inside)) : {Nat.is_le(Nat.mul(_,Chunks.chunk_rows(query(grid,row,group))),U32.to_nat(Capacity.half(e))) == True{} : Bool}
     Order.transitive(row_offset_natural(grid,row,group),U32.to_nat(Capacity.quarter(e)),U32.to_nat(Capacity.half(e)),row_offset_room(grid,row,group,inside),Bounds.as_nat_le(Capacity.quarter(e),Capacity.half(e),Capacity.quarter_half(e))))
 def group_offset_exact(+grid: Grid,+row: Nat,+group: Nat,+inside: Chunks.Inside<query(grid,row,group)>) ->
@@ -354,7 +358,7 @@ def group_offset_exact(+grid: Grid,+row: Nat,+group: Nat,+inside: Chunks.Inside<
   +e = grid_envelope(grid)
   +coordinate = (native_producer(grid,row,group) % grid_groups(grid) : U32)
   %native_producer_group(grid,row,group,inside) : {U32.to_nat(group_offset(grid,row,group)) == Nat.mul(_,Chunks.chunk_groups(query(grid,row,group))) : Nat}
-  Arithmetic.multiply(coordinate,Capacity.layout_chunk_groups(Kernel.tiling(g)),Capacity.half(e),Capacity.half_fits(e),
+  WordMultiplication.bounded_multiply(coordinate,Capacity.layout_chunk_groups(Kernel.tiling(g)),Capacity.half(e),Capacity.half_fits(e),
     %Equal.sym(Nat,U32.to_nat(coordinate),Chunks.group_chunk(query(grid,row,group)),native_producer_group(grid,row,group,inside)) : {Nat.is_le(Nat.mul(_,Chunks.chunk_groups(query(grid,row,group))),U32.to_nat(Capacity.half(e))) == True{} : Bool}
     Order.transitive(group_offset_natural(grid,row,group),U32.to_nat(Capacity.quarter(e)),U32.to_nat(Capacity.half(e)),group_offset_room(grid,row,group,inside),Bounds.as_nat_le(Capacity.quarter(e),Capacity.half(e),Capacity.quarter_half(e))))
 
@@ -403,19 +407,19 @@ def physical_remainder_matches(+grid: Grid,+first: U32,+row: Nat,+group: Nat) ->
       %Arithmetic.add_commutative(count,first) : {(_ - first : U32) == count : U32} Subtraction.subtract_add(count,first)))
 def physical_rows_matches(+grid: Grid,+first: U32,+row: Nat,+group: Nat) -> {physical_rows(grid,first,row,group) == selected_rows(grid,row,group) : U32}:
   Equal.cong(U32,U32,value => U32.min(Capacity.layout_chunk_rows(Kernel.tiling(grid_geometry(grid))),value),((first + grid_count(grid)) - (first + row_offset(grid,row,group)) : U32),row_remainder(grid,row,group),physical_remainder_matches(grid,first,row,group))
-def selected_chunk(+grid: Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat) -> Kernel.Chunk:
+def selected_chunk(+grid: Grid,+first: U32,+target: U32,+row: Nat,+group: Nat) -> Kernel.Chunk:
   +g = grid_geometry(grid)
   +start = (first + row_offset(grid,row,group) : U32)
   +count = selected_rows(grid,row,group)
-  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{g,Kernel.tiling(g)},first,grid_count(grid),target,plane},start,count,Kernel.band_low(g,start,(start + count : U32)),group_offset(grid,row,group)}
-def selected_chunk_matches(+grid: Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
-  {Execution.shape_chunk(Execution.chunk_shape(native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{grid_geometry(grid),Kernel.tiling(grid_geometry(grid))},first,grid_count(grid),target,plane},source)) == selected_chunk(grid,first,target,plane,row,group) : Kernel.Chunk}:
+  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{g,Kernel.tiling(g)},first,grid_count(grid),target},start,count,Kernel.band_low(g,start,(start + count : U32)),group_offset(grid,row,group)}
+def selected_chunk_matches(+grid: Grid,+first: U32,+target: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
+  {Execution.shape_chunk(Execution.chunk_shape(native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{grid_geometry(grid),Kernel.tiling(grid_geometry(grid))},first,grid_count(grid),target},source)) == selected_chunk(grid,first,target,row,group) : Kernel.Chunk}:
   Grid{call,e,c,contained,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{cc,o,h,w,k,s,p,gh,gw} = g
-  Execution.Source{data,base,source_plane,source_first,source_rows} = source
+  Execution.Source{data,base,source_first,source_rows} = source
   +start = (first + row_offset(grid,row,group) : U32)
-  Equal.cong(U32,Kernel.Chunk,value => Kernel.Chunk{Kernel.LeafContext{Kernel.Task{g,Kernel.tiling(g)},first,grid_count(grid),target,plane},start,value,Kernel.band_low(g,start,(start + value : U32)),group_offset(grid,row,group)},physical_rows(grid,first,row,group),selected_rows(grid,row,group),physical_rows_matches(grid,first,row,group))
+  Equal.cong(U32,Kernel.Chunk,value => Kernel.Chunk{Kernel.LeafContext{Kernel.Task{g,Kernel.tiling(g)},first,grid_count(grid),target},start,value,Kernel.band_low(g,start,(start + value : U32)),group_offset(grid,row,group)},physical_rows(grid,first,row,group),selected_rows(grid,row,group),physical_rows_matches(grid,first,row,group))
 
 def grid_height_room(+grid: Grid) -> {Nat.is_le(Domain.height(grid_geometry(grid)),U32.to_nat(Machine.dimension(grid_limits(grid)))) == True{} : Bool}:
   Grid{call,e,c,contained,rp,rr} = grid
@@ -467,12 +471,12 @@ def selected_guarded(+grid: Grid,+first: U32,+row: Nat,+group: Nat,+inside: Chun
   Depth.Guarded<Capacity.tiled_count(grid_geometry(grid),selected_start(grid,first,row,group),selected_rows(grid,row,group))>:
   Grid{call,e,c,range,rp,rr} = grid
   Capacity.tiled_guarded(call,e,fits,selected_start(grid,first,row,group),selected_rows(grid,row,group),selected_band_contains(grid,first,row,group,inside,contained),selected_rows_bounded(grid,row,group))
-def selected_shape_tiles_matches(+grid: Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
-  {Execution.shape_tiles(Execution.chunk_shape(native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{grid_geometry(grid),Kernel.tiling(grid_geometry(grid))},first,grid_count(grid),target,plane},source)) == Capacity.tiled_count(grid_geometry(grid),selected_start(grid,first,row,group),selected_rows(grid,row,group)) : U32}:
+def selected_shape_tiles_matches(+grid: Grid,+first: U32,+target: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
+  {Execution.shape_tiles(Execution.chunk_shape(native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{grid_geometry(grid),Kernel.tiling(grid_geometry(grid))},first,grid_count(grid),target},source)) == Capacity.tiled_count(grid_geometry(grid),selected_start(grid,first,row,group),selected_rows(grid,row,group)) : U32}:
   Grid{call,e,c,range,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{cc,o,h,w,k,s,p,gh,gw} = g
-  Execution.Source{data,base,source_plane,source_first,source_rows} = source
+  Execution.Source{data,base,source_first,source_rows} = source
   Equal.cong(U32,U32,value => Capacity.tiled_count(g,selected_start(grid,first,row,group),value),physical_rows(grid,first,row,group),selected_rows(grid,row,group),physical_rows_matches(grid,first,row,group))
 
 # An enabled phase's eight-lane group is contained in the tiled group extent.
@@ -495,17 +499,33 @@ def phase_inside(+grid: Grid,+index: Nat,
   Grid{call,e,c,range,rp,rr} = grid
   Chunks.Inside{rp,actual_groups_positive(Domain.geometry(call)),row_inside,phase_group_inside(grid,index,inside,used,position,position_inside)}
 
-def selected_filling(+grid: Grid,+first: U32,+row: Nat,+group: Nat,+source: Execution.Source) -> Kernel.Filling:
+# The fill of tile rows from tile row low and groups [group, group + span)
+# of a tiling.
+def layout_outputs(layout: Kernel.Tiling) -> U32:
+  Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,chunk_groups,chunk_rows} = layout
+  outputs
+def layout_kernel(layout: Kernel.Tiling) -> U32:
+  Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,chunk_groups,chunk_rows} = layout
+  kernel
+def layout_width(layout: Kernel.Tiling) -> U32:
+  Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,chunk_groups,chunk_rows} = layout
+  width
+def tiling_filling(+layout: Kernel.Tiling,+low: U32,+base: U32,+groups: U32,+first: U32,+rows: U32,+group: U32,+span: U32) -> Fill.Filling:
+  Fill.Filling{Columns.layout_shifts(layout),layout_outputs(layout),Columns.layout_column_low(layout),layout_kernel(layout),layout_width(layout),
+    Capacity.layout_chunk_groups(layout),low,base,groups,first,rows,group,span}
+
+def selected_filling(+grid: Grid,+first: U32,+row: Nat,+group: Nat,+source: Execution.Source) -> Fill.Filling:
   +g = grid_geometry(grid)
   +start = selected_start(grid,first,row,group)
   +count = selected_rows(grid,row,group)
-  Kernel.Filling{Kernel.tiling(g),Kernel.band_low(g,start,(start + count : U32)),
-    Execution.source_base(source),Execution.source_plane(source),Execution.source_first(source),Execution.source_rows(source),group_offset(grid,row,group),selected_groups(grid,row,group)}
-def selected_filling_matches(+grid: Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
-  {Execution.shape_filling(Execution.chunk_shape(native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{grid_geometry(grid),Kernel.tiling(grid_geometry(grid))},first,grid_count(grid),target,plane},source)) == selected_filling(grid,first,row,group,source) : Kernel.Filling}:
+  tiling_filling(Kernel.tiling(g),Kernel.band_low(g,start,(start + count : U32)),
+    Execution.source_base(source),Packing.output_groups(g),Execution.source_first(source),Execution.source_rows(source),group_offset(grid,row,group),selected_groups(grid,row,group))
+def selected_filling_matches(+grid: Grid,+first: U32,+target: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
+  {Execution.shape_filling(Execution.chunk_shape(native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{grid_geometry(grid),Kernel.tiling(grid_geometry(grid))},first,grid_count(grid),target},source)) == selected_filling(grid,first,row,group,source) : Fill.Filling}:
   Grid{call,e,c,range,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{cc,o,h,w,k,s,p,gh,gw} = g
-  Execution.Source{data,+base,+source_plane,+source_first,+source_rows} = source
+  Execution.Source{data,+base,+source_first,+source_rows} = source
   +start = selected_start(grid,first,row,group)
-  Equal.cong(U32,Kernel.Filling,value => Kernel.Filling{Kernel.tiling(g),Kernel.band_low(g,start,(start + value : U32)),base,source_plane,source_first,source_rows,group_offset(grid,row,group),selected_groups(grid,row,group)},physical_rows(grid,first,row,group),selected_rows(grid,row,group),physical_rows_matches(grid,first,row,group))
+  Equal.cong(U32,Fill.Filling,value => tiling_filling(Kernel.tiling(g),Kernel.band_low(g,start,(start + value : U32)),base,Tiled.groups(o),source_first,source_rows,group_offset(grid,row,group),selected_groups(grid,row,group)),
+physical_rows(grid,first,row,group),selected_rows(grid,row,group),physical_rows_matches(grid,first,row,group))

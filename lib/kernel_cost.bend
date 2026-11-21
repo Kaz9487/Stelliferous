@@ -2,15 +2,27 @@
 # worker count is not a profile value: callers pass the runtime's pool size.
 import Base
 
+# The prices a plan is estimated with. A cell counts rows, vector
+# instructions of eight lanes with its tile loads and stores among them, and
+# steps, scalar instructions. A target cell of a moving operation also pays
+# one move through a view, and a block copy pays its bytes.
 type Configuration is Data:
-  Configuration{mac_ns: F32,copy_byte_ns: F32,operation_ns: F32,grain_ns: F32,wake_round_ns: F32}
+  Configuration{row_ns: F32,byte_ns: F32,step_ns: F32,move_ns: F32,grain_ns: F32,wake_round_ns: F32,dispatch_ns: F32}
 
-# One element's cost. Bytes price loading, storing and the loop that moves
-# them, as the copies that measured copy_byte_ns do; operations are the other
-# scalar work, counted from source.
-def element_ns(+bytes: F32,+operations: F32,config: Configuration) -> F32:
-  Configuration{mac_ns,byte_ns,operation_ns,grain,wake} = config
-  (bytes * byte_ns + operations * operation_ns : F32)
+# One cell's work from its counts.
+def cell_ns(+rows: F32,+steps: F32,config: Configuration) -> F32:
+  Configuration{row_ns,byte_ns,step_ns,move_ns,grain,wake,dispatch} = config
+  (rows * row_ns + steps * step_ns : F32)
+
+# One target cell of a moving operation: its move and its own rows and steps.
+def moved_ns(+rows: F32,+steps: F32,config: Configuration) -> F32:
+  Configuration{row_ns,byte_ns,step_ns,move_ns,grain,wake,dispatch} = config
+  (move_ns + rows * row_ns + steps * step_ns : F32)
+
+# The bytes a block copy writes into a new buffer.
+def copy_ns(+bytes: F32,config: Configuration) -> F32:
+  Configuration{row_ns,byte_ns,step_ns,move_ns,grain,wake,dispatch} = config
+  (bytes * byte_ns : F32)
 
 # The official runtime grows fork tasks and queues fork-free tasks for its
 # work round (monk_step, row_grow, cube_run). No fixed number of leaves can

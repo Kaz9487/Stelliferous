@@ -11,8 +11,8 @@ import shutil
 import subprocess
 import numpy as np
 import torch
-from training_reference import (EPSILON, F32, MOMENTUM, batch_norm_backward, batch_norm_evaluate, batch_norm_forward, learning_case,
-                                squared_error, step, train, two_layer_case)
+from training_reference import (EPSILON, F32, MOMENTUM, batch_norm_backward, batch_norm_evaluate, batch_norm_forward, layer_norm_backward, layer_norm_forward,
+                                learning_case, sgd_with, squared_error, step, train, two_layer_case)
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / 'out/checks/training.bend'
@@ -147,82 +147,42 @@ CLASSIFY = '''
 # CLASSIFY_STEPS steps of classify_case through the training layers: a
 # Conv-BatchNorm-ReLU block, the global average pool and a 1x1 convolution to
 # logits, cross entropy, SGD; then the logits of evaluate.
-type Network is Type:
-  End{}
-  Then{layer: Train.Layer,rest: Network}
-
-type Tape is Type:
-  Blank{}
-  Recorded{saved: Train.Saved,layer: Train.Layer,rest: Tape}
-
-def recorded(result: F.Tensor() & (Train.Saved & Train.Layer),next: F.Tensor() -> Train.Saved -> Train.Layer -> F.Tensor() & Tape) -> F.Tensor() & Tape:
-  (y,(saved,layer)) = result
-  next(y,saved,layer)
-
-def network_forward(network: Network,x: F.Tensor(),tape: Tape) -> F.Tensor() & Tape:
-  match network:
-    case End{}: (x,tape)
-    case Then{layer,rest}: recorded(Train.forward(x,layer),y => saved => layer => network_forward(rest,y,Recorded{saved,layer,tape}))
-
-def returned(result: F.Tensor() & Train.Layer,next: F.Tensor() -> Train.Layer -> Network) -> Network:
-  (dx,layer) = result
-  next(dx,layer)
-
-def network_backward(tape: Tape,dy: F.Tensor(),network: Network) -> Network:
-  match tape:
-    case Blank{}: network
-    case Recorded{saved,layer,rest}: returned(Train.backward(dy,saved,layer),dx => layer => network_backward(rest,dx,Then{layer,network}))
-
-def network_updated(network: Network,+rate: F32) -> Network:
-  match network:
-    case End{}: End{}
-    case Then{layer,rest}: Then{Train.sgd_step(layer,rate),network_updated(rest,rate)}
-
-def prepended(layer: Train.Layer,result: F.Tensor() & Network) -> F.Tensor() & Network:
-  (y,rest) = result
-  (y,Then{layer,rest})
-
-def evaluated(result: F.Tensor() & Train.Layer,next: F.Tensor() -> Train.Layer -> F.Tensor() & Network) -> F.Tensor() & Network:
-  (y,layer) = result
-  next(y,layer)
-
-def network_evaluate(network: Network,x: F.Tensor()) -> F.Tensor() & Network:
-  match network:
-    case End{}: (x,End{})
-    case Then{layer,rest}: evaluated(Train.evaluate(x,layer),y => layer => prepended(layer,network_evaluate(rest,y)))
+def classify_updated(result: F.Tensor() & Train.Network) -> Train.Network:
+  (dx,network) = result
+  Train.sgd_network(network,CLASSIFY_RATE)
 
 def Classified() -> Type:
-  F32 & (F.Tensor() & (F.Tensor() & Network))
+  F32 & (F.Tensor() & (F.Tensor() & Train.Network))
 
-def classify_lost(x: F.Tensor(),tape: Tape,result: F.Tensor() & (F.Tensor() & F.Tensor())) -> Classified():
+def classify_lost(x: F.Tensor(),tape: Train.Tape,result: F.Tensor() & (F.Tensor() & F.Tensor())) -> Classified():
   (loss,(dlogits,target)) = result
-  (F.item_or(loss,0.0),(x,(target,network_updated(network_backward(tape,F.reshape(dlogits,[IMAGES,CLASSES,1,1]),End{}),CLASSIFY_RATE))))
+  (F.item_or(loss,0.0),(x,(target,classify_updated(Train.backward_network(F.reshape(dlogits,[IMAGES,CLASSES,1,1]),tape)))))
 
-def classify_predicted(x: F.Tensor(),target: F.Tensor(),result: F.Tensor() & Tape) -> Classified():
+def classify_predicted(x: F.Tensor(),target: F.Tensor(),result: F.Tensor() & Train.Tape) -> Classified():
   (logits,tape) = result
   classify_lost(x,tape,Train.cross_entropy(F.reshape(logits,[IMAGES,CLASSES]),target))
 
-def classify_step(xs: F.Tensor() & F.Tensor(),target: F.Tensor(),network: Network) -> Classified():
+def classify_step(xs: F.Tensor() & F.Tensor(),target: F.Tensor(),network: Train.Network) -> Classified():
   (x,x_kept) = xs
-  classify_predicted(x_kept,target,network_forward(network,x,Blank{}))
+  classify_predicted(x_kept,target,Train.forward_network(x,network))
 
-def classified_then(result: Classified(),next: F32 -> F.Tensor() -> F.Tensor() -> Network -> List<&2,F32> & (F.Tensor() & Network)) ->
-  List<&2,F32> & (F.Tensor() & Network):
+def classified_then(result: Classified(),next: F32 -> F.Tensor() -> F.Tensor() -> Train.Network -> List<&2,F32> & (F.Tensor() & Train.Network)) ->
+  List<&2,F32> & (F.Tensor() & Train.Network):
   (loss,(x,(target,network))) = result
   next(loss,x,target,network)
 
-def classify_continued(+loss: F32,result: List<&2,F32> & (F.Tensor() & Network)) -> List<&2,F32> & (F.Tensor() & Network):
+def classify_continued(+loss: F32,result: List<&2,F32> & (F.Tensor() & Train.Network)) -> List<&2,F32> & (F.Tensor() & Train.Network):
   (losses,rest) = result
   (loss <> losses,rest)
 
 # The loss of every step, then the logits of evaluate and the network.
-def classify_trained(remaining: Nat,x: F.Tensor(),target: F.Tensor(),network: Network) -> List<&2,F32> & (F.Tensor() & Network):
+def classify_trained(remaining: Nat,x: F.Tensor(),target: F.Tensor(),network: Train.Network) -> List<&2,F32> & (F.Tensor() & Train.Network):
   match remaining:
-    case 0n: ([],network_evaluate(network,x))
+    case 0n: ([],Train.evaluate_network(x,network))
     case 1n+rest:
       classified_then(classify_step(F.copy(x),target,network),loss => x => target => network => classify_continued(loss,classify_trained(rest,x,target,network)))
 
-def classify_saved(+tag: String,result: List<&2,F32> & (F.Tensor() & Network)) -> IO(F.Tensor()):
+def classify_saved(+tag: String,result: List<&2,F32> & (F.Tensor() & Train.Network)) -> IO(F.Tensor()):
   (losses,(logits,network)) = result
   do IO<F.Tensor()>:
     losses : F.Tensor() <- norm_kept("classify_losses",tag,F.from_list([CLASSIFY_STEPS],losses))
@@ -233,6 +193,13 @@ def classify_load(+name: String,+shape: List<&2,U32>,+workers: U32) -> IO(F.Tens
     tensor : F.Tensor() <- F.load_raw(folder() ++ "classify_" ++ name ++ ".bin",shape)
     IO.pure(F.Tensor(),F.with_workers(tensor,workers))
 
+def classifier(weights: F.Tensor(),bias: F.Tensor(),head: F.Tensor(),head_bias: F.Tensor()) -> Train.Network:
+  tail = {Train.Then{Train.conv2d_layer(head,head_bias,1,0),Train.End{}} : Train.Network}
+  tail = {Train.Then{Train.average_pool_layer(),tail} : Train.Network}
+  tail = {Train.Then{Train.activation_layer(Act.relu()),tail} : Train.Network}
+  tail = {Train.Then{Train.batch_norm_layer(CHANNELS),tail} : Train.Network}
+  Train.Then{Train.conv2d_layer(weights,bias,1,1),tail}
+
 def classify_case(+tag: String,+workers: U32) -> IO(F.Tensor()):
   do IO<F.Tensor()>:
     x : F.Tensor() <- classify_load("x",X_SHAPE,workers)
@@ -241,9 +208,8 @@ def classify_case(+tag: String,+workers: U32) -> IO(F.Tensor()):
     bias : F.Tensor() <- classify_load("bias",[CHANNELS],workers)
     head : F.Tensor() <- classify_load("head",HEAD,workers)
     head_bias : F.Tensor() <- classify_load("head_bias",[CLASSES],workers)
-    classify_saved(tag,classify_trained(CLASSIFY_STEPSn,x,Train.one_hot(labels,CLASSES),
-      Then{Train.conv2d_layer(weights,bias,1,1),Then{Train.batch_norm_layer(CHANNELS),Then{Train.activation_layer(Act.relu()),
-        Then{Train.average_pool_layer(),Then{Train.conv2d_layer(head,head_bias,1,0),End{}}}}}}))
+    classify_saved(tag,classify_trained(CLASSIFY_STEPSn,x,Train.one_hot(labels,CLASSES),classifier(weights,bias,head,head_bias)))
+
 
 # The backward of a layer with what another kind of layer saved fails: it reads as the fallback.
 def saved_mismatch(result: F.Tensor() & Train.Layer) -> F.Tensor():
@@ -254,6 +220,96 @@ def mismatch_forwarded(result: F.Tensor() & (Train.Saved & Train.Layer)) -> F.Te
   (y,(saved,layer)) = result
   saved_mismatch(Train.backward(y,saved,Train.conv2d_layer(F.zeros([1,1,1,1]),F.zeros([1]),1,0)))
 '''
+# Layer normalization through Train: two steps of forward, backward and an update with momentum and
+# weight decay, then evaluate.
+LINE = '''
+def line_backward(+file: String,+tag: String,y: F.Tensor(),result: F.Tensor() & Train.Layer) -> IO(Train.Layer):
+  (dx,layer) = result
+  do IO<Train.Layer>:
+    y : F.Tensor() <- norm_kept(file ++ "_y",tag,y)
+    dx : F.Tensor() <- norm_kept(file ++ "_dx",tag,dx)
+    IO.pure(Train.Layer,Train.sgd_step_with(layer,LINE_RATE,LINE_MOMENTUM,LINE_DECAY))
+
+def line_forward(+file: String,+tag: String,dy: F.Tensor(),result: F.Tensor() & (Train.Saved & Train.Layer)) -> IO(Train.Layer):
+  (y,(saved,layer)) = result
+  line_backward(file,tag,y,Train.backward(dy,saved,layer))
+
+def line_parameters(+name: String,+tag: String,layer: Train.Layer) -> IO(F.Tensor()):
+  match layer:
+    case Train.LayerNorm{gamma,beta,epsilon,gamma_gradient,beta_gradient,gamma_velocity,beta_velocity}:
+      do IO<F.Tensor()>:
+        gamma : F.Tensor() <- norm_kept(name ++ "_gamma",tag,gamma)
+        norm_kept(name ++ "_beta",tag,beta)
+    case layer: IO.pure(F.Tensor(),F.zeros([0]))
+
+def line_evaluated(+name: String,+tag: String,result: F.Tensor() & Train.Layer) -> IO(F.Tensor()):
+  (y,layer) = result
+  do IO<F.Tensor()>:
+    y : F.Tensor() <- norm_kept(name ++ "_evaluated",tag,y)
+    line_parameters(name,tag,layer)
+
+def line_load(+name: String,+kind: String,+shape: List<&2,U32>,+workers: U32) -> IO(F.Tensor()):
+  do IO<F.Tensor()>:
+    tensor : F.Tensor() <- F.load_raw(folder() ++ name ++ "_" ++ kind ++ ".bin",shape)
+    IO.pure(F.Tensor(),F.with_workers(tensor,workers))
+
+def line_case(+name: String,+tag: String,+shape: List<&2,U32>,+features: U32,+workers: U32) -> IO(F.Tensor()):
+  do IO<F.Tensor()>:
+    x : F.Tensor() <- line_load(name,"x",shape,workers)
+    dy : F.Tensor() <- line_load(name,"dy",shape,workers)
+    gamma : F.Tensor() <- line_load(name,"gamma",[features],workers)
+    beta : F.Tensor() <- line_load(name,"beta",[features],workers)
+    layer : Train.Layer <- line_forward(name ++ "_first",tag,dy,Train.forward(x,Train.layer_norm_layer_from(gamma,beta,LINE_EPSILON)))
+    x : F.Tensor() <- line_load(name,"x",shape,workers)
+    dy : F.Tensor() <- line_load(name,"dy",shape,workers)
+    layer : Train.Layer <- line_forward(name ++ "_second",tag,dy,Train.forward(x,layer))
+    x : F.Tensor() <- line_load(name,"x",shape,workers)
+    line_evaluated(name,tag,Train.evaluate(x,layer))
+'''
+LINE_RATE, LINE_MOMENTUM, LINE_DECAY, LINE_EPSILON = 0.25, 0.875, 0.015625, 1e-5
+# name, shape of x
+LINES = [
+    ('line_tokens', [2, 5, 19]),
+    ('line_vector', [19]),
+    ('line_pairs', [3, 16]),
+    ('line_wide', [1, 9, 40]),
+]
+
+
+def line_expected(inputs):
+    gamma, beta = inputs['gamma'], inputs['beta']
+    velocity_gamma = velocity_beta = None
+    expected = {}
+    for step_name in ('first', 'second'):
+        y, xhat, deviation = layer_norm_forward(inputs['x'], gamma, beta, LINE_EPSILON)
+        dx, dgamma, dbeta = layer_norm_backward(inputs['dy'], xhat, deviation, gamma)
+        expected.update({f'{step_name}_y': y, f'{step_name}_dx': dx})
+        gamma, velocity_gamma = sgd_with(gamma, dgamma, velocity_gamma, LINE_RATE, LINE_MOMENTUM, LINE_DECAY)
+        beta, velocity_beta = sgd_with(beta, dbeta, velocity_beta, LINE_RATE, LINE_MOMENTUM, LINE_DECAY)
+    expected.update(evaluated=layer_norm_forward(inputs['x'], gamma, beta, LINE_EPSILON)[0], gamma=gamma, beta=beta)
+    return expected
+
+
+def line_torch(inputs):
+    """The same steps with torch.nn.functional.layer_norm and torch.optim.SGD in FP32."""
+    gamma = torch.tensor(inputs['gamma'], requires_grad=True)
+    beta = torch.tensor(inputs['beta'], requires_grad=True)
+    optimizer = torch.optim.SGD([gamma, beta], lr=LINE_RATE, momentum=LINE_MOMENTUM, weight_decay=LINE_DECAY)
+    features = inputs['x'].shape[-1:]
+    theirs = {}
+    for step_name in ('first', 'second'):
+        x = torch.tensor(inputs['x'], requires_grad=True)
+        y = torch.nn.functional.layer_norm(x, features, gamma, beta, LINE_EPSILON)
+        optimizer.zero_grad()
+        y.backward(torch.tensor(inputs['dy']))
+        optimizer.step()
+        theirs.update({f'{step_name}_y': y.detach().numpy(), f'{step_name}_dx': x.grad.numpy()})
+    with torch.no_grad():
+        theirs.update(evaluated=torch.nn.functional.layer_norm(torch.tensor(inputs['x']), features, gamma, beta, LINE_EPSILON).numpy(),
+                      gamma=gamma.numpy(), beta=beta.numpy())
+    return theirs
+
+
 CLASSIFY_STEPS = 5
 CLASSIFY_RATE = 0.1
 CLASSIFY_X, CLASSIFY_WEIGHTS, CLASSIFY_HEAD = (4, 3, 8, 8), (8, 3, 3, 3), (5, 8, 1, 1)
@@ -330,6 +386,14 @@ def generate():
         for kind, value in norm_inputs(rng, shape).items():
             value.tofile(REPORT / f'{name}_{kind}.bin')
         steps += [f'    {name}_{workers} : F.Tensor() <- norm_case("{name}","{workers}",{shape},{shape[1]},{workers})\n' for workers in WORKERS]
+    rng = np.random.default_rng(20261101)
+    line_steps = []
+    for name, shape in LINES:
+        features = shape[-1]
+        inputs = dict(x=rng.normal(0.3, 1.5, shape), dy=rng.normal(0, 1, shape), gamma=rng.normal(1, 0.2, features), beta=rng.normal(0, 0.2, features))
+        for kind, value in inputs.items():
+            value.astype('<f4').tofile(REPORT / f'{name}_{kind}.bin')
+        line_steps += [f'    {name}_{workers} : F.Tensor() <- line_case("{name}","{workers}",{shape},{features},{workers})\n' for workers in WORKERS]
     for name, value in classify_case().items():
         value.astype('<f4').tofile(REPORT / f'classify_{name}.bin')
     steps += [f'    classify_{workers} : F.Tensor() <- classify_case("{workers}",{workers})\n' for workers in WORKERS]
@@ -379,13 +443,20 @@ def mismatched(result: F.Tensor() & (F.Tensor() & F.Tensor())) -> F.Tensor():
         .replace('WEIGHTS1', str(list(layers[0][0].shape))).replace('WEIGHTS2', str(list(layers[1][0].shape)))
         .replace('BIAS1', str(list(layers[0][1].shape))).replace('BIAS2', str(list(layers[1][1].shape)))
         + NORM.replace('EPSILON', np.format_float_positional(F32(EPSILON))).replace('MOMENTUM', np.format_float_positional(F32(MOMENTUM)))
+        + LINE.replace('LINE_RATE', repr(LINE_RATE)).replace('LINE_MOMENTUM', repr(LINE_MOMENTUM)).replace('LINE_DECAY', repr(LINE_DECAY))
+        .replace('LINE_EPSILON', np.format_float_positional(F32(LINE_EPSILON)))
         + CLASSIFY.replace('CLASSIFY_STEPS', str(CLASSIFY_STEPS)).replace('CLASSIFY_RATE', repr(CLASSIFY_RATE)).replace('X_SHAPE', str(list(CLASSIFY_X)))
         .replace('IMAGES', str(CLASSIFY_X[0])).replace('CLASSES', str(CLASSIFY_HEAD[0])).replace('CHANNELS', str(CLASSIFY_WEIGHTS[0]))
         .replace('WEIGHTS', str(list(CLASSIFY_WEIGHTS))).replace('HEAD', str(list(CLASSIFY_HEAD)))
         + '''
+def line_cases() -> IO(Unit):
+  do IO<Unit>:
+''' + ''.join(line_steps) + '''    IO.pure(Unit,Unit{})
+
 def main() -> IO(Unit):
   do IO<Unit>:
-''' + ''.join(steps) + '''    failed : F.Tensor() <- F.save_raw(folder() ++ "loss_mismatch.bin",mismatched(Loss.mse(F.zeros([2,3]),F.zeros([3]),Loss.mean())))
+''' + ''.join(steps) + '''    line_cases()
+    failed : F.Tensor() <- F.save_raw(folder() ++ "loss_mismatch.bin",mismatched(Loss.mse(F.zeros([2,3]),F.zeros([3]),Loss.mean())))
     failed : F.Tensor() <- F.expect(failed)
     failed : F.Tensor() <- F.save_raw(folder() ++ "saved_mismatch.bin",mismatch_forwarded(Train.forward(F.zeros([2]),Train.activation_layer(Act.relu()))))
     failed : F.Tensor() <- F.expect(failed)
@@ -421,6 +492,17 @@ def compare():
             for kind in NORM_VALUES:
                 actual = np.fromfile(REPORT / f'{name}_{kind}_{workers}.bin', np.uint32)
                 if not np.array_equal(actual, np.asarray(expected[kind], '<f4').view(np.uint32).ravel()):
+                    failures.append(f'{name} {kind} with {workers} workers')
+    for name, shape in LINES:
+        inputs = {kind: np.fromfile(REPORT / f'{name}_{kind}.bin', '<f4').reshape(shape if kind in ('x', 'dy') else -1) for kind in ('x', 'dy', 'gamma', 'beta')}
+        expected = line_expected(inputs)
+        theirs = line_torch(inputs)
+        for kind, value in expected.items():
+            if not np.allclose(value, theirs[kind], rtol=1e-3, atol=1e-4):
+                failures.append(f'{name} {kind} differs from PyTorch')
+            for workers in WORKERS:
+                actual = np.fromfile(REPORT / f'{name}_{kind}_{workers}.bin', np.uint32)
+                if not np.array_equal(actual, np.asarray(value, '<f4').view(np.uint32).ravel()):
                     failures.append(f'{name} {kind} with {workers} workers')
     x, student, target, rate = learning_case()
     losses, learned = train(x, student, target, rate, STEPS)
@@ -480,17 +562,18 @@ def main():
     if not cc:
         raise SystemExit('The training cases need clang on PATH or CC.')
     subprocess.run([cc, '-O3', '-ffp-contract=off', '-std=c11', str(generated), '-lpthread', '-lm', '-o', str(BUILD / 'training')], check=True)
-    subprocess.run([str(BUILD / 'training'), '--threads', str(max(WORKERS)), '--gpu', 'off'], cwd=ROOT, check=True, capture_output=True)
+    subprocess.run([str(BUILD / 'training'), '+RTS', '--threads', str(max(WORKERS)), '--gpu', 'off', '-RTS'], cwd=ROOT, check=True, capture_output=True)
     learning = BUILD / 'learning.c'
     subprocess.run(['node', 'scripts/bend_launcher.mjs', str(EXAMPLE), '-o', str(learning)], cwd=ROOT, env=dict(os.environ, BEND_NO_TELEMETRY='1'), check=True)
     subprocess.run([cc, '-O3', '-ffp-contract=off', '-std=c11', str(learning), '-lpthread', '-lm', '-o', str(BUILD / 'learning')], check=True)
     for workers in WORKERS:
-        subprocess.run([str(BUILD / 'learning'), '--threads', str(workers), '--gpu', 'off'], cwd=ROOT, check=True, capture_output=True)
+        subprocess.run([str(BUILD / 'learning'), '+RTS', '--threads', str(workers), '--gpu', 'off', '-RTS'], cwd=ROOT, check=True, capture_output=True)
     failures, losses = compare()
     assert not failures, failures
     print(f'{len(LOSSES)} loss cases, one training step of two layers, {len(NORMS)} batch normalization cases and {STEPS} learning steps'
           f' equal the reference bit for bit with {WORKERS} workers.')
     print(f'The {STEPS} learning steps lower the loss from {losses[0]:.6g} to {losses[-1]:.6g} and agree with PyTorch to rounding.')
+    print(f'{len(LINES)} layer normalization cases with momentum and weight decay equal the reference bit for bit and agree with PyTorch to rounding.')
     print(f'{CLASSIFY_STEPS} classifier steps of cross entropy through the average pool, and the logits of evaluate, agree with PyTorch'
           f' to rounding and are equal bit for bit with {WORKERS} workers.')
 

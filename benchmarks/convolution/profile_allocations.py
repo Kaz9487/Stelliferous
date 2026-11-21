@@ -94,7 +94,7 @@ fprintf(payload,"%llu",workspace_new_bytes+profile_copy_bytes[0]+profile_copy_by
                 config[9] = threads
                 config.tofile(config_path)
                 subprocess.run(
-                    [str(executable), '--threads', str(threads), '--gpu', 'off'],
+                    [str(executable), '+RTS', '--threads', str(threads), '--gpu', 'off', '-RTS'],
                     cwd=folder,
                     env=dict(os.environ, CONV_REPS='1'),
                     stdout=subprocess.DEVNULL,
@@ -115,7 +115,7 @@ fprintf(payload,"%llu",workspace_new_bytes+profile_copy_bytes[0]+profile_copy_by
                         returned_output_bytes=output_bytes,
                         budget_semantics='Cumulative Array payload excluding the returned output; allocator metadata and RSS are reported separately.',
 
-                        phases=dict(zip(['reorder', 'pack_gemm', 'gather'], phases)),
+                        phases=dict(zip(['boundary_pack', 'pack_gemm', 'gather_untile'], phases)),
                     )
                 )
         finally:

@@ -1,0 +1,497 @@
+{
+  "packages": {
+    "stelliferous": "lib"
+  },
+  "program": [
+    {
+      "file": "lib/tensor_f32.bend",
+      "names": "*",
+      "reason": "F is the whole public API"
+    },
+    {
+      "file": "lib/math_activation.bend",
+      "names": "*",
+      "reason": "Act is imported beside F by every program"
+    },
+    {
+      "file": "lib/tensor_training.bend",
+      "names": "*",
+      "reason": "Train is the public training API"
+    },
+    {
+      "file": "convolution/inference.bend",
+      "names": [
+        "infer",
+        "automatic"
+      ],
+      "reason": "Native convolution entry of the generated integration programs"
+    },
+    {
+      "file": "convolution/scalar_kernel.bend",
+      "names": [
+        "infer"
+      ],
+      "reason": "Scalar fallback entry of the generated integration programs"
+    },
+    {
+      "file": "convolution/array_api.bend",
+      "names": [
+        "infer"
+      ],
+      "reason": "Array convolution entry of the generated integration programs"
+    },
+    {
+      "file": "convolution/specification.bend",
+      "names": [
+        "reference"
+      ],
+      "reason": "Reference the generated integration programs compare with"
+    },
+    {
+      "file": "lib/tensor_layer.bend",
+      "names": "*",
+      "reason": "Layer is public behind Train; docs/proofs.md states its functions"
+    },
+    {
+      "file": "lib/tensor_batch_norm.bend",
+      "names": "*",
+      "reason": "BatchNorm is public behind Train; docs/proofs.md states its functions"
+    },
+    {
+      "file": "lib/tensor_layer_norm.bend",
+      "names": "*",
+      "reason": "LayerNorm is public behind Train; docs/proofs.md states its functions"
+    },
+    {
+      "file": "lib/tensor_loss.bend",
+      "names": "*",
+      "reason": "Loss is public behind Train; docs/proofs.md states its functions"
+    },
+    {
+      "file": "lib/tensor_optimizer.bend",
+      "names": "*",
+      "reason": "Optimizer is public behind Train; docs/proofs.md states its functions"
+    }
+  ],
+  "proof": [
+    {
+      "file": "convolution/proofs/native_inference_law.bend",
+      "names": [
+        "native_inference_matches_matrix",
+        "every_strategy_matches_matrix"
+      ],
+      "reason": "The root theorem, and both execution strategies against the unchanged full specification"
+    },
+    {
+      "file": "lib/proofs/storage_refinement.bend",
+      "names": [
+        "pack_reflected"
+      ],
+      "reason": "Every native Array has the shared storage observation"
+    },
+    {
+      "file": "lib/proofs/traversal_array_refinement.bend",
+      "names": [
+        "copy_traversal_refines_storage",
+        "fold_refines_ordered_model",
+        "map_loop_refines_model"
+      ],
+      "reason": "Shared actual traversal and ordered fold contracts"
+    },
+    {
+      "file": "lib/proofs/array_layout_bounds.bend",
+      "names": [
+        "view_address_is_inside"
+      ],
+      "reason": "Rank-independent bounded lookup and storage ownership"
+    },
+    {
+      "file": "convolution/proofs/matrix_convolution_law.bend",
+      "names": [
+        "convolution"
+      ],
+      "reason": "Frozen matrix-to-convolution contract"
+    },
+    {
+      "file": "convolution/proofs/reference_refinement.bend",
+      "names": [
+        "validated"
+      ],
+      "reason": "Frozen reference implementation contract"
+    },
+    {
+      "file": "convolution/proofs/matrix_axis_partitions.bend",
+      "names": [
+        "output_channel_tiles"
+      ],
+      "reason": "Ordered matrix partition API for optimization"
+    },
+    {
+      "file": "convolution/proofs/matrix_axis_lengths.bend",
+      "names": [
+        "columns",
+        "rows",
+        "channels"
+      ],
+      "reason": "Dimensions of the same matrix API"
+    },
+    {
+      "file": "convolution/proofs/array_api_validation.bend",
+      "names": [
+        "validation_matches_spec",
+        "array_inference_matches_matrix"
+      ],
+      "reason": "Native Array validation and complete Direct and Packed results for arbitrary supplied storage"
+    },
+    {
+      "file": "convolution/proofs/array_tree_refinement.bend",
+      "names": [
+        "packed_layout",
+        "read_flat"
+      ],
+      "reason": "Logical Array API exercised by retained array comparisons"
+    },
+    {
+      "file": "convolution/proofs/guarded_read_refinement.bend",
+      "names": [
+        "bounded"
+      ],
+      "reason": "Guarded read used by scalar and array comparisons"
+    },
+    {
+      "file": "convolution/proofs/concrete_support_guard.bend",
+      "names": [
+        "packed_guard_matches_original_conditions"
+      ],
+      "reason": "Guard factoring preserves original conditions"
+    },
+    {
+      "file": "convolution/proofs/convolution_call.bend",
+      "names": [
+        "conv2d_contract"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/convolution_public.bend",
+      "names": [
+        "run_contract"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/input_gradient_public.bend",
+      "names": [
+        "tiled_input"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/parameter_gradient_public.bend",
+      "names": [
+        "tiled_bias",
+        "tiled_weight"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/layer_public.bend",
+      "names": [
+        "backward",
+        "backward_parameters",
+        "forward"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/training_convolution_public.bend",
+      "names": [
+        "convolution_backward",
+        "convolution_evaluate",
+        "convolution_forward",
+        "convolution_step",
+        "convolution_step_cleared"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/training_network_public.bend",
+      "names": [
+        "backward",
+        "evaluate",
+        "forward",
+        "sgd"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/matmul_call.bend",
+      "names": [
+        "matmul_contract"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "convolution/proofs/linear_call.bend",
+      "names": [
+        "linear_contract"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_binary_values.bend",
+      "names": [
+        "broadcast",
+        "same"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_comparison_values.bend",
+      "names": [
+        "clamp",
+        "equal",
+        "equal_scalar",
+        "greater",
+        "greater_equal",
+        "greater_equal_scalar",
+        "greater_scalar",
+        "less",
+        "less_equal",
+        "less_equal_scalar",
+        "less_scalar",
+        "not_equal",
+        "not_equal_scalar"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_function_values.bend",
+      "names": [
+        "activate",
+        "activate_backward",
+        "activate_derivative",
+        "activate_forward",
+        "exp",
+        "log",
+        "public",
+        "scalar_public",
+        "sqrt"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_optimizer_values.bend",
+      "names": [
+        "sgd",
+        "sgd_with"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_batch_norm_public.bend",
+      "names": [
+        "backward",
+        "evaluate",
+        "forward"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_layer_norm_values.bend",
+      "names": [
+        "backward",
+        "evaluate",
+        "forward"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_loss_values.bend",
+      "names": [
+        "mse"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_cross_entropy_values.bend",
+      "names": [
+        "cross_entropy"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_one_hot_values.bend",
+      "names": [
+        "one_hot"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_training_layer_values.bend",
+      "names": [
+        "activation_backward",
+        "activation_evaluate",
+        "activation_forward",
+        "line_backward",
+        "line_evaluate",
+        "line_forward",
+        "line_step",
+        "line_step_cleared",
+        "norm_backward",
+        "norm_evaluate",
+        "norm_forward",
+        "norm_step",
+        "norm_step_cleared",
+        "pool_backward",
+        "pool_evaluate",
+        "pool_forward"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_copy_contract.bend",
+      "names": [
+        "copy",
+        "tiled"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_reshape.bend",
+      "names": [
+        "reshaped",
+        "upsampled"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_softmax_values.bend",
+      "names": [
+        "softmax"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_indexed_values.bend",
+      "names": [
+        "indexed"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_random_values.bend",
+      "names": [
+        "arange",
+        "random_below",
+        "random_uniform"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_select_public.bend",
+      "names": [
+        "broadcast_cases",
+        "same"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/math_select_values.bend",
+      "names": [
+        "chosen_bits",
+        "selected_word"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_view.bend",
+      "names": [
+        "broadcast",
+        "flipped",
+        "sliced",
+        "transposed"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_set_slice.bend",
+      "names": [
+        "set_slice"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_pad.bend",
+      "names": [
+        "pad"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_concat.bend",
+      "names": [
+        "concat"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_reduce.bend",
+      "names": [
+        "reduce_all",
+        "reduce_axes"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_pool.bend",
+      "names": [
+        "max_pool2d"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_tiled_depthwise.bend",
+      "names": [
+        "depthwise_conv2d"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_entry_values.bend",
+      "names": [
+        "read_storage",
+        "tiled_from_list",
+        "tiled_from_storage"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_exit_values.bend",
+      "names": [
+        "into_storage",
+        "item",
+        "save_npy",
+        "save_raw",
+        "to_list"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_full_values.bend",
+      "names": [
+        "full",
+        "zeros"
+      ],
+      "reason": "Public theorem"
+    },
+    {
+      "file": "lib/proofs/tensor_model_values.bend",
+      "names": [
+        "keep",
+        "take"
+      ],
+      "reason": "Public theorem"
+    }
+  ]
+}

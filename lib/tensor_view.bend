@@ -53,6 +53,20 @@ def axis_extents(axes: List<&2,Axis>) -> List<&2,U32>:
     case Nil{}: Nil{}
     case Con{Axis{extent,stride},tail}: extent <> axis_extents(tail)
 
+# The axes without the one at axis.
+def removed_axis(axes: List<&2,Axis>,axis: Nat) -> List<&2,Axis>:
+  match axes axis:
+    case Nil{} axis: Nil{}
+    case Con{head,rest} 0n: rest
+    case Con{head,rest} 1n+next: head <> removed_axis(rest,next)
+
+# The stride of the axis at axis, and 0 past the axes.
+def stride_at(axes: List<&2,Axis>,axis: Nat) -> U32:
+  match axes axis:
+    case Nil{} axis: 0
+    case Con{Axis{extent,stride},rest} 0n: stride
+    case Con{head,rest} 1n+next: stride_at(rest,next)
+
 def shape(view: View) -> Shapes.Shape:
   View{axes,offset} = view
   Shapes.Shape{axis_extents(axes)}
@@ -62,9 +76,6 @@ def numel(view: View) -> Maybe<&2,U32>:
 
 def rank(view: View) -> Nat:
   Shapes.rank(shape(view))
-
-def extent(view: View,axis: Nat) -> Maybe<&2,U32>:
-  Shapes.extent(shape(view),axis)
 
 def build_axes(reversed: List<&2,U32>,stride: Maybe<&2,U32>,axes: List<&2,Axis>,offset: U32) -> Maybe<&2,View>:
   match reversed stride:
@@ -119,11 +130,6 @@ def last_coordinates(axes: List<&2,Axis>) -> List<&2,U32>:
     case Nil{}: Nil{}
     case Con{Axis{size,stride},tail}: (size - 1 : U32) <> last_coordinates(tail)
 
-def found(address: Maybe<&2,U32>) -> Bool:
-  match address:
-    case None{}: False{}
-    case Some{value}: True{}
-
 def fits_nonempty(empty: Bool,+view: View,+logical_length: U32) -> Bool:
   match empty:
     case True{}:
@@ -131,7 +137,7 @@ def fits_nonempty(empty: Bool,+view: View,+logical_length: U32) -> Bool:
       U32.is_le(offset,logical_length)
     case False{}:
       View{+axes,offset} = view
-      found(address(View{axes,offset},last_coordinates(axes),logical_length))
+      has_count(address(View{axes,offset},last_coordinates(axes),logical_length))
 
 # Forward strides are nonnegative: the last coordinate is the maximum address.
 # Empty views may point exactly one past the logical end, and perform no reads.
@@ -163,16 +169,6 @@ def drop_flags(count: Nat,flags: List<&2,Bool>) -> List<&2,Bool>:
   match count:
     case 0n: flags
     case 1n+rest: drop_flags(rest,later_flags(flags))
-
-def fitted_flags(count: Nat,+flags: List<&2,Bool>) -> List<&2,Bool>:
-  match count:
-    case 0n: []
-    case 1n+rest: flag(flags) <> fitted_flags(rest,later_flags(flags))
-
-def forward(count: Nat,+flags: List<&2,Bool>) -> Bool:
-  match count:
-    case 0n: True{}
-    case 1n+rest: Bool.not(flag(flags)) && forward(rest,later_flags(flags))
 
 def directed(reverse: Bool,stride: U32) -> U32:
   match reverse:
@@ -228,7 +224,9 @@ def permute_when(valid: Bool,view: View,order: List<&2,Nat>) -> Maybe<&2,View>:
 
 # Order must contain each axis exactly once, including singleton axes.
 def permute(+view: View,+order: List<&2,Nat>) -> Maybe<&2,View>:
-  permute_when(Nat.is_eq(rank(view),List.length(&2,Nat,order)) && unique_axes(order),view,order)
+  # the view built again for each use: a View used twice shares every View
+  View{+axes,+offset} = view
+  permute_when(Nat.is_eq(rank(View{axes,offset}),List.length(&2,Nat,order)) && unique_axes(order),View{axes,offset},order)
 
 def slice_step(zero: Bool,+start: U32,+count: U32,+step: U32,+size: U32) -> Bool:
   match zero:

@@ -1,4 +1,4 @@
-// File I/O and phase clocks only. Reorder, packing, convolution and gathering are Bend.
+// File I/O and phase clocks only. Packing, convolution and gathering are Bend.
 static u64 lab_ticks[4];
 Term lab_reps(Env e, Term *f, IoWork *w) {
   const char *s = getenv("CONV_REPS");
@@ -28,7 +28,7 @@ Term lab_start(Env e, Term *f, IoWork *w) {
   lab_ticks[0] = io_tick();
   return term_pak(CID(Unit), 0);
 }
-Term lab_reordered(Env e, Term *f, IoWork *w) {
+Term lab_prepared(Env e, Term *f, IoWork *w) {
   lab_ticks[1] = io_tick();
   return f[0];
 }
@@ -57,14 +57,14 @@ Term lab_save(Env e, Term *f, IoWork *w) {
   p = fopen("bend.json", "w");
   if (!p)
     exit(2);
-  fprintf(p, "{\"reorder_ms\":%.9f,\"compute_ms\":%.9f,\"gather_ms\":%.9f,\"total_ms\":%.9f}\n",
+  fprintf(p, "{\"prepare_ms\":%.9f,\"compute_ms\":%.9f,\"finish_ms\":%.9f,\"total_ms\":%.9f}\n",
           (lab_ticks[1] - lab_ticks[0]) / 1e6, (lab_ticks[2] - lab_ticks[1]) / 1e6,
           (lab_ticks[3] - lab_ticks[2]) / 1e6, (lab_ticks[3] - lab_ticks[0]) / 1e6);
   fclose(p);
   p = fopen("bend_samples.jsonl", "a");
   if (!p)
     exit(2);
-  fprintf(p, "{\"reorder_ms\":%.9f,\"compute_ms\":%.9f,\"gather_ms\":%.9f,\"total_ms\":%.9f}\n",
+  fprintf(p, "{\"prepare_ms\":%.9f,\"compute_ms\":%.9f,\"finish_ms\":%.9f,\"total_ms\":%.9f}\n",
           (lab_ticks[1] - lab_ticks[0]) / 1e6, (lab_ticks[2] - lab_ticks[1]) / 1e6,
           (lab_ticks[3] - lab_ticks[2]) / 1e6, (lab_ticks[3] - lab_ticks[0]) / 1e6);
   fclose(p);
@@ -75,7 +75,7 @@ static void __attribute__((constructor)) lab_register(void) {
   io_eff(CID(Lab.param), lab_param);
   io_eff(CID(Lab.load), lab_load);
   io_eff(CID(Lab.start), lab_start);
-  io_eff(CID(Lab.reordered), lab_reordered);
+  io_eff(CID(Lab.prepared), lab_prepared);
   io_eff(CID(Lab.computed), lab_computed);
   io_eff(CID(Lab.finish), lab_finish);
   io_eff(CID(Lab.save), lab_save);

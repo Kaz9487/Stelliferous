@@ -1,5 +1,6 @@
 """Write a checkpoint of the storage formats and layouts the official one lacks."""
 
+from collections import OrderedDict
 import sys
 from pathlib import Path
 
@@ -31,8 +32,8 @@ def doubles():
 
 
 def cases():
-    """Entries of each storage class and of strided, offset and broadcast views."""
-    return {
+    """Entries of each storage class and of strided, offset and broadcast views, saved as a state dict."""
+    state = OrderedDict({
         'double.values': doubles(),
         'double.transposed': torch.arange(15, dtype=torch.float64).reshape(3, 5).t(),
         'float.transposed': torch.arange(24, dtype=torch.float32).reshape(4, 6).t(),
@@ -40,7 +41,9 @@ def cases():
         'half.sliced': torch.arange(60, dtype=torch.float16).reshape(5, 12)[1:4, ::3],
         'float.scalar': torch.tensor(2.5),
         'float.empty': torch.zeros(0, 3),
-    }
+    })
+    state._metadata = OrderedDict(block={'version': 1})
+    return state
 
 
 if __name__ == '__main__':

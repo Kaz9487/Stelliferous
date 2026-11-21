@@ -17,9 +17,12 @@
 | `python run.py model --case bus_640 --threads 4` | YOLOv5n：產生、編譯、執行，與 PyTorch 比對 |
 | `python run.py checkpoint` | 在 Bend 裡載入官方 `.pt` checkpoint，每個張量與 `torch.load` 逐位元比對 |
 | `python run.py benchmark` | 卷積運算的計時 |
-| `python run.py training --threads 4` | ResNet-20 形狀的網路訓練一個 epoch（390 步、batch 128）的時間，Stelliferous 與 PyTorch 各一次 |
+| `python run.py vit --threads 4` | ViT-B/16：編譯、執行，與 PyTorch 比對 |
+| `python run.py training` | CIFAR-10 上的 ResNet-20：在 1、2、4、8 執行緒與續跑後各跑兩個短 epoch，逐位元比對，第一個 loss 與 PyTorch 比對到 1e-5 |
+| `python run.py training --threads 4 --epochs 160` | 完整的 ResNet-20 訓練，Stelliferous 與 PyTorch 各一次 |
 | `python run.py backends` | YOLOv5n 在 NumPy、Stelliferous 與 PyTorch 上的 forward 時間 |
 | `python run.py summary` | 列出已記錄的結果哪些通過，不重新執行 |
+| `python run.py dependencies` | 每個 Bend 宣告與檔案在哪裡被使用：未使用的 import、沒有根到達的宣告、複本，以及 `why`、`users`、`deps`、`size` 查詢 |
 
 檢查單一 Bend 檔，先掃描檢查器會拒絕的寫法：
 
@@ -33,6 +36,21 @@ node scripts/bend_launcher.mjs FILE --check-only      # 印出 ALL PROOFS CHECK
 ```sh
 python -B scripts/toolchain_rules/verify.py
 ```
+
+找出死碼與不必要的 import：
+
+```sh
+python run.py dependencies                   # 摘要，out/results/dependencies/dependencies.json
+python run.py dependencies unused lib/       # lib/ 底下檔案的待審清單
+python run.py dependencies why tensor_select.selected_leaf   # 從某個根到它的一條最短路徑
+python run.py dependencies users lib/tensor_select.select    # 哪些宣告引用它
+python run.py dependencies users --all lib/tensor_select.select   # 連間接引用一起，附上距離
+python run.py dependencies deps lib/tensor_layout.bend       # 一個檔案 import 了什麼，標出未使用的
+python run.py dependencies size tensor_tiled_edge_pad.pad_edge tensor_tiled_concat.concat   # 各自到達什麼，以及只有它到達的
+python run.py dependencies duplicates lib/proofs/            # 複製的宣告，以及重複證明的敘述
+```
+
+它以上游 parser 讀取各原始碼資料夾的每個 `.bend` 檔。一個宣告引用它的型別與內容在每個分支中提到的名稱。根是公開 API、各程式入口、Python 檢查寫出的 Bend 程式所提到的宣告，以及 [dependency_roots.json](../scripts/dependency_roots.json) 中的定理。`program` 表示有程式根到達它，`proof` 表示只有證明根到達，`unreached` 表示沒有任何根到達。沒有被任何宣告引用的證明宣告是一個結果。清單列出每個結果單獨保留的宣告數。一個檔案沒有用到某個 import 的任何名稱，且該 import 沒有寫出 law 的內容時，這個 import 就是未使用的。兩個宣告的敘述與內容形狀相同、提到相同的宣告（複本算同一個），就是複本，約束變數的名字不影響。`size` 計算宣告數、檔案數與原始碼行數。已發布的套件從 `lib/` 讀取。清單只是候選：刪除前先以各項檢查確認，凍結檔保持不變。
 
 各項掃描結果的說明見[工具鏈規則](toolchain_rules.zh-TW.md)。[CI](../.github/workflows/ci.yml) 執行 `layout`、`proofs` 與 `api`。
 

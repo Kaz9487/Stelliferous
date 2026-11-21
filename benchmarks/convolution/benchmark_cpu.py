@@ -70,7 +70,7 @@ def main():
                 command += (
                     [str(threads)]
                     if is_c
-                    else ['--threads', str(threads), '--gpu', 'off']
+                    else ['+RTS', '--threads', str(threads), '--gpu', 'off', '-RTS']
                 )
                 subprocess.run(
                     command,
@@ -144,7 +144,7 @@ def write_measurement_report(records, toolchain):
             '[量測流程](../../../benchmarks/convolution/README.zh-TW.md)。中位數，單位毫秒；估計值是 Bend 規劃器對所選方案的預測：',
         ),
         (
-            '| Case | Threads | Bend total | Estimate | Error | Packed C total | NumPy total | Reorder | Pack+GEMM | Gather |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+            '| Case | Threads | Bend total | Estimate | Error | Packed C total | NumPy total | Boundary pack | Pack+GEMM | Gather+untile |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
             '| 案例 | 執行緒 | Bend 總時間 | 估計 | 誤差 | Packed C 總時間 | NumPy 總時間 | 重排 | 打包+GEMM | 收集 |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
         ),
     ]
@@ -154,7 +154,7 @@ def write_measurement_report(records, toolchain):
         estimate = record['plan']['estimated_ns'] / 1e6
         error = (estimate - bend['total_ms']) / bend['total_ms']
         sections.append(
-            f'| {record["case"]} | {record["threads"]} | {bend["total_ms"]:.3f} | {estimate:.3f} | {error:+.0%} | {timing["packed_c"]["total_ms"]:.3f} | {timing["numpy"]["total_ms"]:.3f} | {bend["reorder_ms"]:.3f} | {bend["compute_ms"]:.3f} | {bend["gather_ms"]:.3f} |'
+            f'| {record["case"]} | {record["threads"]} | {bend["total_ms"]:.3f} | {estimate:.3f} | {error:+.0%} | {timing["packed_c"]["total_ms"]:.3f} | {timing["numpy"]["total_ms"]:.3f} | {bend["prepare_ms"]:.3f} | {bend["compute_ms"]:.3f} | {bend["finish_ms"]:.3f} |'
         )
     sections.append(
         (

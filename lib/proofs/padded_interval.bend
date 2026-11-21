@@ -1,4 +1,3 @@
-import ./storage_shape.bend as Shape
 # Wrapped native subtraction and zero-padding guards denote the same range.
 import Base
 import ./natural_addition.bend as Addition
@@ -13,6 +12,7 @@ import ./boolean_logic.bend as Boolean
 import ./nat_division_order.bend as DivisionOrder
 import ./nat_division.bend as Division
 import ./row_major_index.bend as RowMajor
+import ../kernel_gemm.bend as KernelGemm
 
 def sum_room(+r: Nat,+extent: Nat,+pad: Nat,+cap: Nat,h: {Nat.is_lt(r,extent) == True{} : Bool},bound: {Nat.is_le(Nat.add(extent,pad),
       cap) == True{} : Bool}) -> {Nat.is_le(Nat.add(r,pad),cap) == True{} : Bool}:
@@ -28,10 +28,10 @@ def recovered(+padded_row: U32,+pad: U32,+extent: U32,+cap: U32,cap_ok: {U32.is_
 
 def forward(+padded_row: U32,+pad: U32,+extent: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
   +bound: {Nat.is_le(Nat.add(U32.to_nat(extent),U32.to_nat(pad)),U32.to_nat(cap)) == True{} : Bool},+h: {U32.is_lt((padded_row - pad : U32),
-      extent) == True{} : Bool}) -> Shape.Both<{Nat.is_le(U32.to_nat(pad),U32.to_nat(padded_row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(padded_row),
+      extent) == True{} : Bool}) -> KernelGemm.Both<{Nat.is_le(U32.to_nat(pad),U32.to_nat(padded_row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(padded_row),
     Nat.add(U32.to_nat(pad),U32.to_nat(extent))) == True{} : Bool}>:
   +eq = recovered(padded_row,pad,extent,cap,cap_ok,bound,h)
-  Shape.Both{
+  KernelGemm.Both{
     %eq : {Nat.is_le(U32.to_nat(pad),_) == True{} : Bool}
     %Order.commutative(U32.to_nat(pad),U32.to_nat((padded_row - pad : U32))) : {Nat.is_le(U32.to_nat(pad),_) == True{} : Bool}
     Order.le_add(U32.to_nat(pad),U32.to_nat((padded_row - pad : U32))),
@@ -56,28 +56,28 @@ def backward(+padded_row: U32,+pad: U32,+extent: U32,+cap: U32,cap_ok: {U32.is_l
             U32.to_nat(pad)),pybound))) : {Nat.is_lt(_,U32.to_nat(extent)) == True{} : Bool}
     Order.sub_lt(U32.to_nat(padded_row),U32.to_nat(pad),U32.to_nat(extent),lo,hi))
 
-def parts(+a: Bool,+b: Bool,h: {a && b == True{} : Bool}) -> Shape.Both<{a == True{} : Bool},{b == True{} : Bool}>:
+def parts(+a: Bool,+b: Bool,h: {a && b == True{} : Bool}) -> KernelGemm.Both<{a == True{} : Bool},{b == True{} : Bool}>:
   match a b:
     case False{} False{}:
-      Empty.absurd(Shape.Both<{False{} == True{} : Bool},{False{} == True{} : Bool}>,WordEncoding.false_true(h))
+      Empty.absurd(KernelGemm.Both<{False{} == True{} : Bool},{False{} == True{} : Bool}>,WordEncoding.false_true(h))
     case False{} True{}:
-      Empty.absurd(Shape.Both<{False{} == True{} : Bool},{True{} == True{} : Bool}>,WordEncoding.false_true(h))
+      Empty.absurd(KernelGemm.Both<{False{} == True{} : Bool},{True{} == True{} : Bool}>,WordEncoding.false_true(h))
     case True{} False{}:
-      Empty.absurd(Shape.Both<{True{} == True{} : Bool},{False{} == True{} : Bool}>,WordEncoding.false_true(h))
+      Empty.absurd(KernelGemm.Both<{True{} == True{} : Bool},{False{} == True{} : Bool}>,WordEncoding.false_true(h))
     case True{} True{}:
-      Shape.Both{{==},{==}}
+      KernelGemm.Both{{==},{==}}
 
-def joined(+padded_row: U32,+pad: U32,+extent: U32,p: Shape.Both<{Nat.is_le(U32.to_nat(pad),U32.to_nat(padded_row)) == True{} : Bool},
+def joined(+padded_row: U32,+pad: U32,+extent: U32,p: KernelGemm.Both<{Nat.is_le(U32.to_nat(pad),U32.to_nat(padded_row)) == True{} : Bool},
   {Nat.is_lt(U32.to_nat(padded_row),Nat.add(U32.to_nat(pad),U32.to_nat(extent))) == True{} : Bool}>) -> {Nat.is_le(U32.to_nat(pad),
     U32.to_nat(padded_row)) && Nat.is_lt(U32.to_nat(padded_row),Nat.add(U32.to_nat(pad),U32.to_nat(extent))) == True{} : Bool}:
-  Shape.Both{lo,hi} = p
+  KernelGemm.Both{lo,hi} = p
   Boolean.and_true(Nat.is_le(U32.to_nat(pad),U32.to_nat(padded_row)),Nat.is_lt(U32.to_nat(padded_row),Nat.add(U32.to_nat(pad),U32.to_nat(extent))),lo,hi)
 
 def split_backward(+padded_row: U32,+pad: U32,+extent: U32,+cap: U32,cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
   bound: {Nat.is_le(Nat.add(U32.to_nat(extent),U32.to_nat(pad)),U32.to_nat(cap)) == True{} : Bool},
-  p: Shape.Both<{Nat.is_le(U32.to_nat(pad),U32.to_nat(padded_row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(padded_row),Nat.add(U32.to_nat(pad),
+  p: KernelGemm.Both<{Nat.is_le(U32.to_nat(pad),U32.to_nat(padded_row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(padded_row),Nat.add(U32.to_nat(pad),
         U32.to_nat(extent))) == True{} : Bool}>) -> {U32.is_lt((padded_row - pad : U32),extent) == True{} : Bool}:
-  Shape.Both{lo,hi} = p
+  KernelGemm.Both{lo,hi} = p
   backward(padded_row,pad,extent,cap,cap_ok,bound,lo,hi)
 
 law range:

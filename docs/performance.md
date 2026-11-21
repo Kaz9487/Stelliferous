@@ -2,24 +2,23 @@
 
 [English](performance.md) | [繁體中文](performance.zh-TW.md)
 
-YOLOv5n v7.0 forward, the bus image at 640 × 640, FP32, batch one. Two warmups and seven samples per setting, median in milliseconds.
+YOLOv5n v7.0 forward, the bus image at 640 × 640, FP32, batch one. Median in milliseconds.
 
 | Backend | 1 thread | 4 threads |
 |---|---:|---:|
-| Stelliferous 0.0.3 | 117 | 47 |
-| Stelliferous 0.0.2 | 115 | 44 |
-| Stelliferous 0.0.1 | 153.7 | 54.8 |
-| NumPy / OpenBLAS | 133.7 | 116.3 |
-| PyTorch | 51.1 | 15.2 |
+| Stelliferous 0.0.4 | 80 | 35 |
+| Stelliferous 0.0.3 | 117 | 48 |
+| NumPy / OpenBLAS | 132.5 | 120.8 |
+| PyTorch | 48.5 | 14.8 |
 
-Measured on 2026-10-21 on a Google Cloud `c4d-standard-8` virtual machine. CPU affinity and frequency are not pinned. Every setting passed the layer, prediction and detection comparison with the official reference. Stelliferous reports whole milliseconds. The comparison ran four times, alternating the released 0.0.2 tree with its own Bend v2.0.36 and 0.0.3, so each Stelliferous row has 14 samples and NumPy and PyTorch have 28. Stelliferous 0.0.1 is the released tree with its own Bend v2.0.35, measured in the same way on 2026-10-10 on the same machine type.
+Measured on 2026-11-20 on a Google Cloud `c4d-standard-8` virtual machine. CPU affinity and frequency are not pinned. Stelliferous reports whole milliseconds. The released 0.0.3 tree with its own Bend v2.0.37 and 0.0.4 ran alternately four times, eleven forwards per run, so each Stelliferous row has 44 samples, and both versions give the same predictions bit for bit. NumPy and PyTorch come from one `run.py backends` run with two warmups and seven samples, where every setting passed the layer, prediction and detection comparison with the official reference.
 
 ## Reproduce
 
 After the [YOLO example setup](../examples/yolov5/README.md):
 
 ```sh
-python run.py backends      # the table above
+python run.py backends      # Stelliferous, NumPy and PyTorch on this tree
 python run.py benchmark     # single convolution shapes
 ```
 
@@ -28,8 +27,8 @@ Samples and the environment go to `out/results/backends/`, and the report is `ou
 ## Environment
 
 - Google Cloud `c4d-standard-8`, Ubuntu 24.04: AMD EPYC 9B45, 8 virtual CPUs (4 cores, 2 threads each).
-- Bend v2.0.37 (official, unmodified), Clang 19.1.1 with `-O3 -march=native -ffp-contract=off -std=c11`.
-- NumPy 2.4.6 with its bundled OpenBLAS, PyTorch 2.14.0 (CPU, eager, FP32), one inter-op thread.
+- Bend v2.0.40 (official, unmodified), Clang 19.1.1 with `-O3 -march=native -ffp-contract=off -std=c11`.
+- NumPy 2.4.6 with its bundled OpenBLAS, PyTorch 2.14.0 and torchvision 0.29.0 (CPU, eager, FP32), one inter-op thread.
 
 ## What is timed
 
@@ -39,32 +38,47 @@ The forward computation: allocation, ownership copies, packing, kernels, gather 
 
 | Setting | Median (ms) | Min–max (ms) |
 |---|---:|---:|
-| Stelliferous 0.0.3, 1 thread | 117 | 115–121 |
-| Stelliferous 0.0.3, 4 threads | 47 | 46–50 |
-| Stelliferous 0.0.2, 1 thread | 115 | 112–116 |
-| Stelliferous 0.0.2, 4 threads | 44 | 44–47 |
-| Stelliferous 0.0.1, 1 thread | 153.7 | 153.4–154.4 |
-| Stelliferous 0.0.1, 4 threads | 54.8 | 54.6–56.5 |
-| NumPy, 1 thread | 133.7 | 129.9–141.4 |
-| NumPy, 4 threads | 116.3 | 113.9–122.1 |
-| PyTorch, 1 thread | 51.1 | 49.0–52.4 |
-| PyTorch, 4 threads | 15.2 | 14.7–16.5 |
+| Stelliferous 0.0.4, 1 thread | 80 | 76–86 |
+| Stelliferous 0.0.4, 4 threads | 35 | 33–41 |
+| Stelliferous 0.0.3, 1 thread | 117 | 113–125 |
+| Stelliferous 0.0.3, 4 threads | 48 | 46–57 |
+| NumPy, 1 thread | 132.5 | 128.9–136.7 |
+| NumPy, 4 threads | 120.8 | 118.5–122.3 |
+| PyTorch, 1 thread | 48.5 | 47.6–49.6 |
+| PyTorch, 4 threads | 14.8 | 14.3–15.1 |
+
+## ViT-B/16
+
+The official torchvision ViT-B/16 with its ImageNet weights, one 224 × 224 image, FP32. Stelliferous 0.0.4 and PyTorch ran alternately three times, ten forwards per run after one PyTorch warmup, on the same machine on the same day.
+
+| Backend | 1 thread | 4 threads |
+|---|---:|---:|
+| Stelliferous 0.0.4 | 360 (349–380) | 176 (171–184) |
+| PyTorch | 353 (350–356) | 121 (120–124) |
+
+```sh
+python run.py vit --threads 4
+```
+
+The setup and the comparison with PyTorch are in the [ViT-B/16 example](../examples/vit_b16/README.md).
 
 ## Training
 
-One epoch of a ResNet-20-shaped network: 390 steps of batch 128, each a forward pass, cross entropy, a backward pass and SGD. Measured once on 2026-10-21 on the same machine type, four threads.
+ResNet-20 on CIFAR-10 for 160 epochs from the same initial weights and batches. An epoch is 390 steps of batch 128 and the test of 10,000 images. Measured once on 2026-11-20 on the same machine type with Stelliferous 0.0.4, four threads.
 
-| Library | Epoch | Loss after the last step |
-|---|---:|---:|
-| Stelliferous 0.0.3 | 767 s | 0.026418747 |
-| PyTorch 2.14.0 | 31.1 s | 0.02641915 |
+| Library | Epoch, mean | Test accuracy, last epoch | Best test accuracy |
+|---|---:|---:|---:|
+| Stelliferous 0.0.4 | 137.5 s | 91.40% | 91.57% |
+| PyTorch 2.14.0 | 34.5 s | 91.34% | 91.54% |
+
+0.0.3 cannot train ResNet-20. At its release on 2026-10-21 it took 767 s for one epoch of 390 steps without the test, on the ResNet-20 shape without residual additions or projections, with plain SGD and one synthetic batch reused.
 
 ```sh
-python run.py training --threads 4
+python run.py training --threads 4 --epochs 160
 ```
 
-The network, data and timer are described in the [training benchmark](../benchmarks/training/README.md).
+The network, data and schedule are described in the [ResNet-20 example](../examples/resnet20/README.md).
 
 ## Other convolution shapes
 
-Some shapes gain little from more workers: many weights with few output positions, batches of more than one image, and outputs narrower than six positions. See [design](design.md#known-limits).
+Two shapes carry extra costs: many weights with few output positions, and outputs narrower than eight positions. See [design](design.md#costs-that-remain).

@@ -115,15 +115,3 @@ def stride_value(~Element: Data,address: U32,+stride: U32,result: Array<Element>
 def read_stride(~Element: Data,storage: Array<Element>,cursor: Stride) -> Array<Element> & Traversal.Visited<Stride,Element>:
   Stride{+address,+stride} = cursor
   stride_value(~Element,address,stride,Array.get(Element,storage,address))
-
-# The address a scatter stores at, with the cursor of the next element.
-def target(cursor: Cursor) -> Traversal.Target<Cursor>:
-  Cursor{axes,+address} = cursor
-  Traversal.Target{advance(axes,address),address}
-
-def target_stride(cursor: Stride) -> Traversal.Target<Stride>:
-  Stride{+address,+stride} = cursor
-  Traversal.Target{Stride{(address + stride : U32),stride},address}
-
-type CursorPair is Data:
-  CursorPair{left: Cursor,right: Cursor}

@@ -10,19 +10,6 @@ def collect_prepend(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),va
   (reader,values) = result
   (reader,value <> values)
 
-def collect_next(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,
-  result: Reader & Collected<ownership,Context,Element>,tail: Reader -> Context -> Reader & List<ownership,Element>) -> Reader & List<ownership,Element>:
-  (reader,Collected{context,value}) = result
-  collect_prepend(~ownership,~Reader,~Element,value,tail(reader,context))
-
-# Values may own arrays; a context transition supplies the next read without
-# indexing a second list or allocating an array of affine elements.
-def collect(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),~Context: Data,
-  ~read: Reader -> Context -> Reader & Collected<ownership,Context,Element>,count: Nat,reader: Reader,context: Context) -> Reader & List<ownership,Element>:
-  match count:
-    case 0n: (reader,[])
-    case 1n+rest: collect_next(~ownership,~Reader,~Element,~Context,read(reader,context),reader => context => collect(~ownership,~Reader,~Element,~Context,~read,rest,reader,context))
-
 def collect_list_next(~ownership: Quant,~Reader: Type,~Element: Kind(ownership),result: Reader & Element,
   tail: Reader -> Reader & List<ownership,Element>) -> Reader & List<ownership,Element>:
   (reader,value) = result
@@ -170,6 +157,14 @@ def strided(~Element: Data,input: Array<Element>,context: Strided,position: U32)
   Strided{base,stride} = context
   Array.get(Element,input,(base + position * stride : U32))
 
+# Positions base + position * stride, and a value every read takes.
+type Spaced<-Extra: Data> is Data:
+  Spaced{base: U32,stride: U32,extra: Extra}
+
+def spaced(~Element: Data,~Extra: Data,input: Array<Element>,context: Spaced<Extra>,position: U32) -> Array<Element> & Element:
+  Spaced{base,stride,extra} = context
+  Array.get(Element,input,(base + position * stride : U32))
+
 def copy(~Element: Data,count: Nat,source: U32,destination: U32,input: Array<Element>,target: Array<Element>) -> Array<Element> & Array<Element>:
   finish(~Array<Element>,~Element,~Offsets,
     run(~Array<Element>,~Element,~Offsets,~source_offset(~Element),~destination_offset,count,
@@ -199,84 +194,6 @@ def fold(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,
   finish_fold(~Reader,~Accumulator,~Context,
     Loop.run(~State<&1,&2,Reader,Accumulator,Context>,~fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),
       count,State{reader,initial,position,context}))
-
-# Eight values read one after another, before any of them is combined.
-type Eight<-Element: Data> is Data:
-  Eight{a: Element,b: Element,c: Element,d: Element,e: Element,f: Element,g: Element,h: Element}
-
-def read_last(~Reader: Type,~Element: Data,+a: Element,+b: Element,+c: Element,+d: Element,+e: Element,+f: Element,+g: Element,
-  result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,h) = result
-  (reader,Eight{a,b,c,d,e,f,g,h})
-
-def read_seventh(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
-  +a: Element,+b: Element,+c: Element,+d: Element,+e: Element,+f: Element,result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,g) = result
-  read_last(~Reader,~Element,a,b,c,d,e,f,g,read(reader,context,(position + 1 : U32)))
-
-def read_sixth(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
-  +a: Element,+b: Element,+c: Element,+d: Element,+e: Element,result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,f) = result
-  read_seventh(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,d,e,f,read(reader,context,(position + 1 : U32)))
-
-def read_fifth(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
-  +a: Element,+b: Element,+c: Element,+d: Element,result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,e) = result
-  read_sixth(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,d,e,read(reader,context,(position + 1 : U32)))
-
-def read_fourth(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
-  +a: Element,+b: Element,+c: Element,result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,d) = result
-  read_fifth(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,d,read(reader,context,(position + 1 : U32)))
-
-def read_third(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
-  +a: Element,+b: Element,result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,c) = result
-  read_fourth(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,c,read(reader,context,(position + 1 : U32)))
-
-def read_second(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
-  +a: Element,result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,b) = result
-  read_third(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,b,read(reader,context,(position + 1 : U32)))
-
-# The values at position, position + 1, ..., position + 7.
-def read_eight(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> U32 -> Reader & Element,+position: U32,+context: Context,
-  result: Reader & Element) -> Reader & Eight<Element>:
-  (reader,a) = result
-  read_second(~Reader,~Element,~Context,~read,(position + 1 : U32),context,a,read(reader,context,(position + 1 : U32)))
-
-# The position after eight steps of one.
-def after_eight(+position: U32) -> U32:
-  ((((((((position + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32) + 1 : U32)
-
-def combine_eight(~Element: Data,~Accumulator: Data,~combine: Accumulator -> Element -> Accumulator,accumulator: Accumulator,values: Eight<Element>) -> Accumulator:
-  Eight{+a,+b,+c,+d,+e,+f,+g,+h} = values
-  combine(combine(combine(combine(combine(combine(combine(combine(accumulator,a),b),c),d),e),f),g),h)
-
-def round_value(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~combine: Accumulator -> Element -> Accumulator,
-  accumulator: Accumulator,+position: U32,+context: Context,result: Reader & Eight<Element>) -> State<&1,&2,Reader,Accumulator,Context>:
-  (reader,values) = result
-  State{reader,combine_eight(~Element,~Accumulator,~combine,accumulator,values),after_eight(position),context}
-
-# Eight fold steps: the same reads and combines, the reads first.
-def fold_round(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,
-  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
-  state: State<&1,&2,Reader,Accumulator,Context>) -> State<&1,&2,Reader,Accumulator,Context>:
-  State{reader,accumulator,+position,+context} = state
-  round_value(~Reader,~Element,~Accumulator,~Context,~combine,accumulator,position,context,
-    read_eight(~Reader,~Element,~Context,~read,position,context,read(reader,context,position)))
-
-# fold with the steps after the first count % 8 taken eight at a time: the
-# same result for every combine. The eight reads of a round come first, so an
-# accumulator of several lanes keeps them in registers.
-def fold_rounds(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,
-  ~read: Reader -> Context -> U32 -> Reader & Element,~combine: Accumulator -> Element -> Accumulator,
-  count: Nat,position: U32,reader: Reader,initial: Accumulator,context: Context) -> Reader & Accumulator:
-  +count = count
-  finish_fold(~Reader,~Accumulator,~Context,
-    Loop.run(~State<&1,&2,Reader,Accumulator,Context>,~fold_round(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.div(count,8n),
-      Loop.run(~State<&1,&2,Reader,Accumulator,Context>,~fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),Nat.mod(count,8n),
-        State{reader,initial,position,context})))
 
 # Reuse the output owner for each read/write; no second array or clone.
 def mapped_value(~Element: Data,~Context: Data,~map: Context -> Element -> Element,
@@ -325,6 +242,17 @@ def update(~Reader: Type,~Element: Data,~Sample: Data,~Context: Data,
   Loop.run(~State<&1,&1,Reader,Array<Element>,Context>,
     ~update_step(~Reader,~Element,~Sample,~Context,~read,~combine,~destination),count,state)
 
+# The count, the first position and the context of a run of steps.
+type Steps<-Context: Data> is Data:
+  Steps{count: Nat,position: U32,context: Context}
+
+# A run of updates, the reader and the output handed back.
+def updated(~Reader: Type,~Element: Data,~Sample: Data,~Context: Data,
+  ~read: Reader -> Context -> U32 -> Reader & Sample,~combine: Element -> Sample -> Element,
+  ~destination: Context -> U32 -> U32,run: Steps<Context>,reader: Reader,output: Array<Element>) -> Reader & Array<Element>:
+  Steps{count,+position,+context} = run
+  finish(~Reader,~Element,~Context,update(~Reader,~Element,~Sample,~Context,~read,~combine,~destination,count,State{reader,output,position,context}))
+
 # A cursor is consumed by read and returned advanced. The state position is the
 # absolute contiguous destination, so it need not retain a second cursor copy.
 type Visited<-Context: Data,-Element: Data> is Data:
@@ -343,23 +271,6 @@ def visit_step(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Cont
 def visit(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Context -> Reader & Visited<Context,Element>,
   count: Nat,state: State<&1,&1,Reader,Array<Element>,Context>) -> State<&1,&1,Reader,Array<Element>,Context>:
   Loop.run(~State<&1,&1,Reader,Array<Element>,Context>,~visit_step(~Reader,~Element,~Context,~read),count,state)
-
-# A scatter reads the source at the state position, which counts up, and
-# stores at the address its context names; target yields that address with
-# the context of the next element.
-type Target<-Context: Data> is Data:
-  Target{context: Context,address: U32}
-
-def spread_store(~Element: Data,~Context: Data,position: U32,output: Array<Element>,target: Target<Context>,result: Array<Element> & Element) ->
-  State<&1,&1,Array<Element>,Array<Element>,Context>:
-  Target{context,address} = target
-  (input,value) = result
-  State{input,Array.set(Element,output,address,value),(position + 1 : U32),context}
-
-def spread_step(~Element: Data,~Context: Data,~target: Context -> Target<Context>,
-  state: State<&1,&1,Array<Element>,Array<Element>,Context>) -> State<&1,&1,Array<Element>,Array<Element>,Context>:
-  State{input,output,+position,context} = state
-  spread_store(~Element,~Context,position,output,target(context),Array.get(Element,input,position))
 
 def visit_update_sample(~Reader: Type,~Element: Data,~Context: Data,~combine: Element -> Element -> Element,
   +position: U32,output: Array<Element>,current: Element,result: Reader & Visited<Context,Element>) -> State<&1,&1,Reader,Array<Element>,Context>:
@@ -380,16 +291,3 @@ def visit_update(~Reader: Type,~Element: Data,~Context: Data,~read: Reader -> Co
   ~combine: Element -> Element -> Element,count: Nat,state: State<&1,&1,Reader,Array<Element>,Context>) -> State<&1,&1,Reader,Array<Element>,Context>:
   Loop.run(~State<&1,&1,Reader,Array<Element>,Context>,~visit_update_step(~Reader,~Element,~Context,~read,~combine),count,state)
 
-def visit_fold_value(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~combine: Accumulator -> Element -> Accumulator,
-  position: U32,accumulator: Accumulator,result: Reader & Visited<Context,Element>) -> State<&1,&2,Reader,Accumulator,Context>:
-  (reader,Visited{context,value}) = result
-  State{reader,combine(accumulator,value),(position + 1 : U32),context}
-
-def visit_fold_step(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~read: Reader -> Context -> Reader & Visited<Context,Element>,
-  ~combine: Accumulator -> Element -> Accumulator,state: State<&1,&2,Reader,Accumulator,Context>) -> State<&1,&2,Reader,Accumulator,Context>:
-  State{reader,accumulator,position,context} = state
-  visit_fold_value(~Reader,~Element,~Accumulator,~Context,~combine,position,accumulator,read(reader,context))
-
-def visit_fold(~Reader: Type,~Element: Data,~Accumulator: Data,~Context: Data,~read: Reader -> Context -> Reader & Visited<Context,Element>,
-  ~combine: Accumulator -> Element -> Accumulator,count: Nat,state: State<&1,&2,Reader,Accumulator,Context>) -> State<&1,&2,Reader,Accumulator,Context>:
-  Loop.run(~State<&1,&2,Reader,Accumulator,Context>,~visit_fold_step(~Reader,~Element,~Accumulator,~Context,~read,~combine),count,state)

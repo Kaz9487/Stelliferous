@@ -22,13 +22,13 @@ def build_graph(model, reference, case):
     assert model['nc'] == 80 and reference['input_shape'][0] == 1
     tensors, operations, snapshots, weights = [], [], {}, {}
 
-    def add_tensor(shape, path=None):
+    def add_tensor(shape, path=None, name=None):
         index = len(tensors)
-        tensors.append(dict(shape=shape, count=math.prod(shape), path=path))
+        tensors.append(dict(shape=shape, count=math.prod(shape), path=path, name=name))
         return index
 
     for name, weight in model['weights'].items():
-        weights[name] = add_tensor(weight['shape'], 'out/weights/' + weight['file'])
+        weights[name] = add_tensor(weight['shape'], 'out/weights/' + weight['file'], name)
     input_id = add_tensor(reference['input_shape'], f'out/results/{case}/input.bin')
 
     def convolution(input_id, prefix, stride=1, padding=0, activation=True):

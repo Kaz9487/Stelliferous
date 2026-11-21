@@ -9,6 +9,7 @@ import ./storage_shape.bend as Shape
 import ./storage_witness.bend as Witness
 import ./word_power_of_two.bend as Power
 import ./nat_order.bend as Order
+import ../kernel_gemm.bend as KernelGemm
 
 type Content<-Element: Data> is Data:
   Content{tree: Tree.Tree<Element>,length: Nat}
@@ -28,6 +29,11 @@ def content_tree(~Element: Data,content: Content<Element>) -> Tree.Tree<Element>
 def content_length(~Element: Data,content: Content<Element>) -> Nat:
   Content{tree,length} = content
   length
+
+# Contents are their tree and their length.
+def content_eta(~Element: Data,+content: Content<Element>) -> {content == Content{content_tree(~Element,content),content_length(~Element,content)} : Content<Element>}:
+  match content:
+    case Content{+tree,+length}: {==}
 
 type ContentReady<-Element: Data,-content: Content<Element>> is Data:
   ContentReady{depth: Nat,balanced: Shape.Balanced(Element,depth,content_tree(~Element,content)),
@@ -72,15 +78,6 @@ def capacity_bound(~Element: Data,+model: Model<Element>,+depth_ok: {Nat.is_le(d
     Shape.capacity(Element,depth(~Element,model),tree(~Element,model),balanced(~Element,model))) : {U32.is_le(_,2147483648) == True{} : Bool}
   Power.native_power_bound(depth(~Element,model),Order.successor(depth(~Element,model),30n,depth_ok))
 
-def capacity_allocatable(~Element: Data,+model: Model<Element>,depth_ok: {Nat.is_le(depth(~Element,model),30n) == True{} : Bool}) ->
-  {U32.is_le(Tree.capacity(Element,tree(~Element,model)),1073741824) == True{} : Bool}:
-  %Equal.sym(U32,Tree.capacity(Element,tree(~Element,model)),U32.shln(1,depth(~Element,model)),
-    Shape.capacity(Element,depth(~Element,model),tree(~Element,model),balanced(~Element,model))) : {U32.is_le(_,1073741824) == True{} : Bool}
-  Power.native_allocatable(depth(~Element,model),depth_ok)
-
-# Logical length and the native machine depth are independent of the stored
-# element values. Allocation establishes them; content-preserving operations
-# carry them with the same owner.
 type Sized<-Element: Data,-model: Model<Element>> is Data:
   Sized{depth_ok: {Nat.is_le(depth(~Element,model),30n) == True{} : Bool},
     room: {Nat.is_le(length(~Element,model),U32.to_nat(Tree.capacity(Element,tree(~Element,model)))) == True{} : Bool}}
@@ -99,23 +96,12 @@ def content_ready(~Element: Data,+model: Model<Element>,evidence: Sized<Element,
 
 def NativeReady(~Element: Data,buffer: Storage.Buffer<Element>) -> Data:
   Storage.Buffer{storage,length,Certificate.Certificate{depth,equation}} = buffer
-  Shape.Both<{Nat.is_le(depth,30n) == True{} : Bool},{Nat.is_le(length,U32.to_nat(Tree.capacity(Element,Tree.reflect(Element,storage)))) == True{} : Bool}>
+  KernelGemm.Both<{Nat.is_le(depth,30n) == True{} : Bool},{Nat.is_le(length,U32.to_nat(Tree.capacity(Element,Tree.reflect(Element,storage)))) == True{} : Bool}>
 
 def native_content_ready(~Element: Data,buffer: Storage.Buffer<Element>,ready: NativeReady(~Element,buffer)) -> ContentReady<Element,contents(~Element,buffer)>:
   Storage.Buffer{storage,length,Certificate.Certificate{+depth,equation}} = buffer
-  Shape.Both{depth_ok,room} = ready
+  KernelGemm.Both{depth_ok,room} = ready
   ContentReady{depth,Witness.balanced(Element,depth,storage,Certificate.witness_at(Element,depth,storage,equation)),depth_ok,room}
-
-def ready_packed(~Element: Data,+model: Model<Element>,ready: NativeReady(~Element,pack(~Element,model))) -> Sized<Element,model>:
-  Model{+tree,+length,Certificate.Certificate{+depth,equation}} = model
-  Shape.Both{depth_ok,room} = ready
-  Sized{depth_ok,
-    %StorageLaws.reflect_packed(Element,tree) : {Nat.is_le(length,U32.to_nat(Tree.capacity(Element,_))) == True{} : Bool} room}
-
-def ready_observed(~Element: Data,-buffer: Storage.Buffer<Element>,+model: Model<Element>,equation: {pack(~Element,model) == buffer : Storage.Buffer<Element>},
-  ready: NativeReady(~Element,buffer)) -> Sized<Element,model>:
-  ready_packed(~Element,model,
-    %Equal.sym(Storage.Buffer<Element>,pack(~Element,model),buffer,equation) : NativeReady(~Element,_) ready)
 
 def fresh_certificate(~Element: Data,+depth: Nat,+fill: Element) -> Certificate.Certificate<Element,Tree.pack(Element,Tree.fresh(Element,depth,fill))>:
   Certificate.Certificate{depth,
@@ -210,18 +196,6 @@ def read_masked(~Element: Data,+fallback: Element,valid: Bool,+model: Model<Elem
   match valid:
     case False{}: {==}
     case True{}: read(~Element,model,index)
-
-def content_parts(+model: Model<F32>) -> {content(~F32,model) == Content{tree(~F32,model),length(~F32,model)} : Content<F32>}:
-  Model{tree,length,certificate} = model
-  {==}
-
-def model_length(+model: Model<F32>) -> {content_length(~F32,content(~F32,model)) == length(~F32,model) : Nat}:
-  Model{tree,length,certificate} = model
-  {==}
-
-def read_content(+index: U32,+content: Content<F32>) -> {Tree.read(F32,content_tree(~F32,content),index) == value(~F32,index,content) : F32}:
-  Content{tree,length} = content
-  {==}
 
 def buffer_contents(~Element: Data,+model: Model<Element>,-buffer: Storage.Buffer<Element>,equal: {pack(~Element,model) == buffer : Storage.Buffer<Element>}) ->
   {content(~Element,model) == contents(~Element,buffer) : Content<Element>}:

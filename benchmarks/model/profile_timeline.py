@@ -22,11 +22,13 @@ sys.path.insert(0, str(ROOT / 'benchmarks'))
 from allocation_instrumentation import replace_once  # noqa: E402
 from compare_forward import baseline_stem  # noqa: E402
 
-PHASES = ('unclassified', 'band_execute', 'band_run', 'halo_prepare', 'halo_assemble',
-          'band_gather', 'partition_run', 'pipeline_finish', 'range_copy', 'pipeline_run')
+# runtime modules, and the proof modules whose certified functions the runtime calls
+MODULES = sorted([path.stem for path in (ROOT / 'lib').glob('*.bend')]
+                 + ['proofs_' + path.stem for path in (ROOT / 'lib/proofs').glob('*.bend')], key=len, reverse=True)
 KINDS = dict(turn=1, wake=2, claim=3, finish=4, forward_begin=5, forward_end=6,
              operation_begin=7, operation_end=8, dispatch=9, dispatch_span=10,
-             block_copy=11, host_grow=12, windowed_entry=13)
+             block_copy=11, host_grow=12, region_begin=14, region_end=15,
+             queued_task=16, step_begin=18)
 EVENT = np.dtype([('t0', '<u8'), ('t1', '<u8'), ('kind', '<u4'), ('worker', '<u4'),
                   ('sample', '<u4'), ('operation', '<u4'), ('phase', '<u4'), ('fid', '<u4'), ('value', '<u8')])
 
@@ -36,6 +38,7 @@ typedef struct { uint64_t t0,t1; uint32_t kind,worker,sample,operation,phase,fid
 _Static_assert(sizeof(TraceEvent)==48,"unexpected timeline event layout");
 static TraceEvent trace_events[@CAP@];
 static uint32_t trace_count,trace_active,trace_sample,trace_operation=UINT32_MAX,trace_next_sample;
+static uint32_t trace_region_id,trace_next_region;
 static _Thread_local uint32_t trace_worker=UINT32_MAX,trace_fid,trace_phase_id;
 static _Thread_local uint64_t trace_phase_start;
 static uint64_t trace_now(void) {
@@ -53,6 +56,13 @@ static void trace_add(unsigned kind,uint64_t t0,uint64_t t1,unsigned phase,unsig
 }
 static void trace_point(unsigned kind,uint64_t value) {
   uint64_t t=trace_now();trace_add(kind,t,t,trace_phase_id,trace_fid,value);
+}
+static void trace_region_begin(void) {
+  if(!__atomic_load_n(&trace_active,__ATOMIC_ACQUIRE))return;
+  trace_region_id=++trace_next_region;trace_point(14,trace_region_id);
+}
+static void trace_region_end(void) {
+  trace_point(15,trace_region_id);trace_region_id=0;
 }
 static void trace_flush(void) {
   if(trace_phase_id)trace_add(10,trace_phase_start,trace_now(),trace_phase_id,trace_fid,0);
@@ -97,62 +107,22 @@ __attribute__((destructor)) static void trace_dump(void) {
 
 
 def phase_of(name):
-    if re.search(r'_KERNEL_BAND_PIPELINE_EXECUTE(?:_|$)', name):
-        return 'band_execute'
-    if re.search(r'_KERNEL_BAND_PIPELINE_(?:RUN|WINDOWED)(?:_|$)', name):
-        return 'band_run'
-    if re.search(r'_TENSOR_BAND_WINDOW_(?:PREPARE|EXTRACT)(?:_|$)', name):
-        return 'halo_prepare'
-    if re.search(r'_TENSOR_BAND_WINDOW_ASSEMBL(?:E|ED)(?:_|$)', name):
-        return 'halo_assemble'
-    if re.search(r'_TENSOR_BAND_GATHER(?:_|$)', name):
-        return 'band_gather'
-    if re.search(r'_TRAVERSAL_PARTITION_RUN(?:_|$)', name):
-        return 'partition_run'
-    if re.search(r'_KERNEL_PIPELINE_FINISH(?:_|$)', name):
-        return 'pipeline_finish'
-    if re.search(r'_(?:TENSOR_BAND_RANGE|STORAGE_COPY_RANGE)(?:_|$)', name):
-        return 'range_copy'
-    if re.search(r'_KERNEL_PIPELINE_(?:RUN|RUN_PACKED)(?:_|$)', name):
-        return 'pipeline_run'
+    """The library module that defines a dispatched entry, else 'unclassified'."""
+    stem = name.removeprefix('FID_').lstrip('_')
+    if stem.startswith('lib_'):
+        stem = stem[len('lib_'):]
+        for module in MODULES:
+            if stem.startswith(module + '_'):
+                return module
     return 'unclassified'
 
 
-def block_end(source, start):
-    """Balanced literal C block; macros themselves are never expanded."""
-    depth, index, quote = 0, start, None
-    while index < len(source):
-        char = source[index]
-        if quote:
-            if char == '\\':
-                index += 2
-                continue
-            if char == quote:
-                quote = None
-        elif source.startswith('//', index):
-            index = source.find('\n', index)
-            if index < 0:
-                break
-            continue
-        elif source.startswith('/*', index):
-            ending = source.find('*/', index + 2)
-            if ending < 0:
-                raise ValueError('Unclosed C comment')
-            index = ending + 2
-            continue
-        elif char in ('"', "'"):
-            quote = char
-        elif char == '{':
-            depth += 1
-        elif char == '}':
-            depth -= 1
-            if depth == 0:
-                return index + 1
-        index += 1
-    raise ValueError('Unclosed C block')
+def instrument(source, capacity, *, external_boundaries=False):
+    """Trace runtime work; external callers supply forward/operation hooks.
 
-
-def instrument(source, capacity):
+    Region and turn intervals can cross public operation boundaries. Attribute
+    their overlap by timestamps, rather than the operation active at their end.
+    """
     anchors = []
 
     def replace(needle, replacement, label):
@@ -164,7 +134,7 @@ def instrument(source, capacity):
     declarations = dict((name, int(value)) for name, value in declaration_items)
     if len(declarations) != len(declaration_items):
         raise ValueError('Repeated emitted FID declaration')
-    case_pattern = re.compile(r'\bWL_CASE\((FID_\w+)\)\s*\{')
+    case_pattern = re.compile(r'\bWL_CASE\((FID_\w+)\)\s*\{?')
     cases = list(case_pattern.finditer(source))
     identifiers = [case.group(1) for case in cases]
     if len(set(identifiers)) != len(identifiers) or not cases:
@@ -174,44 +144,17 @@ def instrument(source, capacity):
     catalog = [dict(name=name, fid=declarations[name], phase=phase_of(name)) for name in identifiers]
     if len({item['fid'] for item in catalog}) != len(catalog):
         raise ValueError('Different WL_CASE identifiers share a numeric declaration')
-    phase_cases = ' '.join(f'case {item["fid"]}:return {PHASES.index(item["phase"])};' for item in catalog if item['phase'] != 'unclassified')
+    # phase 0 is 'unclassified', then every library module with an emitted entry
+    phases = ['unclassified'] + sorted({item['phase'] for item in catalog} - {'unclassified'})
+    phase_cases = ' '.join(f'case {item["fid"]}:return {phases.index(item["phase"])};' for item in catalog if item['phase'] != 'unclassified')
     # All host WL entries set the current dispatch identity. Spans stop on a
     # change of phase or work_loop return. Synchronous inline C work belongs to
     # its current segment; this is not semantic-function exclusive time.
-    insertions = [(case.end(), '\n#if !DEVICE\n    trace_dispatch(' + case.group(1) + ');\n#endif\n') for case in cases]
-    windowed = [item for item in catalog if re.search(r'_KERNEL_BAND_PIPELINE_WINDOWED(?:_\d+)?$', item['name'])]
-    inline = []
-    if windowed:
-        names = {item['name'] for item in windowed}
-        insertions.extend((case.end(), '\n#if !DEVICE\n    trace_point(13,0);\n#endif\n')
-                          for case in cases if case.group(1) in names)
-    else:
-        for index, case in enumerate(cases):
-            if not re.search(r'_KERNEL_BAND_PIPELINE_RUN(?:_\d+)?$', case.group(1)):
-                continue
-            # WL_OPEN contributes a macro brace. Use the next emitted WL_CASE
-            # as the outer slice boundary and literal balancing for each guard.
-            if index + 1 == len(cases):
-                raise ValueError('Band run case lacks a following emitted case boundary')
-            body = source[case.end():cases[index + 1].start()]
-            rows = list(re.finditer(r'if\s*\(\s*term_aux\(\s*\w+\s*\)\s*==\s*CID_\w+TENSOR_BAND_ROWS\s*\)\s*\{', body))
-            # The marker is optional: a run that splits its Rows cases has no single guard to mark.
-            if len(rows) != 1 or len(re.findall(r'\bWL_OPEN\b', body)) != 1:
-                continue
-            leaves = list(re.finditer(r'if\s*\(\s*term_aux\(\s*\w+\s*\)\s*==\s*CID_\w+TRAVERSAL_PARTITION_LEAF\s*\)\s*\{', body))
-            if len(leaves) != 2:
-                raise ValueError('Inlined windowed requires exactly the core and halo Leaf guards')
-            row_end = block_end(body, rows[0].end() - 1)
-            core_end = block_end(body, leaves[0].end() - 1)
-            halo_end = block_end(body, leaves[1].end() - 1)
-            if not rows[0].end() <= leaves[0].start() < leaves[1].start() < halo_end <= core_end <= row_end:
-                raise ValueError('Windowed guards are not nested Rows/core Leaf/halo Leaf')
-            position = case.end() + leaves[1].end()
-            insertions.append((position, '\n#if !DEVICE\n          trace_point(13,0);\n#endif\n'))
-            inline.append(dict(name=case.group(1), core_halo_leaf_guards=2, rows_guards=1,
-                               marker='inside nested halo Leaf guard of Rows/core Leaf branch'))
-    for position, insertion in sorted(insertions, reverse=True):
-        source = source[:position] + insertion + source[position:]
+    pieces, last = [], 0
+    for case in cases:
+        pieces += [source[last:case.end()], '\n#if !DEVICE\n    trace_dispatch(' + case.group(1) + ');\n#endif\n']
+        last = case.end()
+    source = ''.join(pieces) + source[last:]
     header = HEADER.replace('@CAP@', str(capacity)).replace('@PHASE_CASES@', phase_cases)
     replace('// Types\n// =====', header + '\n// Types\n// =====', 'host trace declarations')
     replace('Term r = work_loop(e, stk, t, seq);', 'Term r = work_loop(e, stk, t, seq);\n#if !DEVICE\n    trace_flush();\n#endif', 'work_loop return flush')
@@ -233,14 +176,24 @@ def instrument(source, capacity):
             'POOL_WAIT(a32_load_acq(&pool_done) != 0, pool_join)\n  trace_add(1,trace_turn_start,trace_now(),0,trace_fid,grow);\n}', 'pool turn end')
     replace('u32 cur = row_grow((Env){ H, ALC[0] }, io_stk, 0, CUBE_G, want, f);',
             'uint64_t trace_host_start=trace_now();u32 cur=row_grow((Env){H,ALC[0]},io_stk,0,CUBE_G,want,f);trace_add(12,trace_host_start,trace_now(),0,trace_fid,0);', 'host frontier growth')
+    replace('static void cube_run(u64* H, bool gpu) {',
+            'static void cube_run(u64* H, bool gpu) { trace_region_begin();', 'runtime region begin')
+    replace('  a32_store(a32_at(H, H_CURSOR), 0);\n}',
+            '  a32_store(a32_at(H, H_CURSOR), 0);\n  trace_region_end();\n}', 'runtime region end')
+    replace('    Term r = work_loop(e, stk, t, seq);',
+            '    uint64_t trace_task_start=trace_now();unsigned trace_task_fid=(unsigned)term_aux(t);\n'
+            '    Term r = work_loop(e, stk, t, seq);\n'
+            '    trace_add(16,trace_task_start,trace_now(),0,trace_task_fid,stride!=0);',
+            'queued task execution; continuation entries are separate tasks')
     replace('OUTLINE Term blk_copy(Env e, Term a) {',
             'OUTLINE Term blk_copy(Env e,Term a){uint64_t trace_copy_start=trace_now();', 'block copy begin')
     replace('blk_fill(e, dst, blk_loc(e.mem, a), 1ull << cls, arr); return term_blk(arr, blk_cls(a), dst);',
             'blk_fill(e,dst,blk_loc(e.mem,a),1ull<<cls,arr);trace_add(11,trace_copy_start,trace_now(),trace_phase_id,trace_fid,(1ull<<cls)*8);return term_blk(arr,blk_cls(a),dst);', 'block copy end and actual size class')
-    replace('tensor_dump_seconds=0;tensor_started=io_tick();',
-            'tensor_dump_seconds=0;tensor_started=io_tick();trace_forward_begin();', 'forward begin')
-    replace('double elapsed=(io_tick()-tensor_started)/1e9;',
-            'trace_forward_end();double elapsed=(io_tick()-tensor_started)/1e9;', 'forward end')
+    if not external_boundaries:
+        replace('tensor_dump_seconds=0;tensor_started=io_tick();',
+                'tensor_dump_seconds=0;tensor_started=io_tick();trace_forward_begin();', 'forward begin')
+        replace('double elapsed=(io_tick()-tensor_started)/1e9;',
+                'trace_forward_end();double elapsed=(io_tick()-tensor_started)/1e9;', 'forward end')
     begin = 'Term tensor_operation_begin_run(Env environment,Term* arguments,IoWork* work){'
     end = 'Term tensor_operation_end_run(Env environment,Term* arguments,IoWork* work){'
     begin_emitted = 'tensor_operation_begin_run' in source
@@ -248,30 +201,30 @@ def instrument(source, capacity):
     if begin_emitted != end_emitted:
         raise ValueError('Operation effects must emit both begin and end')
     emitted_effects = begin_emitted and end_emitted
-    explicit = emitted_effects
-    if explicit:
+    explicit = emitted_effects and not external_boundaries
+    if external_boundaries:
+        protocol = 'caller supplies trace_forward_begin/end and trace_operation_begin/end at actual computation boundaries'
+    elif explicit:
         replace(begin, begin + 'trace_operation_begin();', 'explicit operation begin')
         replace(end, end + 'trace_operation_end();', 'explicit operation end')
         protocol = 'explicit begin/end includes operand acquisition and computation; snapshot gather and state-save IO excluded'
     else:
         replace('static Term tensor_save_run(Env environment,Term* arguments,IoWork* work){',
                 'static Term tensor_save_run(Env environment,Term* arguments,IoWork* work){trace_operation_end();', 'save boundary end')
-        replace('free(label);return term_pak(CID_UNIT,0);',
-                'free(label);trace_operation_begin();return term_pak(CID_UNIT,0);', 'save boundary begin')
+        replace('free(label);return term_pak(CID_Unit,0);',
+                'free(label);trace_operation_begin();return term_pak(CID_Unit,0);', 'save boundary begin')
         replace('tensor_started=io_tick();trace_forward_begin();',
                 'tensor_started=io_tick();trace_forward_begin();trace_operation_begin();', 'first operation')
         protocol = 'unmarked operation from previous save return to current save entry; expect_storage transfers its owner; state-save IO excluded'
-    availability = {phase: [item['name'] for item in catalog if item['phase'] == phase] for phase in PHASES[1:]}
+    availability = {phase: [item['name'] for item in catalog if item['phase'] == phase] for phase in phases[1:]}
     return source, dict(anchors=anchors, case_count=len(cases), declaration_count=len(declarations),
-                        case_identifiers=catalog, phases=availability,
-                        windowed=dict(emitted=[item['name'] for item in windowed], inlined=inline,
-                                      absent=not windowed and not inline, inclusive_ns=None),
+                        case_identifiers=catalog, phase_names=phases, phases=availability,
                         operation_effects_emitted=emitted_effects,
-                        operation_boundaries='explicit' if explicit else 'save_boundaries',
-                        mode='explicit_effects' if explicit else 'save_pause_resume',
+                        operation_boundaries='external' if external_boundaries else ('explicit' if explicit else 'save_boundaries'),
+                        mode='external_hooks' if external_boundaries else ('explicit_effects' if explicit else 'save_pause_resume'),
                         public_begin_effect_emitted=begin_emitted,
                         public_end_effect_emitted=end_emitted,
-                        semantic_scope='operand_acquisition_and_computation; snapshot_gather_and_state_save_io_excluded',
+                        semantic_scope='caller_defined' if external_boundaries else 'operand_acquisition_and_computation; snapshot_gather_and_state_save_io_excluded',
                         operation_protocol=protocol)
 
 
@@ -333,10 +286,10 @@ def analyze(path, graph, threads, instrumentation):
                                           calls=len(group), bytes=sum(int(event['value']) for event in group),
                                           ms=sum(int(event['t1']) - int(event['t0']) for event in group) / 1e6))
             phases = {}
-            for phase_id, phase in enumerate(PHASES[1:], 1):
+            for phase_id, phase in enumerate(instrumentation['phase_names'][1:], 1):
                 spans = mine[(mine['kind'] == KINDS['dispatch_span']) & (mine['phase'] == phase_id)]
                 entries = mine[(mine['kind'] == KINDS['dispatch']) & (mine['phase'] == phase_id)]
-                phases[phase] = dict(present_in_source=bool(instrumentation['phases'][phase]), entries=len(entries),
+                phases[phase] = dict(entries=len(entries),
                                      dispatch_segment_ms=sum(int(event['t1']) - int(event['t0']) for event in spans) / 1e6 if len(spans) else None,
                                      inclusive_ms=None)
             wake_envelope = 0
@@ -355,37 +308,32 @@ def analyze(path, graph, threads, instrumentation):
                              grow_partial_claim_ms=partial / 1e6, wake_envelope_ms=wake_envelope / 1e6,
                              worker_claim_ms=busy, block_copy_calls=len(clones), block_copy_bytes=sum(int(e['value']) for e in clones),
                              block_copy_ms=sum(int(e['t1']) - int(e['t0']) for e in clones) / 1e6,
-                             block_copy_by_last_dispatch=copy_dispatch,
-                             windowed_entries=int((mine['kind'] == KINDS['windowed_entry']).sum())
-                                 if not instrumentation['windowed']['absent'] else None, phases=phases))
+                             block_copy_by_last_dispatch=copy_dispatch, phases=phases))
         samples.append(dict(sample=repetition, forward_ms=(int(endings[repetition]['t0']) - int(beginnings[repetition]['t0'])) / 1e6, operations=rows))
     measured = samples[2:]
     categories = {}
-    fields = ('ms', 'grow_ms', 'work_ms', 'host_grow_ms', 'grow_partial_claim_ms', 'wake_envelope_ms', 'block_copy_ms', 'block_copy_calls', 'block_copy_bytes', 'windowed_entries')
+    fields = ('ms', 'grow_ms', 'work_ms', 'host_grow_ms', 'grow_partial_claim_ms', 'wake_envelope_ms', 'block_copy_ms', 'block_copy_calls', 'block_copy_bytes')
     for kind in sorted({operation['kind'] for operation in graph['ops']}):
         selected = [[row for row in sample['operations'] if row['kind'] == kind] for sample in measured]
         categories[kind] = {field: statistics.median(sum(row[field] for row in rows) for rows in selected)
                             if all(row[field] is not None for rows in selected for row in rows) else None for field in fields}
         categories[kind]['phases'] = {}
-        for phase in PHASES[1:]:
+        for phase in instrumentation['phase_names'][1:]:
             values = [sum(row['phases'][phase]['dispatch_segment_ms'] or 0 for row in rows)
                       if any(row['phases'][phase]['dispatch_segment_ms'] is not None for row in rows) else None for rows in selected]
             categories[kind]['phases'][phase] = dict(
-                present_in_source=bool(instrumentation['phases'][phase]),
                 dispatch_segment_median_ms=statistics.median(values) if all(value is not None for value in values) else None,
                 entries_median=statistics.median(sum(row['phases'][phase]['entries'] for row in rows) for rows in selected),
                 inclusive_ms=None)
     return dict(protocol='same process: 2 warmups and 7 samples', samples=samples, categories=categories,
                 forward_median_ms=statistics.median(sample['forward_ms'] for sample in measured),
-                unavailable=dict(root_construction_ms=None, semantic_leaf_ms=None, halo_assembly_inclusive_ms=None,
-                                 parameter_owner_clone_ms=None, leaf_count=None),
                 interpretation='Diagnostic timings include trace overhead. Claims describe ring occupancy, not CPU residency. '
-                               'Wake envelopes overlap grow/work. Dispatch segments include synchronous inline C until the next family transition or work_loop return; '
+                               'Wake envelopes overlap grow/work. A phase is the library module of the dispatched entry. '
+                               'Dispatch segments include synchronous inline C until the next module transition or work_loop return; '
                                'they are not semantic self time or inclusive semantic calls. '
                                'Block copies and dispatch/claim intervals overlap; do not add them. '
-                               'Block-copy attribution uses the last real dispatch identifier, not an inferred parameter owner. '
-                               'Root construction, semantic leaf time/count, and inclusive halo/parameter-owner durations have no complete anchors. '
-                               'Absent/inlined phases and unavailable inclusive durations are null, not zero. Snapshot IO follows the recorded operation protocol.')
+                               'Block-copy attribution uses the last real dispatch identifier, not an inferred owner. '
+                               'Phases without entries in an operation and unavailable inclusive durations are null, not zero. Snapshot IO follows the recorded operation protocol.')
 
 
 def main():
@@ -441,7 +389,7 @@ def main():
         else:
             environment.pop('BEND_TRACE_FILE', None)
         with (folder / 'stdout.log').open('w', newline='\n') as stdout:
-            subprocess.run([str(binaries[name]), '--threads', str(args.threads), '--gpu', 'off'], cwd=ROOT,
+            subprocess.run([str(binaries[name]), '+RTS', '--threads', str(args.threads), '--gpu', 'off', '-RTS'], cwd=ROOT,
                            env=environment, check=True, stdout=stdout)
 
     normal, validated = output / 'validation_normal', output / 'validation_diagnostic'

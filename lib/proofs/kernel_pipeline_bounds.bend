@@ -17,6 +17,10 @@ import ./nat_division_order.bend as DivisionOrder
 import ./row_major_index.bend as RowMajor
 import ./natural_addition.bend as Addition
 import ./nat_ceiling.bend as Ceiling
+import ./checked_word_refinement.bend as Checked
+import ../math_checked_word.bend as CheckedWord
+import ./u32_shift.bend as Shift
+import ./word_multiplication.bend as WordMultiplication
 
 def groups(target: U32,inner: U32) -> Nat:
   Nat.max(1n,U32.to_nat((target / inner : U32)))
@@ -49,7 +53,7 @@ def span_exact(+target: U32,+target_positive: {Nat.is_lt(0n,U32.to_nat(target)) 
   {U32.to_nat((8 * U32.max(1,(target / inner : U32)) : U32)) == Nat.mul(groups(target,inner),8n) : Nat}:
   %RowMajor.multiply_commutative(8n,groups(target,inner)) : {U32.to_nat((8 * U32.max(1,(target / inner : U32)) : U32)) == _ : Nat}
   %groups_exact(target,inner) : {U32.to_nat((8 * U32.max(1,(target / inner : U32)) : U32)) == Nat.mul(8n,_) : Nat}
-  Arithmetic.multiply(8,U32.max(1,(target / inner : U32)),upper,upper_ok,
+  WordMultiplication.bounded_multiply(8,U32.max(1,(target / inner : U32)),upper,upper_ok,
     %Equal.sym(Nat,U32.to_nat(U32.max(1,(target / inner : U32))),groups(target,inner),groups_exact(target,inner)) : {Nat.is_le(Nat.mul(8n,_),U32.to_nat(upper)) == True{} : Bool}
     %Equal.sym(Nat,Nat.mul(8n,groups(target,inner)),Nat.mul(groups(target,inner),8n),RowMajor.multiply_commutative(8n,groups(target,inner))) : {Nat.is_le(_,U32.to_nat(upper)) == True{} : Bool}
     Order.transitive(Nat.mul(groups(target,inner),8n),Nat.mul(U32.to_nat(target),8n),U32.to_nat(upper),span_room(target,target_positive,limits,inner,bound,positive),span_fit))
@@ -195,7 +199,6 @@ def clipped_contains(+start: Nat,+end: Nat,+span: Nat,+point: Nat,
 def ceiling_eight(+count: Nat) -> Nat:
   Encoded.ceiling_eight(count)
 
-
 def workspace_product(+target: U32,+inner: U32,+positions: U32) -> Nat:
   Nat.mul(Nat.div(U32.to_nat(Pipeline.workspace_prefix(target,inner,positions)),8n),U32.to_nat(inner))
 
@@ -225,7 +228,7 @@ def workspace_count_exact(+target: U32,+inner: U32,+positions: U32,+upper: U32,+
   +prefix = Pipeline.workspace_prefix(target,inner,positions)
   +quotient_exact = U32Division.divide(prefix,8,2147483648,{==},{==},{==})
   %quotient_exact : {U32.to_nat(Pipeline.workspace_tiles(target,inner,positions)) == Nat.mul(_,U32.to_nat(inner)) : Nat}
-  Arithmetic.multiply((prefix / 8 : U32),inner,upper,upper_ok,
+  WordMultiplication.bounded_multiply((prefix / 8 : U32),inner,upper,upper_ok,
     %Equal.sym(Nat,U32.to_nat((prefix / 8 : U32)),Nat.div(U32.to_nat(prefix),8n),quotient_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(inner)),U32.to_nat(upper)) == True{} : Bool}
     Order.transitive(workspace_product(target,inner,positions),U32.to_nat(U32.max(target,inner)),U32.to_nat(upper),workspace_product_room(target,inner,positions,full_exact,old_room),max_room))
 
@@ -239,59 +242,6 @@ def workspace_count_room(+target: U32,+inner: U32,+positions: U32,+upper: U32,+e
 def current(+start: U32,+padded: U32,+span: U32) -> U32:
   U32.min(span,(padded - start : U32))
 
-type StepBounds<-origin: U32,-positions: U32,-padded: U32,-span: U32,-cap: U32> is Data:
-  StepBounds{cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
-    pack_room: {Nat.is_le(Nat.add(U32.to_nat(origin),U32.to_nat(padded)),U32.to_nat(cap)) == True{} : Bool},
-    loop_room: {Nat.is_le(Nat.add(U32.to_nat(padded),U32.to_nat(span)),U32.to_nat(cap)) == True{} : Bool},
-    padded_end: {Nat.is_le(U32.to_nat(padded),Nat.add(U32.to_nat(positions),7n)) == True{} : Bool},
-    span_positive: {Nat.is_lt(0n,U32.to_nat(span)) == True{} : Bool},
-    padded_aligned: Partition.BlockAligned<padded>,span_aligned: Partition.BlockAligned<span>}
-
-type Step<-origin: U32,-positions: U32,-start: U32,-padded: U32,-span: U32,-cap: U32> is Data:
-  Step{pack_exact: {U32.to_nat((origin + start : U32)) == Nat.add(U32.to_nat(origin),U32.to_nat(start)) : Nat},
-    advance: {U32.to_nat((start + span : U32)) == Nat.add(U32.to_nat(start),U32.to_nat(span)) : Nat},
-    clipped: {U32.to_nat(current(start,padded,span)) == Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))) : Nat},
-    positive: {Nat.is_lt(0n,U32.to_nat(current(start,padded,span))) == True{} : Bool},
-    clipped_bound: {Nat.is_le(U32.to_nat(current(start,padded,span)),U32.to_nat(padded)) == True{} : Bool},
-    end_room: {Nat.is_le(Nat.add(U32.to_nat(start),U32.to_nat(current(start,padded,span))),Nat.add(U32.to_nat(positions),7n)) == True{} : Bool},
-    position_room: {Nat.is_le(Nat.add(U32.to_nat(start),U32.to_nat(current(start,padded,span))),U32.to_nat(padded)) == True{} : Bool},
-    origin_room: {Nat.is_le(Nat.add(U32.to_nat((origin + start : U32)),U32.to_nat(current(start,padded,span))),U32.to_nat(cap)) == True{} : Bool},
-    aligned: Partition.BlockAligned<current(start,padded,span)>,next_aligned: Partition.BlockAligned<(start + span : U32)>}
-
-def step_geometry(+origin: U32,+positions: U32,+start: U32,+padded: U32,+span: U32,+cap: U32,
-  +bounds: StepBounds<origin,positions,padded,span,cap>,
-  +inside: {Nat.is_lt(U32.to_nat(start),U32.to_nat(padded)) == True{} : Bool},+aligned: Partition.BlockAligned<start>) -> Step<origin,positions,start,padded,span,cap>:
-  StepBounds{+cap_ok,+pack_room,+loop_room,+padded_end,+span_positive,+padded_aligned,+span_aligned} = bounds
-  +ordered = Bounds.strict_le(U32.to_nat(start),U32.to_nat(padded),inside)
-  +padded_room = Order.transitive(U32.to_nat(padded),Nat.add(U32.to_nat(padded),U32.to_nat(span)),U32.to_nat(cap),Order.le_add(U32.to_nat(padded),U32.to_nat(span)),loop_room)
-  +difference = Arithmetic.subtract(padded,start,cap,cap_ok,ordered,Order.transitive(Nat.sub(U32.to_nat(padded),U32.to_nat(start)),U32.to_nat(padded),U32.to_nat(cap),Order.sub_le(U32.to_nat(padded),U32.to_nat(start)),padded_room))
-  +advance = Arithmetic.add(start,span,cap,cap_ok,Order.transitive(Nat.add(U32.to_nat(start),U32.to_nat(span)),Nat.add(U32.to_nat(padded),U32.to_nat(span)),U32.to_nat(cap),Order.add_le(U32.to_nat(start),U32.to_nat(padded),U32.to_nat(span),ordered),loop_room))
-  +clipped = clipped_exact(start,padded,span,difference)
-  +pack_exact = Arithmetic.add(origin,start,cap,cap_ok,Order.transitive(Nat.add(U32.to_nat(origin),U32.to_nat(start)),Nat.add(U32.to_nat(origin),U32.to_nat(padded)),U32.to_nat(cap),Order.offset_le(U32.to_nat(origin),U32.to_nat(start),U32.to_nat(padded),ordered),pack_room))
-  +position_room = {
-    %Equal.sym(Nat,U32.to_nat(current(start,padded,span)),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),clipped) : {Nat.is_le(Nat.add(U32.to_nat(start),_),U32.to_nat(padded)) == True{} : Bool}
-    clipped_end(U32.to_nat(start),U32.to_nat(padded),U32.to_nat(span),ordered) : {Nat.is_le(Nat.add(U32.to_nat(start),U32.to_nat(current(start,padded,span))),U32.to_nat(padded)) == True{} : Bool}}
-  Step{pack_exact,advance,clipped,
-    %Equal.sym(Nat,U32.to_nat(current(start,padded,span)),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),clipped) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Extrema.minimum_strict_lower(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start)),0n,span_positive,Order.positive_difference(U32.to_nat(padded),U32.to_nat(start),inside)),
-    %Equal.sym(Nat,U32.to_nat(current(start,padded,span)),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),clipped) : {Nat.is_le(_,U32.to_nat(padded)) == True{} : Bool}
-    clipped_bound(U32.to_nat(start),U32.to_nat(padded),U32.to_nat(span)),
-    Order.transitive(Nat.add(U32.to_nat(start),U32.to_nat(current(start,padded,span))),U32.to_nat(padded),Nat.add(U32.to_nat(positions),7n),position_room,padded_end),position_room,
-    %Equal.sym(Nat,U32.to_nat((origin + start : U32)),Nat.add(U32.to_nat(origin),U32.to_nat(start)),pack_exact) : {Nat.is_le(Nat.add(_,U32.to_nat(current(start,padded,span))),U32.to_nat(cap)) == True{} : Bool}
-    %Equal.sym(Nat,Nat.add(Nat.add(U32.to_nat(origin),U32.to_nat(start)),U32.to_nat(current(start,padded,span))),Nat.add(U32.to_nat(origin),Nat.add(U32.to_nat(start),U32.to_nat(current(start,padded,span)))),Addition.associative(U32.to_nat(origin),U32.to_nat(start),U32.to_nat(current(start,padded,span)))) : {Nat.is_le(_,U32.to_nat(cap)) == True{} : Bool}
-    Order.transitive(Nat.add(U32.to_nat(origin),Nat.add(U32.to_nat(start),U32.to_nat(current(start,padded,span)))),Nat.add(U32.to_nat(origin),U32.to_nat(padded)),U32.to_nat(cap),Order.offset_le(U32.to_nat(origin),Nat.add(U32.to_nat(start),U32.to_nat(current(start,padded,span))),U32.to_nat(padded),position_room),pack_room),
-    minimum_aligned(span,(padded - start : U32),span_aligned,difference_aligned(padded,start,difference,padded_aligned,aligned)),sum_aligned(start,span,advance,aligned,span_aligned)}
-
-def step_schedule(+origin: U32,+positions: U32,+rest: Nat,+start: U32,+padded: U32,+span: U32,+cap: U32,
-  step: Step<origin,positions,start,padded,span,cap>,schedule: Schedule<1n+rest,U32.to_nat(start),U32.to_nat(padded),U32.to_nat(span)>) -> Schedule<rest,U32.to_nat((start + span : U32)),U32.to_nat(padded),U32.to_nat(span)>:
-  Step{pack_exact,+advance,clipped,positive,clipped_bound,end_room,position_room,origin_room,aligned,next_aligned} = step
-  %Equal.sym(Nat,U32.to_nat((start + span : U32)),Nat.add(U32.to_nat(start),U32.to_nat(span)),advance) : Schedule<rest,_,U32.to_nat(padded),U32.to_nat(span)>
-  schedule_advanced(rest,U32.to_nat(start),U32.to_nat(padded),U32.to_nat(span),schedule)
-
-def step_alignment(+origin: U32,+positions: U32,+start: U32,+padded: U32,+span: U32,+cap: U32,step: Step<origin,positions,start,padded,span,cap>) -> Partition.BlockAligned<(start + span : U32)>:
-  Step{pack_exact,advance,clipped,positive,clipped_bound,end_room,position_room,origin_room,aligned,next_aligned} = step
-  next_aligned
-
 def current_prefix_bound(+positions: U32,+start: U32,+padded: U32,+span: U32,+padded_value: {padded == Window.padded(positions) : U32},
   clipped: {U32.to_nat(current(start,padded,span)) == Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))) : Nat}) -> {Nat.is_le(U32.to_nat(current(start,padded,span)),U32.to_nat(U32.min(span,Window.padded(positions)))) == True{} : Bool}:
   %Equal.sym(Nat,U32.to_nat(U32.min(span,Window.padded(positions))),Nat.min(U32.to_nat(span),U32.to_nat(Window.padded(positions))),U32Extrema.minimum(span,Window.padded(positions))) : {Nat.is_le(U32.to_nat(current(start,padded,span)),_) == True{} : Bool}
@@ -299,3 +249,38 @@ def current_prefix_bound(+positions: U32,+start: U32,+padded: U32,+span: U32,+pa
   %padded_value : {Nat.is_le(Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),Nat.min(U32.to_nat(span),U32.to_nat(_))) == True{} : Bool}
   Extrema.minimum_lower(U32.to_nat(span),U32.to_nat(padded),Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),Extrema.minimum_left(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),
     Order.transitive(Nat.min(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),Nat.sub(U32.to_nat(padded),U32.to_nat(start)),U32.to_nat(padded),Extrema.minimum_right(U32.to_nat(span),Nat.sub(U32.to_nat(padded),U32.to_nat(start))),Order.sub_le(U32.to_nat(padded),U32.to_nat(start))))
+
+# ---- The fixed caps of a blocked leaf ----
+
+# These are internal arithmetic parameters; public callers supply no new guards.
+type Configuration<-limits: Machine.Limits,-target: U32,-allocation_cap: U32,-loop_cap: U32> is Data:
+  Configuration{target_positive: {Nat.is_lt(0n,U32.to_nat(target)) == True{} : Bool},
+    target_room: {U32.is_le(target,allocation_cap) == True{} : Bool},
+    target_span_room: {Nat.is_le(Nat.mul(U32.to_nat(target),8n),U32.to_nat(allocation_cap)) == True{} : Bool},
+    allocation_fits: {U32.is_le(allocation_cap,2147483648) == True{} : Bool},allocation_bound: {U32.is_le(allocation_cap,1073741824) == True{} : Bool},
+    capacity_room: {U32.is_le(Machine.capacity(limits),allocation_cap) == True{} : Bool},
+    loop_fits: {U32.is_le(loop_cap,2147483648) == True{} : Bool},doubled: {U32.to_nat(loop_cap) == Nat.double(U32.to_nat(allocation_cap)) : Nat}}
+
+def sum_room(+left: Nat,+right: Nat,+allocation_cap: U32,+loop_cap: U32,+left_room: {Nat.is_le(left,U32.to_nat(allocation_cap)) == True{} : Bool},
+  +right_room: {Nat.is_le(right,U32.to_nat(allocation_cap)) == True{} : Bool},+doubled: {U32.to_nat(loop_cap) == Nat.double(U32.to_nat(allocation_cap)) : Nat}) ->
+  {Nat.is_le(Nat.add(left,right),U32.to_nat(loop_cap)) == True{} : Bool}:
+  %Equal.sym(Nat,U32.to_nat(loop_cap),Nat.double(U32.to_nat(allocation_cap)),doubled) : {Nat.is_le(Nat.add(left,right),_) == True{} : Bool}
+  %Addition.double(U32.to_nat(allocation_cap)) : {Nat.is_le(Nat.add(left,right),_) == True{} : Bool}
+  Encoded.sum_bounds(left,right,U32.to_nat(allocation_cap),U32.to_nat(allocation_cap),left_room,right_room)
+
+def eight_product(+target: U32,+product: U32,accepted: {CheckedWord.multiply(target,8) == Some{product} : Maybe<&2,U32>}) ->
+  {Nat.mul(U32.to_nat(target),8n) == U32.to_nat(product) : Nat}:
+  Checked.multiply_sound(target,8,product,accepted)
+
+def eight_room(+target: U32,+product: U32,+cap: U32,+accepted: {CheckedWord.multiply(target,8) == Some{product} : Maybe<&2,U32>},room: {U32.is_le(product,cap) == True{} : Bool}) ->
+  {Nat.is_le(Nat.mul(U32.to_nat(target),8n),U32.to_nat(cap)) == True{} : Bool}:
+  %Equal.sym(Nat,Nat.mul(U32.to_nat(target),8n),U32.to_nat(product),eight_product(target,product,accepted)) : {Nat.is_le(_,U32.to_nat(cap)) == True{} : Bool}
+  Bounds.as_nat_le(product,cap,room)
+
+def doubled_cap(+small: U32,+large: U32,+exact: {U32.shl(small) == large : U32},bounded: {U32.is_lt(small,2147483648) == True{} : Bool}) ->
+  {U32.to_nat(large) == Nat.double(U32.to_nat(small)) : Nat}:
+  %exact : {U32.to_nat(_) == Nat.double(U32.to_nat(small)) : Nat}
+  Shift.double(small,bounded)
+
+def configuration(+limits: Machine.Limits) -> Configuration<limits,8192,1073741824,2147483648>:
+  Configuration{{==},{==},eight_room(8192,65536,1073741824,{==},{==}),{==},{==},Limits.capacity_allocatable(limits),{==},doubled_cap(1073741824,2147483648,{==},{==})}

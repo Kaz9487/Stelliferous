@@ -14,15 +14,15 @@ import ./u32_shift.bend as Shift
 import ./u32_division.bend as NativeDivision
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./word_encoding.bend as WordEncoding
-import ./input_gradient_phase_weights.bend as Weights
 import ./nat_division.bend as Division
 import ./nat_division_order.bend as DivisionOrder
 import ./encoded_coordinates.bend as Encoded
 import ./word_arithmetic.bend as WordArithmetic
-import ../kernel_pipeline.bend as Pipeline
 import ../kernel_spatial_packing.bend as Spatial
 import ./kernel_packing_window_coordinates.bend as Coordinates
+import ../tensor_tiled.bend as Tiled
 import ./u32_comparison.bend as Comparison
+import ./word_multiplication.bend as WordMultiplication
 
 def doubled_dimension(+limits: Machine.Limits) ->
   {Nat.is_le(Nat.double(U32.to_nat(Machine.dimension(limits))),U32.to_nat(Machine.coordinate(limits))) == True{} : Bool}:
@@ -242,46 +242,6 @@ def column_facts(+call: Domain.Call,+first: U32,+position: U32,+offset: Nat,
     width_coordinate_room(call),kernel_coordinate_room(call),stride_double_room(call),
     padded_width_room(call),Domain.column_source_room(call),Domain.stride_positive(call),first_inside,position_inside,offset_inside)
 
-def input_base_exact(+geometry: Kernel.Geometry,+y: U32,+x: U32,+image: U32) ->
-  {Packing.input_base(Kernel.phase(geometry,y,x),image) == U32.from_nat(Nat.mul(U32.to_nat(image),Domain.gradient_size(geometry))) : U32}:
-  Kernel.Geometry{c,+o,h,w,k,s,p,+gh,+gw} = geometry
-  %RowMajor.assoc(U32.to_nat(image),U32.to_nat(o),Nat.mul(U32.to_nat(gh),U32.to_nat(gw))) :
-    {Packing.input_base(Kernel.phase(geometry,y,x),image) == U32.from_nat(_) : U32}
-  %RowMajor.assoc(Nat.mul(U32.to_nat(image),U32.to_nat(o)),U32.to_nat(gh),U32.to_nat(gw)) :
-    {Packing.input_base(Kernel.phase(geometry,y,x),image) == U32.from_nat(_) : U32}
-  Encoded.product_four_encoded(image,o,gh,gw)
-
-def gradient_step_exact(+call: Domain.Call,+y: U32,+x: U32) ->
-  {U32.to_nat(Packing.gradient_step(Kernel.phase(Domain.geometry(call),y,x))) == Nat.mul(Domain.gradient_height(Domain.geometry(call)),Domain.gradient_width(Domain.geometry(call))) : Nat}:
-  Domain.Call{geometry,batch,limits,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
-  Arithmetic.multiply(gh,gw,Machine.capacity(limits),Limits.capacity_fits(limits),Domain.gradient_area_room(call))
-
-def gradient_base_exact(+call: Domain.Call,+y: U32,+x: U32,+image: U32,+output: Nat) ->
-  {(Packing.input_base(Kernel.phase(Domain.geometry(call),y,x),image) + U32.from_nat(Nat.mul(output,U32.to_nat(Packing.gradient_step(Kernel.phase(Domain.geometry(call),y,x))))) : U32) ==
-    U32.from_nat(Nat.add(Nat.mul(U32.to_nat(image),Domain.gradient_size(Domain.geometry(call))),Nat.mul(output,Nat.mul(Domain.gradient_height(Domain.geometry(call)),Domain.gradient_width(Domain.geometry(call)))))) : U32}:
-  Domain.Call{geometry,batch,limits,facts} = call
-  %gradient_step_exact(call,y,x) :
-    {(Packing.input_base(Kernel.phase(geometry,y,x),image) + U32.from_nat(Nat.mul(output,U32.to_nat(Packing.gradient_step(Kernel.phase(geometry,y,x))))) : U32) == U32.from_nat(Nat.add(Nat.mul(U32.to_nat(image),Domain.gradient_size(geometry)),Nat.mul(output,_))) : U32}
-  %Equal.sym(U32,Packing.input_base(Kernel.phase(geometry,y,x),image),U32.from_nat(Nat.mul(U32.to_nat(image),Domain.gradient_size(geometry))),input_base_exact(geometry,y,x,image)) :
-    {(_ + U32.from_nat(Nat.mul(output,U32.to_nat(Packing.gradient_step(Kernel.phase(geometry,y,x))))) : U32) == U32.from_nat(Nat.add(Nat.mul(U32.to_nat(image),Domain.gradient_size(geometry)),Nat.mul(output,U32.to_nat(Packing.gradient_step(Kernel.phase(geometry,y,x)))))) : U32}
-  WordArithmetic.native_add(Nat.mul(U32.to_nat(image),Domain.gradient_size(geometry)),Nat.mul(output,U32.to_nat(Packing.gradient_step(Kernel.phase(geometry,y,x)))))
-
-def weight_step_exact(+call: Domain.Call,+y: U32,+x: U32) ->
-  {U32.to_nat(Weights.output_step(Kernel.phase(Domain.geometry(call),y,x))) == Nat.mul(Domain.channels(Domain.geometry(call)),Nat.mul(Domain.kernel(Domain.geometry(call)),Domain.kernel(Domain.geometry(call)))) : Nat}:
-  Domain.Call{geometry,batch,limits,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
-  %RowMajor.assoc(U32.to_nat(c),U32.to_nat(k),U32.to_nat(k)) :
-    {U32.to_nat(Weights.output_step(Kernel.phase(geometry,y,x))) == _ : Nat}
-  Encoded.multiply_three(c,k,k,Machine.capacity(limits),Limits.capacity_fits(limits),Domain.kernel_positive(call),
-    %Equal.sym(Nat,Nat.mul(Nat.mul(U32.to_nat(c),U32.to_nat(k)),U32.to_nat(k)),Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))),RowMajor.assoc(U32.to_nat(c),U32.to_nat(k),U32.to_nat(k))) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} Domain.kernel_words_room(call))
-
-def weight_square_exact(+call: Domain.Call,+y: U32,+x: U32) ->
-  {U32.to_nat((Weights.kernel(Kernel.phase(Domain.geometry(call),y,x)) * Weights.kernel(Kernel.phase(Domain.geometry(call),y,x)) : U32)) == Nat.mul(Domain.kernel(Domain.geometry(call)),Domain.kernel(Domain.geometry(call))) : Nat}:
-  Domain.Call{geometry,batch,limits,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
-  Arithmetic.multiply(k,k,Machine.capacity(limits),Limits.capacity_fits(limits),Domain.kernel_area_room(call))
-
 def lane_position_exact(+call: Domain.Call,+first: U32,+position: U32,+lane: Nat,
   +first_inside: {Nat.is_lt(U32.to_nat(first),Domain.width(Domain.geometry(call))) == True{} : Bool},
   +inside: {Nat.is_lt(Nat.add(U32.to_nat(position),lane),U32.to_nat(Geometry.axis_count(Packing.phase_x(Kernel.phase(Domain.geometry(call),0,first))))) == True{} : Bool}) ->
@@ -335,7 +295,7 @@ def column_lane_counter(+geometry: Kernel.Geometry,+y: U32,+x: U32,+position: U3
 
 def phase_stencil(context: Kernel.Phase) -> Spatial.Stencil:
   Kernel.Phase{Kernel.Geometry{c,o,h,w,k,s,p,gh,gw},Kernel.Axis{yf,yc,yt,yr,ys},Kernel.Axis{xf,xc,xt,xr,xs},inner} = context
-  Spatial.Stencil{0,gh,gw,yr,xr,1,ys,xs,xc,inner}
+  Spatial.Stencil{0,gh,gw,yr,xr,1,ys,xs,xc,inner,Tiled.groups(o)}
 
 def phase_inner_positive(+context: Kernel.Phase,active: {U32.is_eq(Kernel.phase_inner(context),0) == False{} : Bool}) ->
   {Nat.is_lt(0n,U32.to_nat(Kernel.phase_inner(context))) == True{} : Bool}:
@@ -381,7 +341,7 @@ def window_geometry(+call: Domain.Call,+y: U32,+x: U32,
   +area_bound = Order.transitive(area,Nat.mul(U32.to_nat(k),U32.to_nat(k)),U32.to_nat(capacity),
     Order.transitive(area,Nat.mul(U32.to_nat(k),columns),Nat.mul(U32.to_nat(k),U32.to_nat(k)),RowMajor.mul_le(rows,U32.to_nat(k),columns,row_bound),DivisionOrder.multiply_left_le(U32.to_nat(k),columns,U32.to_nat(k),column_bound)),Domain.kernel_area_room(call))
   +area_word = (row_word * column_word : U32)
-  +area_exact = Arithmetic.multiply(row_word,column_word,capacity,Limits.capacity_fits(limits),area_bound)
+  +area_exact = WordMultiplication.bounded_multiply(row_word,column_word,capacity,Limits.capacity_fits(limits),area_bound)
   +area_double = Limits.double_bound(limits,area,area_bound)
   +area_word_double = {%Equal.sym(Nat,U32.to_nat(area_word),area,area_exact) : {Nat.is_le(Nat.double(_),U32.to_nat(half)) == True{} : Bool} area_double : {Nat.is_le(Nat.double(U32.to_nat(area_word)),U32.to_nat(half)) == True{} : Bool}}
   +area_word_positive = {%Equal.sym(Nat,U32.to_nat(area_word),area,area_exact) : {Nat.is_lt(0n,_) == True{} : Bool} area_positive : {Nat.is_lt(0n,U32.to_nat(area_word)) == True{} : Bool}}

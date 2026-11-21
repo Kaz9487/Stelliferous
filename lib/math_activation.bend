@@ -10,6 +10,7 @@
 # accuracy is measured against MPFR rather than a global rounding guarantee.
 import Base
 import ./math_fp32.bend as Fp32
+import ./math_choice.bend as Choice
 
 # Custom is a caller-supplied function; only its operation count lives here.
 type Activation is Data:
@@ -23,19 +24,20 @@ type Activation is Data:
   HardSigmoid{}
   HardSwish{}
   GELUTanh{}
+  GELU{}
   Custom{operations: F32}
 
 def identity_value(value: F32) -> F32:
   value
 
 def relu_value(value: F32) -> F32:
-  F32.max(value,0.0)
+  Choice.larger(value,0.0)
 
 def relu6_value(value: F32) -> F32:
-  F32.min(F32.max(value,0.0),6.0)
+  Choice.smaller(Choice.larger(value,0.0),6.0)
 
 def leaky(slope: F32,+value: F32) -> F32:
-  Bool.pick(F32,F32.is_lt(value,0.0),(value * slope : F32),value)
+  Choice.chosen(~F32,F32.is_lt(value,0.0),(value * slope : F32),value)
 
 # x for x >= 0, slope * x otherwise.
 def leaky_relu_value(value: F32,slope: F32) -> F32:
@@ -63,6 +65,10 @@ def hard_swish_value(value: F32) -> F32:
 # The tanh approximation as x*logistic(2t), retaining argument rounding errors.
 def gelu_tanh_value(value: F32) -> F32:
   Fp32.gelu_tanh(value)
+
+# PyTorch's gelu with approximate='none'.
+def gelu_value(value: F32) -> F32:
+  Fp32.gelu(value)
 
 def identity() -> Activation:
   Identity{}
@@ -94,6 +100,9 @@ def hard_swish() -> Activation:
 def gelu_tanh() -> Activation:
   GELUTanh{}
 
+def gelu() -> Activation:
+  GELU{}
+
 # The identity needs no pass at all.
 def is_identity(activation: Activation) -> Bool:
   match activation:
@@ -120,6 +129,8 @@ def operations(activation: Activation) -> F32:
     case HardSwish{}: 7.0
     # 68 per eight lanes: compensated argument, logistic and sign selection
     case GELUTanh{}: 8.5
+    # 95 per eight lanes: one division, two polynomials, exponential and two selections
+    case GELU{}: 11.875
     case Custom{operations}: operations
 
 # A custom function (F.conv2d_custom, F.apply) states its scalar operations per
@@ -132,7 +143,7 @@ def unknown_operations() -> F32:
 
 # Derivatives propagate NaNs independently of the ordered branch predicates.
 def derivative_nan(+x: F32,value: F32) -> F32:
-  Bool.pick(F32,F32.is_eq(x,x),value,x)
+  Choice.chosen(~F32,F32.is_eq(x,x),value,x)
 
 def identity_derivative_value(value: F32) -> F32:
   +value = value
@@ -140,25 +151,25 @@ def identity_derivative_value(value: F32) -> F32:
 
 def relu_derivative_value(value: F32) -> F32:
   +value = value
-  derivative_nan(value,Bool.pick(F32,F32.is_lt(0.0,value),1.0,0.0))
+  derivative_nan(value,Choice.chosen(~F32,F32.is_lt(0.0,value),1.0,0.0))
 
 def relu6_derivative_value(value: F32) -> F32:
   +value = value
-  derivative_nan(value,Bool.pick(F32,F32.is_lt(0.0,value) && F32.is_lt(value,6.0),1.0,0.0))
+  derivative_nan(value,Choice.chosen(~F32,F32.is_lt(0.0,value) && F32.is_lt(value,6.0),1.0,0.0))
 
 def leaky_relu_derivative_value(value: F32,slope: F32) -> F32:
   +value = value
-  derivative_nan(value,Bool.pick(F32,F32.is_lt(0.0,value),1.0,slope))
+  derivative_nan(value,Choice.chosen(~F32,F32.is_lt(0.0,value),1.0,slope))
 
 def hard_sigmoid_derivative_value(value: F32) -> F32:
   +value = value
-  derivative_nan(value,Bool.pick(F32,F32.is_lt(F32.neg(3.0),value) && F32.is_lt(value,3.0),(1.0 / 6.0 : F32),0.0))
+  derivative_nan(value,Choice.chosen(~F32,F32.is_lt(F32.neg(3.0),value) && F32.is_lt(value,3.0),(1.0 / 6.0 : F32),0.0))
 
 # PyTorch's backward takes the outer branches at -3 and 3.
 def hard_swish_derivative_value(value: F32) -> F32:
   +value = value
-  derivative_nan(value,Bool.pick(F32,F32.is_le(value,F32.neg(3.0)),0.0,
-    Bool.pick(F32,F32.is_lt(value,3.0),((value / 3.0 : F32) + 0.5 : F32),1.0)))
+  derivative_nan(value,Choice.chosen(~F32,F32.is_le(value,F32.neg(3.0)),0.0,
+    Choice.chosen(~F32,F32.is_lt(value,3.0),((value / 3.0 : F32) + 0.5 : F32),1.0)))
 
 # Packed arithmetic, comparisons, masks and selections per eight values,
 # divided by eight. NaN selection is included.
@@ -174,6 +185,7 @@ def derivative_operations(activation: Activation) -> F32:
     case Tanh{}: 5.625
     case SiLU{}: 8.375
     case GELUTanh{}: 20.625
+    case GELU{}: 9.125
     case activation: 0.0
 
 def sigmoid_derivative_value(value: F32) -> F32:
@@ -189,3 +201,6 @@ def silu_derivative_value(value: F32) -> F32:
 
 def gelu_tanh_derivative_value(value: F32) -> F32:
   Fp32.gelu_tanh_derivative(value)
+
+def gelu_derivative_value(value: F32) -> F32:
+  Fp32.gelu_derivative(value)

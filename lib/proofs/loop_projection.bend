@@ -1,6 +1,5 @@
 # One induction for every state representation, output index and step count.
 import Base
-import ./natural_addition.bend as Addition
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./word_arithmetic.bend as WordArithmetic
 import ./nat_order.bend as Order
@@ -96,30 +95,3 @@ def indexed_successor(+position: U32,+offset: Nat) ->
   Equal.sym(U32,((position + 1 : U32) + U32.from_nat(offset) : U32),(position + (1 + U32.from_nat(offset) : U32) : U32),
     Arithmetic.add_associative(position,1,U32.from_nat(offset)))
 
-# The final step is applied once, to the state the loop ends in.
-def run_then_finishes(~State: Type,~Result: Type,~step: State -> State,~finish: State -> Result,count: Nat,-state: State) ->
-  {Loop.run_then(~State,~Result,~step,~finish,count,state) == finish(Loop.run(~State,~step,count,state)) : Result}:
-  match count:
-    case 0n: {==}
-    case 1n+rest: run_then_finishes(~State,~Result,~step,~finish,rest,step(state))
-
-# Natural counters use the same symbolic induction as machine counters.
-def natural_counter_progress(~State: Data,~step: State -> State,~position: State -> Nat,
-  ~advances: @+state: State -> {position(step(state)) == 1n+position(state) : Nat},
-  +count: Nat,+state: State) ->
-  {position(iterate(~State,~step,count,state)) == Nat.add(count,position(state)) : Nat}:
-  match count:
-    case 0n: {==}
-    case 1n+ +rest:
-      %Addition.successor_right(rest,position(state)) : {position(iterate(~State,~step,rest,step(state))) == _ : Nat}
-      %advances(state) : {position(iterate(~State,~step,rest,step(state))) == Nat.add(rest,_) : Nat}
-      natural_counter_progress(~State,~step,~position,~advances,rest,step(state))
-
-# Structural properties of an owned model also follow the shared loop.
-def preserves_invariant(~State: Data,~Context: Data,~Property: Context -> State -> Data,~step: State -> State,
-  ~preserved: @+context: Context -> @+state: State -> Property(context,state) -> Property(context,step(state)),
-  count: Nat,+context: Context,+state: State,evidence: Property(context,state)) -> Property(context,Loop.run(~State,~step,count,state)):
-  match count:
-    case 0n: evidence
-    case 1n+rest:
-      preserves_invariant(~State,~Context,~Property,~step,~preserved,rest,context,step(state),preserved(context,state,evidence))

@@ -4,6 +4,7 @@ import ../storage_allocation.bend as Allocation
 import ./storage_tree_model.bend as Tree
 import ./storage_refinement.bend as StorageLaws
 import ./storage_buffer_model.bend as Buffer
+import ../tensor.bend as Tensors
 
 # Dispatch changes neither the initialized array nor its live certificate.
 # This is an unconditional equation for every element type, depth and length.
@@ -62,3 +63,27 @@ def contents(~Element: Data,+depth: Nat,+value: Element,+length: Nat) ->
   %Equal.sym(Array<Element>,Array.new(Element,depth,value),Tree.pack(Element,Tree.fresh(Element,depth,value)),StorageLaws.fresh(Element,depth,value)) :
     {Buffer.Content{Tree.reflect(Element,_),length} == Buffer.Content{Tree.fresh(Element,depth,value),length} : Buffer.Content<Element>}
   Equal.cong(Tree.Tree<Element>,Buffer.Content<Element>,tree => Buffer.Content{tree,length},Tree.reflect(Element,Tree.pack(Element,Tree.fresh(Element,depth,value))),Tree.fresh(Element,depth,value),StorageLaws.reflect_packed(Element,Tree.fresh(Element,depth,value)))
+
+# A tensor buffer of count cells of fill is the fresh tree of its depth.
+def buffer_content(~Element: Data,+fill: Element,+count: U32) ->
+  {Buffer.content(~Element,Buffer.remodel(~Element,Tensors.buffer(~Element,fill,count))) == Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)} :
+    Buffer.Content<Element>}:
+  Equal.trans(Buffer.Content<Element>,Buffer.content(~Element,Buffer.remodel(~Element,Tensors.buffer(~Element,fill,count))),Buffer.contents(~Element,Tensors.buffer(~Element,fill,count)),
+    Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)},Buffer.remodel_content(~Element,Tensors.buffer(~Element,fill,count)),
+    contents(~Element,Tensors.depth_for(count),fill,U32.to_nat(count)))
+
+def buffer_tree(~Element: Data,+fill: Element,+count: U32) ->
+  {Buffer.tree(~Element,Buffer.remodel(~Element,Tensors.buffer(~Element,fill,count))) == Tree.fresh(Element,Tensors.depth_for(count),fill) : Tree.Tree<Element>}:
+  +model = Buffer.remodel(~Element,Tensors.buffer(~Element,fill,count))
+  Equal.trans(Tree.Tree<Element>,Buffer.tree(~Element,model),Buffer.content_tree(~Element,Buffer.content(~Element,model)),Tree.fresh(Element,Tensors.depth_for(count),fill),
+    Equal.sym(Tree.Tree<Element>,Buffer.content_tree(~Element,Buffer.content(~Element,model)),Buffer.tree(~Element,model),Buffer.content_tree_of(~Element,model)),
+    Equal.cong(Buffer.Content<Element>,Tree.Tree<Element>,content => Buffer.content_tree(~Element,content),Buffer.content(~Element,model),
+      Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)},buffer_content(~Element,fill,count)))
+
+def buffer_length(~Element: Data,+fill: Element,+count: U32) ->
+  {Buffer.length(~Element,Buffer.remodel(~Element,Tensors.buffer(~Element,fill,count))) == U32.to_nat(count) : Nat}:
+  +model = Buffer.remodel(~Element,Tensors.buffer(~Element,fill,count))
+  Equal.trans(Nat,Buffer.length(~Element,model),Buffer.content_length(~Element,Buffer.content(~Element,model)),U32.to_nat(count),
+    Equal.sym(Nat,Buffer.content_length(~Element,Buffer.content(~Element,model)),Buffer.length(~Element,model),Buffer.content_length_of(~Element,model)),
+    Equal.cong(Buffer.Content<Element>,Nat,content => Buffer.content_length(~Element,content),Buffer.content(~Element,model),
+      Buffer.Content{Tree.fresh(Element,Tensors.depth_for(count),fill),U32.to_nat(count)},buffer_content(~Element,fill,count)))

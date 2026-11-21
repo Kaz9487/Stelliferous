@@ -8,7 +8,6 @@ import argparse
 from collections import Counter
 import json
 import re
-import struct
 import sys
 from pathlib import Path
 from yolo_graph import build_graph, input_slots
@@ -83,8 +82,16 @@ RUNTIME = '''# The model is a list of operations run by one loop. A tensor betwe
 type Read is Data:
   Read{slot: U32,take: Bool}
 
+# A host tensor read before the timer starts, as a program built on the
+# library holds it: the image and biases from storage, the weights taken from
+# the weights folder by name.
+type Host is Data:
+  Image{slot: U32,channels: U32,height: U32,width: U32}
+  Weights{slot: U32,name: String}
+  Bias{slot: U32,outputs: U32}
+
 type Work is Data:
-  Conv{input: Read,host: Bool,weights: U32,bias: U32,channels: U32,height: U32,width: U32,outputs: U32,kernel: U32,stride: U32,padding: U32,silu: Bool}
+  Conv{input: Read,weights: Read,bias: Read,channels: U32,height: U32,width: U32,outputs: U32,kernel: U32,stride: U32,padding: U32,silu: Bool}
   Concat{first: Read,rest: List<&2,Read>}
   Add{left: Read,right: Read}
   Up{input: Read}
@@ -131,26 +138,6 @@ def read(source: Read,env: Env) -> Loaded():
   Read{+slot,+take} = source
   fetch(env,slot,take)
 
-def hosted(take: Bool,+slot: U32,+channels: U32,+height: U32,+width: U32,env: Env,+workers: U32) -> IO(Loaded()):
-  match take:
-    case True{}:
-      do IO<Loaded()>:
-        input : F.Storage() <- Tensor.take_buffer(slot,U32.to_nat((channels * height * width : U32)))
-        IO.pure(Loaded(),(F.with_workers(F.from_storage([1,channels,height,width],input),workers),env))
-    case False{}:
-      do IO<Loaded()>:
-        input : F.Storage() <- Tensor.get_buffer(slot,U32.to_nat((channels * height * width : U32)))
-        IO.pure(Loaded(),(F.with_workers(F.from_storage([1,channels,height,width],input),workers),env))
-
-def hosted_read(input: Read,+channels: U32,+height: U32,+width: U32,env: Env,+workers: U32) -> IO(Loaded()):
-  Read{+slot,take} = input
-  hosted(take,slot,channels,height,width,env,workers)
-
-def source(input: Read,host: Bool,+channels: U32,+height: U32,+width: U32,env: Env,+workers: U32) -> IO(Loaded()):
-  match host:
-    case True{}: hosted_read(input,channels,height,width,env,workers)
-    case False{}: IO.pure(Loaded(),read(input,env))
-
 def convolved_silu(loaded: Loaded(),weights: F.Tensor(),bias: F.Tensor(),stride: U32,padding: U32) -> Loaded():
   (input,env) = loaded
   (CONV2D(input,weights,bias,stride,padding,Act.silu()),env)
@@ -163,6 +150,18 @@ def convolved(silu: Bool,loaded: Loaded(),weights: F.Tensor(),bias: F.Tensor(),s
   match silu:
     case True{}: convolved_silu(loaded,weights,bias,stride,padding)
     case False{}: convolved_identity(loaded,weights,bias,stride,padding)
+
+def convolved_bias(silu: Bool,stride: U32,padding: U32,input: F.Tensor(),weights: F.Tensor(),loaded: Loaded()) -> Loaded():
+  (bias,env) = loaded
+  convolved(silu,(input,env),weights,bias,stride,padding)
+
+def convolved_weights(silu: Bool,stride: U32,padding: U32,input: F.Tensor(),bias: Read,loaded: Loaded()) -> Loaded():
+  (weights,env) = loaded
+  convolved_bias(silu,stride,padding,input,weights,read(bias,env))
+
+def convolved_input(silu: Bool,stride: U32,padding: U32,weights: Read,bias: Read,loaded: Loaded()) -> Loaded():
+  (input,env) = loaded
+  convolved_weights(silu,stride,padding,input,bias,read(weights,env))
 
 def joined(tensor: F.Tensor(),pair: F.Parts() & Env) -> F.Parts() & Env:
   (parts,env) = pair
@@ -203,19 +202,60 @@ def decoded(head: U32,loaded: Loaded()) -> Loaded():
 
 def compute(work: Work,env: Env,+workers: U32) -> IO(Loaded()):
   match work:
-    case Conv{input,host,+weights,+bias,+channels,+height,+width,+outputs,+kernel,stride,padding,silu}:
-      do IO<Loaded()>:
-        loaded : Loaded() <- source(input,host,channels,height,width,env,workers)
-        w : F.Storage() <- Tensor.take_buffer(weights,U32.to_nat((outputs * channels * kernel * kernel : U32)))
-        b : F.Storage() <- Tensor.take_buffer(bias,U32.to_nat(outputs))
-        # Tensors carry the runtime's worker count, read once in main.
-        IO.pure(Loaded(),convolved(silu,loaded,F.with_workers(F.from_storage([outputs,channels,kernel,kernel],w),workers),
-          F.with_workers(F.from_storage([outputs],b),workers),stride,padding))
+    case Conv{input,weights,bias,channels,height,width,outputs,kernel,stride,padding,silu}:
+      IO.pure(Loaded(),convolved_input(silu,stride,padding,weights,bias,read(input,env)))
     case Concat{first,rest}: IO.pure(Loaded(),concatenated(parts_after(rest,read(first,env))))
     case Add{left,right}: IO.pure(Loaded(),added(right,read(left,env)))
     case Up{input}: IO.pure(Loaded(),upsampled(read(input,env)))
     case Pool{input}: IO.pure(Loaded(),pooled(read(input,env)))
     case Decode{input,head}: IO.pure(Loaded(),decoded(head,read(input,env)))
+
+# Tensors carry the runtime's worker count, read once in main.
+def host_stored(+slot: U32,+shape: List<&2,U32>,+count: U32,weights: F.Weights(),+workers: U32) -> IO(F.Tensor() & F.Weights()):
+  do IO<F.Tensor() & F.Weights()>:
+    storage : F.Storage() <- Tensor.take_buffer(slot,U32.to_nat(count))
+    IO.pure(F.Tensor() & F.Weights(),(F.with_workers(F.from_storage(shape,storage),workers),weights))
+
+def weight_taken(pair: F.Tensor() & F.Weights(),+workers: U32) -> F.Tensor() & F.Weights():
+  (tensor,weights) = pair
+  (F.with_workers(tensor,workers),weights)
+
+def parameter(host: Host,weights: F.Weights(),+workers: U32) -> IO(F.Tensor() & F.Weights()):
+  match host:
+    case Image{+slot,+channels,+height,+width}: host_stored(slot,[1,channels,height,width],(channels * height * width : U32),weights,workers)
+    case Weights{slot,+name}: IO.pure(F.Tensor() & F.Weights(),weight_taken(F.run_keeping(F.Tensor(),F.take(name),weights),workers))
+    case Bias{+slot,+outputs}: host_stored(slot,[outputs],outputs,weights,workers)
+
+def host_slot(host: Host) -> U32:
+  match host:
+    case Image{slot,channels,height,width}: slot
+    case Weights{slot,name}: slot
+    case Bias{slot,outputs}: slot
+
+# Every host tensor waits in the environment before the first operation, the
+# next one read nearest the front.
+def placed(+slot: U32,env: Env,pair: F.Tensor() & F.Weights()) -> Env & F.Weights():
+  (tensor,weights) = pair
+  (Slot{slot,tensor,env},weights)
+
+def prepared(+host: Host,state: Env & F.Weights(),+workers: U32) -> IO(Env & F.Weights()):
+  (env,weights) = state
+  +slot = host_slot(host)
+  do IO<Env & F.Weights()>:
+    pair : F.Tensor() & F.Weights() <- parameter(host,weights,workers)
+    IO.pure(Env & F.Weights(),placed(slot,env,pair))
+
+def prepare(hosts: List<&2,Host>,state: Env & F.Weights(),+workers: U32) -> IO(Env & F.Weights()):
+  match hosts:
+    case []: IO.pure(Env & F.Weights(),state)
+    case +host <> rest:
+      do IO<Env & F.Weights()>:
+        next : Env & F.Weights() <- prepared(host,state,workers)
+        prepare(rest,next,workers)
+
+def environment(state: Env & F.Weights()) -> Env:
+  (env,weights) = state
+  env
 
 def snapshot_pair(+id: U32,pair: F.Tensor() & F.Tensor()) -> IO(F.Tensor()):
   (tensor,snapshot) = pair
@@ -277,6 +317,11 @@ def run(operations: List<&2,Op>,env: Env,+workers: U32,+dump: Bool) -> IO(Unit):
 '''
 
 
+# The weights folder examples/yolov5/prepare_reference.py writes: every
+# parameter under its PyTorch name.
+WEIGHTS = 'out/weights/named'
+
+
 def emit_model(graph, target):
     tensors = graph['tensors']
     lines = [
@@ -304,10 +349,11 @@ def emit_model(graph, target):
             '',
         ]
 
+    weight_slots = {operation['weights'] for operation in graph['ops'] if operation['kind'] == 'conv'}
     initialization = [
         f'Tensor.load("{tensor["path"]}", {index}, {tensor["count"]})'
         for index, tensor in enumerate(tensors)
-        if tensor['path']
+        if tensor['path'] and index not in weight_slots
     ]
     decoders = {}
     for operation in graph['ops']:
@@ -356,10 +402,20 @@ def emit_model(graph, target):
             ownership['bend_copy'] += 1
         return f'Read{{{slot},{boolean(transfer)}}}'
 
-    def host(slot):
+    hosts = []
+    images = set()
+
+    def host(slot, record):
         assert tensors[slot]['path'] and remaining_reads[slot] == 1, 'Weights and biases are host tensors read once'
-        read(slot)
-        return slot
+        hosts.append(record)
+        return read(slot)
+
+    def image(slot, channels, height, width):
+        """The image waits in the environment from the start; every read of it is an ordinary read."""
+        if tensors[slot]['path'] and slot not in images:
+            images.add(slot)
+            hosts.append(f'Image{{{slot},{channels},{height},{width}}}')
+        return read(slot)
 
     records = []
     for operation in graph['ops']:
@@ -370,9 +426,12 @@ def emit_model(graph, target):
             channels, outputs, kernel = operation['input_channels'], operation['output_channels'], operation['kernel_size']
             assert tensors[source]['shape'] == [1, channels, operation['input_height'], operation['input_width']]
             assert tensors[operation['weights']]['shape'] == [outputs, channels, kernel, kernel]
-            hosted = boolean(tensors[source]['path'])
+            weights, bias = operation['weights'], operation['bias']
+            weight_record = 'Weights{%d,"%s"}' % (weights, tensors[weights]['name'])
             work = (
-                f'Conv{{{read(source)},{hosted},{host(operation["weights"])},{host(operation["bias"])},'
+                f'Conv{{{image(source, channels, operation["input_height"], operation["input_width"])},'
+                f'{host(weights, weight_record)},'
+                f'{host(bias, f"Bias{{{bias},{outputs}}}")},'
                 f'{channels},{operation["input_height"]},{operation["input_width"]},{outputs},'
                 f'{kernel},{operation["stride"]},{operation["padding"]},{boolean(operation["activation"])}}}'
             )
@@ -421,11 +480,14 @@ def emit_model(graph, target):
     lines += ['    case _: ""', '']
     lines += RUNTIME.replace('CONV2D', 'F.conv2d!' if target == 'cuda' else 'F.conv2d').splitlines()
     lines += ['def operations() -> List<&2,Op>:', '  [' + ',\n    '.join(records) + ']', '']
+    lines += ['def hosts() -> List<&2,Host>:', '  [' + ',\n    '.join(reversed(hosts)) + ']', '']
     function(
         'forward',
         [f'{name}()' for name in initializers]
+        + [f'weights : F.Weights() <- F.load_weights("{WEIGHTS}")']
+        + ['parameters : Env & F.Weights() <- prepare(hosts(),(Empty{},weights),workers)']
         + ['Tensor.begin()']
-        + ['run(operations(),Empty{},workers,dump)'],
+        + ['run(operations(),environment(parameters),workers,dump)'],
         '+workers: U32,+dump: Bool',
     )
     lines += [

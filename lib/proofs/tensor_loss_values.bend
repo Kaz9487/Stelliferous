@@ -2,328 +2,191 @@
 import Base
 import ../tensor.bend as Tensors
 import ../tensor_loss.bend as Loss
-import ../tensor_shape.bend as ShapeOps
-import ../tensor_layout.bend as Layout
-import ../tensor_operations.bend as Operations
+import ../tensor_f32.bend as F32Tensor
+import ../tensor_shape.bend as Shapes
 import ../tensor_access.bend as Access
-import ../tensor_band.bend as Bands
-import ../storage_buffer.bend as Storage
-import ./tensor_contract.bend as Contract
-import ./tensor_copy_contract.bend as Copy
-import ./tensor_reduce_values.bend as Reduce
+import ../tensor_grid.bend as Grid
+import ../tensor_layout.bend as Layout
+import ../tensor_tiled.bend as Tiled
+import ../tensor_tiled_map.bend as TiledMap
+import ../tensor_tiled_reduce.bend as TiledReduce
 import ../math_sum.bend as Sum
-import ./tensor_ready_flow.bend as Flow
-import ./tensor_operations_refinement.bend as OperationsLaws
-import ./tensor_shape_refinement.bend as Shapes
-import ./storage_shape.bend as Shape
+import ../kernel_tile.bend as Tile
+import ../kernel_gemm.bend as KernelGemm
+import ../machine_limits.bend as Machine
+import ../default_machine_limits.bend as Default
+import ./tensor_pieces_model.bend as PiecesModel
+import ./tensor_pieces_map.bend as PiecesMap
+import ./tensor_pieces_combine_leaf.bend as Leaf
+import ./tensor_partials_values.bend as PartialsValues
+import ./tensor_reduce_values.bend as Reduce
+import ./tensor_shape_refinement.bend as ShapeLaws
+import ./tensor_tiled_public.bend as Public
+import ./tensor_tiled_representation.bend as Representation
+import ./tensor_tiled_map.bend as TiledMaps
+import ./tensor_tiled_sums.bend as Sums
+import ./tensor_function_values.bend as FunctionValues
+import ./tensor_binary_values.bend as Binary
+import ./tensor_copy_contract.bend as Copy
 import ./word_encoding.bend as Words
-import ./tensor_global_shape_count.bend as Global
-import ./tensor_band_model.bend as Model
-import ./tensor_band_map.bend as BandMap
-import ./tensor_band_normal_unary.bend as NormalUnary
-import ./tensor_band_combine_leaf.bend as Leaf
-import ./tensor_combine_public.bend as CombinePublic
-import ./tensor_unit_broadcast.bend as UnitBroadcast
 
-# The squares of the difference, and the fold of all of them in place.
-def Squares(~Prediction: Data,~Target: Data) -> Data:
-  BandMap.Context<Unit,Leaf.Context<Prediction,Target>>
-
-def Total(~Prediction: Data,~Target: Data) -> Data:
-  Reduce.Lines<Sum.Lanes,Reduce.Ordered<Squares(~Prediction,~Target)>>
-
-def total_context(~Prediction: Data,~Target: Data,+prediction: Prediction,+target: Target,+shape: List<&2,U32>) -> Total(~Prediction,~Target):
-  Reduce.Lines{Sum.zero(),Reduce.Ordered{BandMap.Context{Unit{},Leaf.Context{prediction,target}},None{}},Shapes.elements(shape)}
-
-# The two hypotheses concern only the returned loss and gradient.
-def Ready(result: Loss.Tensor() & (Loss.Tensor() & Loss.Tensor())) -> Data:
-  (loss,(gradient,target)) = result
-  Shape.Both<{Contract.tensor_ready(~F32,loss) == True{} : Bool},{Contract.tensor_ready(~F32,gradient) == True{} : Bool}>
-
-# A loss or gradient divided by the count for Mean, as it is for Sum.
-def Normalized(~Logical: Data,~original: Logical -> U32 -> F32,reduction: Loss.Reduction,+count: F32,+logical: Logical,-tensor: Loss.Tensor()) -> Data:
+# A loss or gradient of the values divided by the count for Mean, as it is for
+# Sum.
+def Normalized(~Logical: Data,~original: Logical -> U32 -> F32,reduction: Loss.Reduction,+count: F32,+logical: Logical,+values: List<&2,U32>,tiled: Tiled.Tiled) -> Data:
   match reduction:
-    case Loss.Mean{}: Global.Contract(~F32,~BandMap.Context<F32,Logical>,~BandMap.value(~F32,~F32,~Logical,~Bands.scalar_value(~F32,~F32.div),~original),BandMap.Context{count,logical},tensor)
-    case Loss.Sum{}: Global.Contract(~F32,~Logical,~original,logical,tensor)
+    case Loss.Mean{}: Public.Contract(~PiecesMap.Context<F32,Logical>,~PiecesMap.value(~F32,~F32,~Logical,~F32Tensor.scalar_value(~F32.div),~original),PiecesMap.Context{count,logical},values,tiled)
+    case Loss.Sum{}: Public.Contract(~Logical,~original,logical,values,tiled)
 
-# The rank-0 loss folds the squares of the difference of prediction and
-# target, the gradient holds the difference times two, and the target returns
-# as it was given.
+# The rank-0 loss holds the sum of the squares of the difference of prediction
+# and target, the gradient holds the difference times two, and the target
+# returns as it was given.
 def Contract(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+shape: List<&2,U32>,
   +reduction: Loss.Reduction,result: Loss.Tensor() & (Loss.Tensor() & Loss.Tensor())) -> Data:
   (loss,(gradient,returned)) = result
-  Shape.Both<
-    Normalized(~Total(~Prediction,~Target),
-      ~Reduce.value(~F32,~Sum.Lanes,~Reduce.Ordered<Squares(~Prediction,~Target)>,~Reduce.ordered_value(~F32,~Squares(~Prediction,~Target),
-        ~BandMap.value(~F32,~Unit,~Leaf.Context<Prediction,Target>,~Access.apply_element(~F32,~Loss.square),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value))),~Sum.step,~Sum.total),
-      reduction,U32.to_f32(Tensors.count_or_zero(shape)),total_context(~Prediction,~Target,prediction,target,shape),loss),
-    Shape.Both<
-      Normalized(~BandMap.Context<F32,Leaf.Context<Prediction,Target>>,
-        ~BandMap.value(~F32,~F32,~Leaf.Context<Prediction,Target>,~Bands.scalar_value(~F32,~F32.mul),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),
-        reduction,U32.to_f32(Tensors.count_or_zero(shape)),BandMap.Context{2.0,Leaf.Context{prediction,target}},gradient),
-      Global.Contract(~F32,~Target,~target_value,target,returned)>>
-
-def normalize_ready(reduction: Loss.Reduction,+count: F32,tensor: Loss.Tensor(),ready: {Contract.tensor_ready(~F32,Loss.reduced(reduction,count,tensor)) == True{} : Bool}) ->
-  {Contract.tensor_ready(~F32,tensor) == True{} : Bool}:
-  match reduction:
-    case Loss.Mean{}: NormalUnary.scalar_status(~F32,~F32.div,1.0,tensor,count,ready)
-    case Loss.Sum{}: ready
-
-# A Ready loss comes from a Ready difference.
-def squared_ready(tensor: Loss.Tensor(),+reduction: Loss.Reduction,+count: F32,-target: Loss.Tensor(),ready: Ready(Loss.mse_squares(reduction,count,target,Layout.copy(~F32,tensor)))) ->
-  {Contract.tensor_ready(~F32,tensor) == True{} : Bool}:
-  match tensor:
-    case Tensors.Tensor{bands,geometry,shape,fill,status,workers}:
-      match status:
-        case Tensors.Usable{}: {==}
-        case Tensors.Failed{problem}:
-          match reduction:
-            case Loss.Mean{}:
-              Shape.Both{loss_ready,gradient_ready} = ready
-              Empty.absurd({Contract.tensor_ready(~F32,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers}) == True{} : Bool},Words.false_true(loss_ready))
-            case Loss.Sum{}:
-              Shape.Both{loss_ready,gradient_ready} = ready
-              Empty.absurd({Contract.tensor_ready(~F32,Tensors.Tensor{bands,geometry,shape,fill,Tensors.Failed{problem},workers}) == True{} : Bool},Words.false_true(loss_ready))
-
-def counted_ready(+reduction: Loss.Reduction,-target: Loss.Tensor(),shaped: Loss.Tensor() & List<&2,U32>,+ready: Ready(Loss.mse_counted(reduction,target,shaped))) ->
-  {Contract.tensor_ready(~F32,Pair.fst(Loss.Tensor(),List<&2,U32>,shaped)) == True{} : Bool}:
-  (difference,+shape) = shaped
-  squared_ready(difference,reduction,U32.to_f32(Tensors.count_or_zero(shape)),target,ready)
+  KernelGemm.Both<Normalized(~PartialsValues.Box<Sum.Parts>,~PartialsValues.box_value(~F32,~Sum.Parts,~Sum.merge,~Sum.rounded),reduction,U32.to_f32(Tensors.count_or_zero(shape)),Sums.sum_box(~PiecesMap.Context<Unit,Leaf.Context<Prediction,Target>>,~PiecesMap.value(~F32,~Unit,~Leaf.Context<Prediction,Target>,~Access.apply_element(~F32,~Loss.square),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),PiecesMap.Context{Unit{},Leaf.Context{prediction,target}},shape,TiledReduce.every_axis(List.length(&2,U32,shape),0)),Layout.extents_at(shape,Reduce.kept_axes(shape,TiledReduce.every_axis(List.length(&2,U32,shape),0))),loss),
+    KernelGemm.Both<Normalized(~PiecesMap.Context<F32,Leaf.Context<Prediction,Target>>,~PiecesMap.value(~F32,~F32,~Leaf.Context<Prediction,Target>,~F32Tensor.scalar_value(~F32.mul),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),reduction,U32.to_f32(Tensors.count_or_zero(shape)),PiecesMap.Context{2.0,Leaf.Context{prediction,target}},shape,gradient),
+      Public.Contract(~Target,~target_value,target,shape,returned)>>
 
 # A loss or gradient of the contract, divided by the count for Mean.
-def normalized(~Logical: Data,~original: Logical -> U32 -> F32,reduction: Loss.Reduction,+count: F32,+logical: Logical,tensor: Loss.Tensor(),
-  usable: Global.Usable<F32,Contract.extents(~F32,tensor),tensor>,contract: Global.Contract(~F32,~Logical,~original,logical,tensor)) ->
-  Normalized(~Logical,~original,reduction,count,logical,Loss.reduced(reduction,count,tensor)):
+def normalized(~Logical: Data,~original: Logical -> U32 -> F32,reduction: Loss.Reduction,+count: F32,+logical: Logical,+values: List<&2,U32>,tiled: Loss.Tensor(),
+  +contract: Public.Contract(~Logical,~original,logical,values,tiled)) -> Normalized(~Logical,~original,reduction,count,logical,values,Loss.reduced(reduction,count,tiled)):
   match reduction:
-    case Loss.Mean{}:
-      Global.Usable{+bands,+geometry,+fill,+workers,+equation} = usable
-      %equation : Normalized(~Logical,~original,Loss.Mean{},count,logical,Tensors.combine_scalar(~F32,~F32.div,1.0,_,count))
-      NormalUnary.combine_scalar(~F32,~Logical,~F32.div,~original,logical,1.0,count,bands,geometry,Contract.extents(~F32,tensor),fill,workers,
-        %Equal.sym(Loss.Tensor(),Tensors.Tensor{Model.pack(~F32,bands),geometry,Contract.extents(~F32,tensor),fill,Tensors.Usable{},workers},tensor,equation) :
-          Global.Contract(~F32,~Logical,~original,logical,_)
-        contract)
+    case Loss.Mean{}: FunctionValues.scalar_public(~Logical,~original,~F32.div,count,1.0)(logical,values,tiled,contract)
     case Loss.Sum{}: contract
-
-# The sum of every value of a tensor of the shape, by an operation of the name.
-def summed(~Logical: Data,~original: Logical -> U32 -> F32,+name: String,+logical: Logical,+shape: List<&2,U32>,-squares: Loss.Tensor(),usable: Global.Usable<F32,shape,squares>,
-  contract: Global.Contract(~F32,~Logical,~original,logical,squares),
-  ready: {Contract.tensor_ready(~F32,Layout.reduce_all(~F32,~Sum.Lanes,~Sum.step,~Sum.total,name,6.0,Sum.zero(),squares)) == True{} : Bool}) ->
-  Reduce.Whole(~F32,~Sum.Lanes,~Logical,~original,~Sum.step,~Sum.total,logical,Sum.zero(),shape,Layout.reduce_all(~F32,~Sum.Lanes,~Sum.step,~Sum.total,name,6.0,Sum.zero(),squares)):
-  Global.Usable{+bands,+geometry,+fill,+workers,+equation} = usable
-  +back = Equal.sym(Loss.Tensor(),Tensors.Tensor{Model.pack(~F32,bands),geometry,shape,fill,Tensors.Usable{},workers},squares,equation)
-  %equation : Reduce.Whole(~F32,~Sum.Lanes,~Logical,~original,~Sum.step,~Sum.total,logical,Sum.zero(),shape,Layout.reduce_all(~F32,~Sum.Lanes,~Sum.step,~Sum.total,name,6.0,Sum.zero(),_))
-  Reduce.reduce_all(~F32,~Sum.Lanes,~Logical,~original,~Sum.step,~Sum.total,logical,name,6.0,Sum.zero(),bands,geometry,shape,fill,workers,
-    %back : Global.Contract(~F32,~Logical,~original,logical,_) contract,
-    %back : {Contract.tensor_ready(~F32,Layout.reduce_all(~F32,~Sum.Lanes,~Sum.step,~Sum.total,name,6.0,Sum.zero(),_)) == True{} : Bool} ready)
-
-# The loss and gradient of the two copies of a difference of the shape.
-def copied(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+shape: List<&2,U32>,
-  +reduction: Loss.Reduction,-returned: Loss.Tensor(),+first: Model.Model<F32>,+second: Model.Model<F32>,+geometry: Bands.Geometry,+fill: F32,+workers: U32,
-  first_contract: Global.Contract(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},
-    Tensors.Tensor{Model.pack(~F32,first),geometry,shape,fill,Tensors.Usable{},workers}),
-  second_contract: Global.Contract(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},
-    Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers}),
-  returned_contract: Global.Contract(~F32,~Target,~target_value,target,returned),
-  ready: Ready(Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,
-    (Tensors.Tensor{Model.pack(~F32,first),geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers})))) ->
-  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,
-      (Tensors.Tensor{Model.pack(~F32,first),geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers}))):
-  Shape.Both{+loss_ready,gradient_ready} = ready
-  +count = U32.to_f32(Tensors.count_or_zero(shape))
-  +total_ready = normalize_ready(reduction,count,Layout.reduce_all(~F32,~Sum.Lanes,~Sum.step,~Sum.total,"mse_loss",6.0,Sum.zero(),
-    Tensors.apply(~F32,~Operations.mapped(~F32,~Loss.square),1.0,Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers})),loss_ready)
-  Shape.Both{
-    normalized(~Total(~Prediction,~Target),
-      ~Reduce.value(~F32,~Sum.Lanes,~Reduce.Ordered<Squares(~Prediction,~Target)>,~Reduce.ordered_value(~F32,~Squares(~Prediction,~Target),
-        ~BandMap.value(~F32,~Unit,~Leaf.Context<Prediction,Target>,~Access.apply_element(~F32,~Loss.square),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value))),~Sum.step,~Sum.total),
-      reduction,count,total_context(~Prediction,~Target,prediction,target,shape),
-      Layout.reduce_all(~F32,~Sum.Lanes,~Sum.step,~Sum.total,"mse_loss",6.0,Sum.zero(),
-        Tensors.apply(~F32,~Operations.mapped(~F32,~Loss.square),1.0,Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers})),
-      Global.usable(~F32,Layout.reduce_all(~F32,~Sum.Lanes,~Sum.step,~Sum.total,"mse_loss",6.0,Sum.zero(),
-        Tensors.apply(~F32,~Operations.mapped(~F32,~Loss.square),1.0,Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers})),total_ready),
-      summed(~BandMap.Context<Unit,Leaf.Context<Prediction,Target>>,
-        ~BandMap.value(~F32,~Unit,~Leaf.Context<Prediction,Target>,~Access.apply_element(~F32,~Loss.square),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),
-        "mse_loss",BandMap.Context{Unit{},Leaf.Context{prediction,target}},shape,Tensors.apply(~F32,~Operations.mapped(~F32,~Loss.square),1.0,Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers}),Global.usable(~F32,Tensors.apply(~F32,~Operations.mapped(~F32,~Loss.square),1.0,Tensors.Tensor{Model.pack(~F32,second),geometry,shape,fill,Tensors.Usable{},workers}),{==}),
-        NormalUnary.apply(~F32,~Leaf.Context<Prediction,Target>,~Loss.square,~Operations.mapped(~F32,~Loss.square),~OperationsLaws.mapped(~F32,~Loss.square),
-          ~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},1.0,second,geometry,shape,fill,workers,second_contract),
-        total_ready)),
-    Shape.Both{
-      normalized(~BandMap.Context<F32,Leaf.Context<Prediction,Target>>,
-        ~BandMap.value(~F32,~F32,~Leaf.Context<Prediction,Target>,~Bands.scalar_value(~F32,~F32.mul),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),
-        reduction,count,BandMap.Context{2.0,Leaf.Context{prediction,target}},
-        Tensors.combine_scalar(~F32,~F32.mul,1.0,Tensors.Tensor{Model.pack(~F32,first),geometry,shape,fill,Tensors.Usable{},workers},2.0),
-        Global.usable(~F32,Tensors.combine_scalar(~F32,~F32.mul,1.0,Tensors.Tensor{Model.pack(~F32,first),geometry,shape,fill,Tensors.Usable{},workers},2.0),{==}),
-        NormalUnary.combine_scalar(~F32,~Leaf.Context<Prediction,Target>,~F32.mul,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),
-          Leaf.Context{prediction,target},1.0,2.0,first,geometry,shape,fill,workers,first_contract)),
+# The loss and gradient of the two copies of a difference of the contract.
+def squared(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},-returned: Loss.Tensor(),
+  +first: PiecesModel.Model<Tile.Tile8>,+second: PiecesModel.Model<Tile.Tile8>,+cells: List<&2,U32>,+fill: Tile.Tile8,+workers: U32,+axis: Nat,+lanes: U32,+position: Grid.Position,
+  +first_contract: Public.Contract(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,first),cells,fill,Tensors.Usable{},workers},axis,lanes,position}),
+  +second_contract: Public.Contract(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,second),cells,fill,Tensors.Usable{},workers},axis,lanes,position}),
+  +returned_contract: Public.Contract(~Target,~target_value,target,shape,returned)) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,first),cells,fill,Tensors.Usable{},workers},axis,lanes,position},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,second),cells,fill,Tensors.Usable{},workers},axis,lanes,position}))):
+  KernelGemm.Both{
+    normalized(~PartialsValues.Box<Sum.Parts>,~PartialsValues.box_value(~F32,~Sum.Parts,~Sum.merge,~Sum.rounded),reduction,U32.to_f32(Tensors.count_or_zero(shape)),Sums.sum_box(~PiecesMap.Context<Unit,Leaf.Context<Prediction,Target>>,~PiecesMap.value(~F32,~Unit,~Leaf.Context<Prediction,Target>,~Access.apply_element(~F32,~Loss.square),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),PiecesMap.Context{Unit{},Leaf.Context{prediction,target}},shape,TiledReduce.every_axis(List.length(&2,U32,shape),0)),Layout.extents_at(shape,Reduce.kept_axes(shape,TiledReduce.every_axis(List.length(&2,U32,shape),0))),TiledReduce.sum_all("mse_loss",F32Tensor.tiled_lanes(~Loss.square,1.0,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,second),cells,fill,Tensors.Usable{},workers},axis,lanes,position})),
+      Sums.tiled_sum_all(~PiecesMap.Context<Unit,Leaf.Context<Prediction,Target>>,~PiecesMap.value(~F32,~Unit,~Leaf.Context<Prediction,Target>,~Access.apply_element(~F32,~Loss.square),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),PiecesMap.Context{Unit{},Leaf.Context{prediction,target}},limits,"mse_loss",shape,F32Tensor.tiled_lanes(~Loss.square,1.0,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,second),cells,fill,Tensors.Usable{},workers},axis,lanes,position}),
+        FunctionValues.public(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),~Loss.square,1.0)(Leaf.Context{prediction,target},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,second),cells,fill,Tensors.Usable{},workers},axis,lanes,position},second_contract),
+        default_capacity,rank_room,nonempty,cap,cap_ok,count_room)),
+    KernelGemm.Both{
+      normalized(~PiecesMap.Context<F32,Leaf.Context<Prediction,Target>>,~PiecesMap.value(~F32,~F32,~Leaf.Context<Prediction,Target>,~F32Tensor.scalar_value(~F32.mul),~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),reduction,U32.to_f32(Tensors.count_or_zero(shape)),PiecesMap.Context{2.0,Leaf.Context{prediction,target}},shape,F32Tensor.mul_scalar(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,first),cells,fill,Tensors.Usable{},workers},axis,lanes,position},2.0),
+        FunctionValues.scalar_public(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),~F32.mul,2.0,1.0)(Leaf.Context{prediction,target},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,first),cells,fill,Tensors.Usable{},workers},axis,lanes,position},first_contract)),
       returned_contract}}
-
-# The difference of the shape is copied before the loss and the gradient.
-def squared(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+shape: List<&2,U32>,
-  +reduction: Loss.Reduction,-returned: Loss.Tensor(),+difference: Model.Model<F32>,+geometry: Bands.Geometry,+fill: F32,+workers: U32,
-  evidence: Copy.Copied<F32,difference>,
-  +contract: Global.Contract(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},
-    Tensors.Tensor{Model.pack(~F32,difference),geometry,shape,fill,Tensors.Usable{},workers}),
-  returned_contract: Global.Contract(~F32,~Target,~target_value,target,returned),
-  ready: Ready(Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,Layout.copy(~F32,Tensors.Tensor{Model.pack(~F32,difference),geometry,shape,fill,Tensors.Usable{},workers})))) ->
-  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,Layout.copy(~F32,Tensors.Tensor{Model.pack(~F32,difference),geometry,shape,fill,Tensors.Usable{},workers}))):
+# A difference of the contract, measured as a tensor of the shape and copied.
+def measured_model(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},-returned: Loss.Tensor(),
+  +model: PiecesModel.Model<Tile.Tile8>,+cells: List<&2,U32>,+fill: Tile.Tile8,+workers: U32,+axis: Nat,+lanes: U32,+position: Grid.Position,evidence: Copy.Copied<Tile.Tile8,model>,
+  +contract: Public.Contract(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,model),cells,fill,Tensors.Usable{},workers},axis,lanes,position}),
+  +returned_contract: Public.Contract(~Target,~target_value,target,shape,returned)) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_counted(reduction,returned,F32Tensor.shape(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,model),cells,fill,Tensors.Usable{},workers},axis,lanes,position}))):
   Copy.Copied{+first,+second,+equation,+first_content,+second_content} = evidence
-  %equation : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Loss.Tensor() & Loss.Tensor()),_,
-      left => right => (Tensors.Tensor{left,geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{right,geometry,shape,fill,Tensors.Usable{},workers}))))
-  copied(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,returned,first,second,geometry,fill,workers,
-    Copy.kept(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},
-      difference,first,geometry,shape,fill,workers,first_content,contract),
-    Copy.kept(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},
-      difference,second,geometry,shape,fill,workers,second_content,contract),
-    returned_contract,
-    %Equal.sym(Bands.Bands(~F32) & Bands.Bands(~F32),(Model.pack(~F32,first),Model.pack(~F32,second)),Bands.copy(~F32,Model.pack(~F32,difference)),equation) :
-      Ready(Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Loss.Tensor() & Loss.Tensor()),_,
-        left => right => (Tensors.Tensor{left,geometry,shape,fill,Tensors.Usable{},workers},Tensors.Tensor{right,geometry,shape,fill,Tensors.Usable{},workers}))))
-    ready)
+  KernelGemm.Both{+global,Public.Laid{+inside,+shaped,+restored,+counted,+pinned}} = contract
+  +pair_equation = Copy.copied_equation(~Tile.Tile8,32.0,model,cells,fill,workers,first,second,equation)
+  +before = {Representation.Lifted{Leaf.Context{prediction,target},Public.geometry_of(shape,axis,position)} : Representation.Lifted<Leaf.Context<Prediction,Target>>}
+  %Equal.sym(List<&2,U32>,Tiled.logical_shape(cells,axis,lanes,position),shape,restored) : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(_)),returned,F32Tensor.copy(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,model),cells,fill,Tensors.Usable{},workers},axis,lanes,position})))
+  %Equal.sym(Tensors.Tensor<Tile.Tile8> & Tensors.Tensor<Tile.Tile8>,Tensors.copied(~Tile.Tile8,32.0,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,model),cells,fill,Tensors.Usable{},workers}),(Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,first),cells,fill,Tensors.Usable{},workers},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,second),cells,fill,Tensors.Usable{},workers}),pair_equation) :
+    Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(shape)),returned,Tiled.copied(axis,lanes,position,_)))
+  squared(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,returned,first,second,cells,fill,workers,axis,lanes,position,
+    KernelGemm.Both{Copy.kept(~Tile.Tile8,~Representation.Lifted<Leaf.Context<Prediction,Target>>,~Representation.lifted(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),before,model,first,cells,fill,workers,first_content,global),Public.Laid{inside,shaped,restored,counted,pinned}},
+    KernelGemm.Both{Copy.kept(~Tile.Tile8,~Representation.Lifted<Leaf.Context<Prediction,Target>>,~Representation.lifted(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value)),before,model,second,cells,fill,workers,second_content,global),Public.Laid{inside,shaped,restored,counted,pinned}},
+    returned_contract)
 
-# A Ready difference is a tensor of the shape of the operands.
-def measured(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+shape: List<&2,U32>,
-  +reduction: Loss.Reduction,-returned: Loss.Tensor(),difference: Loss.Tensor(),usable: Global.Usable<F32,Contract.extents(~F32,difference),difference>,
-  +extents: {Contract.extents(~F32,difference) == shape : List<&2,U32>},
-  contract: Global.Contract(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},difference),
-  returned_contract: Global.Contract(~F32,~Target,~target_value,target,returned),
-  ready: Ready(Loss.mse_counted(reduction,returned,Tensors.shape(~F32,difference)))) ->
-  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_counted(reduction,returned,Tensors.shape(~F32,difference))):
-  Global.Usable{+bands,+geometry,+fill,+workers,+equation} = usable
-  +back = Equal.sym(Loss.Tensor(),Tensors.Tensor{Model.pack(~F32,bands),geometry,Contract.extents(~F32,difference),fill,Tensors.Usable{},workers},difference,equation)
-  %equation : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_counted(reduction,returned,Tensors.shape(~F32,_)))
-  %Equal.sym(List<&2,U32>,Contract.extents(~F32,difference),shape,extents) :
-    Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-      Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(_)),returned,Layout.copy(~F32,Tensors.Tensor{Model.pack(~F32,bands),geometry,_,fill,Tensors.Usable{},workers})))
-  squared(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,returned,bands,geometry,fill,workers,Copy.copied(~F32,bands),
-    %extents : Global.Contract(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},
-      Tensors.Tensor{Model.pack(~F32,bands),geometry,_,fill,Tensors.Usable{},workers})
-    %back : Global.Contract(~F32,~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},_)
-    contract,
-    returned_contract,
-    %extents : Ready(Loss.mse_squares(reduction,U32.to_f32(Tensors.count_or_zero(_)),returned,Layout.copy(~F32,Tensors.Tensor{Model.pack(~F32,bands),geometry,_,fill,Tensors.Usable{},workers})))
-    %back : Ready(Loss.mse_counted(reduction,returned,Tensors.shape(~F32,_)))
-    ready)
-
+def measured(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},-returned: Loss.Tensor(),
+  -difference: Loss.Tensor(),packed: Public.Packed<difference>,+contract: Public.Contract(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},shape,difference),
+  +returned_contract: Public.Contract(~Target,~target_value,target,shape,returned)) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_counted(reduction,returned,F32Tensor.shape(difference))):
+  Public.Packed{+model,+cells,+fill,+workers,+axis,+lanes,+position,+equation} = packed
+  %equation : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_counted(reduction,returned,F32Tensor.shape(_)))
+  measured_model(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,returned,model,cells,fill,workers,axis,lanes,position,Copy.copied(~Tile.Tile8,model),
+    %Equal.sym(Tiled.Tiled,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,model),cells,fill,Tensors.Usable{},workers},axis,lanes,position},difference,equation) : Public.Contract(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},shape,_) contract,
+    returned_contract)
 # Operands of the same shape: the difference of the prediction and the kept
 # copy of the target.
-def kept(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+shape: List<&2,U32>,
-  +reduction: Loss.Reduction,-returned: Loss.Tensor(),+prediction_bands: Model.Model<F32>,+prediction_geometry: Bands.Geometry,+prediction_fill: F32,+prediction_workers: U32,
-  +kept_bands: Model.Model<F32>,+kept_geometry: Bands.Geometry,+kept_fill: F32,+kept_workers: U32,
-  prediction_contract: Global.Contract(~F32,~Prediction,~prediction_value,prediction,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers}),
-  kept_contract: Global.Contract(~F32,~Target,~target_value,target,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers}),
-  returned_contract: Global.Contract(~F32,~Target,~target_value,target,returned),
-  +ready: Ready(Loss.mse_counted(reduction,returned,Tensors.shape(~F32,Tensors.combine(~F32,~F32.sub,"mse_loss",1.0,
-    Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-    Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers}))))) ->
-  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse_counted(reduction,returned,Tensors.shape(~F32,Tensors.combine(~F32,~F32.sub,"mse_loss",1.0,
-      Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-      Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers})))):
-  +difference_ready = {
-    %Flow.measured_source(~F32,Tensors.combine(~F32,~F32.sub,"mse_loss",1.0,
-        Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-        Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers})) :
-      {Contract.tensor_ready(~F32,_) == True{} : Bool}
-    counted_ready(reduction,returned,Tensors.shape(~F32,Tensors.combine(~F32,~F32.sub,"mse_loss",1.0,
-        Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-        Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers})),ready)
-    : {Contract.tensor_ready(~F32,Tensors.combine(~F32,~F32.sub,"mse_loss",1.0,
-        Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-        Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers})) == True{} : Bool}}
-  measured(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,returned,
-    Tensors.combine(~F32,~F32.sub,"mse_loss",1.0,
-      Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-      Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers}),
-    Global.usable(~F32,Tensors.combine(~F32,~F32.sub,"mse_loss",1.0,
-      Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-      Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers}),difference_ready),
-    Flow.combined_extents(~F32,~Operations.combine_kernel(~F32,~F32.sub),"mse_loss",1.0,
-      Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers,
-      Model.pack(~F32,kept_bands),kept_geometry,shape,kept_fill,Tensors.Usable{},kept_workers,UnitBroadcast.self_broadcast(shape)),
-    CombinePublic.combine(~F32,~Prediction,~Target,~F32.sub,~Operations.combine_kernel(~F32,~F32.sub),~OperationsLaws.scalar_kernel(~F32,~F32.sub),~prediction_value,~target_value,
-      prediction,target,"mse_loss",1.0,shape,prediction_geometry,kept_geometry,prediction_fill,kept_fill,prediction_workers,kept_workers,
-      Model.pack(~F32,prediction_bands),Model.pack(~F32,kept_bands),prediction_contract,kept_contract),
-    returned_contract,ready)
+def kept_model(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},-returned: Loss.Tensor(),
+  +pm: PiecesModel.Model<Tile.Tile8>,+ps: List<&2,U32>,+pf: Tile.Tile8,+pw: U32,+pa: Nat,+pl: U32,+pp: Grid.Position,+km: PiecesModel.Model<Tile.Tile8>,+ks: List<&2,U32>,+kf: Tile.Tile8,+kw: U32,+ka: Nat,+kl: U32,+kp: Grid.Position,
+  +prediction_contract: Public.Contract(~Prediction,~prediction_value,prediction,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp}),+returned_contract: Public.Contract(~Target,~target_value,target,shape,returned),
+  +kept_contract: Public.Contract(~Target,~target_value,target,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,km),ks,kf,Tensors.Usable{},kw},ka,kl,kp})) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_kept(reduction,True{},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},(returned,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,km),ks,kf,Tensors.Usable{},kw},ka,kl,kp}))):
+  +contract = Binary.same(~Prediction,~prediction_value,~Target,~target_value,~F32.sub,prediction,target,"mse_loss",1.0,limits,default_capacity,shape,nonempty,rank_room,
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},prediction_contract,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,km),ks,kf,Tensors.Usable{},kw},ka,kl,kp},kept_contract)
+  measured(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,returned,F32Tensor.binary(~F32.sub,"mse_loss",1.0,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,km),ks,kf,Tensors.Usable{},kw},ka,kl,kp}),Public.packed(~Leaf.Context<Prediction,Target>,~Leaf.value(~F32,~Prediction,~Target,~F32.sub,~prediction_value,~target_value),Leaf.Context{prediction,target},shape,F32Tensor.binary(~F32.sub,"mse_loss",1.0,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,km),ks,kf,Tensors.Usable{},kw},ka,kl,kp}),contract),contract,returned_contract)
 
-# Operands of other shapes are rejected.
-def selected(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,same: Bool,+prediction: Prediction,+target: Target,
-  +shape: List<&2,U32>,+target_shape: List<&2,U32>,+reduction: Loss.Reduction,-returned: Loss.Tensor(),
-  +prediction_bands: Model.Model<F32>,+prediction_geometry: Bands.Geometry,+prediction_fill: F32,+prediction_workers: U32,
-  +kept_bands: Model.Model<F32>,+kept_geometry: Bands.Geometry,+kept_fill: F32,+kept_workers: U32,+classified: {ShapeOps.same_extents(shape,target_shape) == same : Bool},
-  prediction_contract: Global.Contract(~F32,~Prediction,~prediction_value,prediction,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers}),
-  kept_contract: Global.Contract(~F32,~Target,~target_value,target,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,target_shape,kept_fill,Tensors.Usable{},kept_workers}),
-  returned_contract: Global.Contract(~F32,~Target,~target_value,target,returned),
-  ready: Ready(Loss.mse_kept(reduction,same,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-    (returned,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,target_shape,kept_fill,Tensors.Usable{},kept_workers})))) ->
-  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse_kept(reduction,same,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-      (returned,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,target_shape,kept_fill,Tensors.Usable{},kept_workers}))):
+def kept_packed(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},-returned: Loss.Tensor(),
+  +pm: PiecesModel.Model<Tile.Tile8>,+ps: List<&2,U32>,+pf: Tile.Tile8,+pw: U32,+pa: Nat,+pl: U32,+pp: Grid.Position,-kept: Loss.Tensor(),packed: Public.Packed<kept>,
+  +prediction_contract: Public.Contract(~Prediction,~prediction_value,prediction,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp}),+returned_contract: Public.Contract(~Target,~target_value,target,shape,returned),
+  +kept_contract: Public.Contract(~Target,~target_value,target,shape,kept)) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_kept(reduction,True{},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},(returned,kept))):
+  Public.Packed{+km,+ks,+kf,+kw,+ka,+kl,+kp,+equation} = packed
+  %equation : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_kept(reduction,True{},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},(returned,_)))
+  kept_model(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,returned,pm,ps,pf,pw,pa,pl,pp,km,ks,kf,kw,ka,kl,kp,prediction_contract,returned_contract,
+    %Equal.sym(Tiled.Tiled,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,km),ks,kf,Tensors.Usable{},kw},ka,kl,kp},kept,equation) : Public.Contract(~Target,~target_value,target,shape,_) kept_contract)
+# The target is copied: one copy returns, the other meets the prediction.
+def selected(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},same: Bool,+target_shape: List<&2,U32>,
+  +pm: PiecesModel.Model<Tile.Tile8>,+ps: List<&2,U32>,+pf: Tile.Tile8,+pw: U32,+pa: Nat,+pl: U32,+pp: Grid.Position,+classified: {Shapes.same_extents(shape,target_shape) == same : Bool},
+  +prediction_contract: Public.Contract(~Prediction,~prediction_value,prediction,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp}),pair: Loss.Tensor() & Loss.Tensor(),+copies: Copy.Copies(~Target,~target_value,target,target_shape,pair),
+  +matched: {Shapes.same_extents(shape,target_shape) == True{} : Bool}) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_kept(reduction,same,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},pair)):
   match same:
     case True{}:
-      +equal = Shapes.same_extents(shape,target_shape,classified)
-      %equal :
-        Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-          Loss.mse_kept(reduction,True{},Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-            (returned,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,_,kept_fill,Tensors.Usable{},kept_workers})))
-      kept(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,returned,prediction_bands,prediction_geometry,prediction_fill,prediction_workers,
-        kept_bands,kept_geometry,kept_fill,kept_workers,prediction_contract,
-        %Equal.sym(List<&2,U32>,shape,target_shape,equal) :
-          Global.Contract(~F32,~Target,~target_value,target,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,_,kept_fill,Tensors.Usable{},kept_workers})
-        kept_contract,returned_contract,
-        %Equal.sym(List<&2,U32>,shape,target_shape,equal) : Ready(Loss.mse_kept(reduction,True{},Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-          (returned,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,_,kept_fill,Tensors.Usable{},kept_workers})))
-        ready)
+      (returned,kept) = pair
+      KernelGemm.Both{+returned_contract,+kept_contract} = copies
+      +to_shape = Equal.sym(List<&2,U32>,shape,target_shape,ShapeLaws.same_extents(shape,target_shape,classified))
+      kept_packed(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,returned,pm,ps,pf,pw,pa,pl,pp,kept,
+        Public.packed(~Target,~target_value,target,shape,kept,%to_shape : Public.Contract(~Target,~target_value,target,_,kept) kept_contract),
+        prediction_contract,%to_shape : Public.Contract(~Target,~target_value,target,_,returned) returned_contract,
+        %to_shape : Public.Contract(~Target,~target_value,target,_,kept) kept_contract)
     case False{}:
-      Empty.absurd(Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-          Loss.mse_kept(reduction,False{},Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-            (returned,Tensors.Tensor{Model.pack(~F32,kept_bands),kept_geometry,target_shape,kept_fill,Tensors.Usable{},kept_workers}))),
-        Words.false_true(
-          %Flow.rejected(~F32,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},"mse_loss") : {_ == True{} : Bool}
-          %Flow.measured_source(~F32,Tensors.rejected(~F32,"mse_loss",Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers})) : {Contract.tensor_ready(~F32,_) == True{} : Bool}
-          counted_ready(reduction,returned,Tensors.shape(~F32,Tensors.rejected(~F32,"mse_loss",Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers})),ready)))
+      (returned,kept) = pair
+      Empty.absurd(Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_kept(reduction,False{},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},(returned,kept))),
+        Words.false_true(Equal.trans(Bool,False{},Shapes.same_extents(shape,target_shape),True{},Equal.sym(Bool,Shapes.same_extents(shape,target_shape),False{},classified),matched)))
+def mse_model(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},+target_shape: List<&2,U32>,
+  +pm: PiecesModel.Model<Tile.Tile8>,+ps: List<&2,U32>,+pf: Tile.Tile8,+pw: U32,+pa: Nat,+pl: U32,+pp: Grid.Position,+tm: PiecesModel.Model<Tile.Tile8>,+ts: List<&2,U32>,+tf: Tile.Tile8,+tw: U32,+ta: Nat,+tl: U32,+tp: Grid.Position,
+  +prediction_contract: Public.Contract(~Prediction,~prediction_value,prediction,shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp}),+target_contract: Public.Contract(~Target,~target_value,target,target_shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,tm),ts,tf,Tensors.Usable{},tw},ta,tl,tp}),
+  +matched: {Shapes.same_extents(shape,target_shape) == True{} : Bool}) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,tm),ts,tf,Tensors.Usable{},tw},ta,tl,tp},reduction)):
+  KernelGemm.Both{+prediction_global,Public.Laid{+prediction_inside,+prediction_shaped,+prediction_restored,+prediction_counted,+prediction_pinned}} = prediction_contract
+  KernelGemm.Both{+target_global,Public.Laid{+target_inside,+target_shaped,+target_restored,+target_counted,+target_pinned}} = target_contract
+  %Equal.sym(List<&2,U32>,Tiled.logical_shape(ps,pa,pl,pp),shape,prediction_restored) : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_kept(reduction,Shapes.same_extents(_,Tiled.logical_shape(ts,ta,tl,tp)),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},F32Tensor.copy(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,tm),ts,tf,Tensors.Usable{},tw},ta,tl,tp})))
+  %Equal.sym(List<&2,U32>,Tiled.logical_shape(ts,ta,tl,tp),target_shape,target_restored) : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse_kept(reduction,Shapes.same_extents(shape,_),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},F32Tensor.copy(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,tm),ts,tf,Tensors.Usable{},tw},ta,tl,tp})))
+  selected(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,Shapes.same_extents(shape,target_shape),target_shape,pm,ps,pf,pw,pa,pl,pp,{==},prediction_contract,F32Tensor.copy(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,tm),ts,tf,Tensors.Usable{},tw},ta,tl,tp}),
+    Copy.tiled(~Target,~target_value,target,target_shape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,tm),ts,tf,Tensors.Usable{},tw},ta,tl,tp},target_contract),
+    matched)
 
-# The target is copied: one copy returns, the other meets the prediction.
-def copies(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,
-  +prediction_bands: Model.Model<F32>,+prediction_geometry: Bands.Geometry,+shape: List<&2,U32>,+prediction_fill: F32,+prediction_workers: U32,
-  +target_bands: Model.Model<F32>,+target_geometry: Bands.Geometry,+target_shape: List<&2,U32>,+target_fill: F32,+target_workers: U32,evidence: Copy.Copied<F32,target_bands>,
-  prediction_contract: Global.Contract(~F32,~Prediction,~prediction_value,prediction,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers}),
-  +target_contract: Global.Contract(~F32,~Target,~target_value,target,Tensors.Tensor{Model.pack(~F32,target_bands),target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers}),
-  ready: Ready(Loss.mse(Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-    Tensors.Tensor{Model.pack(~F32,target_bands),target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers},reduction))) ->
-  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse(Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-      Tensors.Tensor{Model.pack(~F32,target_bands),target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers},reduction)):
-  Copy.Copied{+returned,+kept,+equation,+returned_content,+kept_content} = evidence
-  +same = ShapeOps.same_extents(shape,target_shape)
-  %equation : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse_kept(reduction,same,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-      Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Loss.Tensor() & Loss.Tensor()),_,
-        left => right => (Tensors.Tensor{left,target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers},Tensors.Tensor{right,target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers}))))
-  selected(~Prediction,~Target,~prediction_value,~target_value,same,prediction,target,shape,target_shape,reduction,
-    Tensors.Tensor{Model.pack(~F32,returned),target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers},
-    prediction_bands,prediction_geometry,prediction_fill,prediction_workers,kept,target_geometry,target_fill,target_workers,{==},prediction_contract,
-    Copy.kept(~F32,~Target,~target_value,target,target_bands,kept,target_geometry,target_shape,target_fill,target_workers,kept_content,target_contract),
-    Copy.kept(~F32,~Target,~target_value,target,target_bands,returned,target_geometry,target_shape,target_fill,target_workers,returned_content,target_contract),
-    %Equal.sym(Bands.Bands(~F32) & Bands.Bands(~F32),(Model.pack(~F32,returned),Model.pack(~F32,kept)),Bands.copy(~F32,Model.pack(~F32,target_bands)),equation) :
-      Ready(Loss.mse_kept(reduction,same,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-        Storage.bind_pair(~Bands.Bands(~F32),~Bands.Bands(~F32),~(Loss.Tensor() & Loss.Tensor()),_,
-          left => right => (Tensors.Tensor{left,target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers},Tensors.Tensor{right,target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers}))))
-    ready)
+def mse_packed(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},+target_shape: List<&2,U32>,
+  -prediction_tiled: Loss.Tensor(),prediction_packed: Public.Packed<prediction_tiled>,-target_tiled: Loss.Tensor(),target_packed: Public.Packed<target_tiled>,
+  +prediction_contract: Public.Contract(~Prediction,~prediction_value,prediction,shape,prediction_tiled),+target_contract: Public.Contract(~Target,~target_value,target,target_shape,target_tiled),
+  +matched: {Shapes.same_extents(shape,target_shape) == True{} : Bool}) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse(prediction_tiled,target_tiled,reduction)):
+  Public.Packed{+pm,+ps,+pf,+pw,+pa,+pl,+pp,+prediction_equation} = prediction_packed
+  Public.Packed{+tm,+ts,+tf,+tw,+ta,+tl,+tp,+target_equation} = target_packed
+  %prediction_equation : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse(_,target_tiled,reduction))
+  %target_equation : Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},_,reduction))
+  mse_model(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,target_shape,pm,ps,pf,pw,pa,pl,pp,tm,ts,tf,tw,ta,tl,tp,
+    %Equal.sym(Tiled.Tiled,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,pm),ps,pf,Tensors.Usable{},pw},pa,pl,pp},prediction_tiled,prediction_equation) : Public.Contract(~Prediction,~prediction_value,prediction,shape,_) prediction_contract,
+    %Equal.sym(Tiled.Tiled,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,tm),ts,tf,Tensors.Usable{},tw},ta,tl,tp},target_tiled,target_equation) : Public.Contract(~Target,~target_value,target,target_shape,_) target_contract,matched)
 
-# The loss and gradient of a prediction against a target of the same shape,
-# both of the contract in any layout.
-def mse(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,
-  +prediction_bands: Model.Model<F32>,+prediction_geometry: Bands.Geometry,+shape: List<&2,U32>,+prediction_fill: F32,+prediction_workers: U32,
-  +target_bands: Model.Model<F32>,+target_geometry: Bands.Geometry,+target_shape: List<&2,U32>,+target_fill: F32,+target_workers: U32,
-  prediction_contract: Global.Contract(~F32,~Prediction,~prediction_value,prediction,Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers}),
-  +target_contract: Global.Contract(~F32,~Target,~target_value,target,Tensors.Tensor{Model.pack(~F32,target_bands),target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers}),
-  ready: Ready(Loss.mse(Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-    Tensors.Tensor{Model.pack(~F32,target_bands),target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers},reduction))) ->
-  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,
-    Loss.mse(Tensors.Tensor{Model.pack(~F32,prediction_bands),prediction_geometry,shape,prediction_fill,Tensors.Usable{},prediction_workers},
-      Tensors.Tensor{Model.pack(~F32,target_bands),target_geometry,target_shape,target_fill,Tensors.Usable{},target_workers},reduction)):
-  copies(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,prediction_bands,prediction_geometry,shape,prediction_fill,prediction_workers,
-    target_bands,target_geometry,target_shape,target_fill,target_workers,Copy.copied(~F32,target_bands),prediction_contract,target_contract,ready)
+# The loss and gradient of a prediction against a target, both tiled tensors
+# of the contract, of the same shape.
+def mse(~Prediction: Data,~Target: Data,~prediction_value: Prediction -> U32 -> F32,~target_value: Target -> U32 -> F32,+prediction: Prediction,+target: Target,+reduction: Loss.Reduction,+shape: List<&2,U32>,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +rank_room: {Nat.is_le(List.length(&2,U32,shape),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},+nonempty: {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool},+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +count_room: {Nat.is_le(Nat.add(Nat.double(ShapeLaws.elements(shape)),4n),U32.to_nat(cap)) == True{} : Bool},+target_shape: List<&2,U32>,
+  prediction_tiled: Loss.Tensor(),+prediction_contract: Public.Contract(~Prediction,~prediction_value,prediction,shape,prediction_tiled),
+  target_tiled: Loss.Tensor(),+target_contract: Public.Contract(~Target,~target_value,target,target_shape,target_tiled),
+  +matched: {Shapes.same_extents(shape,target_shape) == True{} : Bool}) ->
+  Contract(~Prediction,~Target,~prediction_value,~target_value,prediction,target,shape,reduction,Loss.mse(prediction_tiled,target_tiled,reduction)):
+  mse_packed(~Prediction,~Target,~prediction_value,~target_value,prediction,target,reduction,shape,limits,default_capacity,rank_room,nonempty,cap,cap_ok,count_room,target_shape,
+    prediction_tiled,Public.packed(~Prediction,~prediction_value,prediction,shape,prediction_tiled,prediction_contract),
+    target_tiled,Public.packed(~Target,~target_value,target,target_shape,target_tiled,target_contract),
+    prediction_contract,target_contract,matched)

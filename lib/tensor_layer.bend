@@ -2,12 +2,11 @@
 # what backward reads, backward gives the gradients in a fixed FP32 order.
 import Base
 import ./math_activation.bend as Activations
-import ./tensor.bend as Tensors
 import ./tensor_f32.bend as F
 import ./tensor_convolution_gradient.bend as Gradient
 
 def Tensor() -> Type:
-  Tensors.Tensor<F32>
+  F.Tensor()
 
 type Settings is Data:
   Settings{stride: U32,padding: U32,activation: Activations.Activation}
@@ -56,7 +55,7 @@ def measured(weight_gradient: Tensor(),weights: Tensor(),dz: Tensor(),input: Ten
 
 def weighted(weights: Tensor(),result: Tensor() & (Tensor() & Tensor())) -> Parameters():
   (weight_gradient,(x,dz)) = result
-  measured(weight_gradient,weights,dz,Tensors.shape(~F32,x))
+  measured(weight_gradient,weights,dz,F.shape(x))
 
 def shaped(stride: U32,padding: U32,x: Tensor(),dz: Tensor(),measured: Tensor() & List<&2,U32>) -> Parameters():
   (weights,shape) = measured
@@ -66,7 +65,7 @@ def shaped(stride: U32,padding: U32,x: Tensor(),dz: Tensor(),measured: Tensor() 
 def parameters(dy: Tensor(),saved: Saved(),weights: Tensor(),settings: Settings) -> Parameters():
   (x,z) = saved
   Settings{stride,padding,+activation} = settings
-  shaped(stride,padding,x,F.activate_backward(dy,z,activation),Tensors.shape(~F32,weights))
+  shaped(stride,padding,x,F.activate_backward(dy,z,activation),F.shape(weights))
 
 def finished(weight_gradient: Tensor(),bias_gradient: Tensor(),pair: Tensor() & Tensor()) -> Tensor() & (Tensor() & (Tensor() & Tensor())):
   (dx,weights) = pair

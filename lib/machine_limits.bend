@@ -5,31 +5,6 @@ import Base
 def word_max() -> U32:
   4294967295
 
-# Official v2.0.26 native Nat payloads have 48 bits. Checked metadata products
-# keep each partial value <= U32.max; doubling it and adding a U32 operand is
-# at most 3*U32.max. Binary evidence avoids expanding these bounds in unary.
-def native_nat_max() -> Word(48n):
-  Word.not(48n,Word.zero(48n))
-
-def extend_metadata_word(width: Nat,word: Word(width)) -> Word(Nat.add(width,16n)):
-  match width word:
-    case 0n WNil{}: Word.zero(16n)
-    case 1n+rest WCon{bit,tail}: WCon{bit,extend_metadata_word(rest,tail)}
-
-def extended_metadata_operand(value: U32) -> Word(48n):
-  U32{bits} = value
-  extend_metadata_word(32n,bits)
-
-def metadata_operand_max() -> Word(48n):
-  extended_metadata_operand(word_max())
-
-def metadata_product_step_max() -> Word(48n):
-  +maximum = metadata_operand_max()
-  Word.add(48n,Word.add(48n,maximum,maximum),maximum)
-
-def metadata_product_step_fits() -> {Cmp.is_le(Word.cmp(48n,metadata_product_step_max(),native_nat_max())) == True{} : Bool}:
-  {==}
-
 type Facts<-d: U32,-c: U32,-k: U32,-h: U32> is Data:
   Facts{
     dimension_fits: {U32.is_le(d,2147483648) == True{} : Bool},
@@ -44,7 +19,7 @@ type Facts<-d: U32,-c: U32,-k: U32,-h: U32> is Data:
     dimension_within_coordinate: {U32.is_le(d,k) == True{} : Bool},
     doubled_dimension_within_coordinate: {U32.is_le(U32.shl(d),k) == True{} : Bool},
     capacity_doubles_to_half: {U32.shl(c) == h : U32},
-    seven_within_capacity: {U32.is_le(7,c) == True{} : Bool},
+    sixteen_within_capacity: {U32.is_le(16,c) == True{} : Bool},
     sixteen_within_half: {U32.is_le(16,h) == True{} : Bool},
     capacity_within_half: {U32.is_le(c,h) == True{} : Bool}
   }

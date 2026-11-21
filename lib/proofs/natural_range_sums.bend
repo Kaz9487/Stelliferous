@@ -8,6 +8,7 @@ import ./nat_to_u32_bounds.bend as Bounds
 import ./row_major_index.bend as RowMajor
 import ../traversal_array.bend as Traversal
 import ./word_arithmetic.bend as WordArithmetic
+import ./tensor_mirror_address.bend as MirrorAddress
 
 def fold(values: List<&2,Nat>) -> Nat:
   List.foldl(~&2,~Nat,~Nat,~Nat.add,values,0n)
@@ -77,13 +78,6 @@ def added(~Context: Data,~left: Context -> Nat -> Nat,~right: Context -> Nat -> 
   +index = index
   Nat.add(left(context,index),right(context,index))
 
-def add_four(+a: Nat,+b: Nat,+c: Nat,+d: Nat) -> {Nat.add(Nat.add(a,b),Nat.add(c,d)) == Nat.add(Nat.add(a,c),Nat.add(b,d)) : Nat}:
-  Equal.trans(Nat,Nat.add(Nat.add(a,b),Nat.add(c,d)),Nat.add(a,Nat.add(b,Nat.add(c,d))),Nat.add(Nat.add(a,c),Nat.add(b,d)),
-    Addition.associative(a,b,Nat.add(c,d)),
-    Equal.trans(Nat,Nat.add(a,Nat.add(b,Nat.add(c,d))),Nat.add(a,Nat.add(c,Nat.add(b,d))),Nat.add(Nat.add(a,c),Nat.add(b,d)),
-      Equal.cong(Nat,Nat,tail => Nat.add(a,tail),Nat.add(b,Nat.add(c,d)),Nat.add(c,Nat.add(b,d)),RowMajor.add_swap(b,c,d)),
-      Equal.sym(Nat,Nat.add(Nat.add(a,c),Nat.add(b,d)),Nat.add(a,Nat.add(c,Nat.add(b,d))),Addition.associative(a,c,Nat.add(b,d)))))
-
 def addition(~Context: Data,~left: Context -> Nat -> Nat,~right: Context -> Nat -> Nat,remaining: Nat,+start: Nat,+context: Context) ->
   {sum(~Context,~added(~Context,~left,~right),remaining,start,context) == Nat.add(sum(~Context,~left,remaining,start,context),sum(~Context,~right,remaining,start,context)) : Nat}:
   match remaining:
@@ -100,7 +94,7 @@ def addition(~Context: Data,~left: Context -> Nat -> Nat,~right: Context -> Nat 
         {Nat.add(Nat.add(left(context,start),right(context,start)),sum(~Context,~added(~Context,~left,~right),rest,1n+start,context)) == Nat.add(Nat.add(left(context,start),left_tail),_) : Nat}
       %Equal.sym(Nat,sum(~Context,~added(~Context,~left,~right),rest,1n+start,context),Nat.add(left_tail,right_tail),addition(~Context,~left,~right,rest,1n+start,context)) :
         {Nat.add(Nat.add(left(context,start),right(context,start)),_) == Nat.add(Nat.add(left(context,start),left_tail),Nat.add(right(context,start),right_tail)) : Nat}
-      add_four(left(context,start),right(context,start),left_tail,right_tail)
+      MirrorAddress.interchange(left(context,start),right(context,start),left_tail,right_tail)
 
 def constant(~Context: Data,~value: Context -> Nat,context: Context,index: Nat) -> Nat:
   value(context)

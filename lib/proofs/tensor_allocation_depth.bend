@@ -15,7 +15,10 @@ import ./word_subtraction.bend as Subtraction
 import ./word_bit_length.bend as WordLength
 import ./allocation_bit_bounds.bend as AllocationBits
 import ./word_power_of_two.bend as Power
+import ../kernel_gemm.bend as KernelGemm
+import ./u32_division.bend as U32Division
 import ./storage_shape.bend as Shape
+import ./storage_tree_model.bend as Tree
 
 def branch(+remaining: Nat,+value: U32,+bits: Nat,+zero: Bool,
   tail: {Tensors.significant_bits(remaining,U32.shr(value),1n+bits,U32.is_zero(U32.shr(value))) ==
@@ -79,6 +82,10 @@ type Sized<-count: U32> is Data:
   Sized{depth_ok: {Nat.is_le(Tensors.depth_for(count),30n) == True{} : Bool},
     room: {Nat.is_le(U32.to_nat(count),U32.to_nat(U32.shln(1,Tensors.depth_for(count)))) == True{} : Bool}}
 
+def allocation_depth(+count: U32,ready: Sized<count>) -> {Nat.is_le(Tensors.depth_for(count),30n) == True{} : Bool}:
+  Sized{depth_ok,room} = ready
+  depth_ok
+
 def allocation_room(+count: U32,ready: Sized<count>) -> {Nat.is_le(U32.to_nat(count),U32.to_nat(U32.shln(1,Tensors.depth_for(count)))) == True{} : Bool}:
   Sized{depth_ok,room} = ready
   room
@@ -123,23 +130,33 @@ def guard_depth(+count: U32,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) 
     positive_depth((count + 1 : U32),positive),Equal.cong(U32,Nat,value => Storage.bit_length(32n,value),((count + 1 : U32) - 1 : U32),count,Subtraction.subtract_add(count,1)))
 
 def guarded_word(+count: U32,+bounded: {U32.is_lt(count,2147483648) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(Storage.bit_length(32n,count),31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,Storage.bit_length(32n,count))) == True{} : Bool}>:
+  KernelGemm.Both<{Nat.is_le(Storage.bit_length(32n,count),31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,Storage.bit_length(32n,count))) == True{} : Bool}>:
   match count:
     case U32{+word}:
       +inside = bounded
       %Equal.sym(Nat,Storage.bit_length(32n,count),WordLength.bit_length(32n,word),AllocationBits.native_length(word)) :
-        Shape.Both<{Nat.is_le(_,31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,_)) == True{} : Bool}>
-      Shape.Both{WordLength.bounded_length(32n,31n,word,inside),
+        KernelGemm.Both<{Nat.is_le(_,31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,_)) == True{} : Bool}>
+      KernelGemm.Both{WordLength.bounded_length(32n,31n,word,inside),
         %Equal.sym(U32,U32.shln(1,WordLength.bit_length(32n,word)),U32{Power.power(32n,WordLength.bit_length(32n,word))},Power.native_power(WordLength.bit_length(32n,word))) :
           {U32.is_lt(count,_) == True{} : Bool} WordLength.length_covers_bounded_word(32n,31n,word,{==},inside)}
 
 
 def guarded_finish(+count: U32,+bounded: {U32.is_lt(count,2147483648) == True{} : Bool},
-  evidence: Shape.Both<{Nat.is_le(Storage.bit_length(32n,count),31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,Storage.bit_length(32n,count))) == True{} : Bool}>) -> Guarded<count>:
-  Shape.Both{depth_ok,room} = evidence
+  evidence: KernelGemm.Both<{Nat.is_le(Storage.bit_length(32n,count),31n) == True{} : Bool},{U32.is_lt(count,U32.shln(1,Storage.bit_length(32n,count))) == True{} : Bool}>) -> Guarded<count>:
+  KernelGemm.Both{depth_ok,room} = evidence
   Guarded{
     %Equal.sym(Nat,Tensors.depth_for((count + 1 : U32)),Storage.bit_length(32n,count),guard_depth(count,2147483648,{==},bounded)) : {Nat.is_le(_,31n) == True{} : Bool} depth_ok,
     %Equal.sym(Nat,Tensors.depth_for((count + 1 : U32)),Storage.bit_length(32n,count),guard_depth(count,2147483648,{==},bounded)) : {U32.is_lt(count,U32.shln(1,_)) == True{} : Bool} room}
 
 def guarded(+count: U32,+bounded: {U32.is_lt(count,2147483648) == True{} : Bool}) -> Guarded<count>:
   guarded_finish(count,bounded,guarded_word(count,bounded))
+
+# The fresh tree of an allocatable count holds at least count cells.
+def fresh_fits(~Element: Data,+count: U32,+fill: Element,+allocatable: {U32.is_le(count,1073741824) == True{} : Bool}) ->
+  {U32.is_le(count,Tree.capacity(Element,Tree.fresh(Element,Tensors.depth_for(count),fill))) == True{} : Bool}:
+  +depth = Tensors.depth_for(count)
+  +fresh = Tree.fresh(Element,depth,fill)
+  U32Division.nat_le_native(count,Tree.capacity(Element,fresh),
+    {%Equal.sym(U32,Tree.capacity(Element,fresh),U32.shln(1,depth),Shape.capacity(Element,depth,fresh,Shape.fresh(Element,depth,fill))) :
+        {Nat.is_le(U32.to_nat(count),U32.to_nat(_)) == True{} : Bool}
+      allocation_room(count,bounded(count,allocatable)) : {Nat.is_le(U32.to_nat(count),U32.to_nat(Tree.capacity(Element,fresh))) == True{} : Bool}})

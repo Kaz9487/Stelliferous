@@ -4,14 +4,14 @@ import ../kernel_input_gradient.bend as Kernel
 import ../machine_limits.bend as Machine
 import ./input_gradient_phase_domain.bend as Domain
 import ./input_gradient_tiled_geometry.bend as Geometry
-import ./input_gradient_tiled_extents.bend as Extents
 import ./input_gradient_tiled_capacity.bend as Capacity
 import ./row_major_index.bend as RowMajor
 import ./input_gradient_tiled_chunks.bend as Partition
 import ./input_gradient_tiled_chunk_geometry.bend as Chunks
 import ./input_gradient_tiled_fill.bend as Fill
 import ./input_gradient_tiled_leaf_execution.bend as Execution
-import ./input_gradient_tiled_refinement.bend as Filling
+import ./kernel_input_gradient_fill_refinement.bend as Filling
+import ../kernel_input_gradient_fill.bend as FillKernel
 import ./storage_tree_model.bend as Tree
 import ../kernel_tile.bend as Tile
 import ../traversal_array.bend as Traversal
@@ -67,14 +67,14 @@ def slot_size_matches(+grid: Chunks.Grid,+first: U32,+row: Nat,+group: Nat,+sour
   Chunks.Grid{call,e,c,range,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{cc,o,h,w,k,s,p,gh,gw} = g
-  Execution.Source{data,base,plane,source_first,source_rows} = source
+  Execution.Source{data,base,source_first,source_rows} = source
   {==}
 def slot_span_ordered(+grid: Chunks.Grid,+first: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
   {Nat.is_le(U32.to_nat(Fill.span(Chunks.selected_filling(grid,first,row,group,source))),U32.to_nat(Fill.groups(Chunks.selected_filling(grid,first,row,group,source)))) == True{} : Bool}:
   Chunks.Grid{call,e,c,range,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{cc,o,h,w,k,s,p,gh,gw} = g
-  Execution.Source{data,base,plane,source_first,source_rows} = source
+  Execution.Source{data,base,source_first,source_rows} = source
   Bounds.as_nat_le(Chunks.selected_groups(grid,row,group),Capacity.layout_chunk_groups(Kernel.tiling(g)),NativeExtrema.minimum_left(Capacity.layout_chunk_groups(Kernel.tiling(g)),Chunks.group_remainder(grid,row,group)))
 def slot_count_exact(+grid: Chunks.Grid,+first: U32,+row: Nat,+group: Nat,+source: Execution.Source,+position: Nat,+output: Nat,+shift: Nat,
   +inside: Partition.Inside<Chunks.query(grid,row,group)>,
@@ -104,46 +104,46 @@ def slot_frame(+grid: Chunks.Grid,+first: U32,+row: Nat,+group: Nat,+source: Exe
 def fresh_matches(+shape: Execution.ChunkShape,+quantity: U32,+same: {Execution.shape_tiles(shape) == quantity : U32}) ->
   {Execution.fresh_tiles(shape) == Tree.fresh(Tile.Tile8,Tensors.depth_for((quantity + 1 : U32)),Tile.filled(0.0)) : Tree.Tree<Tile.Tile8>}:
   Equal.cong(U32,Tree.Tree<Tile.Tile8>,count => Tree.fresh(Tile.Tile8,Tensors.depth_for((count + 1 : U32)),Tile.filled(0.0)),Execution.shape_tiles(shape),quantity,same)
-def initial_matches_shape(+grid: Chunks.Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat,+source: Execution.Source,+position: Nat,+output: Nat,+shift: Nat) ->
+def initial_matches_shape(+grid: Chunks.Grid,+first: U32,+target: U32,+row: Nat,+group: Nat,+source: Execution.Source,+position: Nat,+output: Nat,+shift: Nat) ->
   {Fill.initial(slot_query(grid,first,row,group,source,position,output,shift)) ==
-    Filling.Owners{Execution.source_data(source),Execution.fresh_tiles(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target,plane},source))} : Filling.Owners}:
+    Filling.Owners{Execution.source_data(source),Execution.fresh_tiles(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target},source))} : Filling.Owners}:
   +g = Chunks.grid_geometry(grid)
   +start = Chunks.selected_start(grid,first,row,group)
   +count = Chunks.selected_rows(grid,row,group)
   +quantity = Capacity.tiled_count(g,start,count)
-  +shape = Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{g,Kernel.tiling(g)},first,Chunks.grid_count(grid),target,plane},source)
+  +shape = Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{g,Kernel.tiling(g)},first,Chunks.grid_count(grid),target},source)
   Equal.cong(Tree.Tree<Tile.Tile8>,Filling.Owners,tiles => Filling.Owners{Execution.source_data(source),tiles},Tree.fresh(Tile.Tile8,Tensors.depth_for((quantity + 1 : U32)),Tile.filled(0.0)),Execution.fresh_tiles(shape),
-    Equal.sym(Tree.Tree<Tile.Tile8>,Execution.fresh_tiles(shape),Tree.fresh(Tile.Tile8,Tensors.depth_for((quantity + 1 : U32)),Tile.filled(0.0)),fresh_matches(shape,quantity,Chunks.selected_shape_tiles_matches(grid,first,target,plane,row,group,source))))
+    Equal.sym(Tree.Tree<Tile.Tile8>,Execution.fresh_tiles(shape),Tree.fresh(Tile.Tile8,Tensors.depth_for((quantity + 1 : U32)),Tile.filled(0.0)),fresh_matches(shape,quantity,Chunks.selected_shape_tiles_matches(grid,first,target,row,group,source))))
 
 def filling_count(+grid: Chunks.Grid,+first: U32,+row: Nat,+group: Nat,+source: Execution.Source) -> U32:
   (Kernel.band_rows(Chunks.grid_geometry(grid),Chunks.selected_start(grid,first,row,group),Chunks.selected_rows(grid,row,group)) * Fill.span(Chunks.selected_filling(grid,first,row,group,source)) : U32)
-def shape_count_matches(+grid: Chunks.Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
-  {Execution.shape_count(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target,plane},source)) == U32.to_nat(filling_count(grid,first,row,group,source)) : Nat}:
+def shape_count_matches(+grid: Chunks.Grid,+first: U32,+target: U32,+row: Nat,+group: Nat,+source: Execution.Source) ->
+  {Execution.shape_count(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target},source)) == U32.to_nat(filling_count(grid,first,row,group,source)) : Nat}:
   Chunks.Grid{call,e,c,range,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{cc,o,h,w,k,s,p,gh,gw} = g
-  Execution.Source{data,base,source_plane,source_first,source_rows} = source
+  Execution.Source{data,base,source_first,source_rows} = source
   +start = Chunks.selected_start(grid,first,row,group)
   Equal.cong(U32,Nat,value => U32.to_nat((Kernel.band_rows(g,start,value) * Chunks.selected_groups(grid,row,group) : U32)),Chunks.physical_rows(grid,first,row,group),Chunks.selected_rows(grid,row,group),Chunks.physical_rows_matches(grid,first,row,group))
-def shape_count_exact(+grid: Chunks.Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat,+source: Execution.Source,+position: Nat,+output: Nat,+shift: Nat,
+def shape_count_exact(+grid: Chunks.Grid,+first: U32,+target: U32,+row: Nat,+group: Nat,+source: Execution.Source,+position: Nat,+output: Nat,+shift: Nat,
   +facts: Fill.Facts<slot_query(grid,first,row,group,source,position,output,shift)>) ->
-  {Execution.shape_count(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target,plane},source)) == Fill.count(slot_query(grid,first,row,group,source,position,output,shift)) : Nat}:
+  {Execution.shape_count(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target},source)) == Fill.count(slot_query(grid,first,row,group,source,position,output,shift)) : Nat}:
   +query = slot_query(grid,first,row,group,source,position,output,shift)
-  +shape = Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target,plane},source)
-  Equal.trans(Nat,Execution.shape_count(shape),U32.to_nat(filling_count(grid,first,row,group,source)),Fill.count(query),shape_count_matches(grid,first,target,plane,row,group,source),Fill.count_exact(query,Kernel.band_rows(Chunks.grid_geometry(grid),Chunks.selected_start(grid,first,row,group),Chunks.selected_rows(grid,row,group)),{==},facts))
+  +shape = Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target},source)
+  Equal.trans(Nat,Execution.shape_count(shape),U32.to_nat(filling_count(grid,first,row,group,source)),Fill.count(query),shape_count_matches(grid,first,target,row,group,source),Fill.count_exact(query,Kernel.band_rows(Chunks.grid_geometry(grid),Chunks.selected_start(grid,first,row,group),Chunks.selected_rows(grid,row,group)),{==},facts))
 
-def fill_matches_slot(+grid: Chunks.Grid,+first: U32,+target: U32,+plane: U32,+row: Nat,+group: Nat,+source: Execution.Source,+position: Nat,+output: Nat,+shift: Nat,
+def fill_matches_slot(+grid: Chunks.Grid,+first: U32,+target: U32,+row: Nat,+group: Nat,+source: Execution.Source,+position: Nat,+output: Nat,+shift: Nat,
   +facts: Fill.Facts<slot_query(grid,first,row,group,source,position,output,shift)>) ->
-  {Execution.fill_chunk(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target,plane},source),source) ==
-    Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(slot_query(grid,first,row,group,source,position,output,shift)),0,Fill.filling(slot_query(grid,first,row,group,source,position,output,shift)),Fill.initial(slot_query(grid,first,row,group,source,position,output,shift))) : Filling.Owners}:
+  {Execution.fill_chunk(Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target},source),source) ==
+    Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(slot_query(grid,first,row,group,source,position,output,shift)),0,Fill.filling(slot_query(grid,first,row,group,source,position,output,shift)),Fill.initial(slot_query(grid,first,row,group,source,position,output,shift))) : Filling.Owners}:
   +query = slot_query(grid,first,row,group,source,position,output,shift)
-  +shape = Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target,plane},source)
+  +shape = Execution.chunk_shape(Chunks.native_producer(grid,row,group),Kernel.LeafContext{Kernel.Task{Chunks.grid_geometry(grid),Kernel.tiling(Chunks.grid_geometry(grid))},first,Chunks.grid_count(grid),target},source)
   +initial = {Filling.Owners{Execution.source_data(source),Execution.fresh_tiles(shape)} : Filling.Owners}
-  +count_same = shape_count_exact(grid,first,target,plane,row,group,source,position,output,shift,facts)
-  +context_same = Chunks.selected_filling_matches(grid,first,target,plane,row,group,source)
-  +initial_same = initial_matches_shape(grid,first,target,plane,row,group,source,position,output,shift)
-  Equal.trans(Filling.Owners,Execution.fill_chunk(shape,source),Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(query),0,Execution.shape_filling(shape),initial),Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),Fill.initial(query)),
-    Equal.cong(Nat,Filling.Owners,count => Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,count,0,Execution.shape_filling(shape),initial),Execution.shape_count(shape),Fill.count(query),count_same),
-    Equal.trans(Filling.Owners,Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(query),0,Execution.shape_filling(shape),initial),Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),initial),Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),Fill.initial(query)),
-      Equal.cong(Kernel.Filling,Filling.Owners,context => Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(query),0,context,initial),Execution.shape_filling(shape),Fill.filling(query),context_same),
-      Equal.cong(Filling.Owners,Filling.Owners,initial => Traversal.indexed_fold(~Filling.Owners,~Kernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),initial),initial,Fill.initial(query),Equal.sym(Filling.Owners,Fill.initial(query),initial,initial_same))))
+  +count_same = shape_count_exact(grid,first,target,row,group,source,position,output,shift,facts)
+  +context_same = Chunks.selected_filling_matches(grid,first,target,row,group,source)
+  +initial_same = initial_matches_shape(grid,first,target,row,group,source,position,output,shift)
+  Equal.trans(Filling.Owners,Execution.fill_chunk(shape,source),Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(query),0,Execution.shape_filling(shape),initial),Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),Fill.initial(query)),
+    Equal.cong(Nat,Filling.Owners,count => Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,count,0,Execution.shape_filling(shape),initial),Execution.shape_count(shape),Fill.count(query),count_same),
+    Equal.trans(Filling.Owners,Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(query),0,Execution.shape_filling(shape),initial),Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),initial),Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),Fill.initial(query)),
+      Equal.cong(FillKernel.Filling,Filling.Owners,context => Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(query),0,context,initial),Execution.shape_filling(shape),Fill.filling(query),context_same),
+      Equal.cong(Filling.Owners,Filling.Owners,initial => Traversal.indexed_fold(~Filling.Owners,~FillKernel.Filling,~Filling.fill_group,Fill.count(query),0,Fill.filling(query),initial),initial,Fill.initial(query),Equal.sym(Filling.Owners,Fill.initial(query),initial,initial_same))))

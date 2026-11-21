@@ -16,6 +16,7 @@ import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
 import ./window_positions.bend as Positions
 import ../../lib/proofs/nat_division.bend as Division
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
 
 def stride_word(+limits: Machine.Limits,+problem: ConvSpec.Problem,
   +support: Guards.Supported<problem,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
@@ -70,7 +71,7 @@ def start_when(+limits: Machine.Limits,+problem: ConvSpec.Problem,+facts: Guards
           Division.exact_quotient(block,Guards.stride(problem),stride_positive)) : {U32.to_nat(quotient) == block : Nat}}
       +width_exact = Coordinates.width_exact(limits,problem,facts,support)
       +product_exact = {Equal.trans(Nat,U32.to_nat(product),Nat.mul(U32.to_nat(quotient),U32.to_nat(width_u)),Nat.mul(block,ConvSpec.out_width(problem)),
-          Arithmetic.multiply(quotient,width_u,capacity,Limits.capacity_fits(limits),
+          WordMultiplication.bounded_multiply(quotient,width_u,capacity,Limits.capacity_fits(limits),
             %Equal.sym(Nat,U32.to_nat(quotient),block,quotient_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(width_u)),U32.to_nat(capacity)) == True{} : Bool}
             %Equal.sym(Nat,U32.to_nat(U32.from_nat(ConvSpec.out_width(problem))),ConvSpec.out_width(problem),width_exact) : {Nat.is_le(Nat.mul(block,_),U32.to_nat(capacity)) == True{} : Bool}
             Order.transitive(Nat.mul(block,ConvSpec.out_width(problem)),U32.to_nat(offset),U32.to_nat(capacity),reach,offset_room)),

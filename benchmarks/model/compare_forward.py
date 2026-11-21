@@ -116,7 +116,7 @@ def run_model(binary, folder, case, threads, repetitions, layers):
         environment['YOLO_LAYERS'] = '1'
     with (folder / 'stdout.log').open('w') as stdout, (folder / 'stderr.log').open('w') as stderr:
         subprocess.run(
-            [str(binary), '--threads', str(threads), '--gpu', 'off'],
+            [str(binary), '+RTS', '--threads', str(threads), '--gpu', 'off', '-RTS'],
             cwd=ROOT,
             env=environment,
             stdout=stdout,

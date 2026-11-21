@@ -7,6 +7,7 @@ import ./nat_to_u32_bounds.bend as Bounds
 import ./natural_addition.bend as Addition
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./u32_division.bend as NativeDivision
+import ./word_multiplication.bend as WordMultiplication
 
 def group_position(+index: Nat,+span: Nat,+groups: Nat) -> Nat:
   Nat.add(Nat.mul(Nat.div(index,span),groups),Nat.mod(index,span))
@@ -88,6 +89,6 @@ def group_address_exact(+index: Nat,+span: U32,+groups: U32,+block: U32,+rows: N
       %Equal.sym(Nat,U32.to_nat(column_word),column,column_exact) : {Nat.is_le(Nat.add(Nat.mul(row,group_width),_),U32.to_nat(capacity)) == True{} : Bool}
       position_room) : {U32.to_nat(position_word) == position : Nat}}
   %position_exact : {U32.to_nat((position_word * block : U32)) == Nat.mul(_,block_width) : Nat}
-  Arithmetic.multiply(position_word,block,capacity,capacity_ok,
+  WordMultiplication.bounded_multiply(position_word,block,capacity,capacity_ok,
     %Equal.sym(Nat,U32.to_nat(position_word),position,position_exact) : {Nat.is_le(Nat.mul(_,block_width),U32.to_nat(capacity)) == True{} : Bool}
     Order.transitive(Nat.mul(position,block_width),Nat.mul(group_count,block_width),U32.to_nat(capacity),RowMajor.mul_le(position,group_count,block_width,Bounds.strict_le(position,group_count,position_inside)),room))

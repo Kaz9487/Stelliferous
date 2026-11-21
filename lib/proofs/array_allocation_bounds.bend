@@ -1,4 +1,3 @@
-import ./storage_shape.bend as Shape
 import Base
 import ../storage_buffer.bend as Storage
 import ./allocation_bit_bounds.bend as AllocationBitBounds
@@ -7,6 +6,7 @@ import ./nat_to_u32_bounds.bend as Bounds
 import ./nat_order.bend as Order
 import ./u32_division.bend as U32Division
 import ./word_encoding.bend as WordEncoding
+import ../kernel_gemm.bend as KernelGemm
 
 def prior_lt(+n: Nat,+cap: Nat,pos: {Nat.is_lt(0n,n) == True{} : Bool},bound: {Nat.is_le(n,cap) == True{} : Bool}) -> {Nat.is_lt(Nat.sub(n,1n),
     cap) == True{} : Bool}:
@@ -40,13 +40,13 @@ def machine_prior(+n: U32,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) ==
     prior_lt(U32.to_nat(n),U32.to_nat(upper),pos,bound))
 
 def Allocation(+n: U32) -> Data:
-  Shape.Both<{Nat.is_le(Storage.allocation_depth(n),30n) == True{} : Bool},{Nat.is_le(U32.to_nat(n),U32.to_nat(U32.shln(1,
+  KernelGemm.Both<{Nat.is_le(Storage.allocation_depth(n),30n) == True{} : Bool},{Nat.is_le(U32.to_nat(n),U32.to_nat(U32.shln(1,
           Storage.allocation_depth(n)))) == True{} : Bool}>
 
 def finish(+n: U32,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) == True{} : Bool},+pos: {Nat.is_lt(0n,U32.to_nat(n)) == True{} : Bool},
   +bound: {Nat.is_le(U32.to_nat(n),U32.to_nat(upper)) == True{} : Bool},proof: AllocationBitBounds.LengthGoal((n - 1 : U32))) -> Allocation(n):
-  Shape.Both{depth,room} = proof
-  Shape.Both{depth,
+  KernelGemm.Both{depth,room} = proof
+  KernelGemm.Both{depth,
     following(U32.to_nat(n),U32.to_nat(U32.shln(1,Storage.allocation_depth(n))),
       %preceding(n,upper,upper_ok,pos,bound) : {Nat.is_lt(_,U32.to_nat(U32.shln(1,Storage.allocation_depth(n)))) == True{} : Bool}
       Bounds.as_nat_lt((n - 1 : U32),U32.shln(1,Storage.allocation_depth(n)),room))}
@@ -68,5 +68,5 @@ def allocated(n,upper,upper_ok,upper_bound,positive,bound):
 def with_bounds(-Result: Type,+count: U32,proof: Allocation(count),body: {Nat.is_le(Storage.allocation_depth(count),
       30n) == True{} : Bool} -> {Nat.is_le(U32.to_nat(count),U32.to_nat(U32.shln(1,
         Storage.allocation_depth(count)))) == True{} : Bool} -> Result) -> Result:
-  Shape.Both{depth_ok,room} = proof
+  KernelGemm.Both{depth_ok,room} = proof
   body(depth_ok,room)

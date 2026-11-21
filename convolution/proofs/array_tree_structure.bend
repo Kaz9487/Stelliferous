@@ -4,18 +4,20 @@ import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/natural_addition.bend as Addition
 import ../specification.bend as ConvSpec
 import ./tree_indexing.bend as TreeIndex
+import ../ordered_reference.bend as OrderedReference
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 law length_cat:
   for +xs: List<&2,F32>
   for +ys: List<&2,F32>
-  {ConvSpec.length(TreeIndex.cat(xs,ys)) == Nat.add(ConvSpec.length(xs),ConvSpec.length(ys)) : Nat}
+  {ConvSpec.length(OrderedReference.cat(xs,ys)) == Nat.add(ConvSpec.length(xs),ConvSpec.length(ys)) : Nat}
 
 def length_cat(xs,ys):
   match xs:
     case Nil{}:
       {==}
     case h <> +tail:
-      %length_cat(tail,ys) : {1n+ConvSpec.length(TreeIndex.cat(tail,ys)) == 1n+_ : Nat}
+      %length_cat(tail,ys) : {1n+ConvSpec.length(OrderedReference.cat(tail,ys)) == 1n+_ : Nat}
       {==}
 
 law length:
@@ -33,10 +35,10 @@ def length(depth,tree,balanced):
     case 1n+d Tree.Leaf{x}:
       match balanced:
     case 1n+ +d Tree.Node{+l,+r}:
-      Shape.Both{left,right} = balanced
-      %Addition.double(Shape.extent(d)) : {ConvSpec.length(TreeIndex.cat(TreeIndex.flatten(l),TreeIndex.flatten(r))) == _ : Nat}
-      %length(d,l,left) : {ConvSpec.length(TreeIndex.cat(TreeIndex.flatten(l),TreeIndex.flatten(r))) == Nat.add(_,
+      KernelGemm.Both{left,right} = balanced
+      %Addition.double(Shape.extent(d)) : {ConvSpec.length(OrderedReference.cat(TreeIndex.flatten(l),TreeIndex.flatten(r))) == _ : Nat}
+      %length(d,l,left) : {ConvSpec.length(OrderedReference.cat(TreeIndex.flatten(l),TreeIndex.flatten(r))) == Nat.add(_,
           Shape.extent(d)) : Nat}
-      %length(d,r,right) : {ConvSpec.length(TreeIndex.cat(TreeIndex.flatten(l),
+      %length(d,r,right) : {ConvSpec.length(OrderedReference.cat(TreeIndex.flatten(l),
             TreeIndex.flatten(r))) == Nat.add(ConvSpec.length(TreeIndex.flatten(l)),_) : Nat}
       length_cat(TreeIndex.flatten(l),TreeIndex.flatten(r))

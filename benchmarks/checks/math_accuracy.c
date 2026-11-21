@@ -43,6 +43,16 @@ static void logistic(mpfr_t result, mpfr_t t) {
 
 // The real function each name stands for. gelu_tanh is PyTorch's
 // 0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3))), written as x logistic(2 t).
+// gelu is x Phi(x), and Phi(x) is erfc(-x / sqrt 2) / 2.
+static void normal_tail(mpfr_t result, mpfr_t x) {
+  mpfr_set_ui(scratch, 2, MPFR_RNDN);
+  mpfr_sqrt(scratch, scratch, MPFR_RNDN);
+  mpfr_div(result, x, scratch, MPFR_RNDN);
+  mpfr_neg(result, result, MPFR_RNDN);
+  mpfr_erfc(result, result, MPFR_RNDN);
+  mpfr_div_2ui(result, result, 1, MPFR_RNDN);
+}
+
 static void reference(mpfr_t result, mpfr_t x, const char *name) {
   if (!strcmp(name, "identity_derivative")) mpfr_set_ui(result, 1, MPFR_RNDN);
   else if (!strcmp(name, "relu_derivative")) mpfr_set_ui(result, mpfr_cmp_ui(x, 0) > 0, MPFR_RNDN);
@@ -117,12 +127,36 @@ static void reference(mpfr_t result, mpfr_t x, const char *name) {
       if (mpfr_sgn(x) >= 0) mpfr_ui_sub(result, 1, result, MPFR_RNDN);
     }
   }
+  else if (!strcmp(name, "gelu_derivative")) {
+    if (mpfr_inf_p(x)) {
+      if (mpfr_sgn(x) < 0) mpfr_set_zero(result, -1);
+      else mpfr_set_ui(result, 1, MPFR_RNDN);
+    } else {
+      // Phi(x) + x exp(-x^2 / 2) / sqrt(2 pi)
+      normal_tail(numerator, x);
+      mpfr_sqr(result, x, MPFR_RNDN);
+      mpfr_div_2ui(result, result, 1, MPFR_RNDN);
+      mpfr_neg(result, result, MPFR_RNDN);
+      mpfr_exp(result, result, MPFR_RNDN);
+      mpfr_mul(result, result, x, MPFR_RNDN);
+      mpfr_const_pi(scratch, MPFR_RNDN);
+      mpfr_mul_2ui(scratch, scratch, 1, MPFR_RNDN);
+      mpfr_sqrt(scratch, scratch, MPFR_RNDN);
+      mpfr_div(result, result, scratch, MPFR_RNDN);
+      mpfr_add(result, result, numerator, MPFR_RNDN);
+      // The exact value is negative far below zero, where both terms leave MPFR's exponent range.
+      if (mpfr_zero_p(result) && mpfr_sgn(x) < 0) mpfr_set_zero(result, -1);
+    }
+  }
   else if (!strcmp(name, "exp")) mpfr_exp(result, x, MPFR_RNDN);
   else if (!strcmp(name, "log")) mpfr_log(result, x, MPFR_RNDN);
   else if (!strcmp(name, "tanh")) mpfr_tanh(result, x, MPFR_RNDN);
   else if (!strcmp(name, "sigmoid")) logistic(result, x);
   else if (!strcmp(name, "silu")) {
     logistic(result, x);
+    mpfr_mul(result, result, x, MPFR_RNDN);
+  } else if (!strcmp(name, "gelu")) {
+    normal_tail(result, x);
     mpfr_mul(result, result, x, MPFR_RNDN);
   } else if (!strcmp(name, "gelu_tanh")) {
     mpfr_pow_ui(result, x, 3, MPFR_RNDN);
@@ -170,8 +204,8 @@ int main(int argc, char **argv) {
   size_t count = strtoull(argv[4], 0, 0);
   float *inputs = read_floats(argv[5], count);
   float *outputs = read_floats(argv[6], count);
-  // silu and gelu_tanh are 0 times infinity at an infinite input.
-  int product = !strcmp(name, "silu") || !strcmp(name, "gelu_tanh");
+  // silu, gelu_tanh and gelu are 0 times infinity at an infinite input.
+  int product = !strcmp(name, "silu") || !strcmp(name, "gelu_tanh") || !strcmp(name, "gelu");
 
   // Tiny sampled products can sit extremely close to subnormal midpoints.
   // Use more precision and a narrower decision interval for those samples.

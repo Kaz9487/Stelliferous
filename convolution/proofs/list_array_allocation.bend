@@ -12,7 +12,7 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/u32_division.bend as U32Division
 import ./tree_indexing.bend as TreeIndex
 import ../specification.bend as ConvSpec
-import ../scalar_kernel.bend as ScalarConv
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def depth(+xs: List<&2,F32>) -> Nat:
   Storage.allocation_depth(U32.from_nat(ConvSpec.length(xs)))
@@ -21,13 +21,13 @@ def initial(+xs: List<&2,F32>) -> Tree.Tree<F32>:
   Tree.fresh(F32,depth(xs),0.0)
 
 def Ready(+xs: List<&2,F32>) -> Data:
-  Shape.Both<{Nat.is_le(depth(xs),30n) == True{} : Bool},{Nat.is_le(ConvSpec.length(xs),U32.to_nat(Tree.capacity(F32,
+  KernelGemm.Both<{Nat.is_le(depth(xs),30n) == True{} : Bool},{Nat.is_le(ConvSpec.length(xs),U32.to_nat(Tree.capacity(F32,
           initial(xs)))) == True{} : Bool}>
 
 def ready_finish(+xs: List<&2,F32>,eq: {U32.to_nat(U32.from_nat(ConvSpec.length(xs))) == ConvSpec.length(xs) : Nat},
   proof: ArrayAllocation.Allocation(U32.from_nat(ConvSpec.length(xs)))) -> Ready(xs):
-  Shape.Both{limit,room} = proof
-  Shape.Both{limit,
+  KernelGemm.Both{limit,room} = proof
+  KernelGemm.Both{limit,
     %Equal.sym(U32,Tree.capacity(F32,initial(xs)),U32.shln(1,depth(xs)),StorageCapacity.exact(depth(xs),initial(xs),
         Shape.fresh(F32,depth(xs),0.0))) : {Nat.is_le(ConvSpec.length(xs),U32.to_nat(_)) == True{} : Bool}
     %eq : {Nat.is_le(_,U32.to_nat(U32.shln(1,depth(xs)))) == True{} : Bool}
@@ -45,7 +45,7 @@ def ready(+xs: List<&2,F32>,+upper: U32,+upper_ok: {U32.is_le(upper,2147483648) 
 
 def prefix(+xs: List<&2,F32>,proof: Ready(xs)) -> {ArrayFill.take(ConvSpec.length(xs),
     TreeIndex.flatten(ListStorage.representation(xs))) == xs : List<&2,F32>}:
-  Shape.Both{+limit,+room} = proof
+  KernelGemm.Both{+limit,+room} = proof
   %Equal.sym(List<&2,F32>,TreeIndex.flatten(ListStorage.representation(xs)),ArrayFill.fill(xs,
       0n,TreeIndex.flatten(initial(xs))),ArrayFill.filled(xs,0,initial(xs),depth(xs),
       Shape.fresh(F32,depth(xs),0.0),limit,room)) : {ArrayFill.take(ConvSpec.length(xs),_) == xs : List<&2,F32>}
@@ -56,7 +56,7 @@ def prefix(+xs: List<&2,F32>,proof: Ready(xs)) -> {ArrayFill.take(ConvSpec.lengt
 
 def inside(+xs: List<&2,F32>,+i: U32,proof: Ready(xs),h: {Nat.is_lt(U32.to_nat(i),ConvSpec.length(xs)) == True{} : Bool}) -> {U32.is_lt(i,
     Tree.capacity(F32,ListStorage.representation(xs))) == True{} : Bool}:
-  Shape.Both{limit,room} = proof
+  KernelGemm.Both{limit,room} = proof
   %Equal.sym(U32,Tree.capacity(F32,ListStorage.representation(xs)),Tree.capacity(F32,initial(xs)),
     ArrayFill.capacity(xs,0,initial(xs),depth(xs),Shape.fresh(F32,depth(xs),0.0))) : {U32.is_lt(i,_) == True{} : Bool}
   U32Division.nat_lt_native(i,Tree.capacity(F32,initial(xs)),Bounds.nat_trans(U32.to_nat(i),ConvSpec.length(xs),
@@ -70,8 +70,8 @@ law read:
   {Tree.read(F32,ListStorage.representation(xs),i) == ConvSpec.at(U32.to_nat(i),xs) : F32}
 
 def read(xs,i,proof,index_bound):
-  Shape.Both{+limit,+room} = proof
-  %prefix(xs,Shape.Both{limit,room}) : {Tree.read(F32,ListStorage.representation(xs),i) == ConvSpec.at(U32.to_nat(i),
+  KernelGemm.Both{+limit,+room} = proof
+  %prefix(xs,KernelGemm.Both{limit,room}) : {Tree.read(F32,ListStorage.representation(xs),i) == ConvSpec.at(U32.to_nat(i),
       _) : F32}
   %Equal.sym(F32,ConvSpec.at(U32.to_nat(i),ArrayFill.take(ConvSpec.length(xs),
         TreeIndex.flatten(ListStorage.representation(xs)))),ConvSpec.at(U32.to_nat(i),
@@ -80,11 +80,11 @@ def read(xs,i,proof,index_bound):
       ListStorage.representation(xs),i) == _ : F32}
   FlatRead.flat(depth(xs),ListStorage.representation(xs),i,ArrayFill.balanced(xs,0,initial(xs),depth(xs),
       Shape.fresh(F32,depth(xs),0.0)),limit,inside(xs,i,
-        Shape.Both{limit,room},index_bound))
+        KernelGemm.Both{limit,room},index_bound))
 
 def expression_exact(+xs: List<&2,F32>,+address: U32,+index: Nat,proof: Ready(xs),encoded: {address == U32.from_nat(index) : U32},
   index_bound: {Nat.is_lt(index,ConvSpec.length(xs)) == True{} : Bool}) -> {U32.to_nat(address) == index : Nat}:
-  Shape.Both{limit,room} = proof
+  KernelGemm.Both{limit,room} = proof
   %Equal.sym(U32,address,U32.from_nat(index),encoded) : {U32.to_nat(_) == index : Nat}
   Bounds.roundtrip(index,Tree.capacity(F32,initial(xs)),StorageCapacity.small(depth(xs),initial(xs),
       Shape.fresh(F32,depth(xs),0.0),limit),Bounds.strict_le(index,U32.to_nat(Tree.capacity(F32,initial(xs))),

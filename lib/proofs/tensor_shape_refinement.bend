@@ -15,6 +15,12 @@ def elements(extents: List<&2,U32>) -> Nat:
     case []: 1n
     case extent <> tail: Nat.mul(U32.to_nat(extent),elements(tail))
 
+# The row-major number of digits.
+def digits_value(extents: List<&2,U32>,digits: List<&2,Nat>) -> Nat:
+  match extents digits:
+    case Con{extent,+rest} Con{+digit,more}: Nat.add(Nat.mul(digit,elements(rest)),digits_value(rest,more))
+    case extents digits: 0n
+
 # The cells of three extents.
 def elements_three(+channels: U32,+rows: U32,+width: U32) ->
   {elements([channels,rows,width]) == Nat.mul(U32.to_nat(channels),Nat.mul(U32.to_nat(rows),U32.to_nat(width))) : Nat}:
@@ -66,11 +72,6 @@ def nonempty_count(+extents: List<&2,U32>) -> Count(Shapes.count_nonempty(False{
   %Addition.zero_right(elements(extents)) : Count(Shapes.product(extents,Some{1}),_)
   product(extents,Some{1},1n,{==})
 
-def nonempty_numel(+extents: List<&2,U32>,nonempty: {Shapes.has_zero(extents) == False{} : Bool}) ->
-  Count(Shapes.numel(Shapes.Shape{extents}),elements(extents)):
-  %Equal.sym(Bool,Shapes.has_zero(extents),False{},nonempty) : Count(Shapes.count_nonempty(_,extents),elements(extents))
-  nonempty_count(extents)
-
 def same_extents(+left: List<&2,U32>,+right: List<&2,U32>,same: {Shapes.same_extents(left,right) == True{} : Bool}) ->
   {left == right : List<&2,U32>}:
   match left right:
@@ -82,10 +83,6 @@ def same_extents(+left: List<&2,U32>,+right: List<&2,U32>,same: {Shapes.same_ext
       %Arithmetic.equal_of_is_eq(head,other,Boolean.left(U32.is_eq(head,other),Shapes.same_extents(tail,rest),same)) : {head <> tail == _ <> rest : List<&2,U32>}
       %same_extents(tail,rest,Boolean.right(U32.is_eq(head,other),Shapes.same_extents(tail,rest),same)) : {head <> tail == head <> _ : List<&2,U32>}
       {==}
-
-def count_zero(+count: U32,equal: {Some{0} == Some{count} : Maybe<&2,U32>}) -> {U32.to_nat(count) == 0n : Nat}:
-  Equal.sym(Nat,0n,U32.to_nat(count),Equal.cong(U32,Nat,value => U32.to_nat(value),0,count,
-    Equal.cong(Maybe<&2,U32>,U32,result => Checked.value(result),Some{0},Some{count},equal)))
 
 def empty_product_selected(zero: Bool,+head: U32,+tail: List<&2,U32>,comparison: {U32.is_zero(head) == zero : Bool},empty: {Shapes.has_zero(head <> tail) == True{} : Bool},
   tail_case: {Shapes.has_zero(tail) == True{} : Bool} -> {elements(tail) == 0n : Nat}) -> {elements(head <> tail) == 0n : Nat}:
@@ -123,3 +120,16 @@ def drop_zero(shape: List<&2,U32>) -> {List.drop(&2,U32,shape,0n) == shape : Lis
   match shape:
     case []: {==}
     case head <> tail: {==}
+
+# The cells of three and four extents of known numbers.
+def elements_three_exact(+a: U32,+b: U32,+c: U32,+an: Nat,+bn: Nat,+cn: Nat,+a_exact: {U32.to_nat(a) == an : Nat},+b_exact: {U32.to_nat(b) == bn : Nat},
+  +c_exact: {U32.to_nat(c) == cn : Nat}) -> {elements([a,b,c]) == Nat.mul(an,Nat.mul(bn,cn)) : Nat}:
+  %a_exact : {elements([a,b,c]) == Nat.mul(_,Nat.mul(bn,cn)) : Nat}
+  %b_exact : {elements([a,b,c]) == Nat.mul(U32.to_nat(a),Nat.mul(_,cn)) : Nat}
+  %c_exact : {elements([a,b,c]) == Nat.mul(U32.to_nat(a),Nat.mul(U32.to_nat(b),_)) : Nat}
+  elements_three(a,b,c)
+
+def elements_four_exact(+a: U32,+b: U32,+c: U32,+d: U32,+an: Nat,+bn: Nat,+cn: Nat,+dn: Nat,+a_exact: {U32.to_nat(a) == an : Nat},+b_exact: {U32.to_nat(b) == bn : Nat},
+  +c_exact: {U32.to_nat(c) == cn : Nat},+d_exact: {U32.to_nat(d) == dn : Nat}) -> {elements([a,b,c,d]) == Nat.mul(an,Nat.mul(bn,Nat.mul(cn,dn))) : Nat}:
+  %a_exact : {elements([a,b,c,d]) == Nat.mul(_,Nat.mul(bn,Nat.mul(cn,dn))) : Nat}
+  Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(a),value),elements([b,c,d]),Nat.mul(bn,Nat.mul(cn,dn)),elements_three_exact(b,c,d,bn,cn,dn,b_exact,c_exact,d_exact))

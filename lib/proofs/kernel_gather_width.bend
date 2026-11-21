@@ -1,7 +1,6 @@
 # Clip a leaf once, then copy each channel without per-element predicates.
 import Base
 import ../kernel_gather.bend as Gather
-import ./storage_shape.bend as Shape
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./bounded_u32_arithmetic.bend as Arithmetic
@@ -10,15 +9,16 @@ import ./word_subtraction.bend as Subtraction
 import ./word_encoding.bend as WordEncoding
 import ./u32_extrema.bend as U32Extrema
 import ./nat_division.bend as Division
+import ../kernel_gemm.bend as KernelGemm
 
 def minimum_inside_when(+choose_left: Bool,+left: U32,+right: U32,+column: Nat,
   comparison: {U32.is_lt(left,right) == choose_left : Bool},+inside: {Nat.is_lt(column,U32.to_nat(Bool.pick(U32,choose_left,left,right))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_lt(column,U32.to_nat(left)) == True{} : Bool},{Nat.is_lt(column,U32.to_nat(right)) == True{} : Bool}>:
+  KernelGemm.Both<{Nat.is_lt(column,U32.to_nat(left)) == True{} : Bool},{Nat.is_lt(column,U32.to_nat(right)) == True{} : Bool}>:
   match choose_left:
     case True{}:
-      Shape.Both{inside,Bounds.nat_trans(column,U32.to_nat(left),U32.to_nat(right),inside,Bounds.strict_le(U32.to_nat(left),U32.to_nat(right),Bounds.as_nat_lt(left,right,comparison)))}
+      KernelGemm.Both{inside,Bounds.nat_trans(column,U32.to_nat(left),U32.to_nat(right),inside,Bounds.strict_le(U32.to_nat(left),U32.to_nat(right),Bounds.as_nat_lt(left,right,comparison)))}
     case False{}:
-      Shape.Both{Bounds.nat_trans(column,U32.to_nat(right),U32.to_nat(left),inside,
+      KernelGemm.Both{Bounds.nat_trans(column,U32.to_nat(right),U32.to_nat(left),inside,
         Order.not_less(U32.to_nat(left),U32.to_nat(right),%Comparison.lt(left,right) : {_ == False{} : Bool} comparison)),inside}
 
 def minimum_covers_when(choose_left: Bool,+left: U32,+right: U32,+column: Nat,
@@ -45,20 +45,20 @@ def restored(+offset: U32,+spatial: U32,+capacity: U32,+capacity_ok: {U32.is_le(
 
 def inside_remainder(+offset: U32,+spatial: U32,+span: U32,+column: Nat,capacity: U32,capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
   bounded: {U32.is_le(spatial,capacity) == True{} : Bool},guard: {U32.is_lt(offset,spatial) == True{} : Bool},
-  facts: Shape.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(column,U32.to_nat((spatial - offset : U32))) == True{} : Bool}>) ->
-  Shape.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>:
-  Shape.Both{in_span,in_remainder} = facts
-  Shape.Both{in_span,
+  facts: KernelGemm.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(column,U32.to_nat((spatial - offset : U32))) == True{} : Bool}>) ->
+  KernelGemm.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>:
+  KernelGemm.Both{in_span,in_remainder} = facts
+  KernelGemm.Both{in_span,
     %restored(offset,spatial,capacity,capacity_ok,bounded,guard) : {Nat.is_lt(Nat.add(U32.to_nat(offset),column),_) == True{} : Bool}
     Order.offset_lt(U32.to_nat(offset),column,U32.to_nat((spatial - offset : U32)),in_remainder)}
 
 def inside_when(+valid: Bool,+offset: U32,+spatial: U32,+span: U32,+column: Nat,+capacity: U32,+capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
   bounded: {U32.is_le(spatial,capacity) == True{} : Bool},guard: {U32.is_lt(offset,spatial) == valid : Bool},
   inside: {Nat.is_lt(column,U32.to_nat(Gather.gather_width_when(valid,offset,spatial,span))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>:
+  KernelGemm.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>:
   match valid:
     case False{}:
-      Empty.absurd(Shape.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>,
+      Empty.absurd(KernelGemm.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>,
         WordEncoding.false_true(%Division.lt_zero(column) : {_ == True{} : Bool} inside))
     case True{}:
       inside_remainder(offset,spatial,span,column,capacity,capacity_ok,bounded,guard,
@@ -68,7 +68,7 @@ def inside_when(+valid: Bool,+offset: U32,+spatial: U32,+span: U32,+column: Nat,
 
 def inside(+offset: U32,+spatial: U32,+span: U32,+column: Nat,capacity: U32,capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},
   bounded: {U32.is_le(spatial,capacity) == True{} : Bool},inside: {Nat.is_lt(column,U32.to_nat(Gather.gather_width(offset,spatial,span))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>:
+  KernelGemm.Both<{Nat.is_lt(column,U32.to_nat(span)) == True{} : Bool},{Nat.is_lt(Nat.add(U32.to_nat(offset),column),U32.to_nat(spatial)) == True{} : Bool}>:
   inside_when(U32.is_lt(offset,spatial),offset,spatial,span,column,capacity,capacity_ok,bounded,{==},inside)
 
 def covers(+offset: U32,+spatial: U32,+span: U32,+column: Nat,+capacity: U32,+capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},

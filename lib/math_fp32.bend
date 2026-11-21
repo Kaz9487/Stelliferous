@@ -1,15 +1,9 @@
 # Ordered FP32 arithmetic on the shared sequence model. No separate container.
 import Base
-import ./math_sequence.bend as Sequence
+import ./math_choice.bend as Choice
 
 def multiply_add(accumulator: F32,input: F32,weight: F32) -> F32:
   (accumulator + input * weight : F32)
-
-def weighted_add(weight: F32,accumulator: F32,input: F32) -> F32:
-  multiply_add(accumulator,input,weight)
-
-def zip_mac(length: Nat,accumulator: Sequence.Values(F32,length),input: Sequence.Values(F32,length),weight: F32) -> Sequence.Values(F32,length):
-  Sequence.zip_map(~F32,~F32,~weighted_add,length,weight,accumulator,input)
 
 # The Cephes expf polynomial after its constant and linear terms.
 def exponential_polynomial(+r: F32) -> F32:
@@ -36,8 +30,11 @@ def exponential_remainder(+r: F32) -> F32:
 def logistic_denominator(q: F32,+base: F32,r: F32,correction: F32) -> F32:
   (base + (r + (correction + ((1.0 - base : F32) + q : F32) : F32) : F32) : F32)
 
+# The bits of yes where mask is set, the bits of no elsewhere.
 def selected(+mask: U32,yes: F32,+no: F32) -> F32:
-  from_bits(U32.xor(F32.bits(no),U32.and(U32.xor(F32.bits(yes),F32.bits(no)),mask)))
+  F32{yes_word} = yes
+  F32{+no_word} = no
+  from_bits(U32.xor(U32{no_word},U32.and(U32.xor(U32{yes_word},U32{no_word}),mask)))
 
 # Above 18 SiLU rounds to x. Pass x through, including positive infinity;
 # the negative tail uses the clamped input before the final underflow.
@@ -63,7 +60,7 @@ def sigmoid_reduced(silu: Bool,x: F32,+value: F32,+biased: F32) -> F32:
   +n = (biased - 12582912.0 : F32)
   +r = ((n * F32.neg(0.693359375) - value : F32) + n * 0.00021219444005469058 : F32)
   +power = from_bits((1602224128 - U32.shln(F32.bits(biased),23n) : U32))
-  +q = from_bits((U32.max(F32.bits(power),545259520) - 536870912 : U32))
+  +q = from_bits((Choice.larger_word(F32.bits(power),545259520) - 536870912 : U32))
   logistic_scaled(silu,x,value,power,logistic_denominator(q,(1.0 + q : F32),r,exponential_remainder(r)))
 
 def sigmoid_input(silu: Bool,x: F32,+value: F32) -> F32:
@@ -73,12 +70,12 @@ def sigmoid_input(silu: Bool,x: F32,+value: F32) -> F32:
 # to zero; multiplying the clamped x before the final scaling preserves -0
 # for SiLU, including at -infinity. NaNs pass the clamp and propagate.
 def sigmoid(+x: F32) -> F32:
-  sigmoid_input(False{},x,F32.max(F32.min(18.0,x),F32.neg(110.0)))
+  sigmoid_input(False{},x,Choice.larger(Choice.smaller(18.0,x),F32.neg(110.0)))
 
 def activate(+x: F32,enabled: Bool) -> F32:
   match enabled:
     case True{}:
-      sigmoid_input(True{},x,F32.max(F32.min(18.0,x),F32.neg(110.0)))
+      sigmoid_input(True{},x,Choice.larger(Choice.smaller(18.0,x),F32.neg(110.0)))
     case False{}:
       x
 
@@ -98,7 +95,7 @@ def gelu_reduced(x: F32,+value: F32,low: F32,+biased: F32) -> F32:
   +n = (biased - 12582912.0 : F32)
   +r = (((n * F32.neg(0.693359375) - value : F32) + n * 0.00021219444005469058 : F32) - low : F32)
   +power = from_bits((1602224128 - U32.shln(F32.bits(biased),23n) : U32))
-  +q = from_bits((U32.max(F32.bits(power),545259520) - 536870912 : U32))
+  +q = from_bits((Choice.larger_word(F32.bits(power),545259520) - 536870912 : U32))
   (((x * power : F32) / logistic_denominator(q,(1.0 + q : F32),r,gelu_exponential_remainder(r)) : F32) * 0.00000000000000000005421010862427522 : F32)
 
 # w=2 sqrt(2/pi) c (1+0.044715 c^2). Twelve-bit input/product heads,
@@ -124,7 +121,7 @@ def gelu_argument(+x: F32,+c: F32) -> Argument:
       ((0.0712890625 * (cube - cubeh : F32) : F32) + (6.575377483386546e-05 * cube : F32) : F32) : F32) +
       (((0.07135481387376785 * h : F32) * (p - ph : F32) : F32) +
         (l * (1.5957691669464111 + 0.21406444907188416 * (p + h * l : F32) : F32) : F32) : F32) : F32)
-  +value = F32.max(w,F32.neg(110.0))
+  +value = Choice.larger(w,F32.neg(110.0))
   Argument{x,value,low}
 
 # Positive results already round to x at magnitude >=6. Cap their
@@ -133,7 +130,7 @@ def gelu_argument(+x: F32,+c: F32) -> Argument:
 def gelu_negative_input(+x: F32) -> F32:
   +word = F32.bits(x)
   +negative = (0 - U32.shrn(word,31n) : U32)
-  F32.max(from_bits(U32.or(word,2147483648)),selected(negative,F32.neg(16.0),F32.neg(6.0)))
+  Choice.larger(from_bits(U32.or(word,2147483648)),selected(negative,F32.neg(16.0),F32.neg(6.0)))
 
 def gelu_finish(arg: Argument) -> F32:
   Argument{+x,+value,low} = arg
@@ -162,7 +159,7 @@ def tanh_finish(+x: F32,+value: F32) -> F32:
 # At |x|>=10, 1-tanh(|x|)<2*exp(-20)<2^-25. Clamping before arithmetic
 # also keeps infinities away from intermediate products; NaNs propagate.
 def tanh_magnitude(+x: F32) -> F32:
-  F32.max(F32.min(10.0,from_bits(U32.and(F32.bits(x),2147483647))),0.000244140625)
+  Choice.larger(Choice.smaller(10.0,from_bits(U32.and(F32.bits(x),2147483647))),0.000244140625)
 
 # Chebyshev interpolation of (tanh(sqrt(z))/sqrt(z)-1)/z, |t|<=0.75.
 # The coefficients are F32 values.
@@ -177,7 +174,7 @@ def tanh_exponential(+a: F32,+biased: F32,x: F32) -> F32:
   +n = (biased - 12582912.0 : F32)
   +r = (((a * 2.0 : F32) - n * 0.693359375 : F32) - n * F32.neg(0.00021219444005469058) : F32)
   +q = from_bits((1065353216 - U32.shln(F32.bits(biased),23n) : U32))
-  +t = F32.min(0.75,a)
+  +t = Choice.smaller(0.75,a)
   +small = tanh_small(t,(t * t : F32))
   +large = (1.0 - 2.0 * (q / ((1.0 + q : F32) + (r + tanh_remainder(r) : F32) : F32) : F32) : F32)
   +mask = (0 - U32.shrn((F32.bits(a) - 1061158912 : U32),31n) : U32)
@@ -214,7 +211,7 @@ def exponential_input(+x: F32) -> F32:
   exponential_reduced(x,(x * 1.44269504088896341 + 12582912.0 : F32))
 
 def exp(x: F32) -> F32:
-  exponential_input(F32.max(F32.min(89.0,x),F32.neg(104.0)))
+  exponential_input(Choice.larger(Choice.smaller(89.0,x),F32.neg(104.0)))
 
 # For s near r/(2+r), d = r-(2+r)*s gives the exact real identity
 # log(1+r) = 2*atanh(s) + log(1+d/(1+s)). The odd series ends at s^11.
@@ -304,11 +301,11 @@ def silu_derivative_prepared(+x: F32,+value: F32) -> DerivativeArgument:
   +n = (biased - 12582912.0 : F32)
   +r = ((n * F32.neg(0.693359375) - value : F32) + n * 0.00021219444005469058 : F32)
   +power = from_bits((1602224128 - U32.shln(F32.bits(biased),23n) : U32))
-  +q = from_bits((U32.max(F32.bits(power),545259520) - 536870912 : U32))
+  +q = from_bits((Choice.larger_word(F32.bits(power),545259520) - 536870912 : U32))
   DerivativeArgument{x,value,(power / logistic_denominator(q,(1.0 + q : F32),r,exponential_remainder(r)) : F32)}
 
 def silu_derivative_prepare(+x: F32) -> DerivativeArgument:
-  silu_derivative_prepared(x,F32.max(from_bits(U32.or(F32.bits(x),2147483648)),F32.neg(110.0)))
+  silu_derivative_prepared(x,Choice.larger(from_bits(U32.or(F32.bits(x),2147483648)),F32.neg(110.0)))
 
 def silu_derivative_finish(arg: DerivativeArgument) -> F32:
   DerivativeArgument{+x,value,scaled} = arg
@@ -349,7 +346,7 @@ def gelu_derivative_prepared(+c: F32,arg: Argument) -> GeluPrepared:
   GeluPrepared{x,head,low,slope,slope_error}
 
 def gelu_derivative_prepare(+x: F32) -> GeluPrepared:
-  +c = F32.max(from_bits(U32.or(F32.bits(x),2147483648)),F32.neg(11.0))
+  +c = Choice.larger(from_bits(U32.or(F32.bits(x),2147483648)),F32.neg(11.0))
   gelu_derivative_prepared(c,gelu_argument(x,c))
 
 type GeluReduced is Data:
@@ -365,7 +362,7 @@ def gelu_derivative_exponential(arg: GeluPrepared) -> GeluReduced:
   +v = (r - rh : F32)
   +rerror = ((rh - (r - v : F32) : F32) + (rl - v : F32) : F32)
   +power = from_bits((1602224128 - U32.shln(F32.bits(biased),23n) : U32))
-  +small = from_bits((U32.max(F32.bits(power),545259520) - 536870912 : U32))
+  +small = from_bits((Choice.larger_word(F32.bits(power),545259520) - 536870912 : U32))
   +base = (1.0 + small : F32)
   +tail = (r + (gelu_exponential_remainder(r) + ((1.0 - base : F32) + small : F32) : F32) : F32)
   +denominator = (base + tail : F32)
@@ -384,7 +381,7 @@ def gelu_derivative_evaluated(arg: GeluReduced) -> DerivativeArgument:
   +remainder = (((factor - quotient * dh : F32) - quotient * dl : F32) + (residual - quotient * error : F32) : F32)
   +value = (quotient + remainder / denominator : F32)
   +result = ((power * value : F32) * 0.00000000000000000005421010862427522 : F32)
-  DerivativeArgument{x,F32.max(from_bits(U32.or(F32.bits(x),2147483648)),F32.neg(11.0)),result}
+  DerivativeArgument{x,Choice.larger(from_bits(U32.or(F32.bits(x),2147483648)),F32.neg(11.0)),result}
 
 # Split the linear term before adding the odd correction to one half.
 def gelu_derivative_small(+x: F32) -> F32:
@@ -410,3 +407,73 @@ def gelu_derivative_finish(arg: DerivativeArgument) -> F32:
 
 def gelu_tanh_derivative(x: F32) -> F32:
   gelu_derivative_finish(gelu_derivative_evaluated(gelu_derivative_exponential(gelu_derivative_prepare(x))))
+
+# GELU(x)=x Phi(x). Phi(-a)=exp(-a^2/2) m(a), where m is the Mills ratio over
+# sqrt(2 pi). Twelve-bit heads make h^2/2 exact, the tail of a^2/2 goes into the
+# reduced argument r, and exp(-a^2/2)=2^n (1+e) with e=r+remainder(r).
+type Gaussian is Data:
+  Gaussian{exponential: F32,power: F32}
+
+def gaussian_reduced(+half: F32,+tail: F32,+biased: F32) -> Gaussian:
+  +n = (biased - 12582912.0 : F32)
+  +r = (((n * F32.neg(0.693359375) - half : F32) + n * 0.00021219444005469058 : F32) - tail : F32)
+  Gaussian{(r + gelu_exponential_remainder(r) : F32),from_bits((1602224128 + U32.shln(F32.bits(biased),23n) : U32))}
+
+def gaussian(+a: F32) -> Gaussian:
+  +h = split_high(a)
+  +half = ((h * h : F32) * 0.5 : F32)
+  gaussian_reduced(half,(((a - h : F32) * (a + h : F32) : F32) * 0.5 : F32),(half * F32.neg(1.44269504088896341) + 12582912.0 : F32))
+
+# scale * quotient * exp(-a^2/2), with only the last multiplication able to
+# underflow.
+def gaussian_scaled(+scale: F32,+quotient: F32,arg: Gaussian) -> F32:
+  Gaussian{+exponential,+power} = arg
+  (((scale * power : F32) * (quotient + quotient * exponential : F32) : F32) * 0.00000000000000000005421010862427522 : F32)
+
+# (Phi(x)-1/2)/x in z=x^2 on |x|<5/8. Chebyshev interpolation, rounded to F32.
+def gelu_center(+z: F32) -> F32:
+  (((F32.neg(0.001098126987926662) * z + 0.009951000101864338 : F32) * z + F32.neg(0.06648848205804825) : F32) * z + 0.3989422619342804 : F32)
+
+# a m(a) on [5/8,15] in t=(a-7/4)/(a+7/4), after its constant term. Chebyshev
+# interpolation, rounded to F32.
+def gelu_ratio(+t: F32) -> F32:
+  (((((((((0.0009397624526172876 * t + F32.neg(0.00014295862638391554) : F32) * t + F32.neg(0.002669112989678979) : F32) * t + F32.neg(0.0036164578050374985) : F32) * t + 0.0036904921289533377 : F32) * t + 0.022165270522236824 : F32) * t + 0.007468339987099171 : F32) * t + F32.neg(0.1432839035987854) : F32) * t + 0.19024132192134857 : F32) * t : F32)
+
+# -(head + low) exp(-a^2/2), with only the last multiplication able to underflow.
+def gelu_scaled(+head: F32,+low: F32,arg: Gaussian) -> F32:
+  Gaussian{+exponential,+power} = arg
+  F32.neg(((power * (head + (head * exponential + low : F32) : F32) : F32) * 0.00000000000000000005421010862427522 : F32))
+
+# GELU(-a)=-a m(a) exp(-a^2/2). The product a m(a) is one polynomial in t, so
+# neither a nor a division by a+7/4 adds a rounding, and the constant term keeps
+# the low part of its addition.
+def gelu_tail(+a: F32) -> F32:
+  +rest = gelu_ratio(((a - 1.75 : F32) / (a + 1.75 : F32) : F32))
+  +head = (0.32415542006492615 + rest : F32)
+  gelu_scaled(head,((0.32415542006492615 - head : F32) + rest : F32),gaussian(a))
+
+# PyTorch's gelu: x (1 + erf(x / sqrt 2)) / 2. Below 5/8 in magnitude x (1/2 + x
+# center(x^2)) needs no exponential. Otherwise GELU(x)=x+GELU(-x) restores the
+# positive side from its negative tail, which is capped as in gelu_tanh; the
+# original word selects the sign and NaNs propagate.
+def gelu(x: F32) -> F32:
+  +x = x
+  +tail = gelu_tail(F32.neg(gelu_negative_input(x)))
+  selected((0 - U32.shrn((U32.and(F32.bits(x),2147483647) - 1059061760 : U32),31n) : U32),
+    (x * (0.5 + x * gelu_center((x * x : F32)) : F32) : F32),
+    selected((0 - U32.shrn(F32.bits(x),31n) : U32),tail,(x + tail : F32)))
+
+# (m(a) - a / sqrt(2 pi)) / (a0 - a) on [0,15] in t=(a-5/2)/(a+5/2), with a0 the
+# zero of the derivative, 0.7517915...
+def gelu_slope(+t: F32) -> F32:
+  (((((((((F32.neg(1.2715127923002001e-05) * t + F32.neg(5.2761755796382204e-05) : F32) * t + F32.neg(7.2345842454524245e-06) : F32) * t + 0.0003662047383841127 : F32) * t + 0.00045144103933125734 : F32) * t + F32.neg(0.0027271131984889507) : F32) * t + F32.neg(0.004506430123001337) : F32) * t + 0.044764235615730286 : F32) * t + F32.neg(0.1289944350719452) : F32) * t + 0.48965805768966675 : F32)
+
+def gelu_derivative_tail(+a: F32) -> F32:
+  +quotient = gelu_slope(((a - 2.5 : F32) / (a + 2.5 : F32) : F32))
+  gaussian_scaled(((0.7517915368080139 - a : F32) + F32.neg(1.211444988769017e-08) : F32),quotient,gaussian(a))
+
+# GELU'(-a)=exp(-a^2/2) (a0 - a) slope(t) and GELU'(a)=1-GELU'(-a).
+def gelu_derivative(x: F32) -> F32:
+  +x = x
+  +tail = gelu_derivative_tail(F32.neg(Choice.larger(from_bits(U32.or(F32.bits(x),2147483648)),F32.neg(16.0))))
+  selected((0 - U32.shrn(F32.bits(x),31n) : U32),tail,(1.0 - tail : F32))

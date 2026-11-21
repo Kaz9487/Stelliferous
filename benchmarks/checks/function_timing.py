@@ -18,7 +18,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 FUNCTIONS = ['identity', 'relu', 'relu6', 'leaky_relu', 'hard_sigmoid', 'hard_swish',
-             'sigmoid', 'silu', 'tanh', 'gelu_tanh']
+             'sigmoid', 'silu', 'tanh', 'gelu_tanh', 'gelu']
 FUNCTIONS += [name + '_derivative' for name in FUNCTIONS]
 
 
@@ -93,7 +93,7 @@ def main():
         order = list(binaries) if iteration % 2 == 0 else list(reversed(binaries))
         for name in order:
             start = time.perf_counter_ns()
-            result = subprocess.run([str(binaries[name]), '--threads', '1', '--gpu', 'off'],
+            result = subprocess.run([str(binaries[name]), '+RTS', '--threads', '1', '--gpu', 'off', '-RTS'],
                                     cwd=ROOT, capture_output=True, text=True, check=True)
             elapsed = time.perf_counter_ns() - start
             value = float(result.stdout.strip())

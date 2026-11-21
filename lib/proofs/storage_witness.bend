@@ -3,6 +3,7 @@
 import Base
 import ./storage_tree_model.bend as Tree
 import ./storage_shape.bend as Shape
+import ../kernel_gemm.bend as KernelGemm
 
 law Witness:
   for -Element: Data
@@ -30,7 +31,7 @@ def balanced(-Element: Data,depth: Nat,-storage: Array<Element>,witness: Witness
       Unit{}
     case 1n+ +rest Node{left,right,owner,left_balanced,right_balanced}:
       %Equal.sym(Array<Element>,storage,ANode{left,right},owner) : Shape.Balanced(Element,1n+rest,Tree.reflect(Element,_))
-      Shape.Both{balanced(Element,rest,left,left_balanced),balanced(Element,rest,right,right_balanced)}
+      KernelGemm.Both{balanced(Element,rest,left,left_balanced),balanced(Element,rest,right,right_balanced)}
 
 def from_shape(-Element: Data,+depth: Nat,+tree: Tree.Tree<Element>,balanced: Shape.Balanced(Element,depth,tree)) ->
   Witness(Element,depth,Tree.pack(Element,tree)):
@@ -39,7 +40,7 @@ def from_shape(-Element: Data,+depth: Nat,+tree: Tree.Tree<Element>,balanced: Sh
     case 0n Tree.Node{left,right}: match balanced:
     case 1n+rest Tree.Leaf{value}: match balanced:
     case 1n+ +rest Tree.Node{+left,+right}:
-      Shape.Both{left_balanced,right_balanced} = balanced
+      KernelGemm.Both{left_balanced,right_balanced} = balanced
       Node{Tree.pack(Element,left),Tree.pack(Element,right),{==},from_shape(Element,rest,left,left_balanced),from_shape(Element,rest,right,right_balanced)}
 
 def fresh_model(-Element: Data,+depth: Nat,+value: Element) ->

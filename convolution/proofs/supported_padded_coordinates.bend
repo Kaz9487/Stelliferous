@@ -15,10 +15,11 @@ import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../specification.bend as ConvSpec
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
 
 def scalar(+limits: Machine.Limits,+p: ConvSpec.Problem,proof: Support.FastSupported<limits,
   p>) -> Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>:
-  Support.FastSupported{s,a,b} = proof
+  Support.FastSupported{s,a,b,c} = proof
   s
 
 def scalar_output_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,
@@ -43,7 +44,7 @@ def padded_bound(+limits: Machine.Limits,+p: ConvSpec.Problem,valid: Guards.Vali
   ConvSpec.Problem{pshape,+xs,+ws,+bs} = p
   ConvSpec.Shape{+d0,+d1,+d2,+d3,+d4,+d5,+d6} = pshape
   Guards.Valid{v0,v1,v2,v3,v4,v5,v6,v7,v8,v9,v10} = valid
-  Support.FastSupported{sc,packing,output} = support
+  Support.FastSupported{sc,packing,output,planes} = support
   Order.transitive(Support.padded(p),Nat.mul(Support.padded(p),ConvSpec.outputs(p)),
     U32.to_nat(Machine.capacity(limits)),RowMajor.product_covers(Support.padded(p),ConvSpec.outputs(p),v1),output)
 
@@ -62,7 +63,7 @@ def scalar_spatial_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Gu
     SupportedCoordinateBounds.col_limit(limits,p,valid,s))
   %eh : {U32.to_nat(spatial(p)) == Nat.mul(_,ConvSpec.out_width(p)) : Nat}
   %ew : {U32.to_nat(spatial(p)) == Nat.mul(U32.to_nat(U32.from_nat(ConvSpec.out_height(p))),_) : Nat}
-  Arithmetic.multiply(U32.from_nat(ConvSpec.out_height(p)),U32.from_nat(ConvSpec.out_width(p)),Machine.capacity(limits),
+  WordMultiplication.bounded_multiply(U32.from_nat(ConvSpec.out_height(p)),U32.from_nat(ConvSpec.out_width(p)),Machine.capacity(limits),
     Limits.capacity_fits(limits),
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(ConvSpec.out_height(p))),ConvSpec.out_height(p),eh) : {Nat.is_le(Nat.mul(_,
           U32.to_nat(U32.from_nat(ConvSpec.out_width(p)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
@@ -112,7 +113,7 @@ def padded_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Val
   +support: Support.FastSupported<limits,p>) -> {U32.to_nat(padded(p)) == Support.padded(p) : Nat}:
   +e = divided_exact(limits,p,valid,support)
   %e : {U32.to_nat(padded(p)) == Nat.mul(_,8n) : Nat}
-  Arithmetic.multiply(((spatial(p) + 7) / 8 : U32),8,Machine.capacity(limits),Limits.capacity_fits(limits),
+  WordMultiplication.bounded_multiply(((spatial(p) + 7) / 8 : U32),8,Machine.capacity(limits),Limits.capacity_fits(limits),
     %Equal.sym(Nat,U32.to_nat(((spatial(p) + 7) / 8 : U32)),Nat.div(Nat.add(Nat.mul(ConvSpec.out_height(p),ConvSpec.out_width(p)),7n),8n),
       e) : {Nat.is_le(Nat.mul(_,8n),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
     padded_bound(limits,p,valid,support))

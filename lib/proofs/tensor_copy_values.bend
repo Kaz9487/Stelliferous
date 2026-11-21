@@ -18,14 +18,11 @@ import ./tensor_cursor_model.bend as CursorModel
 import ./tensor_cursor_order.bend as CursorOrder
 import ./traversal_array_refinement.bend as ArrayLaws
 import ../traversal_loop.bend as Loop
-import ./storage_shape.bend as Shape
-import ./sequence_membership.bend as Members
 import ../storage_buffer.bend as Storage
 import ../tensor_operations.bend as Operations
 import ./nat_order.bend as Order
 import ./tensor_operations_refinement.bend as OperationsLaws
 import ./tensor_operation_bounds.bend as OperationBounds
-import ./ordered_ranges.bend as Ranges
 import ./tensor_visit_refinement.bend as TensorVisit
 import ./traversal_visit_refinement.bend as Visit
 import ./tensor_shape_refinement.bend as ShapeLaws
@@ -37,19 +34,9 @@ import ./storage_tree_model.bend as Tree
 import ../tensor_view.bend as Views
 import ./write_program.bend as Writes
 import ./traversal_batch_refinement.bend as TraversalBatchRefinement
+import ./word_arithmetic.bend as WordArithmetic
+import ../kernel_gemm.bend as KernelGemm
 
-# Nearest upsampling keeps the band representation and calls the same checked
-# repeated-axis copy as whole upsampling. View/count premises below are the
-# actual runtime computations; their successful producer guards remain to prove.
-def right_content(~Element: Data,result: Operations.Outcome<OperationsLaws.PairOwners(Element)>) -> Buffer.Content<Element>:
-  match result:
-    case Operations.Accepted{(left,OperationsLaws.Owner{storage,length})}: Buffer.Content{Tree.reflect(Element,storage),length}
-    case Operations.Rejected{(left,OperationsLaws.Owner{storage,length})}: Buffer.Content{Tree.reflect(Element,storage),length}
-
-# Actual checked-copy output contracts for the nearest-neighbour band leaf.
-# Ready includes both accepted and rejected outcomes. Values below require
-# the copy guard, store bounds, sample matching, and coverage explicitly;
-# those premises are not claimed to follow from the public caller yet.
 def output_tree(~Element: Data,result: AccessLaws.ModelResult<Tree.Tree<Element>,Element>) -> Tree.Tree<Element>:
   AccessLaws.ModelResult{reader,output} = result
   output
@@ -58,12 +45,6 @@ def reader_tree(~Element: Data,result: AccessLaws.ModelResult<Tree.Tree<Element>
   AccessLaws.ModelResult{reader,output} = result
   reader
 
-def view_offset(view: Views.View) -> U32:
-  Views.View{axes,offset} = view
-  offset
-
-# A visit writes the sample of its coordinates at each position in turn;
-# copies and reductions along an axis differ only in sample and next.
 def visit_writes(~Element: Data,~Coordinates: Data,~sample: Tree.Tree<Element> -> Coordinates -> Element,~next: Coordinates -> Coordinates,
   count: Nat,+position: U32,+coordinates: Coordinates,+input: Tree.Tree<Element>) -> List<&2,Writes.Assignment<Element>>:
   match count:
@@ -144,48 +125,6 @@ def copy_reader(~Element: Data,+fast: Bool,+count: Nat,+source: Views.View,+dest
       fast_reader(~Element,count,0,offset,destination,input,output)
     case False{}: visit_reader(~Element,count,destination,CursorLaws.initial(source),input,output)
 
-def modeled_content(~Element: Data,+input_length: Nat,+output_length: Nat,+result: AccessLaws.ModelResult<Tree.Tree<Element>,Element>) ->
-  {right_content(~Element,Operations.Accepted{OperationsLaws.modeled_pair(~Element,input_length,output_length,result)}) ==
-    Buffer.Content{output_tree(~Element,result),output_length} : Buffer.Content<Element>}:
-  AccessLaws.ModelResult{reader,+output} = result
-  Equal.cong(Tree.Tree<Element>,Buffer.Content<Element>,tree => Buffer.Content{tree,output_length},
-    Tree.reflect(Element,Tree.pack(Element,output)),output,StorageLaws.reflect_packed(Element,output))
-
-def accepted_content(~Element: Data,+count: U32,+source: Views.View,+target: Views.View,+input: Tree.Tree<Element>,+input_length: Nat,+output: Tree.Tree<Element>,+output_length: Nat) ->
-  {right_content(~Element,OperationsLaws.copy_model(~Element,True{},Some{count},source,target,input,input_length,output,output_length)) ==
-    Buffer.Content{Writes.pure(Element,copy_writes(~Element,Views.is_contiguous(source),U32.to_nat(count),source,view_offset(target),input),output),output_length} : Buffer.Content<Element>}:
-  Views.View{+axes,+destination} = target
-  Equal.trans(Buffer.Content<Element>,
-    right_content(~Element,OperationsLaws.copy_model(~Element,True{},Some{count},source,target,input,input_length,output,output_length)),
-    Buffer.Content{output_tree(~Element,AccessLaws.copy_model(~Element,Views.is_contiguous(source),U32.to_nat(count),source,destination,input,output)),output_length},
-    Buffer.Content{Writes.pure(Element,copy_writes(~Element,Views.is_contiguous(source),U32.to_nat(count),source,destination,input),output),output_length},
-    modeled_content(~Element,input_length,output_length,AccessLaws.copy_model(~Element,Views.is_contiguous(source),U32.to_nat(count),source,destination,input,output)),
-    Equal.cong(Tree.Tree<Element>,Buffer.Content<Element>,tree => Buffer.Content{tree,output_length},
-      output_tree(~Element,AccessLaws.copy_model(~Element,Views.is_contiguous(source),U32.to_nat(count),source,destination,input,output)),
-      Writes.pure(Element,copy_writes(~Element,Views.is_contiguous(source),U32.to_nat(count),source,destination,input),output),
-      copy_program(~Element,Views.is_contiguous(source),U32.to_nat(count),source,destination,input,output)))
-
-def program_content(~Element: Data,+count: U32,+source: Views.View,+target: Views.View,input: Buffer.Content<Element>,output: Buffer.Content<Element>) -> Buffer.Content<Element>:
-  Buffer.Content{input,input_length} = input
-  Buffer.Content{output,output_length} = output
-  Buffer.Content{Writes.pure(Element,copy_writes(~Element,Views.is_contiguous(source),U32.to_nat(count),source,view_offset(target),input),output),output_length}
-
-def copy_observed_content(~Element: Data,input: Storage.Buffer<Element>,+source: Views.View,+reversed: List<&2,Bool>,output: Storage.Buffer<Element>,+target: Views.View,+count: U32,
-  guarded: {OperationBounds.copy_guard(~Element,input,source,output,target) == True{} : Bool},counted: {Views.numel(target) == Some{count} : Maybe<&2,U32>}) ->
-  {right_content(~Element,OperationsLaws.copy_denotation(~Element,input,source,reversed,output,target)) ==
-    program_content(~Element,count,Views.mirrored(source,reversed),target,Buffer.contents(~Element,input),Buffer.contents(~Element,output)) : Buffer.Content<Element>}:
-  Storage.Buffer{input,+input_length,input_certificate} = input
-  Storage.Buffer{output,+output_length,output_certificate} = output
-  %Equal.sym(Bool,Shapes.same(Views.shape(source),Views.shape(target)) && Views.is_contiguous(target) &&
-      Operations.valid_buffer(input_length,Storage.capacity(~Element,input,input_certificate),source) &&
-      Operations.valid_buffer(output_length,Storage.capacity(~Element,output,output_certificate),target),True{},guarded) :
-    {right_content(~Element,OperationsLaws.copy_model(~Element,_,Views.numel(target),Views.mirrored(source,reversed),target,Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length)) ==
-      program_content(~Element,count,Views.mirrored(source,reversed),target,Buffer.Content{Tree.reflect(Element,input),input_length},Buffer.Content{Tree.reflect(Element,output),output_length}) : Buffer.Content<Element>}
-  %Equal.sym(Maybe<&2,U32>,Views.numel(target),Some{count},counted) :
-    {right_content(~Element,OperationsLaws.copy_model(~Element,True{},_,Views.mirrored(source,reversed),target,Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length)) ==
-      program_content(~Element,count,Views.mirrored(source,reversed),target,Buffer.Content{Tree.reflect(Element,input),input_length},Buffer.Content{Tree.reflect(Element,output),output_length}) : Buffer.Content<Element>}
-  accepted_content(~Element,count,Views.mirrored(source,reversed),target,Tree.reflect(Element,input),input_length,Tree.reflect(Element,output),output_length)
-
 def cursor_address(coordinates: CursorLaws.Coordinates) -> U32:
   CursorLaws.Coordinates{axes,offset,valid} = coordinates
   U32.from_nat(CursorModel.address(axes,offset))
@@ -205,13 +144,6 @@ def iterated_address(count: Nat,+axes: List<&2,CursorModel.Coordinate>,+offset: 
 def address(source: Views.View,index: Nat) -> U32:
   Views.View{axes,offset} = source
   U32.from_nat(CursorModel.address(CursorOrder.iterate(index,CursorModel.prepare_axes(axes,[])),U32.to_nat(offset)))
-
-# The coordinates behind that address are the row-major digits of the index
-# over the extents of the view (axes of extent one carry no digit); the
-# address is their dot product with the strides, plus the offset.
-def coordinates(source: Views.View,index: Nat) -> List<&2,CursorModel.Coordinate>:
-  Views.View{axes,offset} = source
-  CursorOrder.iterate(index,CursorModel.prepare_axes(axes,[]))
 
 # The cursor of the strided traversal reads, at step index, the address of
 # that index.
@@ -240,7 +172,7 @@ def zero_contiguous_address(+source: Views.View,+index: Nat,+zero: {Access.zero_
 def Line(+view: Views.View,+base: Nat,count: Nat,+position: Nat) -> Data:
   match count:
     case 0n: Unit
-    case 1n+rest: Shape.Both<{address(view,position) == U32.from_nat(Nat.add(base,position)) : U32},Line(view,base,rest,1n+position)>
+    case 1n+rest: KernelGemm.Both<{address(view,position) == U32.from_nat(Nat.add(base,position)) : U32},Line(view,base,rest,1n+position)>
 
 # A contiguous view lies at consecutive addresses from its offset.
 def contiguous_line(+axes: List<&2,Views.Axis>,+offset: U32,count: Nat,+position: Nat,
@@ -251,7 +183,7 @@ def contiguous_line(+axes: List<&2,Views.Axis>,+offset: U32,count: Nat,+position
     case 0n: Unit{}
     case 1n+ +rest:
       +elements = ShapeLaws.elements(Views.axis_extents(axes))
-      Shape.Both{
+      KernelGemm.Both{
         Equal.cong(Nat,U32,U32.from_nat,CursorModel.address(CursorOrder.iterate(position,CursorModel.prepare_axes(axes,[])),U32.to_nat(offset)),Nat.add(U32.to_nat(offset),position),
           CursorOrder.contiguous_addresses(axes,offset,position,nonempty,contiguous,Order.room_index(position,rest,elements,room))),
         contiguous_line(axes,offset,rest,1n+position,nonempty,contiguous,Order.advance_room(position,rest,elements,room))}
@@ -272,19 +204,24 @@ def sampled(~Element: Data,+part: Sampled<Element>,+position: Nat) -> Element:
 
 # A contiguous source read at its offset plus each position is the copy
 # reader.
-def fast_line(~Element: Data,count: Nat,+position: Nat,+axes: List<&2,Views.Axis>,+offset: U32,+input: Tree.Tree<Element>,+capacity: U32,
+def offset_address(+base: U32,+index: Nat) -> {(base + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(U32.to_nat(base),index)) : U32}:
+  %Arithmetic.native_roundtrip(base) : {(_ + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(U32.to_nat(base),index)) : U32}
+  WordArithmetic.native_add(U32.to_nat(base),index)
+
+def fast_line(~Element: Data,count: Nat,+position: Nat,+axes: List<&2,Views.Axis>,+offset: U32,+destination: U32,+input: Tree.Tree<Element>,+capacity: U32,
   +capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},+room: {Nat.is_le(Nat.add(position,count),U32.to_nat(capacity)) == True{} : Bool},
   line: Line(Views.View{axes,offset},U32.to_nat(offset),count,position)) ->
-  {Contiguous.writes(~Element,count,input,U32.from_nat(position),offset,0) ==
-    Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),count,0n,position,Sampled{Views.View{axes,offset},input}) : List<&2,Writes.Assignment<Element>>}:
+  {Contiguous.writes(~Element,count,input,U32.from_nat(position),offset,destination) ==
+    Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),count,U32.to_nat(destination),position,Sampled{Views.View{axes,offset},input}) : List<&2,Writes.Assignment<Element>>}:
   match count:
     case 0n: {==}
     case 1n+ +rest:
-      Shape.Both{here,later} = line
+      KernelGemm.Both{here,later} = line
       +view = {Views.View{axes,offset} : Views.View}
       +at = U32.from_nat(position)
+      +target = U32.from_nat(Nat.add(U32.to_nat(destination),position))
       +value = Tree.read(Element,input,address(view,position))
-      +later_writes = Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),rest,0n,1n+position,Sampled{view,input})
+      +later_writes = Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),rest,U32.to_nat(destination),1n+position,Sampled{view,input})
       +natural = Nat.add(U32.to_nat(offset),position)
       +read_at = Equal.trans(U32,(offset + at : U32),U32.from_nat(Nat.add(U32.to_nat(offset),U32.to_nat(at))),address(view,position),
         Arithmetic.native_add(offset,at),
@@ -292,53 +229,77 @@ def fast_line(~Element: Data,count: Nat,+position: Nat,+axes: List<&2,Views.Axis
           Equal.cong(Nat,U32,index => U32.from_nat(Nat.add(U32.to_nat(offset),index)),U32.to_nat(at),position,
             Bounds.roundtrip(position,capacity,capacity_ok,Order.transitive(position,Nat.add(position,1n+rest),U32.to_nat(capacity),Order.le_add(position,1n+rest),room))),
           Equal.sym(U32,address(view,position),U32.from_nat(natural),here)))
-      %Equal.sym(U32,(0 + at : U32),at,Arithmetic.add_zero_left(at)) :
-        {Writes.Put{_,Tree.read(Element,input,(offset + at : U32))} <> Contiguous.writes(~Element,rest,input,(at + 1 : U32),offset,0) ==
-          Writes.Put{at,value} <> later_writes : List<&2,Writes.Assignment<Element>>}
+      %Equal.sym(U32,(destination + at : U32),target,offset_address(destination,position)) :
+        {Writes.Put{_,Tree.read(Element,input,(offset + at : U32))} <> Contiguous.writes(~Element,rest,input,(at + 1 : U32),offset,destination) ==
+          Writes.Put{target,value} <> later_writes : List<&2,Writes.Assignment<Element>>}
       %Equal.sym(U32,(offset + at : U32),address(view,position),read_at) :
-        {Writes.Put{at,Tree.read(Element,input,_)} <> Contiguous.writes(~Element,rest,input,(at + 1 : U32),offset,0) ==
-          Writes.Put{at,value} <> later_writes : List<&2,Writes.Assignment<Element>>}
+        {Writes.Put{target,Tree.read(Element,input,_)} <> Contiguous.writes(~Element,rest,input,(at + 1 : U32),offset,destination) ==
+          Writes.Put{target,value} <> later_writes : List<&2,Writes.Assignment<Element>>}
       %Equal.sym(U32,(at + 1 : U32),U32.from_nat(1n+position),Bounds.add_one(at)) :
-        {Writes.Put{at,value} <> Contiguous.writes(~Element,rest,input,_,offset,0) == Writes.Put{at,value} <> later_writes : List<&2,Writes.Assignment<Element>>}
-      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,tail => Writes.Put{at,value} <> tail,
-        Contiguous.writes(~Element,rest,input,U32.from_nat(1n+position),offset,0),later_writes,
-        fast_line(~Element,rest,1n+position,axes,offset,input,capacity,capacity_ok,Order.advance_room(position,rest,U32.to_nat(capacity),room),later))
+        {Writes.Put{target,value} <> Contiguous.writes(~Element,rest,input,_,offset,destination) == Writes.Put{target,value} <> later_writes : List<&2,Writes.Assignment<Element>>}
+      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,tail => Writes.Put{target,value} <> tail,
+        Contiguous.writes(~Element,rest,input,U32.from_nat(1n+position),offset,destination),later_writes,
+        fast_line(~Element,rest,1n+position,axes,offset,destination,input,capacity,capacity_ok,Order.advance_room(position,rest,U32.to_nat(capacity),room),later))
 
 # A visit from position on writes, at consecutive addresses, the values of a
 # part whenever the sample after index steps is the value of the part at index.
 def visit_line(~Element: Data,~Coordinates: Data,~Part: Data,~sample: Tree.Tree<Element> -> Coordinates -> Element,~next: Coordinates -> Coordinates,
-  ~value: @+part: Part -> @+position: Nat -> Element,~start: Coordinates,~input: Tree.Tree<Element>,~part: Part,
-  ~agrees: @+index: Nat -> {sample(input,Loop.run(~Coordinates,~next,index,start)) == value(part,index) : Element},count: Nat,+position: Nat) ->
-  {visit_writes(~Element,~Coordinates,~sample,~next,count,U32.from_nat(position),Loop.run(~Coordinates,~next,position,start),input) ==
-    Consecutive.writes(~Element,~Part,~value,count,0n,position,part) : List<&2,Writes.Assignment<Element>>}:
+  ~value: @+part: Part -> @+position: Nat -> Element,~start: Part -> Coordinates,~input: Part -> Tree.Tree<Element>,
+  ~agrees: @+part: Part -> @+index: Nat -> {sample(input(part),Loop.run(~Coordinates,~next,index,start(part))) == value(part,index) : Element},
+  +part: Part,count: Nat,+position: Nat,+destination: U32) ->
+  {visit_writes(~Element,~Coordinates,~sample,~next,count,(destination + U32.from_nat(position) : U32),Loop.run(~Coordinates,~next,position,start(part)),input(part)) ==
+    Consecutive.writes(~Element,~Part,~value,count,U32.to_nat(destination),position,part) : List<&2,Writes.Assignment<Element>>}:
   match count:
     case 0n: {==}
     case 1n+ +rest:
-      +cursor = Loop.run(~Coordinates,~next,position,start)
-      +at = U32.from_nat(position)
+      +origin = start(part)
+      +tree = input(part)
+      +cursor = Loop.run(~Coordinates,~next,position,origin)
+      +at = (destination + U32.from_nat(position) : U32)
+      +target = U32.from_nat(Nat.add(U32.to_nat(destination),position))
       +here = value(part,position)
-      +later_writes = Consecutive.writes(~Element,~Part,~value,rest,0n,1n+position,part)
-      %Equal.sym(Element,sample(input,cursor),here,agrees(position)) :
-        {Writes.Put{at,_} <> visit_writes(~Element,~Coordinates,~sample,~next,rest,(at + 1 : U32),next(cursor),input) == Writes.Put{at,here} <> later_writes : List<&2,Writes.Assignment<Element>>}
-      %Equal.sym(U32,(at + 1 : U32),U32.from_nat(1n+position),Bounds.add_one(at)) :
-        {Writes.Put{at,here} <> visit_writes(~Element,~Coordinates,~sample,~next,rest,_,next(cursor),input) == Writes.Put{at,here} <> later_writes : List<&2,Writes.Assignment<Element>>}
-      %TraversalBatchRefinement.last_step(~Coordinates,~next,position,start) :
-        {Writes.Put{at,here} <> visit_writes(~Element,~Coordinates,~sample,~next,rest,U32.from_nat(1n+position),_,input) == Writes.Put{at,here} <> later_writes : List<&2,Writes.Assignment<Element>>}
-      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,tail => Writes.Put{at,here} <> tail,
-        visit_writes(~Element,~Coordinates,~sample,~next,rest,U32.from_nat(1n+position),Loop.run(~Coordinates,~next,1n+position,start),input),later_writes,
-        visit_line(~Element,~Coordinates,~Part,~sample,~next,~value,~start,~input,~part,~agrees,rest,1n+position))
+      +later_writes = Consecutive.writes(~Element,~Part,~value,rest,U32.to_nat(destination),1n+position,part)
+      +advanced = Equal.trans(U32,(at + 1 : U32),(destination + (U32.from_nat(position) + 1 : U32) : U32),(destination + U32.from_nat(1n+position) : U32),
+        Arithmetic.add_associative(destination,U32.from_nat(position),1),
+        Equal.cong(U32,U32,index => (destination + index : U32),(U32.from_nat(position) + 1 : U32),U32.from_nat(1n+position),Bounds.add_one(U32.from_nat(position))))
+      %Equal.sym(U32,at,target,offset_address(destination,position)) :
+        {Writes.Put{_,sample(tree,cursor)} <> visit_writes(~Element,~Coordinates,~sample,~next,rest,(at + 1 : U32),next(cursor),tree) == Writes.Put{target,here} <> later_writes : List<&2,Writes.Assignment<Element>>}
+      %Equal.sym(Element,sample(tree,cursor),here,agrees(part,position)) :
+        {Writes.Put{target,_} <> visit_writes(~Element,~Coordinates,~sample,~next,rest,(at + 1 : U32),next(cursor),tree) == Writes.Put{target,here} <> later_writes : List<&2,Writes.Assignment<Element>>}
+      %Equal.sym(U32,(at + 1 : U32),(destination + U32.from_nat(1n+position) : U32),advanced) :
+        {Writes.Put{target,here} <> visit_writes(~Element,~Coordinates,~sample,~next,rest,_,next(cursor),tree) == Writes.Put{target,here} <> later_writes : List<&2,Writes.Assignment<Element>>}
+      %TraversalBatchRefinement.last_step(~Coordinates,~next,position,origin) :
+        {Writes.Put{target,here} <> visit_writes(~Element,~Coordinates,~sample,~next,rest,(destination + U32.from_nat(1n+position) : U32),_,tree) == Writes.Put{target,here} <> later_writes : List<&2,Writes.Assignment<Element>>}
+      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,tail => Writes.Put{target,here} <> tail,
+        visit_writes(~Element,~Coordinates,~sample,~next,rest,(destination + U32.from_nat(1n+position) : U32),Loop.run(~Coordinates,~next,1n+position,origin),tree),later_writes,
+        visit_line(~Element,~Coordinates,~Part,~sample,~next,~value,~start,~input,~agrees,part,rest,1n+position,destination))
 
-# The writes of a copy to offset zero are the copy reader at consecutive
+# The cursor, the storage and the sample law of a sampled source.
+def sampled_start(~Element: Data,part: Sampled<Element>) -> CursorLaws.Coordinates:
+  Sampled{source,input} = part
+  CursorLaws.initial(source)
+def sampled_input(~Element: Data,part: Sampled<Element>) -> Tree.Tree<Element>:
+  Sampled{source,input} = part
+  input
+def sampled_agrees(~Element: Data,+part: Sampled<Element>,+index: Nat) ->
+  {TensorVisit.sample(~Element,sampled_input(~Element,part),Loop.run(~CursorLaws.Coordinates,~CursorLaws.next,index,sampled_start(~Element,part))) ==
+    sampled(~Element,part,index) : Element}:
+  Sampled{+source,+input} = part
+  sample_address(~Element,source,input,index)
+
+# The writes of a copy are the copy reader at consecutive destination
 # addresses, for a contiguous and a strided source alike.
-def copy_line(~Element: Data,fast: Bool,count: Nat,+source: Views.View,+input: Tree.Tree<Element>,+capacity: U32,
+def copy_line_at(~Element: Data,fast: Bool,count: Nat,+source: Views.View,+destination: U32,+input: Tree.Tree<Element>,+capacity: U32,
   +classified: {Views.is_contiguous(source) == fast : Bool},+exact: {ShapeLaws.elements(Views.axis_extents_of(source)) == count : Nat},
   +capacity_ok: {U32.is_le(capacity,2147483648) == True{} : Bool},+room: {Nat.is_le(count,U32.to_nat(capacity)) == True{} : Bool}) ->
-  {copy_writes(~Element,fast,count,source,0,input) ==
-    Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),count,0n,0n,Sampled{source,input}) : List<&2,Writes.Assignment<Element>>}:
+  {copy_writes(~Element,fast,count,source,destination,input) ==
+    Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),count,U32.to_nat(destination),0n,Sampled{source,input}) : List<&2,Writes.Assignment<Element>>}:
   match fast count:
     case False{} count:
-      visit_line(~Element,~CursorLaws.Coordinates,~Sampled<Element>,~TensorVisit.sample(~Element),~CursorLaws.next,~sampled(~Element),~CursorLaws.initial(source),~input,
-        ~Sampled{source,input},~(index => sample_address(~Element,source,input,index)),count,0n)
+      %Arithmetic.add_zero(destination) :
+        {visit_writes(~Element,~CursorLaws.Coordinates,~TensorVisit.sample(~Element),~CursorLaws.next,count,_,CursorLaws.initial(source),input) == Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),count,U32.to_nat(destination),0n,Sampled{source,input}) : List<&2,Writes.Assignment<Element>>}
+      visit_line(~Element,~CursorLaws.Coordinates,~Sampled<Element>,~TensorVisit.sample(~Element),~CursorLaws.next,~sampled(~Element),
+        ~sampled_start(~Element),~sampled_input(~Element),~sampled_agrees(~Element),Sampled{source,input},count,0n,destination)
     case True{} 0n:
       Views.View{axes,offset} = source
       {==}
@@ -346,26 +307,8 @@ def copy_line(~Element: Data,fast: Bool,count: Nat,+source: Views.View,+input: T
       Views.View{+axes,+offset} = source
       +nonempty = CountCompletion.positive_not_zero(Views.axis_extents(axes),
         %Equal.sym(Nat,ShapeLaws.elements(Views.axis_extents(axes)),1n+rest,exact) : {Nat.is_lt(0n,_) == True{} : Bool} {==})
-      fast_line(~Element,1n+rest,0n,axes,offset,input,capacity,capacity_ok,room,contiguous_start(axes,offset,1n+rest,nonempty,classified,exact))
+      fast_line(~Element,1n+rest,0n,axes,offset,destination,input,capacity,capacity_ok,room,contiguous_start(axes,offset,1n+rest,nonempty,classified,exact))
 
-# A copy into a target at offset zero stores, at every index inside its
-# count, the source storage at the address of that index. A contiguous and a
-# strided source give the same statement.
-def copied_value(~Element: Data,+source: Views.View,+input: Tree.Tree<Element>,+output: Tree.Tree<Element>,+length: Nat,+count: Nat,+index: Nat,
-  +ready: Buffer.ContentReady<Element,Buffer.Content{output,length}>,+capacity_ok: {U32.is_le(Tree.capacity(Element,output),2147483648) == True{} : Bool},
-  +room: {Nat.is_le(count,U32.to_nat(Tree.capacity(Element,output))) == True{} : Bool},+inside: {Nat.is_lt(index,count) == True{} : Bool},
-  +exact: {ShapeLaws.elements(Views.axis_extents_of(source)) == count : Nat}) ->
-  {Tree.read(Element,Writes.pure(Element,copy_writes(~Element,Views.is_contiguous(source),count,source,0,input),output),U32.from_nat(index)) ==
-    Tree.read(Element,input,address(source,index)) : Element}:
-  Buffer.ContentReady{+depth,+balanced,+depth_ok,filled} = ready
-  +fast = Views.is_contiguous(source)
-  %Equal.sym(List<&2,Writes.Assignment<Element>>,copy_writes(~Element,fast,count,source,0,input),
-    Consecutive.writes(~Element,~Sampled<Element>,~sampled(~Element),count,0n,0n,Sampled{source,input}),
-    copy_line(~Element,fast,count,source,input,Tree.capacity(Element,output),{==},exact,capacity_ok,room)) :
-    {Tree.read(Element,Writes.pure(Element,_,output),U32.from_nat(index)) == Tree.read(Element,input,address(source,index)) : Element}
-  Consecutive.read(~Element,~Sampled<Element>,~sampled(~Element),count,0n,Sampled{source,input},output,depth,index,balanced,depth_ok,capacity_ok,room,inside)
-
-# The span of the coordinates does not change along the iteration.
 def iterate_span(count: Nat,+axes: List<&2,CursorModel.Coordinate>) -> {CursorModel.span(CursorOrder.iterate(count,axes)) == CursorModel.span(axes) : Nat}:
   match count:
     case 0n: {==}

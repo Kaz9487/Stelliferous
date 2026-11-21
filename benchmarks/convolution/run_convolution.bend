@@ -7,6 +7,7 @@ import ../../lib/kernel_array_pipeline.bend as ArrayPipeline
 import ../../lib/kernel_weights.bend as Weights
 import ../../lib/kernel_tile.bend as Tile
 import ../../lib/tensor.bend as Tensors
+import ../../lib/tensor_tiled_cells.bend as Cells
 import ../../lib/traversal_partition.bend as Partition
 
 def Lab.param(i: U32) -> IO(U32):
@@ -17,17 +18,21 @@ def Lab.load(i: U32, count: U32) -> IO(Array<F32>):
   import "./io.c"
 def Lab.start() -> IO(Unit):
   import "./io.c"
-def Lab.reordered(a: Array<Tile.Tile8>) -> IO(Array<Tile.Tile8>):
+def Lab.prepared(a: ArrayPipeline.Owners) -> IO(ArrayPipeline.Owners):
   import "./io.c"
-def Lab.computed(a: Partition.Tree<&1,Array<F32>,U32>) -> IO(Partition.Tree<&1,Array<F32>,U32>):
+def Lab.computed(a: Partition.Tree<&1,Array<Tile.Tile8>,U32>) -> IO(Partition.Tree<&1,Array<Tile.Tile8>,U32>):
   import "./io.c"
 def Lab.finish(a: Array<F32>) -> IO(Array<F32>):
   import "./io.c"
 def Lab.save(a: Array<F32>, count: U32) -> IO(Unit):
   import "./io.c"
 
-# The same phases as ArrayPipeline.run, separated only by clock hooks: weight
-# reorder, per-leaf pack plus six-row GEMM, then gather.
+# The Array phases separated by clock hooks: boundary packing, leaf packing
+# and GEMM, then cells gather and the boundary untile.
+def compute_prepared(depth: Nat,work: Pipeline.Work,span: U32,owners: ArrayPipeline.Owners) -> Partition.Tree<&1,Array<Tile.Tile8>,U32>:
+  ArrayPipeline.Owners{window,weights,bias} = owners
+  ArrayPipeline.partition(depth,work,0,span,window,weights,bias)
+
 def run_depth(+input_channel_count: U32, +output_channel_count: U32, +input_height: U32, +input_width: U32, +kernel_size: U32, stride: U32, padding: U32, +output_height: U32, +output_width: U32, depth: U32) -> IO(Unit):
   +reduction_length = (input_channel_count * kernel_size * kernel_size : U32)
   +output_positions = (output_height * output_width : U32)
@@ -38,11 +43,14 @@ def run_depth(+input_channel_count: U32, +output_channel_count: U32, +input_heig
     weights : Array<F32> <- Lab.load(1,(output_channel_count * reduction_length : U32))
     bias : Array<F32> <- Lab.load(2,output_channel_count)
     Lab.start()
-    reordered : Array<Tile.Tile8> <- Lab.reordered(Weights.run(output_channel_count,reduction_length,weights))
-    result : Partition.Tree<&1,Array<F32>,U32> <- Lab.computed(ArrayPipeline.partition(U32.to_nat(U32.min(depth,limit)),
+    prepared : ArrayPipeline.Owners <- Lab.prepared(ArrayPipeline.Owners{
+      ArrayPipeline.InputWindow{Weights.run(input_channel_count,(input_height * input_width : U32),input),0,input_height},
+      Weights.run(output_channel_count,reduction_length,weights),Weights.run(output_channel_count,1,bias)})
+    result : Partition.Tree<&1,Array<Tile.Tile8>,U32> <- Lab.computed(compute_prepared(U32.to_nat(U32.min(depth,limit)),
       Pipeline.Work{output_channel_count,input_height,input_width,kernel_size,stride,padding,output_width,output_positions,reduction_length},
-      0,padded_positions,ArrayPipeline.InputWindow{input,0,input_height},reordered,bias))
-    output : Array<F32> <- Lab.finish(ArrayPipeline.finish(result,output_channel_count,output_positions))
+      padded_positions,prepared))
+    output : Array<F32> <- Lab.finish(ArrayPipeline.values(Cells.untiled(Cells.Cells{output_positions,output_channel_count},
+      ArrayPipeline.finish(result,output_channel_count,output_positions),ArrayPipeline.allocated(output_channel_count,output_positions))))
     Lab.save(output,(output_channel_count * output_positions : U32))
 
 def run_plan(plan: KernelPlanning.Plan,shape: ConvShape.Shape) -> IO(Unit):
@@ -81,5 +89,3 @@ def main() -> IO(Unit):
     workers : U32 <- Lab.param(9)
     reps : U32 <- Lab.reps()
     repeat(U32.to_nat(reps),input_channel_count,output_channel_count,input_height,input_width,kernel_size,stride,padding,output_height,output_width,workers)
-
-

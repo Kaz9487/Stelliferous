@@ -16,6 +16,7 @@ import ./storage_capacity.bend as StorageCapacity
 import ../specification.bend as ConvSpec
 import ../../lib/kernel_packing_samples.bend as PackingSamples
 import ../../lib/kernel_spatial_packing.bend as Packing
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def index(+input_channel_index: U32,+height: U32,+width: U32,+iy: U32,+ix: U32) -> Nat:
   RowMajor.index(U32.to_nat(input_channel_index),U32.to_nat(height),U32.to_nat(width),U32.to_nat(iy),U32.to_nat(ix))
@@ -33,9 +34,9 @@ def guard_equal(+iy: U32,+ix: U32,+height: U32,+width: U32) -> {U32.is_lt(iy,hei
 
 def bounds(+xs: List<&2,F32>,+input_channel_index: U32,+input_channel_count: U32,+height: U32,+width: U32,+iy: U32,+ix: U32,shape: {ConvSpec.length(xs) == Nat.mul(U32.to_nat(input_channel_count),
       Nat.mul(U32.to_nat(height),U32.to_nat(width))) : Nat},channel: {Nat.is_lt(U32.to_nat(input_channel_index),U32.to_nat(input_channel_count)) == True{} : Bool},
-  pair: Shape.Both<{U32.is_lt(iy,height) == True{} : Bool},{U32.is_lt(ix,width) == True{} : Bool}>) -> {Nat.is_lt(index(input_channel_index,height,width,
+  pair: KernelGemm.Both<{U32.is_lt(iy,height) == True{} : Bool},{U32.is_lt(ix,width) == True{} : Bool}>) -> {Nat.is_lt(index(input_channel_index,height,width,
       iy,ix),ConvSpec.length(xs)) == True{} : Bool}:
-  Shape.Both{row,col} = pair
+  KernelGemm.Both{row,col} = pair
   %Equal.sym(Nat,ConvSpec.length(xs),Nat.mul(U32.to_nat(input_channel_count),Nat.mul(U32.to_nat(height),U32.to_nat(width))),shape) : {Nat.is_lt(index(input_channel_index,height,
         width,iy,ix),_) == True{} : Bool}
   RowMajor.in_bounds(U32.to_nat(input_channel_index),U32.to_nat(input_channel_count),U32.to_nat(height),U32.to_nat(width),U32.to_nat(iy),U32.to_nat(ix),channel,
@@ -65,14 +66,20 @@ law scalar_value:
   for +shape: {ConvSpec.length(xs) == Nat.mul(U32.to_nat(input_channel_count),Nat.mul(U32.to_nat(height),U32.to_nat(width))) : Nat}
   for +channel: {Nat.is_lt(U32.to_nat(input_channel_index),U32.to_nat(input_channel_count)) == True{} : Bool}
   for +positive_width: {Nat.is_lt(0n,U32.to_nat(width)) == True{} : Bool}
-  {Reads.value(StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence),iy,ix,(input_channel_index * height * width : U32),height,width) == value(xs,input_channel_index,
+  {Reads.value(~F32,~Packing.identity,StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence),iy,ix,(input_channel_index * height * width : U32),height,width,1) == value(xs,input_channel_index,
       height,width,iy,ix) : F32}
 def scalar_value(xs,evidence,input_channel_index,input_channel_count,height,width,iy,ix,proof,shape,channel,positive_width):
-  Shape.Both{+limit,+room} = proof
-  %guard_equal(iy,ix,height,width) : {Reads.value(StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence),iy,ix,(input_channel_index * height * width : U32),
-      height,width) == ConvSpec.sample_if(_,index(input_channel_index,height,width,iy,ix),xs) : F32}
+  KernelGemm.Both{+limit,+room} = proof
+  +storage = StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence)
+  +cb = (input_channel_index * height * width : U32)
+  %Equal.sym(F32,Reads.value(~F32,~Packing.identity,storage,iy,ix,cb,height,width,1),
+      PackingSamples.masked(Tree.read(F32,storage,(cb + iy * width + ix : U32)),U32.is_lt(iy,height) && U32.is_lt(ix,width)),
+      Reads.unit_step_value(~F32,~Packing.identity,storage,iy,ix,cb,height,width)) :
+    {_ == value(xs,input_channel_index,height,width,iy,ix) : F32}
+  %guard_equal(iy,ix,height,width) : {PackingSamples.masked(Tree.read(F32,StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence),(input_channel_index * height * width + iy * width + ix : U32)),
+      U32.is_lt(iy,height) && U32.is_lt(ix,width)) == ConvSpec.sample_if(_,index(input_channel_index,height,width,iy,ix),xs) : F32}
   when(U32.is_lt(iy,height) && U32.is_lt(ix,width),xs,evidence,(input_channel_index * height * width + iy * width + ix : U32),index(input_channel_index,height,width,iy,ix),
-    Shape.Both{limit,room},
+    KernelGemm.Both{limit,room},
     NativeConvolutionIndex.nchw(input_channel_index,height,width,iy,ix,Tree.capacity(F32,ListArrayAllocation.initial(xs)),
       StorageCapacity.small(ListArrayAllocation.depth(xs),ListArrayAllocation.initial(xs),Shape.fresh(F32,ListArrayAllocation.depth(xs),0.0),limit),
       RowMajor.row_product(U32.to_nat(input_channel_index),U32.to_nat(input_channel_count),U32.to_nat(height),U32.to_nat(width),U32.to_nat(Tree.capacity(F32,
@@ -94,10 +101,10 @@ law native_pixel:
   for +shape: {ConvSpec.length(xs) == Nat.mul(U32.to_nat(input_channel_count),Nat.mul(U32.to_nat(height),U32.to_nat(width))) : Nat}
   for +channel: {Nat.is_lt(U32.to_nat(input_channel_index),U32.to_nat(input_channel_count)) == True{} : Bool}
   for +positive_width: {Nat.is_lt(0n,U32.to_nat(width)) == True{} : Bool}
-  {Packing.pixel(StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),iy,ix,(input_channel_index * height * width : U32),height,width) == (StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),value(xs,input_channel_index,height,width,iy,
+  {Packing.pixel(~F32,~Packing.identity,StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),iy,ix,(input_channel_index * height * width : U32),height,width,1) == (StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),value(xs,input_channel_index,height,width,iy,
         ix)) : Array<F32> & F32}
 def native_pixel(xs,evidence,input_channel_index,input_channel_count,height,width,iy,ix,proof,shape,channel,positive_width):
-  %scalar_value(xs,evidence,input_channel_index,input_channel_count,height,width,iy,ix,proof,shape,channel,positive_width) : {Packing.pixel(Tree.pack(F32,
-        StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence)),iy,ix,(input_channel_index * height * width : U32),height,width) == (Tree.pack(F32,
+  %scalar_value(xs,evidence,input_channel_index,input_channel_count,height,width,iy,ix,proof,shape,channel,positive_width) : {Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,
+        StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence)),iy,ix,(input_channel_index * height * width : U32),height,width,1) == (Tree.pack(F32,
         StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence)),_) : Array<F32> & F32}
-  Reads.pixel(StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence),iy,ix,(input_channel_index * height * width : U32),height,width)
+  Reads.pixel(~F32,~Packing.identity,StorageLaws.sequence_storage(F32,ConvSpec.length(xs),xs,evidence),iy,ix,(input_channel_index * height * width : U32),height,width,1)

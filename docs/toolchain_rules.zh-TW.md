@@ -2,7 +2,7 @@
 
 [English](toolchain_rules.md) | [繁體中文](toolchain_rules.zh-TW.md)
 
-這裡整理本專案的程式與證明所依賴的官方 checker、編譯器與 runtime 規則。規則是從未修改的官方 Bend 原始碼讀出來的（`.tools/bend/bend2/` 下的 `bend.ts`、`comp.ts`、`main.ts`、`base.bend`），並以小程式確認。最近一次核對的版本是 **Bend v2.0.37**。
+這裡整理本專案的程式與證明所依賴的官方 checker、編譯器與 runtime 規則。規則是從未修改的官方 Bend 原始碼讀出來的（`.tools/bend/bend2/` 下的 `bend.ts`、`comp.ts`、`main.ts`、`base.bend`），並以小程式確認。最近一次核對的版本是 **Bend v2.0.40**。
 
 每條規則最多有三種依據：
 
@@ -23,7 +23,10 @@
 | `python -B scripts/toolchain_rules/verify.py --snapshot` | 依新版本重讀並修正規則之後：記錄該版本與它的訊息清單 |
 | `python -B scripts/toolchain_rules/sweep.py OUT.json` | 升級後完整證明失敗時：由下往上逐檔檢查，回報「自己壞掉」的檔。每個檔啟動一次 checker，所以很慢 |
 | `python -B scripts/toolchain_rules/fork_flags.py GENERATED.c 名稱 ...` | 列出生成的 C 中哪些 task 不含 fork（規則 H4） |
+| `CC=clang-19 python3 -B scripts/toolchain_rules/slp_lanes.py GENERATED.c 名稱 ...` | 列出被 clang 重排的向量化 float lane，以及造成重排的 PHI 使用次數（規則 F13） |
 | `python3 -B scripts/toolchain_rules/leaf_workers.py` | 在 Linux 上：執行規則 H4 的兩個 leaf probe，計算在成長輪執行的 leaf 數 |
+| `python3 -B scripts/toolchain_rules/wake_rounds.py` | 在 Linux 上：量測四執行緒時一個平行區段的成本，與規劃器收取的兩輪 wake 比較（規則 H11） |
+| `python3 -B scripts/toolchain_rules/planner_prices.py` | 在 Linux 上：以單一執行緒量測規劃器對一個 row、一個 step、一個複製位元組與一個搬移 cell 的單價，與 lib/default_kernel_cost.bend 比較 |
 | `python -B benchmarks/model/timeline_claims.py TIMELINE_DIR` | 顯示[模型時間軸](../benchmarks/model/README.zh-TW.md)中每個運算有幾個 worker 在工作 |
 
 單一檔案用 `node scripts/bend_launcher.mjs FILE --check-only` 檢查，通過時印出 `ALL PROOFS CHECK`。[diagnostics.txt](../scripts/toolchain_rules/diagnostics.txt) 記錄 `bend.ts` 中 `Err`／`parse_fail` 呼叫所在行的字串片段，沒有涵蓋全部 CLI、編譯器或 runtime 錯誤。
@@ -41,7 +44,7 @@
 | Kernel verdict | `safe.ts:safe_book/safe_check`、`bendtt.lean` | `--verdict` 把已接受的 book elaboration 後交給 BendTT，`--check-only` 不會。超出 elaboration 範圍會失敗 |
 | 選擇後端 | `main.ts:book_run/cli_emit`、`comp.ts:io_run/js_lib/compile_book` | 純值的直接執行使用 `term_snf`，IO 的直接執行編譯成 JS。`.js`、`.mjs`、`.c` 有各自路徑，產生執行檔還會呼叫原生編譯器 |
 | 尋找依賴、降低表示層級 | `file_book/fun_of/lay_of/anf`：可達定義、live 引數、配置、cut 與 fork | 已檢查的型別決定擦除與配置。非尾端的 worklist 呼叫需要 continuation。常數與未使用 let 可能消失 |
-| 產生、收斂 | `compile_book/emit_*`：native spin、segment、擁有權與共享分析結果 | 重複產生時累積 `own`、`hot`、`stat`，接著計算 segment 可達性、fork 傳播與裝置可達性，產生 `FID_T`、`CID_T` 與程式碼 |
+| 產生、收斂 | `compile_book/emit_*`：native spin、segment、擁有權與共享分析結果 | 重複產生時累積事實集合（`own`、`type`、`ctr`、`stat`、`arg`、`open`、`fam`），接著計算 segment 可達性、fork 傳播與裝置可達性，產生 `FID_T`、`CID_T` 與程式碼 |
 | 執行 | 內嵌 C／JS runtime 與 `effs/*`：配置、task、IO、host／device 路徑 | Base native 與 effects 是受信任的 |
 
 官方 CLI 產生執行檔用 `-std=c11 -O3 -lpthread -lm`，本專案另加 `-march=native -ffp-contract=off`。產生程式碼不等於通過 proof verdict：`unsafe_codegen` 過不了 `--check-only`，但三條執行路徑都能跑。
@@ -81,10 +84,10 @@
 
 - **C1** `~k: T` 只能出現在參數列的最前面。*（probe：`tilde_not_leading`）*
 - **C2** 呼叫可對已宣告 `~` 引數的前面一段加上 `~`，也可全部省略。標記不能在未標記引數之後重新出現，也不能超過宣告數目。parser 接受只標記前面一段，儘管概述註解寫的是「全部或全省」。law 用前置的 `for ~name: T` 宣告。*（probe：`template_marks_omitted`、`template_marks_partial`、`template_marks_gap`、`tilde_on_plain_call`、`law_template_ok`）*
-- **C3** 樣板的 `~` 引數必須是封閉的：`a template applied to closed ~ arguments`。樣板本體會檢查一次，每個 `~` 參數當成不透明的常數，所以不論有沒有被呼叫，它都對每個實例成立。第一次 live 呼叫時，還會用實際引數產生實例並再檢查一次。樣板自我實例化最多 64 層。*（probe：`template_uncalled_checked`、`template_function_uncalled_checked`）*
-- **C4** 自我呼叫必須遞減。引數由左到右與定義的參數比較：每個照原樣傳，直到某一個變小。erased 的參數會跳過。否則報 `a decreasing self-call`。非尾遞迴可以通過。*（probe：`non_decreasing`、`non_tail_recursion_ok`）*
+- **C3** 樣板的 `~` 引數必須是封閉的：`a template applied to closed ~ arguments`。樣板本體會檢查一次，每個 `~` 參數當成不透明的常數，所以不論有沒有被呼叫，它都對每個實例成立。第一次 live 呼叫時，還會用實際引數產生實例並再檢查一次。樣板自我實例化最多 64 層。樣板本體可以把自己的變數當 `~` 引數傳出去，但實例檢查會拒絕這種呼叫，所以依賴變數的型別要經由 `-` 參數傳遞。*（probe：`template_uncalled_checked`、`template_function_uncalled_checked`、`template_variable_bad`、`template_instance_variable_bad`、`erased_type_arguments_ok`）*
+- **C4** 自我呼叫必須遞減。引數由左到右與定義的參數比較：每個照原樣傳，直到某一個變小。引數和該欄目前 match 到的 pattern 比較：綁在這個 pattern 裡的變數，或用這些部分重組的建構子，都算變小。erased 的參數會跳過，型別裡的自我呼叫不檢查。否則報 `a call smaller than ...`，列出 def 依目前 match 的開頭，並顯示這個呼叫。非尾遞迴可以通過。*（source：`term_descend`）**（probe：`non_decreasing`、`non_tail_recursion_ok`）*
 - **C8** lambda 裡的自我呼叫和其他自我呼叫一樣要符合 C4。所以對計算出來的結果做的迴圈（A3）可以寫成一個 def：接收結果與一個 lambda，match 結果後呼叫 lambda，lambda 再以較小的引數呼叫迴圈。不需要互相遞迴。*（probe：`lambda_self_call_ok`、`lambda_self_call_bad`，來自 [nuxyel](https://github.com/nuxyel), [bend-ml](https://github.com/nuxyel/bend-ml)）*
-- **C5** live 的程式不能引用還沒有本體的 def。所以沒有互相遞迴，也沒有往前引用：`a filled definition (an unfilled law is a dead claim ...)`。
+- **C5** live 的程式不能引用還沒有本體的 def。所以沒有互相遞迴，也沒有往前引用：`a def whose body is implemented before the def is used (defs are checked in file order ...)`。
 - **C6** law 在填入之前可見但卡住（stuck），填入之後就會展開。先宣告 law，並不會讓它之後保持不透明。
 - **C7** 卡住的呼叫是 canonical 的：比較時先比 def 的名字，再逐一比引數。
 
@@ -103,6 +106,8 @@
 - **D5** 運算子寫成 `(a + b : T)`，比較運算的兩側加空白，`X<A, B>` 的第一個型別引數如果是複合型別要加括號。
 
 - **D8** 目標轉換用有方向的 `LE`：Data 可當 Type，函式參數型別反向比較，剩餘建構子較少的型別可符合剩餘較多的型別。等式兩端與型別引數用精確的 `EQ`。*（原始碼：`compare_go`，probe：`kind_data_to_type`）*
+
+- **D9** 一個 def 只在同一檔案中寫在它之後的 def 裡展開。在它之前，呼叫保持不動，需要它化簡的等式即使作用在建構子上也會失敗。引理要放在它的敘述需要化簡的 def 之後。
 
 ## E. checker：Base 的定義與大數
 
@@ -132,7 +137,7 @@
 
 生成的 C 怎麼讀：
 
-- `spin_N`：原生函式。只以這種形式存在的 def，沒有自己的 `FID_名稱`。
+- `spin_<def>`：一個 def 的原生函式，名稱裡的其他字元換成 `_`。只以這種形式存在的 def，沒有自己的 `FID_名稱`。
 - `FID_名稱` 加上 `WL_CASE(FID_名稱)`：worklist 的 segment。
 - `FID_名稱_K<n>`：非尾端呼叫之後的接續。`FID_名稱_J<n>`：fork 的匯合。`FID_名稱_C<n>`：閉包。
 - `WL_AGAIN(FID_名稱)`：segment 內的尾端自我跳轉。
@@ -140,12 +145,12 @@
 規則：
 
 - **F1** 一個 def 是 **flat**，要同時滿足：本體沒有平行 let（一個 let 綁定兩個以上的名字）、沒有 bang 呼叫 `f!(..)` 或閉包呼叫、只在尾端呼叫自己、它直接呼叫的每個 def 也都是 flat。*（probe：`shapes`）*
-- **F2** flat def 通常產生原生 C `spin_N`，參數攤平成機器字，結果寫進 `o[]`，尾端自呼叫成為迴圈。非 flat 執行走 worklist segment，但融合與不可達程式碼刪除可能消去個別 def 的邊界（F12）。*（probe：`shapes`）*
+- **F2** flat def 通常產生一個原生 C `spin_<def>`，參數攤平成機器字，結果寫進 `o[]`，尾端自呼叫成為迴圈。非 flat 執行走 worklist segment，但融合與不可達程式碼刪除可能消去個別 def 的邊界（F12）。*（probe：`shapes`）*
 - **F3** 不 flat 會往呼叫者傳，不會往被呼叫者傳。*（probe：`shapes`：`mixed` 呼叫了一個非尾遞迴的 def，所以有 `FID_MIXED`，它同時呼叫的 flat `wrapper` 仍然是 `spin`）*
-- **F4** `SPIN_FAR = 8192`：生成的 C 少於 8,192 個字元的 `spin_N` 是 `INLINE`，更長的是 `DFAR`。`DFAR` 只有在 device 建置時才是真正的函式呼叫，在 CPU 上就是 `INLINE`，由 clang 決定是否內聯。*（probe：`inline_small`、`far_large`）*
-- **F5** `FOLD_FUEL = 8192` 是展開預算，不是嚴格的輸出大小或執行時間上限。`emit_open` 重設它，產生內層 native spin 時保存、還原呼叫者預算。`emit_fold` 在符合條件、已足量套用的 flat 本體展開後扣除走訪節點數，再遞迴嘗試內部呼叫，結果會快取，快取命中不再扣款。這不限制 clang 內聯，也不涵蓋每個生成節點。*（原始碼：`emit_open/emit_native/emit_fold/emit_unfold`）*
+- **F4** `SPIN_FAR = 8192`：生成的 C 少於 8,192 個字元的 spin 是 `INLINE`。更長、會迴圈並 box 或 rewrap F32 的是 `FAR`，在 CPU 上也是真正的呼叫。其他更長的是 `DFAR`，只有在 device 建置時才是真正的呼叫，在 CPU 上是 `INLINE`，由 clang 決定是否內聯。*（probe：`inline_small`、`far_large`）*
+- **F5** `FOLD_FUEL = 8192` 是展開預算，不是嚴格的輸出大小或執行時間上限。每個 scope 有自己的預算，每個 segment 與 spin 各自是一個單位。`emit_fold` 在符合條件、已足量套用的 flat 本體展開後扣除走訪節點數，再遞迴嘗試內部呼叫，結果在同一個單位內快取，燃料耗盡的展開不快取。這不限制 clang 內聯，也不涵蓋每個生成節點。*（原始碼：`emit_open/emit_native/emit_fold/emit_unfold`）*
 - **F6** **被平行 let 直接呼叫的 def 會變成 task**，即使它是 flat。它得到自己的 worklist segment，尾遞迴變成 segment 內的自我跳轉，不是 `spin` 裡的迴圈。所以熱迴圈不要直接當 fork 的子呼叫，要把它放在下一層的 def 裡。*（probe：`shapes`：`kid` 有 `FID_KID` 與 `WL_AGAIN(FID_KID)`）*
-- **F7** `INLINE` 是對 C 編譯器的請求，不是保證。一串以 `o[]` 傳遞寬狀態的小 `spin_N`，只有在 C 編譯器願意把每一環都 inline 時才會合成一個迴圈。呼叫點變多，它就不再這樣做。所以多個運算共用的逐元素輔助函式，在完整程式裡可能每個元素花好幾次真正的呼叫，在只連結一個運算的程式裡卻沒有成本。逐元素的路徑要是一個自己的小迴圈，寬狀態每段只前進一次。量測要在連結了其他使用者的程式裡做。*（量測，無探針：非連續複製的逐元素游標單獨是每元素 1.3 ns，連結 combine 與 reduce 後是 6.7 ns，Clang 19 只有在兩個 inline 門檻都設為 20000 時才恢復，設為 5000 反而更慢）*
+- **F7** `INLINE` 是對 C 編譯器的請求，不是保證。一串以 `o[]` 傳遞寬狀態的小 spin，只有在 C 編譯器願意把每一環都 inline 時才會合成一個迴圈。呼叫點變多，它就不再這樣做。所以多個運算共用的逐元素輔助函式，在完整程式裡可能每個元素花好幾次真正的呼叫，在只連結一個運算的程式裡卻沒有成本。逐元素的路徑要是一個自己的小迴圈，寬狀態每段只前進一次。量測要在連結了其他使用者的程式裡做。*（量測，無探針：非連續複製的逐元素游標單獨是每元素 1.3 ns，連結 combine 與 reduce 後是 6.7 ns，Clang 19 只有在兩個 inline 門檻都設為 20000 時才恢復，設為 5000 反而更慢）*
 - **F8** 平行 let 只有在兩個值都還是呼叫時才是 fork。它的 join 是 C 裡的 `FID_NAME_J<n>`，檢查 join 與呼叫 segment，才能確認 fork。erased 的引數留在它的呼叫裡（`anf`）。*（probe：`fork_erased_last`，來自 [nuxyel](https://github.com/nuxyel), [bend-ml](https://github.com/nuxyel/bend-ml)）*
 
 - **F9** 原生尾迴圈展開 `WL_SPIN`，每輪增加錯誤輪詢計數，每 4,096 輪讀取錯誤狀態。clang 證明輪詢沒有影響時可以刪除它。flat 不代表一定能向量化，要檢查迴圈與 clang 的向量化診斷。*（probe：`shapes`）*
@@ -155,24 +160,29 @@
 
 - **F12** 非 flat callee 若只有一個可達引用、尾端目的地與回傳配置符合條件，且不是 bang 或 foreign 呼叫，也能融合進 caller。`file_book` 計數呼叫點，`emit_body/emit_fuse` 在 caller 產生本體，最後依可達性移除未使用 segment。`fuse_once` 沒有 `FID_WORK`，兩次呼叫的 `fuse_twice` 則保留。因此沒有 FID 不能單獨證明 flat，也不能證明沒有排程工作。*（probe：`fuse_once`、`fuse_twice`）*
 
+- **F13** Clang 的 SLP 向量化會依每個 PHI 的使用次數、由少到多排列一組向量化 PHI 的 lane，並把這個順序套到同一棵樹中所有同寬度的節點（LLVM `SLPVectorizer.cpp` 的 `BoUpSLP::getReorderingData` 與 `reorderTopToBottom`）。迴圈累加器若經由使用次數不一的 PHI 離開迴圈，就會以打亂的順序向量化，迴圈內每個運算元都需要 lane 重排。一串直接寫回原始累加值的 `if lane < lanes` store 就足以觸發：SimplifyCFG 會下沉或複製每列的第一個 store，讓第 1 到 7 列的 lane 0 多一次使用。迴圈之後應以直線程式碼讓每個累加器恰好只有一個使用者。同一個函式中若有數個這樣的迴圈（例如不同列數的版本）後面接著相同的程式碼，同樣的下沉也會把它們合併，所以每個函式只保留一個迴圈與一個收尾。`slp_lanes.py` 會同時列出被重排的 shuffle 與使用次數不一的 PHI 群組。*（實測，無 probe：在八列乘八 lane 的 GEMM K 迴圈中，Clang 19 每步產生 70 到 90 條指令並溢出到堆疊，而非 35 條。替其中一個迴圈每個只用一次的出口 PHI 各加一個無作用的使用，該迴圈就恢復規則。交換 PHI 的輸入順序則沒有影響）*
+- **F14** 呼叫會先算出所有引數，`Bool.pick` 也是呼叫，所以兩個分支都會執行。會跑迴圈、會配置記憶體，或只在條件成立時才有意義的分支，要放在 `match` 的分支裡，通常寫成 `*_when(flag, ...)` 輔助函式，讓證明的 motive 能指名這個旗標。用 `U32.is_zero(n)` 防護、在另一支寫 `n - 1` 的計數會繞回，跑上約四十億步。*(來源：`lib/tensor_tasks.bend` 的 `read_classes_when`)*
+- **F15** 改寫的證據會被擦除，執行期引數不會。證書函式若以執行期引數接收證據，證據就會在原生碼裡執行：fold 的證書會透過見證樹把陣列再 fold 一次。證據要在證書函式自己的 `%` 改寫裡，用它的執行期輸入建出來。`scripts/check_generated_c.py` 會拒絕含見證模組函式的原生碼。*(來源：`lib/proofs/tensor_access_certificate.bend` 的 `fold_range`)*
+- **F16** 一個 def 的所有用途共用一個原生函式。型別是被擦除（`-`）參數的值，以一個裝箱的 `Term` 傳遞，所以記錄引數會在呼叫時配置，沒選上的那個再釋放。`Bool.pick`，以及呼叫它的 Base `U32.min`、`U32.max`、`F32.min`、`F32.max` 都是這種 def。`~` 型別參數會依型別實例化（G5），記錄保持為機器字。熱路徑用 `lib/math_choice.bend` 選值。它的 match 和 `Bool.pick` 一樣先列 `False`，原生碼的判斷是 `c == 0`。先列 `True` 的 match 判斷 `c == 1`：在 GEMM 的 tile 收尾裡，clang 19 對 AVX-512 目標（`-march=znver5`）因此把 K 迴圈改成四個 lane 寬並溢出到堆疊。AVX2 目標沒有這個現象。*(probes：`erased_record_boxed`、`template_record_words`。量測：VM 上 YOLOv5n 單執行緒，先列 `False` 95 ms，先列 `True` 257 ms)*
+
 ## G. 編譯器：版面與共享
 
 - **G1** 版面（`lay_of`）。非遞迴的資料型別攤平成機器字，不配置記憶體。U32 與 F32 佔 32 位元，Nat 佔 64 位元。`Array`、`IO.OP` 與遞迴型別（list、樹）是 heap 上的 box。寬度超過 `WIDE = 247` 個字的型別變成 box。參數合計超過時，多字的參數變成 box。延續段（continuation segment）帶著跨過非 flat 呼叫的每個存活值，不會這樣變成 box：存活的字超過 247 個，編譯就以 `an arity over 247` 失敗（`seg_open`）。數量不定的張量放在一個遞迴型別裡，它是一個 box。
-- **G2** 共享（`facts_hot`）。一個值被使用超過一次，它的型別就被標成 hot。該型別的建構子變成共享的，對它的 match 改走會檢查引用計數的 `ctr_take`，而且 hot 會傳到欄位的型別。*（probe：`share_none` 沒有共享，`share_list` 把一個 list 用兩次，部分建構子變成共享）*本專案在 `Views.View` 上遇過：一個定義把同一個 view 交給另外兩個定義，以及迴圈把 view 當參數帶過每次迭代，都讓所有 `View` 建構子變成共享。前者使四執行緒模型在兩次交替量測中為 136.7 對 143.2 ms、132.1 對 145.3 ms（四分位距約 25 ms）。改成每次使用各建一次 view 後為 130.5 對 130.9 ms。在參數位置直接建出的 view 會讓該參數對所有呼叫者都成為擁有的（G8）。之後呼叫者把一個在別處也用到的 `+` view 傳下去時就會共享它，所以 reduction 先把新 view 綁定到一個名字再傳。`scripts/check_generated_c.py` 對模型、benchmark 與整合入口會拒絕共享的 `View`。launcher 對每次編譯做的檢查不含這一項，因為程式自己的定義可能共享 view。
-- **G3** `facts_hot` 追蹤資料型別欄位、lambda 本體與卡住的型別族分支。強制分析仍無法解析的 `All`、`Var` 或 `App` 時，若不能透過 erased 參數把共享需求傳回呼叫者，就設定 `"*"`。後續走訪 binding 時會強制加熱其型別，**不是**直接把每列 `CID_T` 設為共享。`share_existential` 沿 erased 欄位的後備路徑：Hide／WCon／Bool 為 hot，Con 不是（4/22）。具體欄位對照則加熱 Hide／Con／Nil（3/22）。這些旗標展示不同的保守分析路徑，不是任意 existential 程式的正確性證明。*（probe：`share_existential`、`share_concrete`，另有可解析的泛型／型別族探針）*
-- **G4** 綁定會計算自己的使用次數：最後一次使用取走值，之前的使用是共享。攤平的值被共享時，複製的是字，不是節點。
+- **G2** 共享（`facts_hot`）。一個值被使用超過一次，它的型別就被標成 hot。該型別的建構子變成共享的，對它的 match 改走會檢查引用計數的 `ctr_take`，而且 hot 會傳到欄位的型別。*（probe：`share_none` 沒有共享，`share_list` 先走訪一個 list 再取用它，部分建構子變成共享，`borrow_walks` 只讀地走訪同一個 list 兩次，沒有共享）*本專案在 `Views.View` 上遇過：一個定義把同一個 view 交給另外兩個定義，以及迴圈把 view 當參數帶過每次迭代，都讓所有 `View` 建構子變成共享。前者使四執行緒模型在兩次交替量測中為 136.7 對 143.2 ms、132.1 對 145.3 ms（四分位距約 25 ms）。改成每次使用各建一次 view 後為 130.5 對 130.9 ms。在參數位置直接建出的 view 會讓該參數對所有呼叫者都成為擁有的（G8）。之後呼叫者把一個在別處也用到的 `+` view 傳下去時就會共享它，所以 reduction 先把新 view 綁定到一個名字再傳。`scripts/check_generated_c.py` 對模型、benchmark 與整合入口會拒絕共享的 `View`。launcher 對每次編譯做的檢查不含這一項，因為程式自己的定義可能共享 view。容器的內容也會變成 hot。實際的程式裡 `List` 一定是 hot，所以存活的 list 的元素型別是 hot，一個 `Maybe` 的 list 會讓 `Maybe` 變成 hot。hot 的 `Maybe` 會讓 `Some` 裡以 box 存放的值（例如 `View`）變成 hot，扁平的 record 則不受影響。C 裡被 inline 或從未呼叫的定義也算在內。因此 relane 用自己的型別（`Tiled.CellAxis`）列出目標 cell 的軸。*（量測，沒有 probe：在此之前 YOLOv5n、ViT-B/16 與 ResNet-20 都共享 `View`）*
+- **G3** `facts_hot` 追蹤資料型別欄位、lambda 本體與卡住的型別族分支。強制分析仍無法解析的 `All`、`Var` 或 `App` 時，若不能透過 erased 參數把共享需求傳回呼叫者，就加入事實 `open`。後續走訪 binding 時會強制加熱其型別，**不是**直接把每列 `CID_T` 設為共享。`share_existential` 沿 erased 欄位的後備路徑：Hide／WCon／Bool 為 hot，Con 不是（4/22）。具體欄位對照則加熱 Hide／Con／Nil（3/22）。這些旗標展示不同的保守分析路徑，不是任意 existential 程式的正確性證明。*（probe：`share_existential`、`share_concrete`，另有可解析的泛型／型別族探針）*
+- **G4** 綁定會計算自己的使用次數：最後一次使用取走值，之前的使用是共享。把值交給借用的參數（例如只讀地走訪一個 list）時，是借出而不是共享（G8）。攤平的值被共享時，複製的是字，不是節點。以 box 持有的 record（例如寬 def 的 boxed record）保持 box：讀取時 peek 它的字，在 boxed 位置的使用共享這個 box 並加熱其型別。
 - **G5** 樣板與閉包。`~` 樣板引數由 checker 實例化，所以編譯器看到的是直接呼叫。*（probe：`call_template`：整條鏈都是 `spin`）* 當成一般參數傳入的函式是閉包，而且**呼叫閉包的 def 不是 flat**。*（probe：`call_closure`）* 存在 record 裡的函式，量測結果比樣板慢 5.85–6.5 倍。
 - **G6** 泛型的 `~Context: Data` 配 `+context`，只會把實例化後的那個型別標成 hot。*（probe：`share_template_parameter`）*
 - **G7** 樣板在每個使用處代入封閉引數的運算式。`template_record` 讀同一個計算欄位兩次，會生成兩次計數迴圈呼叫，clang 之後兩個迴圈仍在。要共享結果時，先算一次再把值當 `+` 參數傳入。閉包只延後計算，不會記住結果，還會增加 G5 的分派成本。*（probe：`template_record`，來自 [nuxyel](https://github.com/nuxyel), [bend-ml](https://github.com/nuxyel/bend-ml)）*
 
-- **G8** 只要單調累積的 `own`、`hot` 或 `stat` 新增項目，就再次產生程式碼。每輪重建借用／出借與 segment。`graph_close` 傳播間接出借，未出借的借用參數轉為 owned。配置快取不屬於這個收斂判斷。`own_single` 與 `borrow_repeated` 保留相同 `scan` 本體：前者 native code 使用 `ctr_take/term_sink/spare_free`，後者用 `term_peek` 且不釋放。Array 儲存格使用元素資料型別的**開放**配置，讓呼叫者一致。無法解析的裸元素型別會被拒絕，JS 也一樣。*（原始碼：`compile_book/lay_el`，官方測試：`array_generic_cell`、`array_open_element`、`array_open_element_family`）*
+- **G8** 只要單調累積的事實集合新增項目，就再次產生程式碼。每輪重建借用／出借與 segment。`graph_close` 傳播間接出借，未出借的借用參數轉為 owned。配置快取不屬於這個收斂判斷。`own_single` 與 `borrow_repeated` 保留相同 `scan` 本體：前者 native code 使用 `ctr_take/term_sink/spare_free`，後者用 `term_peek` 且不釋放。Array 儲存格使用元素資料型別的**開放**配置，讓呼叫者一致。無法解析的裸元素型別會被拒絕，JS 也一樣。*（原始碼：`compile_book/lay_el`，官方測試：`array_generic_cell`、`array_open_element`、`array_open_element_family`）*
 
 - **G9** 常數與借用節點的釋放規則不同。`ctr_build` 把靜態欄位放進 `STAT_IMG`，並將建構子加入 `stat`，`node_fields` 對 owned 且 hot **或 static** 的建構子使用 `ctr_take`。所以只看到 `ctr_take` 不能證明執行期共享。packed 的零／單 word 節點與靜態位址對 `term_sink` 而言是 trivial。owned heap 子樹則以迭代和引用計數釋放。*（原始碼：`ctr_build/node_fields/term_triv/term_drop`，probe：`own_single`、`borrow_repeated`）*
 
 ## H. runtime：排程、記憶體與檔案
 
 - **H1** fork（平行 let）產生一個 join task，每個呼叫是一個 kid。kid 依序執行時，一個 frame 供所有步驟使用。
-- **H2** worker 在 ring 上輪轉。成長輪（grow）中的 lane 會跳過不含 fork 的 task（`monk_step` 裡的 `fid_nofk`）。host 一個 ring 接一個 ring 地成長，然後清空。host 執行緒也在每一輪領取單位，另有 `threads - 1` 個 pool 執行緒，執行緒睡著之前會先讓出有限次數（`POOL_WAIT`）。沒有 work stealing。所以一次平行就是一輪成長加一輪工作，成長輪本來不該完成 leaf。planner 要以完整的輪次計算。
+- **H2** worker 在 ring 上輪轉。成長輪（grow）中的 lane 會跳過不含 fork 的 task（`monk_step` 裡的 `fid_nofk`）。一步交回的不含 fork 的 task，若在 host 上後面接著一個可恢復、可能 fork 的 frame，就立刻執行而不延後。host 一個 ring 接一個 ring 地成長，然後清空。host 執行緒也在每一輪領取單位，另有 `threads - 1` 個 pool 執行緒，執行緒睡著之前會先讓出有限次數（`POOL_WAIT`）。沒有 work stealing。所以一次平行就是一輪成長加一輪工作，成長輪本來不該完成 leaf。planner 要以完整的輪次計算。
 - **H3** 平行 let 轉移其引數。傳遞唯一擁有的 Array 本身不代表產生別名。明確的 `Array.fork` 讓兩個 handle 指向同一區塊，且標為 `@unsafe`，使用者過不了 `--check-only`（C10）。共享 handle 使用原子 redirect 計數。`Array.clone` 用 `blk_copy` 複製外層區塊。boxed 元素增加保留／共享，不會遞迴深拷貝。*（probe：`array_fork_trust`，原始碼：`blk_copy/blk_fill/blk_keep`）*
 - **H4** **不含 fork 的葉 task 會延後到 work turn。** 機制在 `cube_run`、`row_grow`、`monk_step`、`task_deal`、`emit_jump`：
   1. 在最上層的 fork，host 把兩個 kid 放到**兩個不同的 row**（`ring_flip`）。
@@ -182,7 +192,7 @@
 
   所以深度二、四個 leaf 的樹，在成長輪用兩個 worker 做兩個 leaf，在工作輪用兩個 worker 做另外兩個。總時間是兩個 leaf 的時間，不是一個。16 個 leaf 時是兩個在成長輪、14 個在工作輪。
 
-  做法：子節點是 leaf 時，平行 let 呼叫一個**既不 fork、也不呼叫閉包**的 def。依 F6 它會變成 task，它在 `FID_T` 表中那一列的 mask 2 會被設定（位元索引 1，`fork_flags.py` 會印出來）。成長輪會跳過它，所有 leaf 都在工作輪的不同單位中執行。熱迴圈放在再下一層的 flat def（F6）。避開閉包呼叫是充分條件，不是必要條件：`Clo~apply` 連到所有已產生的閉包，只有這張圖能到達 fork 才標為 may-fork。`call_closure` 的 RUN 與 CLO_APPLY 都是 fork-free，`call_closure_fork` 則都為 may-fork。flat 與 fork-free 是不同分析。
+  做法：子節點是 leaf 時，平行 let 呼叫一個**既不 fork、也不呼叫閉包**的 def。依 F6 它會變成 task，它在 `FID_T` 表中那一列會標為不含 fork（`nofk` 欄位，`fork_flags.py` 會印出來）。成長輪會跳過它，所有 leaf 都在工作輪的不同單位中執行。熱迴圈放在再下一層的 flat def（F6）。避開閉包呼叫是充分條件，不是必要條件：`Clo~apply` 連到所有已產生的閉包，只有這張圖能到達 fork 才標為 may-fork。`call_closure` 的 RUN 與 CLO_APPLY 都是 fork-free，`call_closure_fork` 則都為 may-fork。flat 與 fork-free 是不同分析。
 
   *（probe：`leaf_inline` 與 `leaf_task`。`verify.py` 檢查它們的 task 在 `FID_T` 的旗標。`leaf_workers.py` 以 4、8、16 個 leaf 在二與四執行緒執行它們，要求 inline 的寫法有兩個 leaf 在成長輪執行，不含 fork 的寫法為零個。各四個 leaf 時，在一台 8 執行緒的虛擬機上量到：二執行緒 97.6 與 97.7 ms，四執行緒 **97.5 ms 對 48.9 ms**。inline 的寫法在四執行緒並不比二執行緒快。）*
 
@@ -192,9 +202,10 @@
 - **H7** Array 索引用區塊類別導出的遮罩環繞。兩個元素的 Array 用索引 3 讀到索引 1。有效索引是函式庫的合約，不是執行期的越界例外。*（probe：`array_index_wrap`）*
 - **H8** 把 Array 拆成兩半會用 `blk_half` 配置並複製各半部，與共享同一儲存的 `Array.fork` handle 不同。Buffer 的兩個 32 位元儲存格佔一個 64 位元 heap word，複製格數與配置字數要分別計算。*（probe：`array_blocks`）*
 
-- **H9** 配置按 lane 與大小 class 管理。host 依序取 HOT、暫存的 COLD 世代、共享 bank，最後才拿新的 quantum。累積一整個釋放世代後移往 COLD／bank。回到 free list 不等於把記憶體還給作業系統。共享 boxed 值另有 redirect cell，使用 24-bit 副本計數，溢位會失敗。*（原始碼：`heap_alloc_miss/heap_hand/heap_free/rfc_bump`）*
+- **H9** 配置按 lane 與大小 class 管理。host 依序取 HOT、暫存的 COLD 世代、共享 bank，最後才拿新的 quantum。累積一整個釋放世代後移往 COLD／bank。32,768 個字以上的區塊不經 COLD，直接進 bank。回到 free list 不等於把記憶體還給作業系統。共享 boxed 值另有 redirect cell，使用 24-bit 副本計數，溢位會失敗。*（原始碼：`heap_alloc_miss/heap_hand/heap_free/rfc_bump`）*
 
 - **H10** host 與 device 共用生成語義，但 dispatch 機制不同。host segment 使用 `musttail` 與可用時的 `preserve_none`，device segment 是單一 kernel 的 case。bang 與閉包可達性決定裝置程式碼。`dev` 分成 grow／work／bank-pack 等 pass，host 組合語言結果沒有量到這些 pass。JS 使用直接呼叫／尾端 trampoline 與循序 let，沒有 C worklist 的平行執行。*（原始碼：`compile_book`、runtime Dialect/Dev、`js_open/js_def/run_loop`，已追查原始碼，未執行 GPU）*
+- **H11** 一個平行區段讓 runtime 付出幾到幾十微秒：喚醒執行緒池、成長輪與 join。規劃器每個區段收兩輪 wake（`lib/default_kernel_cost.bend`），兩輪必須涵蓋量到的最大區段成本。*（probe：`wake_rounds.py` 執行多輪串列工作加上一個含四個不含 fork 之 leaf 的區段，與不 fork 的相同工作比較。在一台 8 執行緒的虛擬機上以四執行緒量到：連續區段每個 3.5 us，0.25 ms 串列工作之後 11 us，2.5 ms 之後 20 us，10 ms 之後 33 us）*
 
 ## I. 對設計的意義
 
@@ -214,13 +225,16 @@
 
 | 規則 | 找到的寫法 |
 | --- | --- |
+| A1 | 拆了後面的 binder 之後，又 match 或拆解前面的 |
 | A2 | let 之後的 match 或拆解 |
 | A3 | match 或拆解一個計算出來的值 |
 | A7 | pattern 後面接 `[]` |
 | C1 | `~` 參數不在最前面 |
 | C2 | 呼叫的 `~` 引數過多或不是連續的前綴，會解析 import 別名 |
+| C4 | 型別以外的自我呼叫，引數相對於已 match 的欄沒有遞減 |
+| C5 | def 中以不加前綴的呼叫或 `~` 用到同一檔案後面才寫的 def |
 | D4 | let 一個沒有型別標註的建構子 |
 | E1 | `U32.to_nat(大數字)`，或六位數以上的 Nat 字面值 |
 | E1? | `U32.to_nat(f(X.limits()))`：把預設的機器界限轉成 Nat。問號表示有風險，不一定失敗 |
 
-在 `lib` 與 `convolution` 已驗收的原始碼上，它不回報任何一筆。它只看寫法：找不到用量錯誤（B1）、建構子欄的順序與型別不符，C2 也只檢查明寫 `~` 且解析得到宣告的呼叫。`verify.py` 拿 lint 的結果和 checker probe 對照。
+在 `lib` 與 `convolution` 已驗收的原始碼上，它不回報任何一筆。它只看寫法：找不到用量錯誤（B1）與型別不符，C2 也只檢查明寫 `~` 且解析得到宣告的呼叫。`verify.py` 拿 lint 的結果和 checker probe 對照。

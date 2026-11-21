@@ -38,7 +38,7 @@ export YOLO_INPUT=out/results/bus_640/input.bin
 export YOLO_OUTPUT="$BEND_OUTDIR"
 export YOLO_LAYERS=1
 set +e
-"$binary" --threads "$threads" --gpu "$gpu" > "$BEND_OUTDIR/validation.log" 2> "$BEND_OUTDIR/stderr.log"
+"$binary" +RTS --threads "$threads" --gpu "$gpu" -RTS > "$BEND_OUTDIR/validation.log" 2> "$BEND_OUTDIR/stderr.log"
 status=$?
 set -e
 printf '%s\n' "$status" > "$BEND_OUTDIR/exit_code.txt"
@@ -52,5 +52,5 @@ export BEND_DUMP=0
 export BEND_REPETITIONS=9
 unset YOLO_LAYERS
 export YOLO_EXTRA=8
-"$binary" --threads "$threads" --gpu "$gpu" > "$BEND_OUTDIR/samples.log"
+"$binary" +RTS --threads "$threads" --gpu "$gpu" -RTS > "$BEND_OUTDIR/samples.log"
 "$py" benchmarks/backends/collect_bend.py --backend "$backend" --threads "$threads"

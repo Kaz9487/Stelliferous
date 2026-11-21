@@ -4,7 +4,6 @@
 import Base
 import ../specification.bend as ConvSpec
 import ../matrix_specification.bend as MatrixSpec
-import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/ordered_reduction_split.bend as Ordered
 import ./matrix_reduction_bounds.bend as ReductionBounds
 import ./output_values.bend as Values
@@ -16,16 +15,13 @@ import ../../lib/proofs/natural_addition.bend as Addition
 import ../../lib/proofs/nat_division.bend as Division
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/row_major_index.bend as RowMajor
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def window(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat) -> ConvSpec.Problem:
   ConvSpec.Problem{shape,input,weights,bias} = problem
   ConvSpec.Shape{+ci,co,height,+width,kernel,stride,padding} = shape
   ConvSpec.Problem{ConvSpec.Shape{ci,co,rows,width,kernel,stride,padding},
     WindowBandValues.values(Nat.mul(ci,Nat.mul(rows,width)),0n,WindowBandValues.Band{input,height,width,first,rows}),weights,bias}
-
-def le_after(+first: Nat,+row: Nat) -> {Nat.is_le(row,Nat.add(first,row)) == True{} : Bool}:
-  %Order.commutative(row,first) : {Nat.is_le(row,_) == True{} : Bool}
-  Order.le_add(row,first)
 
 # Input row block * stride + (r * stride + kernel_row) of original output row block + r.
 def row_shift(+block: Nat,+row: Nat,+stride: Nat,+kernel_row: Nat,+first: Nat,+first_exact: {first == Nat.mul(block,stride) : Nat}) ->
@@ -69,7 +65,7 @@ def low(+first: Nat,+padding: Nat,+row: Nat,+top: Top<first,padding,row,1n>) ->
       %Equal.sym(Nat,first,0n,zero) : {Nat.is_le(padding,Nat.add(_,row)) == Nat.is_le(padding,row) : Bool}
       {==}
     case Below{+below}:
-      %Equal.sym(Bool,Nat.is_le(padding,Nat.add(first,row)),True{},Order.transitive(padding,row,Nat.add(first,row),below,le_after(first,row))) :
+      %Equal.sym(Bool,Nat.is_le(padding,Nat.add(first,row)),True{},Order.transitive(padding,row,Nat.add(first,row),below,Order.right_le(first,row))) :
         {_ == Nat.is_le(padding,row) : Bool}
       %Equal.sym(Bool,Nat.is_le(padding,row),True{},below) : {True{} == _ : Bool}
       {==}
@@ -77,7 +73,7 @@ def low(+first: Nat,+padding: Nat,+row: Nat,+top: Top<first,padding,row,1n>) ->
       +shifted = before_bound(Nat.add(first,row),padding,outside)
       %Equal.sym(Bool,Nat.is_le(padding,Nat.add(first,row)),False{},not_reached(Nat.add(first,row),padding,shifted)) :
         {_ == Nat.is_le(padding,row) : Bool}
-      %Equal.sym(Bool,Nat.is_le(padding,row),False{},not_reached(row,padding,Order.le_lt_trans(row,Nat.add(first,row),padding,le_after(first,row),shifted))) :
+      %Equal.sym(Bool,Nat.is_le(padding,row),False{},not_reached(row,padding,Order.le_lt_trans(row,Nat.add(first,row),padding,Order.right_le(first,row),shifted))) :
         {False{} == _ : Bool}
       {==}
 
@@ -229,8 +225,8 @@ def patch_agrees(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+
   {MatrixSpec.patch(window(problem,first,rows),MatrixSpec.Position{output_row,output_column},index) ==
     MatrixSpec.patch(problem,MatrixSpec.Position{Nat.add(block,output_row),output_column},index) : F32}:
   MatrixSpec.KIndex{+channel,+kernel_row,+kernel_column} = index
-  Shape.Both{+channel_inside,+spatial} = bounds
-  Shape.Both{+kernel_row_inside,+kernel_column_inside} = spatial
+  KernelGemm.Both{+channel_inside,+spatial} = bounds
+  KernelGemm.Both{+kernel_row_inside,+kernel_column_inside} = spatial
   +base = Nat.mul(output_row,Guards.stride(problem))
   sample(problem,first,rows,block,channel,output_row,output_column,kernel_row,kernel_column,first_exact,channel_inside,fits,
     top_at(first,Guards.pad(problem),base,Guards.kernel(problem),kernel_row,kernel_row_inside,top),
@@ -257,9 +253,9 @@ def agreements(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+block: Nat,+ch
   match indices:
     case Nil{}: Unit{}
     case +index <> +rest:
-      Shape.Both{+head,tail} = bounds
-      Shape.Both{
-        Shape.Both{patch_agrees(problem,first,rows,block,output_row,output_column,index,first_exact,fits,top,bottom,head),
+      KernelGemm.Both{+head,tail} = bounds
+      KernelGemm.Both{
+        KernelGemm.Both{patch_agrees(problem,first,rows,block,output_row,output_column,index,first_exact,fits,top,bottom,head),
           weight_agrees(problem,first,rows,channel,index)},
         agreements(problem,first,rows,block,channel,output_row,output_column,rest,first_exact,fits,top,bottom,tail)}
 

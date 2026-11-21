@@ -8,9 +8,13 @@ import ./nat_to_u32_bounds.bend as Bounds
 import ./nat_order.bend as Order
 import ./word_encoding.bend as WordEncoding
 import ./word_subtraction.bend as Subtraction
-import ./storage_shape.bend as Shape
 import ./boolean_logic.bend as Boolean
 import ./natural_addition.bend as Addition
+import ../kernel_gemm.bend as KernelGemm
+import ../machine_limits.bend as Machine
+import ./bounded_u32_arithmetic.bend as Arithmetic
+import ./checked_word_completion.bend as Completion
+import ./u32_division.bend as U32Division
 
 def sum_within(+offset: Nat,+increment: Nat,+last: Nat,
   offset_inside: {Nat.is_le(offset,last) == True{} : Bool},
@@ -49,7 +53,7 @@ law Address:
 def Address(result,expected,length):
   match result:
     case None{}: Unit
-    case Some{value}: Shape.Both<{expected == U32.to_nat(value) : Nat},{Nat.is_lt(expected,U32.to_nat(length)) == True{} : Bool}>
+    case Some{value}: KernelGemm.Both<{expected == U32.to_nat(value) : Nat},{Nat.is_lt(expected,U32.to_nat(length)) == True{} : Bool}>
 
 def selected_address(+valid: Bool,+offset: U32,+increment: U32,+length: U32,
   inside: {U32.is_lt(offset,length) == True{} : Bool},guard: {U32.is_le(increment,(length - 1 - offset : U32)) == valid : Bool}) ->
@@ -58,7 +62,7 @@ def selected_address(+valid: Bool,+offset: U32,+increment: U32,+length: U32,
     case False{}: Unit{}
     case True{}:
       +bounded = addition_inside(offset,increment,length,inside,guard)
-      Shape.Both{Equal.sym(Nat,U32.to_nat((offset + increment : U32)),Nat.add(U32.to_nat(offset),U32.to_nat(increment)),
+      KernelGemm.Both{Equal.sym(Nat,U32.to_nat((offset + increment : U32)),Nat.add(U32.to_nat(offset),U32.to_nat(increment)),
         FullRange.add(offset,increment,length,Bounds.strict_le(Nat.add(U32.to_nat(offset),U32.to_nat(increment)),U32.to_nat(length),bounded))),bounded}
 
 def product_address(+product: Maybe<&2,U32>,+offset: U32,+coordinate: U32,+stride: U32,+length: U32,
@@ -85,7 +89,7 @@ def exact(+result: Maybe<&2,U32>,expected: Nat,length: U32,bound: Address(result
   match result:
     case None{}: Unit{}
     case Some{value}:
-      Shape.Both{equation,inside} = bound
+      KernelGemm.Both{equation,inside} = bound
       equation
 
 def guarded_advance(+valid: Bool,+offset: U32,+coordinate: U32,+stride: U32,+extent: U32,+length: U32,
@@ -100,7 +104,7 @@ def finished(+valid: Bool,+offset: U32,+length: U32,guard: {U32.is_lt(offset,len
   Address(Views.finish_address(valid,offset),U32.to_nat(offset),length):
   match valid:
     case False{}: Unit{}
-    case True{}: Shape.Both{{==},Bounds.as_nat_lt(offset,length,guard)}
+    case True{}: KernelGemm.Both{{==},Bounds.as_nat_lt(offset,length,guard)}
 
 # Natural dot product, in source-axis order. Mismatched ranks are irrelevant:
 # locate rejects them, and Address makes no assertion for a rejected result.
@@ -136,12 +140,12 @@ def address(+axes: List<&2,Views.Axis>,+coordinates: List<&2,U32>,+offset: U32,+
   locate(axes,coordinates,Some{offset},U32.to_nat(offset),length,{==})
 
 def found_inside(+result: Maybe<&2,U32>,+expected: Nat,+length: U32,
-  accepted: {Views.found(result) == True{} : Bool},bound: Address(result,expected,length)) ->
+  accepted: {Views.has_count(result) == True{} : Bool},bound: Address(result,expected,length)) ->
   {Nat.is_lt(expected,U32.to_nat(length)) == True{} : Bool}:
   match result:
     case None{}: Empty.absurd({Nat.is_lt(expected,U32.to_nat(length)) == True{} : Bool},WordEncoding.false_true(accepted))
     case Some{value}:
-      Shape.Both{equation,inside} = bound
+      KernelGemm.Both{equation,inside} = bound
       inside
 
 def last_address(+axes: List<&2,Views.Axis>,+offset: U32,+length: U32,
@@ -165,3 +169,77 @@ def last_location(+axes: List<&2,Views.Axis>,+offset: Nat) ->
         Nat.add(offset,last_span(Views.Axis{extent,stride} <> tail)),
         last_location(tail,Nat.add(offset,Nat.mul(U32.to_nat((extent - 1 : U32)),U32.to_nat(stride)))),
         Addition.associative(offset,Nat.mul(U32.to_nat((extent - 1 : U32)),U32.to_nat(stride)),last_span(tail)))
+
+# ---- A view whose last address lies inside a length fits it ----
+
+def located_step(+extent: U32,+stride: U32,+tail: List<&2,Views.Axis>,+offset: U32,+length: U32,
+  +nonzero: {Nat.is_lt(0n,U32.to_nat(extent)) == True{} : Bool},
+  +bound: {Nat.is_lt(Nat.add(Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat((extent - 1 : U32)),U32.to_nat(stride))),last_span(tail)),U32.to_nat(length)) == True{} : Bool},
+  tail_located: @+offset: U32 -> {Nat.is_lt(Nat.add(U32.to_nat(offset),last_span(tail)),U32.to_nat(length)) == True{} : Bool} ->
+    {Views.has_count(Views.locate(tail,Views.last_coordinates(tail),Some{offset},length)) == True{} : Bool}) ->
+  {Views.has_count(Views.locate(Views.Axis{extent,stride} <> tail,Views.last_coordinates(Views.Axis{extent,stride} <> tail),Some{offset},length)) == True{} : Bool}:
+  +term = Nat.mul(U32.to_nat((extent - 1 : U32)),U32.to_nat(stride))
+  +reach = Order.le_lt_trans(Nat.add(U32.to_nat(offset),term),Nat.add(Nat.add(U32.to_nat(offset),term),last_span(tail)),U32.to_nat(length),Order.le_add(Nat.add(U32.to_nat(offset),term),last_span(tail)),bound)
+  +offset_below = Order.le_lt_trans(U32.to_nat(offset),Nat.add(U32.to_nat(offset),term),U32.to_nat(length),Order.le_add(U32.to_nat(offset),term),reach)
+  +last = FullRange.subtract(extent,1,extent,Order.positive_one(U32.to_nat(extent),nonzero),Order.sub_le(U32.to_nat(extent),1n))
+  +last_below = {
+    %Equal.sym(Nat,U32.to_nat((extent - 1 : U32)),Nat.sub(U32.to_nat(extent),1n),last) : {Nat.is_lt(_,U32.to_nat(extent)) == True{} : Bool}
+    Order.last_below(U32.to_nat(extent),nonzero) : {Nat.is_lt(U32.to_nat((extent - 1 : U32)),U32.to_nat(extent)) == True{} : Bool}}
+  +term_room = Bounds.strict_le(term,U32.to_nat(length),Order.le_lt_trans(term,Nat.add(U32.to_nat(offset),term),U32.to_nat(length),Order.right_le(U32.to_nat(offset),term),reach))
+  +product = ((extent - 1 : U32) * stride : U32)
+  +product_value = FullRange.multiply((extent - 1 : U32),stride,length,term_room)
+  +multiplied = Completion.actual((extent - 1 : U32),stride,Machine.word_max(),product,Equal.sym(Nat,U32.to_nat(product),term,product_value),FullRange.maximum(product),{==})
+  +length_positive = Order.le_lt_trans(0n,U32.to_nat(offset),U32.to_nat(length),Order.zero_le(U32.to_nat(offset)),offset_below)
+  +one_less = FullRange.subtract(length,1,length,Order.positive_one(U32.to_nat(length),length_positive),Order.sub_le(U32.to_nat(length),1n))
+  +offset_last = Order.before_last(U32.to_nat(offset),U32.to_nat(length),offset_below)
+  +room = FullRange.subtract((length - 1 : U32),offset,length,
+    %Equal.sym(Nat,U32.to_nat((length - 1 : U32)),Nat.sub(U32.to_nat(length),1n),one_less) : {Nat.is_le(U32.to_nat(offset),_) == True{} : Bool} offset_last,
+    Order.transitive(Nat.sub(U32.to_nat((length - 1 : U32)),U32.to_nat(offset)),U32.to_nat((length - 1 : U32)),U32.to_nat(length),Order.sub_le(U32.to_nat((length - 1 : U32)),U32.to_nat(offset)),
+      %Equal.sym(Nat,U32.to_nat((length - 1 : U32)),Nat.sub(U32.to_nat(length),1n),one_less) : {Nat.is_le(_,U32.to_nat(length)) == True{} : Bool} Order.sub_le(U32.to_nat(length),1n)))
+  +fits_room = {
+    %Equal.sym(Nat,U32.to_nat(product),term,product_value) : {Nat.is_le(_,U32.to_nat((length - 1 - offset : U32))) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat((length - 1 - offset : U32)),Nat.sub(U32.to_nat((length - 1 : U32)),U32.to_nat(offset)),room) : {Nat.is_le(term,_) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat((length - 1 : U32)),Nat.sub(U32.to_nat(length),1n),one_less) : {Nat.is_le(term,Nat.sub(_,U32.to_nat(offset))) == True{} : Bool}
+    Order.cancel_offset_le(U32.to_nat(offset),term,Nat.sub(Nat.sub(U32.to_nat(length),1n),U32.to_nat(offset)),
+      %Equal.sym(Nat,Nat.add(U32.to_nat(offset),Nat.sub(Nat.sub(U32.to_nat(length),1n),U32.to_nat(offset))),Nat.sub(U32.to_nat(length),1n),
+        Order.restore_shift(U32.to_nat(offset),Nat.sub(U32.to_nat(length),1n),offset_last)) : {Nat.is_le(Nat.add(U32.to_nat(offset),term),_) == True{} : Bool}
+      Order.before_last(Nat.add(U32.to_nat(offset),term),U32.to_nat(length),reach))
+    : {Nat.is_le(U32.to_nat(product),U32.to_nat((length - 1 - offset : U32))) == True{} : Bool}}
+  +moved = (offset + product : U32)
+  +moved_value = {
+    %product_value : {U32.to_nat(moved) == Nat.add(U32.to_nat(offset),_) : Nat}
+    FullRange.add(offset,product,length,
+      %Equal.sym(Nat,U32.to_nat(product),term,product_value) : {Nat.is_le(Nat.add(U32.to_nat(offset),_),U32.to_nat(length)) == True{} : Bool} Bounds.strict_le(Nat.add(U32.to_nat(offset),term),U32.to_nat(length),reach))
+    : {U32.to_nat(moved) == Nat.add(U32.to_nat(offset),term) : Nat}}
+  %Equal.sym(Bool,U32.is_lt((extent - 1 : U32),extent),True{},U32Division.nat_lt_native((extent - 1 : U32),extent,last_below)) :
+    {Views.has_count(Views.locate(tail,Views.last_coordinates(tail),Views.advance_inside(_ && U32.is_lt(offset,length),offset,(extent - 1 : U32),stride,length),length)) == True{} : Bool}
+  %Equal.sym(Bool,U32.is_lt(offset,length),True{},U32Division.nat_lt_native(offset,length,offset_below)) :
+    {Views.has_count(Views.locate(tail,Views.last_coordinates(tail),Views.advance_inside(True{} && _,offset,(extent - 1 : U32),stride,length),length)) == True{} : Bool}
+  %Equal.sym(Maybe<&2,U32>,Shapes.checked_multiply((extent - 1 : U32),stride),Some{product},multiplied) :
+    {Views.has_count(Views.locate(tail,Views.last_coordinates(tail),Views.advance_product(_,offset,(length - 1 - offset : U32)),length)) == True{} : Bool}
+  %Equal.sym(Bool,U32.is_le(product,(length - 1 - offset : U32)),True{},U32Division.nat_le_native(product,(length - 1 - offset : U32),fits_room)) :
+    {Views.has_count(Views.locate(tail,Views.last_coordinates(tail),Views.address_when(_,offset,product),length)) == True{} : Bool}
+  tail_located(moved,
+    %Equal.sym(Nat,U32.to_nat(moved),Nat.add(U32.to_nat(offset),term),moved_value) : {Nat.is_lt(Nat.add(_,last_span(tail)),U32.to_nat(length)) == True{} : Bool} bound)
+
+def located(+axes: List<&2,Views.Axis>,+offset: U32,+length: U32,+nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},
+  bound: {Nat.is_lt(Nat.add(U32.to_nat(offset),last_span(axes)),U32.to_nat(length)) == True{} : Bool}) ->
+  {Views.has_count(Views.locate(axes,Views.last_coordinates(axes),Some{offset},length)) == True{} : Bool}:
+  match axes:
+    case Nil{}:
+      +inside = {%Addition.zero_right(U32.to_nat(offset)) : {Nat.is_lt(_,U32.to_nat(length)) == True{} : Bool} bound : {Nat.is_lt(U32.to_nat(offset),U32.to_nat(length)) == True{} : Bool}}
+      %Equal.sym(Bool,U32.is_lt(offset,length),True{},U32Division.nat_lt_native(offset,length,inside)) : {Views.has_count(Views.finish_address(_,offset)) == True{} : Bool}
+      {==}
+    case Con{Views.Axis{+extent,+stride},+tail}:
+      +nonzero = Arithmetic.word_nonzero_positive(extent,Boolean.or_false_left(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty))
+      +tail_nonempty = Boolean.or_false_right(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty)
+      located_step(extent,stride,tail,offset,length,nonzero,
+        %Equal.sym(Nat,Nat.add(Nat.add(U32.to_nat(offset),Nat.mul(U32.to_nat((extent - 1 : U32)),U32.to_nat(stride))),last_span(tail)),Nat.add(U32.to_nat(offset),Nat.add(Nat.mul(U32.to_nat((extent - 1 : U32)),U32.to_nat(stride)),last_span(tail))),Addition.associative(U32.to_nat(offset),Nat.mul(U32.to_nat((extent - 1 : U32)),U32.to_nat(stride)),last_span(tail))) : {Nat.is_lt(_,U32.to_nat(length)) == True{} : Bool} bound,
+        next => fits => located(tail,next,length,tail_nonempty,fits))
+
+# A nonempty view whose last address lies inside a length fits it.
+def fits_span(+axes: List<&2,Views.Axis>,+offset: U32,+length: U32,+nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},
+  bound: {Nat.is_lt(Nat.add(U32.to_nat(offset),last_span(axes)),U32.to_nat(length)) == True{} : Bool}) ->
+  {Views.fits(Views.View{axes,offset},length) == True{} : Bool}:
+  %Equal.sym(Bool,Shapes.has_zero(Views.axis_extents(axes)),False{},nonempty) : {Views.fits_nonempty(_,Views.View{axes,offset},length) == True{} : Bool}
+  located(axes,offset,length,nonempty,bound)

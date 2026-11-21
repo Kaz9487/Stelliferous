@@ -187,6 +187,35 @@ def write(T,tree,i,value):
       Tree.read(T,tree,i)),swap(T,tree,i,value)) : {Array.set.fin(T,_) == Tree.pack(T,Tree.write(T,tree,i,value)) : Array<T>}
   {==}
 
+# Storing back the value just fetched leaves a tree unchanged.
+def stored_choice(-T: Data,+l: Tree.Tree<T>,+r: Tree.Tree<T>,+n: U32,+i: U32,+z: Bool,
+  left: {Tree.store(T,l,U32.shr(n),i,Tree.fetch(T,l,U32.shr(n),i)) == l : Tree.Tree<T>},
+  right: {Tree.store(T,r,U32.shr(n),U32.sub(i,U32.shr(n)),Tree.fetch(T,r,U32.shr(n),U32.sub(i,U32.shr(n)))) == r : Tree.Tree<T>}) ->
+  {Bool.pick(Tree.Tree<T>,z,
+      Tree.Node{Tree.store(T,l,U32.shr(n),i,Bool.pick(T,z,Tree.fetch(T,l,U32.shr(n),i),Tree.fetch(T,r,U32.shr(n),U32.sub(i,U32.shr(n))))),r},
+      Tree.Node{l,Tree.store(T,r,U32.shr(n),U32.sub(i,U32.shr(n)),Bool.pick(T,z,Tree.fetch(T,l,U32.shr(n),i),Tree.fetch(T,r,U32.shr(n),U32.sub(i,U32.shr(n)))))}) ==
+    Tree.Node{l,r} : Tree.Tree<T>}:
+  match z:
+    case True{}:
+      Equal.cong(Tree.Tree<T>,Tree.Tree<T>,tree => Tree.Node{tree,r},Tree.store(T,l,U32.shr(n),i,Tree.fetch(T,l,U32.shr(n),i)),l,left)
+    case False{}:
+      Equal.cong(Tree.Tree<T>,Tree.Tree<T>,tree => Tree.Node{l,tree},
+        Tree.store(T,r,U32.shr(n),U32.sub(i,U32.shr(n)),Tree.fetch(T,r,U32.shr(n),U32.sub(i,U32.shr(n)))),r,right)
+
+def stored_fetched(-T: Data,+tree: Tree.Tree<T>,+n: U32,+i: U32) -> {Tree.store(T,tree,n,i,Tree.fetch(T,tree,n,i)) == tree : Tree.Tree<T>}:
+  match tree:
+    case Tree.Leaf{value}: {==}
+    case Tree.Node{+l,+r}:
+      stored_choice(T,l,r,n,i,U32.is_lt(i,U32.shr(n)),stored_fetched(T,l,U32.shr(n),i),stored_fetched(T,r,U32.shr(n),U32.sub(i,U32.shr(n))))
+
+# Setting the value just read leaves the array unchanged.
+def set_read(-T: Data,+tree: Tree.Tree<T>,+i: U32) -> {Array.set(T,Tree.pack(T,tree),i,Tree.read(T,tree,i)) == Tree.pack(T,tree) : Array<T>}:
+  %Equal.sym(Array<T>,Array.set(T,Tree.pack(T,tree),i,Tree.read(T,tree,i)),Tree.pack(T,Tree.write(T,tree,i,Tree.read(T,tree,i))),
+    write(T,tree,i,Tree.read(T,tree,i))) : {_ == Tree.pack(T,tree) : Array<T>}
+  %Equal.sym(Tree.Tree<T>,Tree.write(T,tree,i,Tree.read(T,tree,i)),tree,
+    stored_fetched(T,tree,Tree.capacity(T,tree),U32.and(i,U32.sub(Tree.capacity(T,tree),1)))) : {Tree.pack(T,_) == Tree.pack(T,tree) : Array<T>}
+  {==}
+
 def guarded_read(~Element: Data,+fallback: Element,+valid: Bool,+tree: Tree.Tree<Element>,+index: U32) ->
   {Storage.read_when(Element,fallback,valid,Tree.pack(Element,tree),index) ==
     (Tree.pack(Element,tree),Bool.pick(Element,valid,Tree.read(Element,tree,index),fallback)) : Array<Element> & Element}:

@@ -2,6 +2,7 @@
 import Base
 import ./u32_comparison.bend as Comparison
 import ./nat_extrema.bend as Extrema
+import ./nat_order.bend as Order
 
 
 def selected(choice: Bool,+left: U32,+right: U32) ->
@@ -72,3 +73,15 @@ def maximum_upper(+left: U32,+right: U32,+upper: U32,lu: {U32.is_le(left,upper) 
   %Equal.sym(Bool,U32.is_le(U32.max(left,right),upper),Nat.is_le(U32.to_nat(U32.max(left,right)),U32.to_nat(upper)),Comparison.le(U32.max(left,right),upper)) : {_ == True{} : Bool}
   %Equal.sym(Nat,U32.to_nat(U32.max(left,right)),Nat.max(U32.to_nat(left),U32.to_nat(right)),maximum(left,right)) : {Nat.is_le(_,U32.to_nat(upper)) == True{} : Bool}
   Extrema.maximum_upper(U32.to_nat(left),U32.to_nat(right),U32.to_nat(upper),%Comparison.le(left,upper) : {_ == True{} : Bool} lu,%Comparison.le(right,upper) : {_ == True{} : Bool} ru)
+
+def minimum_below(+left: U32,+right: U32) -> {Nat.is_le(U32.to_nat(U32.min(left,right)),U32.to_nat(left)) == True{} : Bool}:
+  %Equal.sym(Nat,U32.to_nat(U32.min(left,right)),Nat.min(U32.to_nat(left),U32.to_nat(right)),minimum(left,right)) : {Nat.is_le(_,U32.to_nat(left)) == True{} : Bool}
+  Extrema.minimum_left(U32.to_nat(left),U32.to_nat(right))
+
+# The larger of a positive word and one is the word.
+def max_one_exact(+word: U32,+value: Nat,+exact: {U32.to_nat(word) == value : Nat},+positive: {Nat.is_lt(0n,value) == True{} : Bool}) ->
+  {U32.to_nat(U32.max(word,1)) == value : Nat}:
+  Equal.trans(Nat,U32.to_nat(U32.max(word,1)),Nat.max(value,1n),value,
+    {%exact : {U32.to_nat(U32.max(word,1)) == Nat.max(_,1n) : Nat} maximum(word,1) : {U32.to_nat(U32.max(word,1)) == Nat.max(value,1n) : Nat}},
+    Order.antisymmetric(Nat.max(value,1n),value,Extrema.maximum_upper(value,1n,value,Order.reflexive(value),Order.strict_follow(0n,value,positive)),
+      Extrema.maximum_left(value,1n)))

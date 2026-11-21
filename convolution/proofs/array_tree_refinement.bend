@@ -3,6 +3,7 @@ import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../specification.bend as ConvSpec
 import ./tree_indexing.bend as TreeIndex
 import ./native_array_model.bend as NativeArrayModel
+import ../ordered_reference.bend as OrderedReference
 
 law packed_layout:
   for +tree: Tree.Tree<F32>
@@ -26,10 +27,10 @@ def packed_layout(tree):
     case Tree.Leaf{x}:
       {==}
     case Tree.Node{+l,+r}:
-      %packed_layout(l) : {TreeIndex.cat(TreeIndex.observe(Tree.pack(F32,l)),
-          TreeIndex.observe(Tree.pack(F32,r))) == TreeIndex.cat(_,TreeIndex.flatten(r)) : List<&2,F32>}
-      %packed_layout(r) : {TreeIndex.cat(TreeIndex.observe(Tree.pack(F32,l)),
-          TreeIndex.observe(Tree.pack(F32,r))) == TreeIndex.cat(TreeIndex.observe(Tree.pack(F32,l)),_) : List<&2,F32>}
+      %packed_layout(l) : {OrderedReference.cat(TreeIndex.observe(Tree.pack(F32,l)),
+          TreeIndex.observe(Tree.pack(F32,r))) == OrderedReference.cat(_,TreeIndex.flatten(r)) : List<&2,F32>}
+      %packed_layout(r) : {OrderedReference.cat(TreeIndex.observe(Tree.pack(F32,l)),
+          TreeIndex.observe(Tree.pack(F32,r))) == OrderedReference.cat(TreeIndex.observe(Tree.pack(F32,l)),_) : List<&2,F32>}
       {==}
 
 def read_path(path,tree):
@@ -55,21 +56,21 @@ law cat_assoc:
   for +xs: List<&2,F32>
   for +ys: List<&2,F32>
   for +zs: List<&2,F32>
-  {TreeIndex.cat(xs,TreeIndex.cat(ys,zs)) == TreeIndex.cat(TreeIndex.cat(xs,ys),zs) : List<&2,F32>}
+  {OrderedReference.cat(xs,OrderedReference.cat(ys,zs)) == OrderedReference.cat(OrderedReference.cat(xs,ys),zs) : List<&2,F32>}
 
 def cat_assoc(xs,ys,zs):
   match xs:
     case Nil{}:
       {==}
     case h <> +tail:
-      %cat_assoc(tail,ys,zs) : {h <> TreeIndex.cat(tail,TreeIndex.cat(ys,zs)) == h <> _ : List<&2,F32>}
+      %cat_assoc(tail,ys,zs) : {h <> OrderedReference.cat(tail,OrderedReference.cat(ys,zs)) == h <> _ : List<&2,F32>}
       {==}
 
 law at_skip:
   for +xs: List<&2,F32>
   for +ys: List<&2,F32>
   for +i: Nat
-  {ConvSpec.at(i,ys) == ConvSpec.at(Nat.add(ConvSpec.length(xs),i),TreeIndex.cat(xs,ys)) : F32}
+  {ConvSpec.at(i,ys) == ConvSpec.at(Nat.add(ConvSpec.length(xs),i),OrderedReference.cat(xs,ys)) : F32}
 
 def at_skip(xs,ys,i):
   match xs:
@@ -82,7 +83,7 @@ law logical_lookup:
   for +tree: Tree.Tree<F32>
   for +route: TreeIndex.Routes(tree)
   for +tail: List<&2,F32>
-  {TreeIndex.value(tree,route) == ConvSpec.at(TreeIndex.index(tree,route),TreeIndex.cat(TreeIndex.flatten(tree),tail)) : F32}
+  {TreeIndex.value(tree,route) == ConvSpec.at(TreeIndex.index(tree,route),OrderedReference.cat(TreeIndex.flatten(tree),tail)) : F32}
 
 def logical_lookup(tree,route,tail):
   match tree:
@@ -92,11 +93,11 @@ def logical_lookup(tree,route,tail):
       match route:
         case Inl{+p}:
           %cat_assoc(TreeIndex.flatten(l),TreeIndex.flatten(r),tail) : {TreeIndex.value(l,p) == ConvSpec.at(TreeIndex.index(l,p),_) : F32}
-          logical_lookup(l,p,TreeIndex.cat(TreeIndex.flatten(r),tail))
+          logical_lookup(l,p,OrderedReference.cat(TreeIndex.flatten(r),tail))
         case Inr{+p}:
           %cat_assoc(TreeIndex.flatten(l),TreeIndex.flatten(r),tail) : {TreeIndex.value(r,
               p) == ConvSpec.at(Nat.add(ConvSpec.length(TreeIndex.flatten(l)),TreeIndex.index(r,p)),_) : F32}
-          %at_skip(TreeIndex.flatten(l),TreeIndex.cat(TreeIndex.flatten(r),tail),TreeIndex.index(r,p)) : {TreeIndex.value(r,p) == _ : F32}
+          %at_skip(TreeIndex.flatten(l),OrderedReference.cat(TreeIndex.flatten(r),tail),TreeIndex.index(r,p)) : {TreeIndex.value(r,p) == _ : F32}
           logical_lookup(r,p,tail)
 
 law encoded_value:
@@ -117,14 +118,14 @@ def encoded_value(tree,route):
 
 law cat_nil:
   for +xs: List<&2,F32>
-  {TreeIndex.cat(xs,Nil{}) == xs : List<&2,F32>}
+  {OrderedReference.cat(xs,Nil{}) == xs : List<&2,F32>}
 
 def cat_nil(xs):
   match xs:
     case Nil{}:
       {==}
     case h <> +tail:
-      %cat_nil(tail) : {h <> TreeIndex.cat(tail,Nil{}) == h <> _ : List<&2,F32>}
+      %cat_nil(tail) : {h <> OrderedReference.cat(tail,Nil{}) == h <> _ : List<&2,F32>}
       {==}
 
 def read_flat(tree,route):

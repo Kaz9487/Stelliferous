@@ -13,7 +13,6 @@ python -B benchmarks/model/profile_operations.py --case bus_640 --threads 4
 python -B benchmarks/model/profile_allocations.py --case bus_640 --threads 4
 python -B benchmarks/model/profile_timeline.py --case bus_640 --threads 4 --output out/results/timeline_4t
 python -B benchmarks/model/timeline_claims.py out/results/timeline_4t
-python -B benchmarks/model/report_plans.py out/models/bus_640_cpu_4t.json --output out/results/plans_4t.json
 python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models out/results/baseline/models --output out/results/forward_4t --threads 4
 ```
 
@@ -24,7 +23,6 @@ python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models o
 | [profile_allocations.py](profile_allocations.py) | 每個運算的 heap 請求與 Array block 配置 |
 | [profile_timeline.py](profile_timeline.py) | 哪些 worker 在什麼時候執行哪個運算 |
 | [timeline_claims.py](timeline_claims.py) | 從時間軸算出：依忙碌 worker 數劃分的時間 |
-| [report_plans.py](report_plans.py) | 手寫模型實際卷積規劃（`--handwritten --threads 1 2 4 8 --output out/results/plans.json`），或產生式模型的 metadata 重播 |
 | [compare_forward.py](compare_forward.py) | 手寫模型已存下的 C 與目前的 C 的 forward 時間 |
 
 所有計時工具都在同一個 process 內做兩次暖機、七個樣本。
@@ -41,16 +39,16 @@ python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models o
 
 記錄 grow、work、wake 階段，各 worker 的 ring claim，dispatch 區段，以及 block 複製的位元組。
 
+Region ID 對應 runtime 區域的開始與結束事件。原生呼叫的收集器用 `instrument(..., external_boundaries=True)`，提供 forward 與運算的開始／結束 hook。跨越運算的區間依時間重疊歸屬。
+
+Dispatch 區段歸屬到定義其入口的函式庫模組，所以每個運算依模組列出時間與入口數。Queued-task 事件計算 runtime 入口，包含 continuation。這些是執行次數，不是不同配置的數量。catalog 列出每個入口與它的模組。外部收集器可用事件 18 標記步驟邊界。
+
 - Claim 表示哪個 worker 持有 runtime ring，不代表哪顆 CPU 在執行。
 - Wake、copy 與 dispatch 的區間互相重疊，不可相加。
 - Dispatch 區段包含被 inline 進去的 C。
 - `--event-capacity` 設定 trace 大小（每個事件 48 位元組）。trace 溢位時工具會失敗。
 
 `timeline_claims.py --kind conv` 列出某一種運算的每一個。
-
-## 規劃器報告
-
-[plan_observation.bend](plan_observation.bend) 以產生的運算圖的形狀呼叫函式庫的規劃選擇器，不執行任何張量資料。加上 `--operations RESULTS.json` 會附上 `profile_operations.py` 量到的各運算時間。
 
 ## Forward 比較
 

@@ -88,6 +88,11 @@ def subtract(+left: U32,+right: U32,+capacity: U32,
     {U32.to_nat(_) == Nat.sub(U32.to_nat(left),U32.to_nat(right)) : Nat}
   roundtrip(Nat.sub(U32.to_nat(left),U32.to_nat(right)),capacity,inside)
 
+# One below a positive word is its natural predecessor.
+def predecessor(+value: U32,+positive: {Nat.is_lt(0n,U32.to_nat(value)) == True{} : Bool}) ->
+  {U32.to_nat((value - 1 : U32)) == Nat.sub(U32.to_nat(value),1n) : Nat}:
+  subtract(value,1,value,Order.strict_follow(0n,U32.to_nat(value),positive),Order.sub_le(U32.to_nat(value),1n))
+
 def multiply(+left: U32,+right: U32,+capacity: U32,
   inside: {Nat.is_le(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(capacity)) == True{} : Bool}) ->
   {U32.to_nat(U32.mul(left,right)) == Nat.mul(U32.to_nat(left),U32.to_nat(right)) : Nat}:

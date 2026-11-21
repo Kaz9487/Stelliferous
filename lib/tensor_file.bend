@@ -1,4 +1,4 @@
-# Raw little-endian FP32 files and NumPy .npy files through the official File
+# Raw files of FP32 or U8 values and NumPy .npy files through the official File
 # effects, and the reader that other formats share: a byte range of an open
 # file, decoded element by element, written straight into a tensor's storage.
 import Base
@@ -7,7 +7,6 @@ import ./storage_element_format.bend as Formats
 import ./math_fp32.bend as Fp32
 import ./storage_buffer.bend as Buffers
 import ./tensor.bend as Tensors
-import ./tensor_layout.bend as Layout
 
 def Tensor() -> Type:
   Tensors.Tensor<F32>
@@ -23,7 +22,7 @@ def Sized() -> Type:
 
 # FP32 values per File effect; a read takes four times as many bytes.
 def chunk() -> U32:
-  16384
+  1024
 
 def chunk_bytes() -> U32:
   (chunk() * 4 : U32)
@@ -73,6 +72,11 @@ def trickle(bytes: List<&2,U32>,+format: Formats.Format,words: Words) -> Words:
     case byte <> rest: trickle(rest,format,push(byte,format,words))
 
 # Whole elements at a time while the bytes allow; the values are newest first.
+def singles(bytes: List<&2,U32>,+format: Formats.Format,values: List<&2,F32>,+count: U32) -> Words:
+  match bytes:
+    case Con{first,rest}: singles(rest,format,Formats.widen(format,first,0) <> values,(count + 1 : U32))
+    case rest: trickle(rest,format,Words{values,count,fresh_partial()})
+
 def pairs(bytes: List<&2,U32>,+format: Formats.Format,values: List<&2,F32>,+count: U32) -> Words:
   match bytes:
     case Con{first,Con{second,rest}}:
@@ -94,6 +98,7 @@ def octets(bytes: List<&2,U32>,+format: Formats.Format,values: List<&2,F32>,+cou
 
 def by_width(+width: U32,bytes: List<&2,U32>,+format: Formats.Format) -> Words:
   match width:
+    case 1: singles(bytes,format,[],0)
     case 2: pairs(bytes,format,[],0)
     case 4: quads(bytes,format,[],0)
     case 8: octets(bytes,format,[],0)
@@ -105,9 +110,15 @@ def words(whole: Bool,bytes: List<&2,U32>,+format: Formats.Format,partial: Parti
     case False{}: trickle(bytes,format,Words{[],0,partial})
 
 # Values beyond the count of the shape are counted and not written.
+def within(fits: Bool,+room: U32,values: List<&2,F32>) -> List<&2,F32>:
+  match fits:
+    case True{}: values
+    case False{}: List.take(&2,F32,values,U32.to_nat(room))
+
 def placed(read: Words,buffer: Buffers.Buffer<F32>,+found: U32,+count: U32) -> Target:
   Words{values,+added,partial} = read
-  Target{Buffers.write_at(~F32,List.take(&2,F32,List.reverse(&2,F32,values),U32.to_nat((count - U32.min(found,count) : U32))),U32.min(found,count),buffer),
+  +room = (count - U32.min(found,count) : U32)
+  Target{Buffers.write_at(~F32,within(U32.is_le(added,room),room,List.reverse(&2,F32,values)),U32.min(found,count),buffer),
     (found + added : U32),partial}
 
 def fill(bytes: List<&2,U32>,target: Target,+format: Formats.Format,+count: U32) -> Target:
@@ -120,13 +131,21 @@ def ranged(exhausted: Bool,file: File,+position: U32,+remaining: U32,target: Tar
     case True{}: End{file,target,True{}}
     case False{}: More{file,position,remaining,target}
 
+# The bytes of a read are the elements it added and the change of the element in progress.
+def advanced(target: Target,file: File,+position: U32,+remaining: U32,+width: U32,+found: U32,+held: U32) -> Reading:
+  Target{buffer,+now,partial} = target
+  Partial{low,high,weight,+filled} = partial
+  +length = U32.min(((now - found) * width + filled - held : U32),remaining)
+  ranged(U32.is_eq(length,remaining),file,(position + length : U32),(remaining - length : U32),Target{buffer,now,Partial{low,high,weight,filled}})
+
 # A read that ends early leaves the count short, which the count check reports.
 def absorbed(bytes: List<&2,U32>,file: File,+position: U32,+remaining: U32,target: Target,+format: Formats.Format,+count: U32) -> Reading:
   match bytes:
     case []: End{file,target,True{}}
-    case Con{+byte,+rest}:
-      +length = U32.min(U32.from_nat(List.length(&2,U32,byte <> rest)),remaining)
-      ranged(U32.is_eq(length,remaining),file,(position + length : U32),(remaining - length : U32),fill(byte <> rest,target,format,count))
+    case Con{byte,rest}:
+      Target{buffer,+found,partial} = target
+      Partial{low,high,weight,+held} = partial
+      advanced(fill(byte <> rest,Target{buffer,found,Partial{low,high,weight,held}},format,count),file,position,remaining,Formats.width(format),found,held)
 
 def received(result: Result<&1,&1,U32 & String,List<&2,U32>>,file: File,+position: U32,+remaining: U32,target: Target,+format: Formats.Format,+count: U32) -> Reading:
   match result:
@@ -218,46 +237,50 @@ def refused(file: File,tensor: Tensor()) -> IO(Tensor()):
 
 # A raw file holds exactly the bytes of its shape: a size that is not a whole
 # number of values, or another number of them, is refused before reading.
-def measured(aligned: Bool,matches: Bool,file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+def measured(aligned: Bool,matches: Bool,file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+format: Formats.Format) -> IO(Tensor()):
   match aligned matches:
-    case False{} matches: refused(file,fault(operation,path,"is not a whole number of FP32 values",shape))
+    case False{} matches: refused(file,fault(operation,path,"is not a whole number of values",shape))
     case True{} False{}: refused(file,fault(operation,path,"does not hold the values of the shape",shape))
     case True{} True{}:
       do IO<Tensor()>:
-        pair : File & Tensor() <- load_range(file,operation,path,shape,position,Formats.Fp32{})
+        pair : File & Tensor() <- load_range(file,operation,path,shape,position,format)
         closed(pair)
 
-def with_size(result: Result<&1,&1,U32 & String,U32>,file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+def with_size(result: Result<&1,&1,U32 & String,U32>,file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32,+format: Formats.Format) -> IO(Tensor()):
   match result:
     case Fail{error}: refused(file,fault(operation,path,"cannot be measured",shape))
     case Done{+size}:
-      measured(U32.is_zero(((size - U32.min(size,position)) % 4 : U32)),U32.is_le(position,size) && U32.is_eq(((size - U32.min(size,position)) / 4 : U32),count),file,operation,path,shape,position,count)
+      measured(U32.is_zero(((size - U32.min(size,position)) % Formats.width(format) : U32)),U32.is_le(position,size) && U32.is_eq(((size - U32.min(size,position)) / Formats.width(format) : U32),count),file,operation,path,shape,position,format)
 
-def sized_file(sized: Sized(),operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+def sized_file(sized: Sized(),operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32,+format: Formats.Format) -> IO(Tensor()):
   (file,result) = sized
-  with_size(result,file,operation,path,shape,position,count)
+  with_size(result,file,operation,path,shape,position,count,format)
 
-def fp32_values(file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32) -> IO(Tensor()):
+def stored_values(file: File,operation: String,+path: String,+shape: List<&2,U32>,+position: U32,+count: U32,+format: Formats.Format) -> IO(Tensor()):
   do IO<Tensor()>:
     sized : Sized() <- File.size(file)
-    sized_file(sized,operation,path,shape,position,count)
+    sized_file(sized,operation,path,shape,position,count,format)
 
-def opened(result: Result<&1,&1,U32 & String,File>,+path: String,+shape: List<&2,U32>,+count: U32) -> IO(Tensor()):
+def opened(result: Result<&1,&1,U32 & String,File>,+operation: String,+path: String,+shape: List<&2,U32>,+count: U32,+format: Formats.Format) -> IO(Tensor()):
   match result:
-    case Fail{error}: IO.pure(Tensor(),fault("load",path,"cannot be opened",shape))
-    case Done{file}: fp32_values(file,"load",path,shape,0,count)
+    case Fail{error}: IO.pure(Tensor(),fault(operation,path,"cannot be opened",shape))
+    case Done{file}: stored_values(file,operation,path,shape,0,count,format)
 
-def counted(count: Maybe<&2,U32>,+path: String,+shape: List<&2,U32>) -> IO(Tensor()):
+def counted(count: Maybe<&2,U32>,+operation: String,+path: String,+shape: List<&2,U32>,+format: Formats.Format) -> IO(Tensor()):
   match count:
-    case None{}: IO.pure(Tensor(),Tensors.failed(~F32,"load",Tensors.InvalidShape{shape},shape,0.0,1))
+    case None{}: IO.pure(Tensor(),Tensors.failed(~F32,operation,Tensors.InvalidShape{shape},shape,0.0,1))
     case Some{+count}:
       do IO<Tensor()>:
         result : Result<&1,&1,U32 & String,File> <- File.open(path,"r")
-        opened(result,path,shape,count)
+        opened(result,operation,path,shape,count,format)
 
 # The file holds the values of the shape in row-major order and nothing else.
 def load(+path: String,+shape: List<&2,U32>) -> IO(Tensor()):
-  counted(Tensors.count_of(shape),path,shape)
+  counted(Tensors.count_of(shape),"load",path,shape,Formats.Fp32{})
+
+# The same for one byte per value, each an FP32 from 0 to 255.
+def load_u8(+path: String,+shape: List<&2,U32>) -> IO(Tensor()):
+  counted(Tensors.count_of(shape),"load_u8",path,shape,Formats.U8{})
 
 # The NumPy .npy header: magic, version, header length, then a text such as
 # {'descr': '<f4', 'fortran_order': False, 'shape': (16, 3, 6, 6), }
@@ -337,7 +360,7 @@ def header(+bytes: List<&2,U32>) -> Maybe<&2,Header>:
 def npy_counted(count: Maybe<&2,U32>,+shape: List<&2,U32>,+data: U32,file: File,+path: String) -> IO(Tensor()):
   match count:
     case None{}: refused(file,Tensors.failed(~F32,"load_npy",Tensors.InvalidShape{shape},shape,0.0,1))
-    case Some{+count}: fp32_values(file,"load_npy",path,shape,data,count)
+    case Some{+count}: stored_values(file,"load_npy",path,shape,data,count,Formats.Fp32{})
 
 def npy_parsed(parsed: Maybe<&2,Header>,file: File,+path: String) -> IO(Tensor()):
   match parsed:
@@ -456,7 +479,7 @@ def saving(operation: String,+path: String,tensor: Tensor(),prefix: List<&2,U32>
 # Writes the values in row-major order and returns the tensor. A failed tensor
 # writes nothing and keeps its problem.
 def save(+path: String,tensor: Tensor()) -> IO(Tensor()):
-  Tensors.then(~Tensor(),~Tensor(),~IO(Tensor()),Layout.copy(~F32,tensor),kept => copy => saving("save",path,kept,[],Tensors.into_storage(~F32,copy)))
+  Buffers.bind_pair(~Tensor(),~Tensor(),~IO(Tensor()),Tensors.copied(~F32,4.0,tensor),kept => copy => saving("save",path,kept,[],Tensors.into_storage(~F32,copy)))
 
 def joined(shape: List<&2,U32>) -> String:
   match shape:
@@ -492,4 +515,4 @@ def npy_saving(+path: String,pair: Tensor() & Tensor(),+shape: List<&2,U32>) -> 
 
 # Writes a .npy file that NumPy loads with the tensor's shape.
 def save_npy(+path: String,tensor: Tensor()) -> IO(Tensor()):
-  Tensors.then(~Tensor(),~List<&2,U32>,~IO(Tensor()),Tensors.shape(~F32,tensor),tensor => shape => npy_saving(path,Layout.copy(~F32,tensor),shape))
+  Buffers.bind_pair(~Tensor(),~List<&2,U32>,~IO(Tensor()),Tensors.shape(~F32,tensor),tensor => shape => npy_saving(path,Tensors.copied(~F32,4.0,tensor),shape))

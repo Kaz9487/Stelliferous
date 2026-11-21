@@ -43,6 +43,23 @@ const localBun = process.platform === 'linux' && process.arch === 'x64'
 const bun = localBun && fs.existsSync(localBun) ? localBun : 'bun';
 const requestedEntry = fileArguments.has(0) ? path.resolve(args[0]) : null;
 for (const i of fileArguments) args[i] = path.resolve(args[i]);
+// Build and check only with the commit scripts/toolchain.json pins. The app
+// sandbox and the interactive user can own this checkout, hence safe.directory.
+const repository = path.dirname(compiler);
+const revision = spawnSync(
+  'git',
+  ['-c', 'safe.directory=' + repository, '-C', repository, 'rev-parse', 'HEAD'],
+  { encoding: 'utf8' }
+);
+if (revision.status !== 0) {
+  console.error(revision.error?.message || revision.stderr || 'Could not identify the Bend compiler commit.');
+  process.exit(1);
+}
+const pinned = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'toolchain.json'), 'utf8')).commit;
+if (revision.stdout.trim() !== pinned) {
+  console.error(`.tools/bend is at ${revision.stdout.trim()}, scripts/toolchain.json pins ${pinned}.`);
+  process.exit(1);
+}
 const result = spawnSync(bun, [path.join(compiler, 'main.ts'), ...args], {
   cwd: compiler,
   encoding: 'utf8',
@@ -75,20 +92,6 @@ if (!failed && requestedEntry) {
         console.error(inspection.error?.message || 'Generated C inspection failed.');
         process.exit(inspection.status || 1);
       }
-    }
-    // The app sandbox and interactive user can own this same local checkout.
-    // Trust only this explicit project tool directory for this read command.
-    const repository = path.dirname(compiler);
-    const revision = spawnSync(
-      'git',
-      ['-c', 'safe.directory=' + repository, '-C', repository, 'rev-parse', 'HEAD'],
-      { encoding: 'utf8' }
-    );
-    if (revision.status !== 0) {
-      console.error(
-        revision.error?.message || revision.stderr || 'Could not identify the Bend compiler commit.'
-      );
-      process.exit(1);
     }
     fs.writeFileSync(
       output + '.build.json',

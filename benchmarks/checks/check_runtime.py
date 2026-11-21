@@ -16,7 +16,7 @@ args = ap.parse_args()
 binary = args.entry
 for threads in [1, 2, 4, 8]:
     p = subprocess.run(
-        [str(ROOT / 'out/build/integration' / binary), '--threads', str(threads), '--gpu', 'off'],
+        [str(ROOT / 'out/build/integration' / binary), '+RTS', '--threads', str(threads), '--gpu', 'off', '-RTS'],
         capture_output=True,
         text=True,
         check=True,

@@ -3,7 +3,6 @@ import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 # Reduction extents and spatial width derived from actual scalar guards.
 import Base
-import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ./convolution_guard_facts.bend as Guards
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./supported_padded_coordinates.bend as Padded
@@ -15,6 +14,9 @@ import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../../lib/proofs/binary_radix.bend as Radix
 import ../specification.bend as ConvSpec
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
+import ../../lib/proofs/u32_division.bend as WordDivision
+import ../../lib/proofs/nat_division.bend as Division
 
 def inner(+p: ConvSpec.Problem) -> Nat:
   Nat.mul(Guards.input_channel_count(p),Nat.mul(Guards.kernel(p),Guards.kernel(p)))
@@ -123,7 +125,7 @@ def inner_exact(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Vali
   %encoded_product : {U32.to_nat(native_inner(p)) == Nat.mul(_,kernel) : Nat}
   %SupportedCoordinateBounds.kernel_exact(limits,p,
     support) : {U32.to_nat(native_inner(p)) == Nat.mul(U32.to_nat((U32.from_nat(channels) * U32.from_nat(kernel) : U32)),_) : Nat}
-  Arithmetic.multiply((U32.from_nat(channels) * U32.from_nat(kernel) : U32),U32.from_nat(kernel),upper,upper_ok,
+  WordMultiplication.bounded_multiply((U32.from_nat(channels) * U32.from_nat(kernel) : U32),U32.from_nat(kernel),upper,upper_ok,
     %Equal.sym(Nat,U32.to_nat((U32.from_nat(channels) * U32.from_nat(kernel) : U32)),Nat.mul(channels,kernel),
       encoded_product) : {Nat.is_le(Nat.mul(_,U32.to_nat(U32.from_nat(kernel))),U32.to_nat(upper)) == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(kernel)),kernel,SupportedCoordinateBounds.kernel_exact(limits,p,
@@ -184,3 +186,30 @@ def weight_index(+output_channel_index: Nat,+input_channel_count: Nat,+input_cha
       tail) == Nat.add(Nat.mul(output_channel_index,Nat.mul(input_channel_count,area)),Nat.add(Nat.mul(input_channel_index,area),tail)) : Nat}
   %RowMajor.assoc(output_channel_index,input_channel_count,area) : {Nat.add(Nat.add(Nat.mul(prefix,area),Nat.mul(input_channel_index,area)),tail) == Nat.add(_,Nat.add(Nat.mul(input_channel_index,area),tail)) : Nat}
   Addition.associative(Nat.mul(prefix,area),Nat.mul(input_channel_index,area),tail)
+
+# The reduction length of a supported problem divided by its kernel area is
+# its channel count.
+def inner_channels(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards.Valid<p>,
+  +support: Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>) ->
+  {U32.to_nat((native_inner(p) / (U32.from_nat(Guards.kernel(p)) * U32.from_nat(Guards.kernel(p)) : U32) : U32)) == Guards.input_channel_count(p) : Nat}:
+  +channels = Guards.input_channel_count(p)
+  +kernel = Guards.kernel(p)
+  +half = Machine.half_word(limits)
+  +half_ok = Limits.half_word_fits(limits)
+  +k = U32.from_nat(kernel)
+  +area = (k * k : U32)
+  +total = native_inner(p)
+  +square = Nat.mul(kernel,kernel)
+  +area_exact = square_exact(limits,p,valid,support)
+  +inner_word = inner_exact(limits,p,valid,support)
+  +kernel_above = kernel_positive(p,valid)
+  +square_positive = Order.product_positive(kernel,kernel,kernel_above,kernel_above)
+  +positive = {%Equal.sym(Nat,U32.to_nat(area),square,area_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
+    square_positive : {Nat.is_lt(0n,U32.to_nat(area)) == True{} : Bool}}
+  +divisor_bound = {%Equal.sym(Nat,U32.to_nat(area),square,area_exact) : {Nat.is_le(Nat.double(_),U32.to_nat(half)) == True{} : Bool}
+    Limits.double_bound(limits,square,square_bound(limits,p,valid,support)) : {Nat.is_le(Nat.double(U32.to_nat(area)),U32.to_nat(half)) == True{} : Bool}}
+  Equal.trans(Nat,U32.to_nat((total / area : U32)),Nat.div(U32.to_nat(total),U32.to_nat(area)),channels,
+    WordDivision.divide(total,area,half,half_ok,divisor_bound,positive),
+    {%Equal.sym(Nat,U32.to_nat(total),Nat.mul(channels,square),inner_word) : {Nat.div(_,U32.to_nat(area)) == channels : Nat}
+      %Equal.sym(Nat,U32.to_nat(area),square,area_exact) : {Nat.div(Nat.mul(channels,square),_) == channels : Nat}
+      Division.exact_quotient(channels,square,square_positive) : {Nat.div(U32.to_nat(total),U32.to_nat(area)) == channels : Nat}})

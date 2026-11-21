@@ -82,12 +82,31 @@ def operation(~Reader: Type,~Element: Data,~Metadata: Data,~ReaderCertificate: @
   Certificates{operation_source(~Reader,~Element,~Metadata,~ReaderCertificate,~operation,~preserves,metadata,reader,output,source_certificate,reader_certificate,depth,equation),
     Certificate.Certificate{depth,operation_equation(~Reader,~Element,~Metadata,~ReaderCertificate,~operation,~preserves,metadata,reader,output,equation_certificate,depth,equation)}}
 
-def fold_operation(~Reader: Type,~Accumulator: Data,~Metadata: Data,~ReaderCertificate: @-reader: Reader -> Data,
-  ~operation: Metadata -> Reader -> Accumulator -> Reader & Accumulator,
-  ~preserves: @metadata: Metadata -> @-reader: Reader -> @-initial: Accumulator -> ReaderCertificate(reader) ->
-    {TraversalWitness.first(~Reader,~Accumulator,operation(metadata,reader,initial)) == reader : Reader},
-  metadata: Metadata,-reader: Reader,-initial: Accumulator,proof_certificate: ReaderCertificate(reader),certificate: ReaderCertificate(reader)) ->
-  ReaderCertificate(TraversalWitness.first(~Reader,~Accumulator,operation(metadata,reader,initial))):
-  %Equal.sym(Reader,TraversalWitness.first(~Reader,~Accumulator,operation(metadata,reader,initial)),reader,
-    preserves(metadata,reader,initial,proof_certificate)) : ReaderCertificate(_)
-  certificate
+def array_observed(~Element: Data,-storage: Array<Element>,certificate: Certificate.Certificate<Element,storage>) -> TraversalWitness.array_evidence(~Element,storage):
+  Certificate.witness(Element,storage,certificate)
+
+# A run of updates hands its reader back and leaves its output balanced.
+# observe gives the evidence the reads need from a certificate of the reader.
+def update_preserves(~Reader: Type,~Element: Data,~Value: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~ReaderCertificate: @-reader: Reader -> Data,
+  ~read: Reader -> Context -> U32 -> Reader & Value,~combine: Element -> Value -> Element,~destination: Context -> U32 -> U32,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> TraversalWitness.Sample<Reader,Value,reader,read(reader,context,index)>,
+  ~observe: @-reader: Reader -> ReaderCertificate(reader) -> ReaderEvidence(reader),
+  +depth: Nat,run: Traversal.Steps<Context>,-reader: Reader,-output: Array<Element>,certificate: ReaderCertificate(reader),
+  equation: {output == Tree.pack(Element,Certificate.normalized(Element,depth,Tree.reflect(Element,output))) : Array<Element>}) ->
+  TraversalWitness.ResultEvidence<Reader,Element,reader,depth,Traversal.updated(~Reader,~Element,~Value,~Context,~read,~combine,~destination,run,reader,output)>:
+  Traversal.Steps{count,+position,+context} = run
+  completed(~Reader,~Element,~Context,~ReaderEvidence,~Traversal.update(~Reader,~Element,~Value,~Context,~read,~combine,~destination),
+    ~TraversalWitness.update(~Reader,~Element,~Value,~Context,~ReaderEvidence,~read,~combine,~destination,~read_preserves),
+    count,position,context,reader,output,observe(reader,certificate),depth,equation)
+
+# The certificates of the reader and the output of a run of updates.
+def updated_certificates(~Reader: Type,~Element: Data,~Value: Data,~Context: Data,~ReaderEvidence: @-reader: Reader -> Data,~ReaderCertificate: @-reader: Reader -> Data,
+  ~read: Reader -> Context -> U32 -> Reader & Value,~combine: Element -> Value -> Element,~destination: Context -> U32 -> U32,
+  ~read_preserves: @-reader: Reader -> @context: Context -> @index: U32 -> ReaderEvidence(reader) -> TraversalWitness.Sample<Reader,Value,reader,read(reader,context,index)>,
+  ~observe: @-reader: Reader -> ReaderCertificate(reader) -> ReaderEvidence(reader),
+  +run: Traversal.Steps<Context>,-reader: Reader,-output: Array<Element>,source_certificate: ReaderCertificate(reader),equation_certificate: ReaderCertificate(reader),
+  reader_certificate: ReaderCertificate(reader),output_certificate: Certificate.Certificate<Element,output>) ->
+  Certificates<Reader,Element,ReaderCertificate,Traversal.updated(~Reader,~Element,~Value,~Context,~read,~combine,~destination,run,reader,output)>:
+  operation(~Reader,~Element,~Traversal.Steps<Context>,~ReaderCertificate,~Traversal.updated(~Reader,~Element,~Value,~Context,~read,~combine,~destination),
+    ~update_preserves(~Reader,~Element,~Value,~Context,~ReaderEvidence,~ReaderCertificate,~read,~combine,~destination,~read_preserves,~observe),
+    run,reader,output,source_certificate,equation_certificate,reader_certificate,output_certificate)

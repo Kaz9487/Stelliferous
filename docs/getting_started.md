@@ -2,14 +2,14 @@
 
 [English](getting_started.md) | [繁體中文](getting_started.zh-TW.md)
 
-The examples import the published package `stelliferous@0.0.3.0` from BendHub. A program of your own needs only Bend, Clang and those import lines. The steps below set up this repository, with the library source in [lib](../lib/README.md), its proofs and its benchmarks.
+The examples import the published package `stelliferous@0.0.4.0` from BendHub. A program of your own needs only Bend, Clang and those import lines. The steps below set up this repository, with the library source in [lib](../lib/README.md), its proofs and its benchmarks.
 
 ## Install
 
 Requires Git, Node.js, [Bun](https://bun.sh), Python 3 and Clang (or the C compiler named by `CC`), on Linux, macOS or WSL.
 
 ```sh
-git clone --depth 1 --branch v2.0.37 https://github.com/bendlang/bend.git .tools/bend
+git clone --depth 1 --branch v2.0.40 https://github.com/bendlang/bend.git .tools/bend
 git -C .tools/bend rev-parse HEAD    # must print the commit in scripts/toolchain.json
 ```
 
@@ -21,8 +21,8 @@ On Windows the launcher runs itself inside WSL, so the commands below also work 
 
 ```python
 import Base
-import stelliferous@0.0.3.0/tensor_f32.bend as F
-import stelliferous@0.0.3.0/math_activation.bend as Act
+import stelliferous@0.0.4.0/tensor_f32.bend as F
+import stelliferous@0.0.4.0/math_activation.bend as Act
 
 def main() -> List<&2,F32>:
   # 1.0 .. 16.0 as [batch, channels, height, width]
@@ -98,7 +98,7 @@ node scripts/bend_launcher.mjs examples/small_network.bend -o out/small_network
 A layer is a value. `forward` returns what its `backward` reads, `backward` puts the gradients in the layer, and `sgd_step` applies them. A Conv-BatchNorm-SiLU block in front of the rest of a network:
 
 ```python
-import stelliferous@0.0.3.0/tensor_training.bend as Train
+import stelliferous@0.0.4.0/tensor_training.bend as Train
 
 # the layers of a network in order
 type Network is Type:
@@ -188,7 +188,7 @@ def main() -> IO(Unit):
 ```
 
 ```sh
-./out/program --threads 4
+./out/program +RTS --threads 4 -RTS
 ```
 
 The values are the same, bit for bit, for every worker count.

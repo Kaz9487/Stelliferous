@@ -28,6 +28,21 @@ def direct_bounds(+dimension: U32,+capacity: U32,+coordinate: U32,shape: Dimensi
   Nat.is_le(Nat.add(Nat.mul(oh,stride),kernel),U32.to_nat(coordinate)) &&
   Nat.is_le(Nat.add(Nat.mul(ow,stride),kernel),U32.to_nat(coordinate))
 
+# The rows of the planes a packed call transposes for count positions of an
+# output of width ow, and the tiles of a row: Packing.plane_bound in natural
+# numbers.
+def plane_rows(+count: Nat,+ow: Nat,+kernel: Nat,+stride: Nat) -> Nat:
+  Nat.add(Nat.mul(Nat.div(Nat.sub(Nat.add(count,ow),1n),ow),stride),kernel)
+
+def plane_tiles(+ow: Nat,+kernel: Nat,+stride: Nat) -> Nat:
+  Nat.div(Nat.add(Nat.add(ow,Nat.div(Nat.sub(kernel,1n),stride)),7n),8n)
+
+# The words of one plane and of all of them fit the capacity.
+def planes_fit(+count: Nat,+ci: Nat,+ow: Nat,+kernel: Nat,+stride: Nat,+capacity: U32) -> Bool:
+  +rows = plane_rows(count,ow,kernel,stride)
+  +tiles = plane_tiles(ow,kernel,stride)
+  Nat.is_le(Nat.mul(rows,Nat.mul(tiles,8n)),U32.to_nat(capacity)) && Nat.is_le(Nat.mul(Nat.mul(stride,ci),Nat.mul(rows,tiles)),U32.to_nat(capacity))
+
 def packed_bounds(dimension: U32,+capacity: U32,coordinate: U32,+shape: Dimensions,input_length: Nat,weight_length: Nat) -> Bool:
   Dimensions{+ci,+co,+height,+width,+kernel,+stride,+padding} = shape
   +oh = axis_size(height,kernel,stride,padding)
@@ -35,7 +50,8 @@ def packed_bounds(dimension: U32,+capacity: U32,coordinate: U32,+shape: Dimensio
   +padded = Nat.mul(Nat.div(Nat.add(Nat.mul(oh,ow),7n),8n),8n)
   direct_bounds(dimension,capacity,coordinate,shape,input_length,weight_length) &&
   Nat.is_le(Nat.mul(padded,Nat.mul(ci,Nat.mul(kernel,kernel))),U32.to_nat(capacity)) &&
-  Nat.is_le(Nat.mul(padded,co),U32.to_nat(capacity))
+  Nat.is_le(Nat.mul(padded,co),U32.to_nat(capacity)) &&
+  planes_fit(padded,ci,ow,kernel,stride,capacity)
 
 # Never duplicate the Limits owner: its Facts field depends on its values.
 def supports_direct(limits: Machine.Limits,shape: Dimensions,input_length: Nat,weight_length: Nat) -> Bool:

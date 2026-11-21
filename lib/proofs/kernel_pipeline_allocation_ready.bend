@@ -5,6 +5,13 @@ import ../tensor.bend as Tensors
 import ./kernel_pipeline_buffer_shape.bend as KernelPipelineBufferShape
 import ./storage_buffer_model.bend as Buffer
 import ./tensor_allocation_depth.bend as Depth
+import ./storage_tree_model.bend as Tree
+import ./storage_refinement.bend as StorageLaws
+import ./storage_shape.bend as Shape
+import ./storage_allocation_refinement.bend as AllocationLaws
+import ../storage_allocation.bend as Allocation
+import ../storage_buffer.bend as Storage
+import ../kernel_gemm.bend as KernelGemm
 
 def from_footprint(~Element: Data,+fill: Element,+count: U32,+model: Buffer.Model<Element>,
   +exact: {KernelPipelineBufferShape.footprint(~Element,Buffer.pack(~Element,model)) == KernelPipelineBufferShape.footprint(~Element,Tensors.buffer(~Element,fill,count)) : KernelPipelineBufferShape.Footprint},

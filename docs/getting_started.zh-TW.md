@@ -2,14 +2,14 @@
 
 [English](getting_started.md) | [繁體中文](getting_started.zh-TW.md)
 
-範例從 BendHub 匯入已發布的套件 `stelliferous@0.0.3.0`。自己的程式只需要 Bend、Clang 和那幾行 import。以下步驟是設定本庫，內含函式庫原始碼（[lib](../lib/README.zh-TW.md)）、證明與效能量測。
+範例從 BendHub 匯入已發布的套件 `stelliferous@0.0.4.0`。自己的程式只需要 Bend、Clang 和那幾行 import。以下步驟是設定本庫，內含函式庫原始碼（[lib](../lib/README.zh-TW.md)）、證明與效能量測。
 
 ## 安裝
 
 需要 Git、Node.js、[Bun](https://bun.sh)、Python 3 與 Clang（或由 `CC` 指定的 C 編譯器），作業系統為 Linux、macOS 或 WSL。
 
 ```sh
-git clone --depth 1 --branch v2.0.37 https://github.com/bendlang/bend.git .tools/bend
+git clone --depth 1 --branch v2.0.40 https://github.com/bendlang/bend.git .tools/bend
 git -C .tools/bend rev-parse HEAD    # 必須印出 scripts/toolchain.json 裡的 commit
 ```
 
@@ -21,8 +21,8 @@ git -C .tools/bend rev-parse HEAD    # 必須印出 scripts/toolchain.json 裡�
 
 ```python
 import Base
-import stelliferous@0.0.3.0/tensor_f32.bend as F
-import stelliferous@0.0.3.0/math_activation.bend as Act
+import stelliferous@0.0.4.0/tensor_f32.bend as F
+import stelliferous@0.0.4.0/math_activation.bend as Act
 
 def main() -> List<&2,F32>:
   # 1.0 到 16.0，排成 [batch, channels, height, width]
@@ -98,7 +98,7 @@ node scripts/bend_launcher.mjs examples/small_network.bend -o out/small_network
 一層是一個值。`forward` 回傳它的 `backward` 要讀的東西，`backward` 把梯度放進層裡，`sgd_step` 再套用梯度。一個接在網路其餘部分之前的 Conv-BatchNorm-SiLU 區塊：
 
 ```python
-import stelliferous@0.0.3.0/tensor_training.bend as Train
+import stelliferous@0.0.4.0/tensor_training.bend as Train
 
 # 網路的各層，依序排列
 type Network is Type:
@@ -188,7 +188,7 @@ def main() -> IO(Unit):
 ```
 
 ```sh
-./out/program --threads 4
+./out/program +RTS --threads 4 -RTS
 ```
 
 不論 worker 數，數值的每個位元都相同。
