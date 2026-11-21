@@ -24,6 +24,34 @@ python run.py benchmark     # 單一卷積形狀
 
 樣本與環境寫在 `out/results/backends/`，報告是 `out/results/backend_comparison.md`。Actions 分頁的 Benchmark workflow 會在 GitHub 提供的 runner 上執行同一項比較。其他流程見 [benchmarks](../benchmarks/README.zh-TW.md)。
 
+## 0.0.3 的列
+
+0.0.3 的列來自標籤 `v0.0.3`，搭配它自己的 Bend v2.0.37，依它的入門說明設定。兩個版本各在自己的目錄量：
+
+```sh
+git clone --branch v0.0.3 https://github.com/Kaz9487/Stelliferous.git stelliferous-0.0.3
+cd stelliferous-0.0.3
+python run.py model                    # builds out/models/yolov5n, needed below
+python run.py backends                 # its YOLOv5n row
+python run.py training --threads 4     # its 767 s epoch
+```
+
+YOLOv5n 的表是兩個編譯後的模型在同一段時間內交替執行，抵消不同次執行之間的漂移。迴圈在放兩個目錄的資料夾裡執行，`stelliferous` 是這個版本，已經跑過 `python run.py model`。0.0.3 的選項不加 `+RTS`：
+
+```sh
+# 11 forwards of each version, four rounds, 1 and 4 threads
+for round in 1 2 3 4
+do
+  for threads in 1 4
+  do
+    (cd stelliferous-0.0.3 && YOLO_EXTRA=10 YOLO_SIZE=640 \
+      out/models/yolov5n --threads $threads --gpu off | grep '^forward')
+    (cd stelliferous && YOLO_EXTRA=10 YOLO_SIZE=640 \
+      out/models/yolov5n +RTS --threads $threads --gpu off -RTS | grep '^forward')
+  done
+done
+```
+
 ## 環境
 
 - Google Cloud `c4d-standard-8`，Ubuntu 24.04：AMD EPYC 9B45，8 個虛擬 CPU（4 核心，各 2 執行緒）。
@@ -57,7 +85,7 @@ Forward 計算：配置、所有權複製、packing、kernel、gather 與偵測�
 | PyTorch | 353（350–356） | 121（120–124） |
 
 ```sh
-python run.py vit --threads 4
+python run.py vit --threads 4 --timing
 ```
 
 設定與和 PyTorch 的比對見 [ViT-B/16 範例](../examples/vit_b16/README.zh-TW.md)。
@@ -71,7 +99,15 @@ ResNet-20 在 CIFAR-10 上訓練 160 個 epoch，兩邊從相同的初始權重�
 | Stelliferous 0.0.4 | 137.5 秒 | 91.40% | 91.57% |
 | PyTorch 2.14.0 | 34.5 秒 | 91.34% | 91.54% |
 
-0.0.3 不能訓練 ResNet-20。它在 2026-10-21 發布時量的是一個 epoch 的 390 步，不含測試，花了 767 秒。網路是 ResNet-20 的形狀但沒有殘差相加與 projection，用單純的 SGD，重複使用同一個合成 batch。
+0.0.3 不能訓練 ResNet-20。它在 2026-10-21 發布時量的是一個 epoch 的 390 步，不含測試，花了 767 秒。網路是 ResNet-20 的形狀但沒有殘差相加與 projection，用單純的 SGD，重複使用同一個合成 batch。量法見 [0.0.3 的列](#003-的列)。
+
+不含測試時，0.0.4 一個 epoch 在一執行緒是 238 秒、四執行緒是 112 秒，2026-11-20 在同型機器上量測，也就是更新紀錄裡的數字，和 0.0.3 的 767 秒一樣不含測試。先用 `python run.py training` 準備資料並編譯模型，再執行：
+
+```sh
+# threads, epochs, steps, training files, test images (none), output folder
+sh examples/resnet20/build_run.sh 1 1 390 5 0 out/results/resnet20/epoch_1t
+sh examples/resnet20/build_run.sh 4 1 390 5 0 out/results/resnet20/epoch_4t
+```
 
 ```sh
 python run.py training --threads 4 --epochs 160

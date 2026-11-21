@@ -125,6 +125,8 @@ def vit(options):
     bend('examples/vit_b16/vit_b16.bend', 'out/models/vit_b16.c')
     linux('sh', 'examples/vit_b16/build_run.sh', options.threads, failure='The native model did not build or run')
     python('examples/vit_b16/compare_results.py', '--threads', options.threads, failure='The numerical comparison did not pass')
+    if options.timing:
+        linux_python('examples/vit_b16/time_backends.py', '--threads', options.threads, failure='The timing did not run')
 
 
 def checkpoint(options):
@@ -222,6 +224,7 @@ def main():
             command.add_argument('--epochs', type=int, default=0, help='full epochs to reach, continuing after the last one written')
         if name == 'vit':
             command.add_argument('--threads', type=int, default=1)
+            command.add_argument('--timing', action='store_true', help='then time it and PyTorch alternately, three rounds of ten forwards')
         if name == 'dependencies':
             command.add_argument('query', nargs=argparse.REMAINDER, help='unused [PREFIX], why NAME, users NAME or deps NAME; help lists them')
         if name == 'backends':
