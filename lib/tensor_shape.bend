@@ -9,10 +9,6 @@ def rank(shape: Shape) -> Nat:
   Shape{extents} = shape
   List.length(&2,U32,extents)
 
-def extent(shape: Shape,axis: Nat) -> Maybe<&2,U32>:
-  Shape{extents} = shape
-  List.get(&2,U32,extents,axis)
-
 def same_extents(left: List<&2,U32>,right: List<&2,U32>) -> Bool:
   match left right:
     case Nil{} Nil{}: True{}

@@ -14,16 +14,15 @@ import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./machine_limit_bounds.bend as Limits
 import ./u32_division.bend as NativeDivision
 import ./u32_extrema.bend as NativeExtrema
-import ./traversal_extrema.bend as Folds
 import ./u32_shift.bend as Shift
 import ./input_gradient_phase_geometry.bend as Phase
 import ./u32_comparison.bend as Comparison
 import ./input_gradient_phase_domain.bend as Domain
-import ./input_gradient_tiled_extents.bend as Extents
 import ./input_gradient_tiled_columns.bend as Columns
 import ../kernel_pipeline.bend as Pipeline
 import ./input_gradient_tiled_band_extents.bend as Bands
 import ./tensor_allocation_depth.bend as Depth
+import ./word_multiplication.bend as WordMultiplication
 
 type Plan is Data:
   Plan{groups: Nat,taps: Nat,block: Nat,limit: Nat,capacity: Nat,
@@ -144,11 +143,6 @@ def quarter(envelope: Geometry.WordEnvelope) -> U32:
 def half(envelope: Geometry.WordEnvelope) -> U32:
   Geometry.WordEnvelope{maximum,half,quarter,margin,me,he,qe,re} = envelope
   half
-def margin(envelope: Geometry.WordEnvelope) -> U32:
-  Geometry.WordEnvelope{maximum,half,quarter,margin,me,he,qe,re} = envelope
-  margin
-
-# The dimension limit fits a quarter word.
 def dimension_quarter_room(+limits: Machine.Limits,+envelope: Geometry.WordEnvelope) ->
   {Nat.is_le(U32.to_nat(Machine.dimension(limits)),U32.to_nat(quarter(envelope))) == True{} : Bool}:
   Geometry.WordEnvelope{maximum,half,+quarter,margin,me,he,+qe,re} = envelope
@@ -198,7 +192,7 @@ def cell_exact(+native: Native) -> {U32.to_nat(native_cell(native)) == cell(mode
   +tap_word = Kernel.taps(k,stride)
   +block_word = native_block(native)
   Equal.trans(Nat,U32.to_nat((tap_word * block_word : U32)),Nat.mul(U32.to_nat(tap_word),U32.to_nat(block_word)),Nat.mul(t,b),
-    Arithmetic.multiply(tap_word,block_word,Machine.capacity(limits),Limits.capacity_fits(limits),
+    WordMultiplication.bounded_multiply(tap_word,block_word,Machine.capacity(limits),Limits.capacity_fits(limits),
       %Equal.sym(Nat,U32.to_nat(tap_word),t,te) : {Nat.is_le(Nat.mul(_,U32.to_nat(block_word)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
       %Equal.sym(Nat,U32.to_nat(block_word),b,be) : {Nat.is_le(Nat.mul(t,_),U32.to_nat(Machine.capacity(limits))) == True{} : Bool} fits),
     Equal.trans(Nat,Nat.mul(U32.to_nat(tap_word),U32.to_nat(block_word)),Nat.mul(t,U32.to_nat(block_word)),Nat.mul(t,b),
@@ -249,8 +243,8 @@ def workspace_quarter(+native: Native) -> {U32.is_le(native_workspace(native),qu
   NativeExtrema.maximum_upper(limit,Machine.capacity(limits),quarter(envelope),lb,capacity_quarter(limits,envelope))
 def workspace_fits(+native: Native) -> {U32.is_le(native_workspace(native),2147483648) == True{} : Bool}:
   +envelope = native_envelope(native)
-  Folds.transitive(native_workspace(native),half(envelope),2147483648,
-    Folds.transitive(native_workspace(native),quarter(envelope),half(envelope),workspace_quarter(native),quarter_half(envelope)),half_fits(envelope))
+  Order.word_le(native_workspace(native),half(envelope),2147483648,
+    Order.word_le(native_workspace(native),quarter(envelope),half(envelope),workspace_quarter(native),quarter_half(envelope)),half_fits(envelope))
 
 def quarter_doubled(+envelope: Geometry.WordEnvelope) -> {U32.to_nat(half(envelope)) == Nat.double(U32.to_nat(quarter(envelope))) : Nat}:
   Geometry.WordEnvelope{maximum,+half,+quarter,margin,me,+he,+qe,re} = envelope
@@ -272,7 +266,7 @@ def span_exact(+native: Native) -> {U32.to_nat(native_span(native)) == row_span(
   +natural_groups = chunk_groups(model(native))
   +groups_exact = groups_exact(native)
   Equal.trans(Nat,U32.to_nat((groups * block : U32)),Nat.mul(U32.to_nat(groups),U32.to_nat(block)),Nat.mul(natural_groups,b),
-    Arithmetic.multiply(groups,block,native_workspace(native),workspace_fits(native),
+    WordMultiplication.bounded_multiply(groups,block,native_workspace(native),workspace_fits(native),
       %Equal.sym(Nat,U32.to_nat(groups),natural_groups,groups_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(block)),U32.to_nat(native_workspace(native))) == True{} : Bool}
       %Equal.sym(Nat,U32.to_nat(block),b,be) : {Nat.is_le(Nat.mul(natural_groups,_),U32.to_nat(native_workspace(native))) == True{} : Bool}
       %Equal.sym(Nat,U32.to_nat(native_workspace(native)),workspace(model(native)),workspace_exact(native)) : {Nat.is_le(row_span(model(native)),_) == True{} : Bool} row_span_room(model(native))),
@@ -471,14 +465,14 @@ def tile_product_exact(+native: Native,+rows: U32,
   +product_room = Order.transitive(product,Nat.mul(rn,row_span(model(native))),workspace(model(native)),
     %RowMajor.assoc(rn,gn,b) : {Nat.is_le(product,_) == True{} : Bool} RowMajor.product_covers(product,b,bp),room)
   +first_exact = Equal.trans(Nat,U32.to_nat((rows * groups : U32)),Nat.mul(rn,U32.to_nat(groups)),product,
-    Arithmetic.multiply(rows,groups,native_workspace(native),workspace_fits(native),
+    WordMultiplication.bounded_multiply(rows,groups,native_workspace(native),workspace_fits(native),
     %Equal.sym(Nat,U32.to_nat(groups),gn,gn_exact) : {Nat.is_le(Nat.mul(rn,_),U32.to_nat(native_workspace(native))) == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(native_workspace(native)),workspace(model(native)),workspace_exact(native)) : {Nat.is_le(product,_) == True{} : Bool} product_room),
     Equal.cong(Nat,Nat,value => Nat.mul(rn,value),U32.to_nat(groups),gn,gn_exact))
   +full_room = {%Equal.sym(Nat,Nat.mul(product,b),Nat.mul(rn,row_span(model(native))),RowMajor.assoc(rn,gn,b)) : {Nat.is_le(_,workspace(model(native))) == True{} : Bool} room : {Nat.is_le(Nat.mul(product,b),workspace(model(native))) == True{} : Bool}}
   Equal.trans(Nat,U32.to_nat(tile_product(native,rows)),Nat.mul(product,b),Nat.mul(rn,row_span(model(native))),
     Equal.trans(Nat,U32.to_nat(tile_product(native,rows)),Nat.mul(U32.to_nat((rows * groups : U32)),U32.to_nat(block)),Nat.mul(product,b),
-      Arithmetic.multiply((rows * groups : U32),block,native_workspace(native),workspace_fits(native),
+      WordMultiplication.bounded_multiply((rows * groups : U32),block,native_workspace(native),workspace_fits(native),
         %Equal.sym(Nat,U32.to_nat((rows * groups : U32)),product,first_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(block)),U32.to_nat(native_workspace(native))) == True{} : Bool}
         %Equal.sym(Nat,U32.to_nat(block),b,be) : {Nat.is_le(Nat.mul(product,_),U32.to_nat(native_workspace(native))) == True{} : Bool}
         %Equal.sym(Nat,U32.to_nat(native_workspace(native)),workspace(model(native)),workspace_exact(native)) : {Nat.is_le(Nat.mul(product,b),_) == True{} : Bool} full_room),

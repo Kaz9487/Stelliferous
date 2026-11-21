@@ -18,8 +18,6 @@ SOURCE = ROOT / 'out/checks'
 
 HELPERS = """import Base
 import ../../lib/tensor_f32.bend as F
-import ../../lib/tensor.bend as Tensors
-import ../../lib/tensor_band.bend as Bands
 
 def metadata(pair: F.Tensor() & U32) -> IO(Unit):
   (tensor,workers) = pair
@@ -39,17 +37,6 @@ def whole(+name: String,+shape: List<&2,U32>) -> IO(Unit):
     tensor : F.Tensor() <- F.load_raw("out/results/tensor_file/" ++ name ++ "_input.bin",shape)
     round_trip(name,tensor)
 
-def partitioned(result: Result<&2,&1,F.Problem(),F.Storage()>) -> F.Tensor():
-  match result:
-    case Fail{problem}: F.zeros([0])
-    case Done{buffer}:
-      Tensors.Tensor{Bands.from_whole(~F32,Bands.Geometry{2,3,173,17},0.0,Bands.image_plan(2n,0,1n,173),buffer),Bands.Geometry{2,3,173,17},[2,3,173,17],0.0,Tensors.Usable{},3}
-
-def banded() -> IO(Unit):
-  do IO<Unit>:
-    tensor : F.Tensor() <- F.load_raw("out/results/tensor_file/banded_input.bin",[2,3,173,17])
-    round_trip("banded",partitioned(F.into_storage(tensor)))
-
 def problem(result: Result<&1,&1,F.Tensor() & F.Problem(),F.Tensor()>) -> String:
   match result:
     case Done{tensor}: "unexpected success"
@@ -65,6 +52,16 @@ def save_failures() -> IO(Unit):
     IO.print(problem(F.check(raw)))
     npy : F.Tensor() <- F.save_npy("out/results/tensor_file/missing/array.npy",F.zeros([1]))
     IO.print(problem(F.check(npy)))
+
+def bytes_case() -> IO(Unit):
+  do IO<Unit>:
+    loaded : F.Tensor() <- F.load_u8("out/results/tensor_file/bytes_input.bin",[3,5,7])
+    IO.print(problem(F.check(F.add(F.zeros([2]),F.zeros([3])))))
+    saved : F.Tensor() <- F.save_raw("out/results/tensor_file/bytes.bin",loaded)
+    short : F.Tensor() <- F.load_u8("out/results/tensor_file/bytes_input.bin",[3,5,8])
+    IO.print(problem(F.check(short)))
+    absent : F.Tensor() <- F.load_u8("out/results/tensor_file/missing/bytes.bin",[1])
+    IO.print(problem(F.check(absent)))
 
 def weights() -> IO(Unit):
   do IO<Unit>:
@@ -115,7 +112,7 @@ def build(cc, name, text):
 
 def run(binary, **kwargs):
     result = subprocess.run(
-        [str(binary), '--threads', '1', '--gpu', 'off'],
+        [str(binary), '+RTS', '--threads', '1', '--gpu', 'off', '-RTS'],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -143,7 +140,8 @@ def main():
         'tail': [chunk + 1],
         'multiple': [2 * chunk],
         'remainder': [2 * chunk + 37],
-        'banded': [2, 3, 173, 17],
+        # several pieces
+        'pieces': [2, 3, 173, 17],
     }
     # Distinct payloads include both zeros, subnormals, infinities and NaNs.
     patterns = np.array(
@@ -182,13 +180,15 @@ def main():
         np.save(
             OUT / f'weights_input/{name}.npy', expected[name].view(np.float32), allow_pickle=False
         )
-    calls = [f'    whole("{name}",{shape})' for name, shape in shapes.items() if name != 'banded']
+    calls = [f'    whole("{name}",{shape})' for name, shape in shapes.items()]
     program = (
         HELPERS
         + '\ndef main() -> IO(Unit):\n  do IO<Unit>:\n'
         + '\n'.join(calls)
-        + '\n    banded()\n    weights()\n    save_failures()\n'
+        + '\n    weights()\n    save_failures()\n    bytes_case()\n'
     )
+    u8 = np.arange(105, dtype=np.uint32) * 37 % 256
+    u8.astype(np.uint8).tofile(OUT / 'bytes_input.bin')
     output = run(build(cc, 'tensor_file_cases', program))
     (OUT / 'runtime.log').write_text('\n'.join(output) + '\n')
     assert output[: len(shapes)] == ['3'] * len(shapes), output
@@ -197,7 +197,11 @@ def main():
     assert errors[2:] == [
         'save: file out/results/tensor_file/missing/raw.bin cannot be created',
         'save_npy: file out/results/tensor_file/missing/array.npy cannot be created',
+        'add: shapes [2] and [3] do not match',
+        'load_u8: file out/results/tensor_file/bytes_input.bin does not hold the values of the shape',
+        'load_u8: file out/results/tensor_file/missing/bytes.bin cannot be opened',
     ], errors
+    assert np.array_equal(np.fromfile(OUT / 'bytes.bin', dtype='<f4'), u8.astype(np.float32))
     for name, words in expected.items():
         for suffix in ['.bin', '_returned.bin']:
             actual = np.fromfile(OUT / (name + suffix), dtype='<u4')

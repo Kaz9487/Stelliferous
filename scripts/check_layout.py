@@ -132,7 +132,7 @@ for path in all_files:
             if module.split('/')[0] in {'lib', 'convolution'} and module not in PUBLIC_MODULES:
                 errors.append(f'Example uses an internal module instead of the public API: {path.relative_to(ROOT)} -> {imported}')
 
-# Public prose has one primary edition and two linked translations.
+# Public prose has English and its Traditional Chinese companion.
 public_documents = [*ROOT.glob('README*.md'), *ROOT.glob('CHANGELOG*.md'), *ROOT.glob('CONTRIBUTING*.md')]
 for folder in ['docs', 'lib', 'convolution', 'benchmarks', 'examples', 'data']:
     public_documents.extend((ROOT / folder).rglob('*.md'))

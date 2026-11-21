@@ -17,7 +17,6 @@ import ./nat_order.bend as Order
 import ./boolean_logic.bend as Boolean
 import ./nat_to_u32_bounds.bend as Bounds
 import ./nat_division_order.bend as Division
-import ./storage_shape.bend as Shape
 import ./u32_full_range.bend as FullRange
 import ./nat_ceiling.bend as Ceiling
 import ./natural_addition.bend as Addition
@@ -25,6 +24,7 @@ import ./u32_comparison.bend as Comparison
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./word_subtraction.bend as Subtraction
 import ./machine_limit_bounds.bend as Limits
+import ../kernel_gemm.bend as KernelGemm
 
 type Query is Data:
   Query{axis: Extents.Axis,first: U32,last: U32,ordered: {Nat.is_le(U32.to_nat(first),U32.to_nat(last)) == True{} : Bool},
@@ -106,7 +106,7 @@ def selection(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,count(query)) 
   Samples.Selection{call,phase,size,first,last,envelope,size_room,phase_inside,first_room(query),last_room(query),native_used}
 
 def sample_bounds(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,count(query)) == True{} : Bool},+enabled: {used(query,U32.from_nat(index)) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(lower(query),U32.to_nat(Axes.band_low(context(query),U32.from_nat(index)))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(lower(query),U32.to_nat(Axes.band_low(context(query),U32.from_nat(index)))) == True{} : Bool},
     {Nat.is_le(U32.to_nat(Axes.band_high(context(query),U32.from_nat(index))),upper(query)) == True{} : Bool}>:
   Query{Extents.Axis{call,size,size_room,envelope},first,last,ordered,room} = query
   Domain.Call{geometry,batch,limits,facts} = call
@@ -114,15 +114,15 @@ def sample_bounds(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,count(quer
   Samples.sample_bounds(selection(query,index,inside,enabled))
 
 def chosen_bound(higher: Bool,+query: Query,+index: Nat,
-  facts: Shape.Both<{Nat.is_le(lower(query),U32.to_nat(Axes.band_low(context(query),U32.from_nat(index)))) == True{} : Bool},
+  facts: KernelGemm.Both<{Nat.is_le(lower(query),U32.to_nat(Axes.band_low(context(query),U32.from_nat(index)))) == True{} : Bool},
     {Nat.is_le(U32.to_nat(Axes.band_high(context(query),U32.from_nat(index))),upper(query)) == True{} : Bool}>) ->
   Folds.natural_bound(higher,Bool.pick(U32,higher,Axes.band_high(context(query),U32.from_nat(index)),Axes.band_low(context(query),U32.from_nat(index))),Bool.pick(Nat,higher,upper(query),lower(query))):
   match higher:
     case False{}:
-      Shape.Both{lower,upper} = facts
+      KernelGemm.Both{lower,upper} = facts
       lower
     case True{}:
-      Shape.Both{lower,upper} = facts
+      KernelGemm.Both{lower,upper} = facts
       upper
 
 def sampled_bound(~higher: Bool,+query: Query,+index: Nat,inside: {Nat.is_lt(index,count(query)) == True{} : Bool},enabled: {used(query,U32.from_nat(index)) == True{} : Bool}) ->
@@ -337,9 +337,9 @@ def relative_inside(+query: Query,+position: U32,
   FullRange.interval_inside(low,high,position,lower,upper)
 
 def interval(+query: Query,+position: U32,
-  bounds: Shape.Both<{U32.is_le(low_fold(query),position) == True{} : Bool},{U32.is_lt(position,high_fold(query)) == True{} : Bool}>) ->
+  bounds: KernelGemm.Both<{U32.is_le(low_fold(query),position) == True{} : Bool},{U32.is_lt(position,high_fold(query)) == True{} : Bool}>) ->
   {Nat.is_lt(U32.to_nat((position - low_fold(query) : U32)),U32.to_nat((high_fold(query) - low_fold(query) : U32))) == True{} : Bool}:
-  Shape.Both{+lower,+upper} = bounds
+  KernelGemm.Both{+lower,+upper} = bounds
   FullRange.interval_inside(low_fold(query),high_fold(query),position,lower,upper)
 
 def selection_low_matches(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,count(query)) == True{} : Bool},+enabled: {used(query,U32.from_nat(index)) == True{} : Bool}) ->
@@ -355,13 +355,13 @@ def selection_high_matches(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,c
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
   {==}
 def tapped_fold_bounds_from(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,count(query)) == True{} : Bool},+enabled: {used(query,U32.from_nat(index)) == True{} : Bool},+position: U32,+tap: U32,
-  bounds: Shape.Both<{Nat.is_le(U32.to_nat(Axes.band_sample_low(Samples.selection_sample(selection(query,index,inside,enabled)))),Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
+  bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(Axes.band_sample_low(Samples.selection_sample(selection(query,index,inside,enabled)))),Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
     {Nat.is_lt(Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap),U32.to_nat(Axes.band_sample_high(Samples.selection_sample(selection(query,index,inside,enabled))))) == True{} : Bool}>) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(low_fold(query)),Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(low_fold(query)),Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
     {Nat.is_lt(Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap),U32.to_nat(high_fold(query))) == True{} : Bool}>:
-  Shape.Both{+lo,+hi} = bounds
+  KernelGemm.Both{+lo,+hi} = bounds
   +sample = Samples.selection_sample(selection(query,index,inside,enabled))
-  Shape.Both{
+  KernelGemm.Both{
     Order.transitive(U32.to_nat(low_fold(query)),U32.to_nat(Axes.band_sample_low(sample)),Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap),
       %Equal.sym(U32,Axes.band_sample_low(sample),Axes.band_low(context(query),U32.from_nat(index)),selection_low_matches(query,index,inside,enabled)) : {Nat.is_le(U32.to_nat(low_fold(query)),U32.to_nat(_)) == True{} : Bool}
         Bounds.as_nat_le(low_fold(query),Axes.band_low(context(query),U32.from_nat(index)),contains_low(query,index,inside,enabled)),lo),
@@ -371,14 +371,14 @@ def tapped_fold_bounds_from(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,
 
 def tapped_native_bounds_from(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,count(query)) == True{} : Bool},+enabled: {used(query,U32.from_nat(index)) == True{} : Bool},+position: U32,+tap: U32,
   +exact: {U32.to_nat(Samples.native_tapped(selection(query,index,inside,enabled),position,tap)) == Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap) : Nat},
-  bounds: Shape.Both<{Nat.is_le(U32.to_nat(low_fold(query)),Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
+  bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(low_fold(query)),Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
     {Nat.is_lt(Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap),U32.to_nat(high_fold(query))) == True{} : Bool}>) ->
-  Shape.Both<{U32.is_le(low_fold(query),Samples.native_tapped(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
+  KernelGemm.Both<{U32.is_le(low_fold(query),Samples.native_tapped(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
     {U32.is_lt(Samples.native_tapped(selection(query,index,inside,enabled),position,tap),high_fold(query)) == True{} : Bool}>:
-  Shape.Both{+lo,+hi} = bounds
+  KernelGemm.Both{+lo,+hi} = bounds
   +word = Samples.native_tapped(selection(query,index,inside,enabled),position,tap)
   +natural = Samples.tapped_coordinate(selection(query,index,inside,enabled),position,tap)
-  Shape.Both{
+  KernelGemm.Both{
     %Equal.sym(Bool,U32.is_le(low_fold(query),word),Nat.is_le(U32.to_nat(low_fold(query)),U32.to_nat(word)),Comparison.le(low_fold(query),word)) : {_ == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(word),natural,exact) : {Nat.is_le(U32.to_nat(low_fold(query)),_) == True{} : Bool} lo,
     %Equal.sym(Bool,U32.is_lt(word,high_fold(query)),Nat.is_lt(U32.to_nat(word),U32.to_nat(high_fold(query))),Comparison.lt(word,high_fold(query))) : {_ == True{} : Bool}
@@ -388,7 +388,7 @@ def tapped_native_bounds(+query: Query,+index: Nat,+inside: {Nat.is_lt(index,cou
   +lower: {Nat.is_le(Bands.low(Samples.selection_model(selection(query,index,inside,enabled))),U32.to_nat(position)) == True{} : Bool},
   +upper: {Nat.is_lt(U32.to_nat(position),Bands.high(Samples.selection_model(selection(query,index,inside,enabled)))) == True{} : Bool},
   +tap_inside: {Nat.is_lt(U32.to_nat(tap),Samples.selection_taps(selection(query,index,inside,enabled))) == True{} : Bool}) ->
-  Shape.Both<{U32.is_le(low_fold(query),Samples.native_tapped(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
+  KernelGemm.Both<{U32.is_le(low_fold(query),Samples.native_tapped(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
     {U32.is_lt(Samples.native_tapped(selection(query,index,inside,enabled),position,tap),high_fold(query)) == True{} : Bool}>:
   +selected = selection(query,index,inside,enabled)
   tapped_native_bounds_from(query,index,inside,enabled,position,tap,Samples.native_tapped_exact(selected,position,tap,in_phase,upper,tap_inside),tapped_fold_bounds_from(query,index,inside,enabled,position,tap,Samples.tapped_bounds(selected,position,tap,lower,upper,tap_inside)))
@@ -477,10 +477,10 @@ def contained_band_rows(+call: Domain.Call,+envelope: Geometry.WordEnvelope,+fir
 
 def tapped_relative_finish(+query: Query,+row: {Extents.extent(axis(query)) == Domain.height_word(geometry(query)) : U32},
   +index: Nat,+inside: {Nat.is_lt(index,count(query)) == True{} : Bool},+enabled: {used(query,U32.from_nat(index)) == True{} : Bool},+position: U32,+tap: U32,
-  bounds: Shape.Both<{U32.is_le(low_fold(query),Samples.native_tapped(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
+  bounds: KernelGemm.Both<{U32.is_le(low_fold(query),Samples.native_tapped(selection(query,index,inside,enabled),position,tap)) == True{} : Bool},
     {U32.is_lt(Samples.native_tapped(selection(query,index,inside,enabled),position,tap),high_fold(query)) == True{} : Bool}>) ->
   {Nat.is_lt(U32.to_nat(relative(query,Samples.native_tapped(selection(query,index,inside,enabled),position,tap))),U32.to_nat(Kernel.band_rows(geometry(query),first(query),rows_word(query)))) == True{} : Bool}:
-  Shape.Both{+lo,+hi} = bounds
+  KernelGemm.Both{+lo,+hi} = bounds
   %Equal.sym(U32,Kernel.band_rows(geometry(query),first(query),rows_word(query)),value(query),value_matches(query,row)) : {Nat.is_lt(U32.to_nat(relative(query,Samples.native_tapped(selection(query,index,inside,enabled),position,tap))),U32.to_nat(_)) == True{} : Bool}
   relative_inside(query,Samples.native_tapped(selection(query,index,inside,enabled),position,tap),lo,hi)
 

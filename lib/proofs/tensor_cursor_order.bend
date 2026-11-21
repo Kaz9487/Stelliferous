@@ -5,7 +5,6 @@ import ../tensor_shape.bend as Shapes
 import ./tensor_cursor_model.bend as CursorModel
 import ./tensor_cursor_refinement.bend as CursorLaws
 import ./tensor_shape_refinement.bend as ShapeLaws
-import ./storage_shape.bend as Shape
 import ./row_major_index.bend as RowMajor
 import ./natural_addition.bend as Addition
 import ./boolean_logic.bend as Boolean
@@ -14,6 +13,7 @@ import ./nat_order.bend as Order
 import ./tensor_linear_layout.bend as LinearLayout
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./nat_division_order.bend as DivisionOrder
+import ../kernel_gemm.bend as KernelGemm
 
 def last_coordinate(+extent: Nat,+coordinate: Nat,
   inside: {Nat.is_lt(coordinate,extent) == True{} : Bool},last: {Nat.is_lt(1n+coordinate,extent) == False{} : Bool}) -> {extent == 1n+coordinate : Nat}:
@@ -53,7 +53,7 @@ def advance_position(+axes: List<&2,CursorModel.Coordinate>,valid: CursorLaws.Va
   match axes:
     case []: Empty.absurd({0n == 1n : Nat},WordEncoding.false_true(room))
     case CursorModel.Coordinate{+extent,+coordinate,+stride} <> +tail:
-      Shape.Both{inside,tail_valid} = valid
+      KernelGemm.Both{inside,tail_valid} = valid
       selected_position(Nat.is_lt(1n+coordinate,extent),extent,coordinate,stride,tail,inside,{==},room,
         next_room => advance_position(tail,tail_valid,next_room))
 
@@ -121,13 +121,6 @@ def iterate(count: Nat,axes: List<&2,CursorModel.Coordinate>) -> List<&2,CursorM
   match count:
     case 0n: axes
     case 1n+remaining: iterate(remaining,CursorModel.advance(axes))
-
-# One more step after count steps is count plus one steps.
-def advance_iterate(count: Nat,+axes: List<&2,CursorModel.Coordinate>) ->
-  {CursorModel.advance(iterate(count,axes)) == iterate(1n+count,axes) : List<&2,CursorModel.Coordinate>}:
-  match count:
-    case 0n: {==}
-    case 1n+remaining: advance_iterate(remaining,CursorModel.advance(axes))
 
 def iterate_valid(count: Nat,+axes: List<&2,CursorModel.Coordinate>,valid: CursorLaws.Valid(axes)) -> CursorLaws.Valid(iterate(count,axes)):
   match count:

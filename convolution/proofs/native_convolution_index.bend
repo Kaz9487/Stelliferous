@@ -3,6 +3,7 @@ import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/word_arithmetic.bend as WordArithmetic
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/encoded_coordinates.bend as Encoding
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
 
 def encoded(+x: U32) -> {x == U32.from_nat(U32.to_nat(x)) : U32}:
   Equal.sym(U32,U32.from_nat(U32.to_nat(x)),x,Arithmetic.native_roundtrip(x))
@@ -31,7 +32,7 @@ def nchw(input_channel_index,height,width,iy,ix,cap,cap_ok,row_bound):
       Nat.mul(U32.to_nat(iy),U32.to_nat(width))),U32.to_nat(ix),
     add((input_channel_index * height * width : U32),(iy * width : U32),Nat.mul(Nat.mul(U32.to_nat(input_channel_index),U32.to_nat(height)),U32.to_nat(width)),
       Nat.mul(U32.to_nat(iy),U32.to_nat(width)),
-      Encoding.multiply_known_values((input_channel_index * height : U32),width,Nat.mul(U32.to_nat(input_channel_index),U32.to_nat(height)),U32.to_nat(width),Arithmetic.multiply(input_channel_index,height,cap,
+      Encoding.multiply_known_values((input_channel_index * height : U32),width,Nat.mul(U32.to_nat(input_channel_index),U32.to_nat(height)),U32.to_nat(width),WordMultiplication.bounded_multiply(input_channel_index,height,cap,
           cap_ok,row_bound),{==}),
       Encoding.multiply_known_values(iy,width,U32.to_nat(iy),U32.to_nat(width),{==},{==})),
     encoded(ix))

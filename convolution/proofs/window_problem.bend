@@ -8,7 +8,6 @@ import ../scalar_kernel.bend as ScalarConv
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/storage_tree_model.bend as Tree
 import ../../lib/proofs/boolean_logic.bend as Boolean
-import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/nat_division_order.bend as DivisionOrder
 import ../../lib/proofs/row_major_index.bend as RowMajor
@@ -19,6 +18,8 @@ import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ./window_band_values.bend as WindowBandValues
 import ./window_samples.bend as Samples
 import ../../lib/proofs/encoded_coordinates.bend as Encoding
+import ../../lib/kernel_gemm.bend as KernelGemm
+import ../../lib/kernel_shape.bend as KernelShape
 
 def band(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat) -> WindowBandValues.Band:
   WindowBandValues.Band{Guards.input(problem),Guards.height(problem),Guards.width(problem),first,rows}
@@ -41,8 +42,8 @@ def valid_from(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+facts: Guards.
         WindowBandValues.length(total,0n,WindowBandValues.Band{input,height,width,first,rows})) : {Nat.is_eq(_,total) == True{} : Bool}
       Order.equal_reflexive(total) : {Guards.input_length_matches_shape(windowed) == True{} : Bool}}
   Boolean.all_hold(Guards.valid_conditions(windowed),
-    Shape.Both{bias_length,Shape.Both{weight_length,Shape.Both{window_length,Shape.Both{kernel_width,Shape.Both{kernel_fits,Shape.Both{stride_positive,
-      Shape.Both{kernel_positive,Shape.Both{width_positive,Shape.Both{rows_positive,Shape.Both{co_positive,Shape.Both{ci_positive,Unit{}}}}}}}}}}}})
+    KernelGemm.Both{bias_length,KernelGemm.Both{weight_length,KernelGemm.Both{window_length,KernelGemm.Both{kernel_width,KernelGemm.Both{kernel_fits,KernelGemm.Both{stride_positive,
+      KernelGemm.Both{kernel_positive,KernelGemm.Both{width_positive,KernelGemm.Both{rows_positive,KernelGemm.Both{co_positive,KernelGemm.Both{ci_positive,Unit{}}}}}}}}}}}})
 
 def valid(+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+valid: {ConvSpec.valid(problem) == True{} : Bool},
   +rows_positive: {Nat.is_lt(0n,rows) == True{} : Bool},
@@ -65,6 +66,27 @@ def scalar_from_formula(+limits: Machine.Limits,+problem: ConvSpec.Problem,
   ConvSpec.Shape{+ci,+co,+height,+width,+kernel,+stride,+padding} = shape
   formula
 
+# The planes of fewer positions fit where those of more do.
+def planes_fewer(+fewer: Nat,+count: Nat,+ci: Nat,+ow: Nat,+kernel: Nat,+stride: Nat,+capacity: U32,+positive: {Nat.is_lt(0n,ow) == True{} : Bool},
+  +ordered: {Nat.is_le(fewer,count) == True{} : Bool},+fit: {KernelShape.planes_fit(count,ci,ow,kernel,stride,capacity) == True{} : Bool}) ->
+  {KernelShape.planes_fit(fewer,ci,ow,kernel,stride,capacity) == True{} : Bool}:
+  +tiles = KernelShape.plane_tiles(ow,kernel,stride)
+  +rows = KernelShape.plane_rows(fewer,ow,kernel,stride)
+  +more = KernelShape.plane_rows(count,ow,kernel,stride)
+  +area = Nat.is_le(Nat.mul(more,Nat.mul(tiles,8n)),U32.to_nat(capacity))
+  +pairs = Nat.is_le(Nat.mul(Nat.mul(stride,ci),Nat.mul(more,tiles)),U32.to_nat(capacity))
+  +last = Nat.sub(Nat.add(fewer,ow),1n)
+  +more_last = Nat.sub(Nat.add(count,ow),1n)
+  +rows_le = Order.add_le(Nat.mul(Nat.div(last,ow),stride),Nat.mul(Nat.div(more_last,ow),stride),kernel,
+    RowMajor.mul_le(Nat.div(last,ow),Nat.div(more_last,ow),stride,
+      DivisionOrder.quotient_le(last,more_last,ow,positive,DivisionOrder.subtract_le(Nat.add(fewer,ow),Nat.add(count,ow),1n,Order.add_le(fewer,count,ow,ordered)))))
+  +area_fewer = Order.transitive(Nat.mul(rows,Nat.mul(tiles,8n)),Nat.mul(more,Nat.mul(tiles,8n)),U32.to_nat(capacity),RowMajor.mul_le(rows,more,Nat.mul(tiles,8n),rows_le),
+    Boolean.left(area,pairs,fit))
+  +pairs_fewer = Order.transitive(Nat.mul(Nat.mul(stride,ci),Nat.mul(rows,tiles)),Nat.mul(Nat.mul(stride,ci),Nat.mul(more,tiles)),U32.to_nat(capacity),
+    DivisionOrder.multiply_left_le(Nat.mul(stride,ci),Nat.mul(rows,tiles),Nat.mul(more,tiles),RowMajor.mul_le(rows,more,tiles,rows_le)),Boolean.right(area,pairs,fit))
+  Boolean.all_hold([Nat.is_le(Nat.mul(Nat.mul(stride,ci),Nat.mul(rows,tiles)),U32.to_nat(capacity)),Nat.is_le(Nat.mul(rows,Nat.mul(tiles,8n)),U32.to_nat(capacity))],
+    KernelGemm.Both{pairs_fewer,KernelGemm.Both{area_fewer,Unit{}}})
+
 def supported_from(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+facts: Guards.Valid<problem>,
   +fast: Support.FastSupported<limits,problem>,+fits: {Nat.is_le(Nat.add(first,rows),Guards.height(problem)) == True{} : Bool}) ->
   {NativeConv.supports_packed_with_limits(limits,Samples.window(problem,first,rows)) == True{} : Bool}:
@@ -72,7 +94,7 @@ def supported_from(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Na
   ConvSpec.Shape{+ci,+co,+height,+width,+kernel,+stride,+padding} = shape
   Guards.Valid{ci_positive,co_positive,height_positive,width_positive,kernel_positive,+stride_positive,kernel_height,kernel_width,
     +input_length,weight_length,bias_length} = facts
-  Support.FastSupported{+scalar,+packing,+output} = fast
+  Support.FastSupported{+scalar,+packing,+output,+planes} = fast
   Guards.Supported{+ci_bound,+co_bound,+height_bound,+width_bound,+kernel_bound,+stride_bound,+padding_bound,+input_bound,+weight_bound,
     +output_bound,+vertical_bound,+horizontal_bound} = scalar
   +dimension = Machine.dimension(limits)
@@ -81,7 +103,7 @@ def supported_from(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Na
   +total = Nat.mul(ci,Nat.mul(rows,width))
   +values = WindowBandValues.values(total,0n,WindowBandValues.Band{input,height,width,first,rows})
   +windowed = {ConvSpec.Problem{ConvSpec.Shape{ci,co,rows,width,kernel,stride,padding},values,weights,bias} : ConvSpec.Problem}
-  +rows_le = Order.transitive(rows,Nat.add(first,rows),height,Samples.le_after(first,rows),fits)
+  +rows_le = Order.transitive(rows,Nat.add(first,rows),height,Order.right_le(first,rows),fits)
   +out_height = ConvSpec.axis_size(height,kernel,stride,padding)
   +out_rows = ConvSpec.axis_size(rows,kernel,stride,padding)
   +out_width = ConvSpec.axis_size(width,kernel,stride,padding)
@@ -96,16 +118,16 @@ def supported_from(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Na
           {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
         input_bound) : {Guards.input_buffer_supported(windowed,dimension,capacity,coordinate) == True{} : Bool}}
   +formula = Boolean.all_hold(Guards.supported_conditions(windowed,dimension,capacity,coordinate),
-    Shape.Both{horizontal_bound,
-    Shape.Both{Order.transitive(Nat.add(Nat.mul(out_rows,stride),kernel),Nat.add(Nat.mul(out_height,stride),kernel),U32.to_nat(coordinate),
+    KernelGemm.Both{horizontal_bound,
+    KernelGemm.Both{Order.transitive(Nat.add(Nat.mul(out_rows,stride),kernel),Nat.add(Nat.mul(out_height,stride),kernel),U32.to_nat(coordinate),
         Order.add_le(Nat.mul(out_rows,stride),Nat.mul(out_height,stride),kernel,RowMajor.mul_le(out_rows,out_height,stride,axis)),vertical_bound),
-    Shape.Both{Order.transitive(Nat.mul(co,Nat.mul(out_rows,out_width)),Nat.mul(co,Nat.mul(out_height,out_width)),U32.to_nat(capacity),
+    KernelGemm.Both{Order.transitive(Nat.mul(co,Nat.mul(out_rows,out_width)),Nat.mul(co,Nat.mul(out_height,out_width)),U32.to_nat(capacity),
         DivisionOrder.multiply_left_le(co,Nat.mul(out_rows,out_width),Nat.mul(out_height,out_width),area),output_bound),
-    Shape.Both{weight_bound,
-    Shape.Both{input_fits,
-    Shape.Both{padding_bound,Shape.Both{stride_bound,Shape.Both{kernel_bound,Shape.Both{width_bound,
-    Shape.Both{Order.transitive(rows,height,U32.to_nat(dimension),rows_le,height_bound),
-    Shape.Both{co_bound,Shape.Both{ci_bound,Unit{}}}}}}}}}}}}})
+    KernelGemm.Both{weight_bound,
+    KernelGemm.Both{input_fits,
+    KernelGemm.Both{padding_bound,KernelGemm.Both{stride_bound,KernelGemm.Both{kernel_bound,KernelGemm.Both{width_bound,
+    KernelGemm.Both{Order.transitive(rows,height,U32.to_nat(dimension),rows_le,height_bound),
+    KernelGemm.Both{co_bound,KernelGemm.Both{ci_bound,Unit{}}}}}}}}}}}}})
   +window_scalar = scalar_from_formula(limits,windowed,formula)
   +inner = Nat.mul(ci,Nat.mul(kernel,kernel))
   +window_packing = {Order.transitive(Nat.mul(Nat.mul(Nat.div(Nat.add(Nat.mul(out_rows,out_width),7n),8n),8n),inner),
@@ -116,11 +138,13 @@ def supported_from(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Na
         Nat.mul(Nat.mul(Nat.div(Nat.add(Nat.mul(out_height,out_width),7n),8n),8n),co),U32.to_nat(capacity),
         RowMajor.mul_le(Nat.mul(Nat.div(Nat.add(Nat.mul(out_rows,out_width),7n),8n),8n),Nat.mul(Nat.div(Nat.add(Nat.mul(out_height,out_width),7n),8n),8n),co,padded),
         output) : {Support.output_bound(limits,windowed) == True{} : Bool}}
+  +window_planes = {planes_fewer(Nat.mul(Nat.div(Nat.add(Nat.mul(out_rows,out_width),7n),8n),8n),Nat.mul(Nat.div(Nat.add(Nat.mul(out_height,out_width),7n),8n),8n),
+        ci,out_width,kernel,stride,capacity,{==},padded,planes) : {Support.planes_bound(limits,windowed) == True{} : Bool}}
   %Equal.sym(Bool,NativeConv.supports_packed_with_limits(limits,windowed),
-    ScalarConv.supported_with_limits(limits,windowed) && Support.packed_bound(limits,windowed) && Support.output_bound(limits,windowed),
+    ScalarConv.supported_with_limits(limits,windowed) && Support.packed_bound(limits,windowed) && Support.output_bound(limits,windowed) && Support.planes_bound(limits,windowed),
     Support.packed_guard_matches_original_conditions(limits,windowed)) : {_ == True{} : Bool}
-  Boolean.all_hold([Support.output_bound(limits,windowed),Support.packed_bound(limits,windowed),ScalarConv.supported_with_limits(limits,windowed)],
-    Shape.Both{window_output,Shape.Both{window_packing,Shape.Both{window_scalar,Unit{}}}})
+  Boolean.all_hold([Support.planes_bound(limits,windowed),Support.output_bound(limits,windowed),Support.packed_bound(limits,windowed),ScalarConv.supported_with_limits(limits,windowed)],
+    KernelGemm.Both{window_planes,KernelGemm.Both{window_output,KernelGemm.Both{window_packing,KernelGemm.Both{window_scalar,Unit{}}}}})
 
 def supported(+limits: Machine.Limits,+problem: ConvSpec.Problem,+first: Nat,+rows: Nat,+valid: {ConvSpec.valid(problem) == True{} : Bool},
   +supported: {NativeConv.supports_packed_with_limits(limits,problem) == True{} : Bool},
@@ -135,17 +159,5 @@ def contract(+problem: ConvSpec.Problem,+storage_contract: Inputs.Contract<probl
   Inputs.Contract<Samples.window(problem,first,rows)>:
   ConvSpec.Problem{shape,+input,+weights,+bias} = problem
   ConvSpec.Shape{+ci,+co,+height,+width,+kernel,+stride,+padding} = shape
-  Inputs.Contract{input_evidence,+weight_evidence,+bias_evidence} = storage_contract
-  Inputs.Contract{WindowBandValues.evidence(Nat.mul(ci,Nat.mul(rows,width)),WindowBandValues.Band{input,height,width,first,rows},tree,contents,room),weight_evidence,bias_evidence}
-
-# A band window has no whole-image owner: its tree carries the band and the
-# supplied evidence carries weights and bias.
-def band_contract(+problem: ConvSpec.Problem,
-  +weight_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(Guards.weights(problem)),Guards.weights(problem)>,
-  +bias_evidence: StorageLaws.SequenceEvidence<F32,ConvSpec.length(Guards.bias(problem)),Guards.bias(problem)>,
-  +first: Nat,+rows: Nat,+tree: Tree.Tree<F32>,+contents: WindowBandValues.Contents(count(problem,rows),band(problem,first,rows),tree),
-  +room: {Nat.is_le(count(problem,rows),U32.to_nat(Tree.capacity(F32,tree))) == True{} : Bool}) ->
-  Inputs.Contract<Samples.window(problem,first,rows)>:
-  ConvSpec.Problem{shape,+input,+weights,+bias} = problem
-  ConvSpec.Shape{+ci,+co,+height,+width,+kernel,+stride,+padding} = shape
-  Inputs.Contract{WindowBandValues.evidence(Nat.mul(ci,Nat.mul(rows,width)),WindowBandValues.Band{input,height,width,first,rows},tree,contents,room),weight_evidence,bias_evidence}
+  Inputs.Contract{input_evidence,+weight_evidence,+bias_evidence,+parameters} = storage_contract
+  Inputs.Contract{WindowBandValues.evidence(Nat.mul(ci,Nat.mul(rows,width)),WindowBandValues.Band{input,height,width,first,rows},tree,contents,room),weight_evidence,bias_evidence,parameters}

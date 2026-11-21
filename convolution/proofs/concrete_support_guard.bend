@@ -10,6 +10,7 @@ import ../specification.bend as ConvSpec
 import ../scalar_kernel.bend as ScalarConv
 import ../inference.bend as NativeConv
 import ../../lib/proofs/nat_order.bend as Order
+import ../../lib/kernel_shape.bend as KernelShape
 
 def scalar(+limits: Machine.Limits,+p: ConvSpec.Problem,h: {ScalarConv.supported_with_limits(limits,
       p) == True{} : Bool}) -> Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),Machine.coordinate(limits)>:
@@ -28,29 +29,35 @@ def packed_bound(+limits: Machine.Limits,+p: ConvSpec.Problem) -> Bool:
 def output_bound(+limits: Machine.Limits,+p: ConvSpec.Problem) -> Bool:
   Nat.is_le(Nat.mul(padded(p),ConvSpec.outputs(p)),U32.to_nat(Machine.capacity(limits)))
 
+def planes_bound(+limits: Machine.Limits,+p: ConvSpec.Problem) -> Bool:
+  KernelShape.planes_fit(padded(p),ConvSpec.channels(p),ConvSpec.out_width(p),ConvSpec.kernel_size(p),Guards.stride(p),Machine.capacity(limits))
+
 def packed_guard_matches_original_conditions(+limits: Machine.Limits,+p: ConvSpec.Problem) ->
-  {NativeConv.supports_packed_with_limits(limits,p) == ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p) && output_bound(limits,p) : Bool}:
+  {NativeConv.supports_packed_with_limits(limits,p) == ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p) && output_bound(limits,p) && planes_bound(limits,p) : Bool}:
   Machine.Limits{dimension,capacity,coordinate,half_word,facts} = limits
   ConvSpec.Problem{shape,input,weights,bias} = p
   ConvSpec.Shape{input_channel_count,output_channel_count,height,width,kernel,stride,padding} = shape
   {==}
 
 def packed_conditions(+limits: Machine.Limits,+p: ConvSpec.Problem,h: {NativeConv.supports_packed_with_limits(limits,p) == True{} : Bool}) ->
-  {ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p) && output_bound(limits,p) == True{} : Bool}:
+  {ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p) && output_bound(limits,p) && planes_bound(limits,p) == True{} : Bool}:
   %packed_guard_matches_original_conditions(limits,p) : {_ == True{} : Bool}
   h
 
 type FastSupported<-limits: Machine.Limits,-p: ConvSpec.Problem> is Data:
   FastSupported{scalar: Guards.Supported<p,Machine.dimension(limits),Machine.capacity(limits),
-    Machine.coordinate(limits)>,packing: {packed_bound(limits,p) == True{} : Bool},output: {output_bound(limits,p) == True{} : Bool}}
+    Machine.coordinate(limits)>,packing: {packed_bound(limits,p) == True{} : Bool},output: {output_bound(limits,p) == True{} : Bool},
+    planes: {planes_bound(limits,p) == True{} : Bool}}
 
 def fast(+limits: Machine.Limits,+p: ConvSpec.Problem,+h: {NativeConv.supports_packed_with_limits(limits,
       p) == True{} : Bool}) -> FastSupported<limits,p>:
   +conditions = packed_conditions(limits,p,h)
-  +ab = Boolean.left(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p),output_bound(limits,p),conditions)
+  +abc = Boolean.left(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p) && output_bound(limits,p),planes_bound(limits,p),conditions)
+  +ab = Boolean.left(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p),output_bound(limits,p),abc)
   FastSupported{scalar(limits,p,Boolean.left(ScalarConv.supported_with_limits(limits,p),packed_bound(limits,p),ab)),
     Boolean.right(ScalarConv.supported_with_limits(limits,p),packed_bound(limits,p),ab),
-    Boolean.right(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p),output_bound(limits,p),conditions)}
+    Boolean.right(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p),output_bound(limits,p),abc),
+    Boolean.right(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p) && output_bound(limits,p),planes_bound(limits,p),conditions)}
 
 def input_positive(+p: ConvSpec.Problem,valid: Guards.Valid<p>) -> {Nat.is_lt(0n,
     ConvSpec.length(Guards.input(p))) == True{} : Bool}:
@@ -110,5 +117,7 @@ def bias_ready_facts(+limits: Machine.Limits,+p: ConvSpec.Problem,+valid: Guards
 
 def scalar_guard(+limits: Machine.Limits,+p: ConvSpec.Problem,+support: {NativeConv.supports_packed_with_limits(limits,
       p) == True{} : Bool}) -> {ScalarConv.supported_with_limits(limits,p) == True{} : Bool}:
-  Boolean.left(ScalarConv.supported_with_limits(limits,p),packed_bound(limits,p),Boolean.left(ScalarConv.supported_with_limits(limits,
-        p) && packed_bound(limits,p),output_bound(limits,p),packed_conditions(limits,p,support)))
+  +abc = Boolean.left(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p) && output_bound(limits,p),planes_bound(limits,p),
+    packed_conditions(limits,p,support))
+  Boolean.left(ScalarConv.supported_with_limits(limits,p),packed_bound(limits,p),
+    Boolean.left(ScalarConv.supported_with_limits(limits,p) && packed_bound(limits,p),output_bound(limits,p),abc))

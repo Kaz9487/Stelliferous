@@ -1,12 +1,12 @@
-import ./storage_shape.bend as Shape
 # The storage allocator follows the generic bit-length proof.
 import Base
 import ../storage_buffer.bend as Storage
 import ./word_bit_length.bend as WordLength
 import ./word_power_of_two.bend as Power
+import ../kernel_gemm.bend as KernelGemm
 
 def LengthGoal(+index: U32) -> Data:
-  Shape.Both<{Nat.is_le(Storage.bit_length(32n,index),30n) == True{} : Bool},{U32.is_lt(index,U32.shln(1,Storage.bit_length(32n,
+  KernelGemm.Both<{Nat.is_le(Storage.bit_length(32n,index),30n) == True{} : Bool},{U32.is_lt(index,U32.shln(1,Storage.bit_length(32n,
           index))) == True{} : Bool}>
 
 law native_counted_shifts:
@@ -31,9 +31,9 @@ def native_length(word):
     native_counted_shifts(32n,word),WordLength.counted_shifts_match_length(32n,32n,word,{==}))
 
 def bounded_word(+word: Word(32n),+bound: {U32.is_lt(U32{word},1073741824) == True{} : Bool}) -> LengthGoal(U32{word}):
-  %Equal.sym(Nat,Storage.bit_length(32n,U32{word}),WordLength.bit_length(32n,word),native_length(word)) : Shape.Both<{Nat.is_le(_,
+  %Equal.sym(Nat,Storage.bit_length(32n,U32{word}),WordLength.bit_length(32n,word),native_length(word)) : KernelGemm.Both<{Nat.is_le(_,
       30n) == True{} : Bool},{U32.is_lt(U32{word},U32.shln(1,_)) == True{} : Bool}>
-  Shape.Both{
+  KernelGemm.Both{
     WordLength.bounded_length(32n,30n,word,bound),
     %Equal.sym(U32,U32.shln(1,WordLength.bit_length(32n,word)),U32{Power.power(32n,WordLength.bit_length(32n,word))},
       Power.native_power(WordLength.bit_length(32n,word))) : {U32.is_lt(U32{word},_) == True{} : Bool}

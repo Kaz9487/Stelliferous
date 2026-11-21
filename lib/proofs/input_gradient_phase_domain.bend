@@ -157,6 +157,9 @@ def image_room(call: Call) -> {Nat.is_le(image_size(geometry(call)),U32.to_nat(M
 def weight_room(call: Call) -> {Nat.is_le(weight_size(geometry(call)),U32.to_nat(Machine.capacity(limits(call)))) == True{} : Bool}:
   Call{geometry,batch,limits,Facts{positive,dimensions,Capacities{image,weight,gradient_image,gradient},axes}} = call
   weight
+def gradient_room(call: Call) -> {Nat.is_le(Nat.mul(batch(call),gradient_size(geometry(call))),U32.to_nat(Machine.capacity(limits(call)))) == True{} : Bool}:
+  Call{geometry,batch,limits,Facts{positive,dimensions,Capacities{image,weight,gradient_image,gradient},axes}} = call
+  gradient
 def gradient_image_room(call: Call) -> {Nat.is_le(gradient_size(geometry(call)),U32.to_nat(Machine.capacity(limits(call)))) == True{} : Bool}:
   Call{geometry,batch,limits,Facts{positive,dimensions,Capacities{image,weight,gradient_image,gradient},axes}} = call
   gradient_image
@@ -226,17 +229,3 @@ def padding_word(geometry: Kernel.Geometry) -> U32:
 def image_positive(+call: Call) -> {Nat.is_lt(0n,image_size(geometry(call))) == True{} : Bool}:
   Call{geometry,batch,limits,Facts{Positive{cp,op,hp,wp,kp,sp},dimensions,capacities,gradient}} = call
   Order.product_positive(channels(geometry),Nat.mul(height(geometry),width(geometry)),cp,Order.product_positive(height(geometry),width(geometry),hp,wp))
-def image_words_exact(+call: Call) ->
-  {U32.to_nat((channel_word(geometry(call)) * height_word(geometry(call)) * width_word(geometry(call)) : U32)) == image_size(geometry(call)) : Nat}:
-  Call{geometry,batch,limits,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = geometry
-  %RowMajor.assoc(U32.to_nat(c),U32.to_nat(h),U32.to_nat(w)) : {U32.to_nat((c * h * w : U32)) == _ : Nat}
-  Encoded.multiply_three(c,h,w,Machine.capacity(limits),Limits.capacity_fits(limits),width_positive(call),
-    %Equal.sym(Nat,Nat.mul(Nat.mul(U32.to_nat(c),U32.to_nat(h)),U32.to_nat(w)),image_size(geometry),RowMajor.assoc(U32.to_nat(c),U32.to_nat(h),U32.to_nat(w))) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool} image_room(call))
-
-def run_images(+call: Call,+count: Nat,+count_exact: {count == Nat.mul(batch(call),image_size(geometry(call))) : Nat}) ->
-  {Nat.div(count,U32.to_nat((channel_word(geometry(call)) * height_word(geometry(call)) * width_word(geometry(call)) : U32))) == batch(call) : Nat}:
-  Call{geometry,batch,limits,facts} = call
-  %Equal.sym(Nat,U32.to_nat((channel_word(geometry) * height_word(geometry) * width_word(geometry) : U32)),image_size(geometry),image_words_exact(call)) : {Nat.div(count,_) == batch : Nat}
-  %Equal.sym(Nat,count,Nat.mul(batch,image_size(geometry)),count_exact) : {Nat.div(_,image_size(geometry)) == batch : Nat}
-  NaturalDivision.exact_quotient(batch,image_size(geometry),image_positive(call))

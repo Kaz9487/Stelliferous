@@ -1,6 +1,6 @@
 # A write through a view: element k of a part goes to the address of the k-th
-# row-major coordinates of the view, elements in order. A scatter and the
-# tile stores of the kernels are this list.
+# row-major coordinates of the view, elements in order. The tile stores of the
+# kernels are this list.
 import Base
 import ../tensor_view.bend as Views
 import ./write_program.bend as Writes
@@ -9,7 +9,6 @@ import ./write_program_readback.bend as Readback
 import ./consecutive_writes.bend as Consecutive
 import ./tensor_copy_values.bend as Copy
 import ./tensor_row_major_coordinates.bend as Digits
-import ./storage_shape.bend as Shape
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./word_arithmetic.bend as WordArithmetic
 import ./word_multiplication.bend as Multiplication
@@ -23,6 +22,7 @@ import ./boolean_logic.bend as Boolean
 import ./row_major_index.bend as RowMajor
 import ../tensor_shape.bend as Shapes
 import ./tensor_shape_refinement.bend as ShapeLaws
+import ../kernel_gemm.bend as KernelGemm
 
 # The writes of count elements from position on.
 def writes_from(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,count: Nat,+position: Nat,+view: Views.View,+part: Part) ->
@@ -99,7 +99,7 @@ def plane_digits(+target: U32,+rows: U32,+plane: U32,+row: Nat,+columns: U32,+st
   {Copy.address(Views.View{[Views.Axis{rows,plane},Views.Axis{columns,step}],target},Nat.add(Nat.mul(row,U32.to_nat(columns)),column)) ==
     U32.from_nat(Nat.add(Nat.mul(column,U32.to_nat(step)),Nat.add(Nat.mul(row,U32.to_nat(plane)),U32.to_nat(target)))) : U32}:
   +points = {[Digits.Point{rows,row,plane,False{}},Digits.Point{columns,column,step,False{}}] : List<&2,Digits.Point>}
-  +valid = {Shape.Both{row_inside,Shape.Both{column_inside,Unit{}}} : Digits.Valid(points)}
+  +valid = {KernelGemm.Both{row_inside,KernelGemm.Both{column_inside,Unit{}}} : Digits.Valid(points)}
   Digits.copied(points,target,valid,Digits.inside(points,valid))
 def plane_address(+target: U32,+rows: U32,+plane: U32,+row: Nat,+columns: U32,+step: U32,+column: Nat,
   +row_inside: {Nat.is_lt(row,U32.to_nat(rows)) == True{} : Bool},+column_inside: {Nat.is_lt(column,U32.to_nat(columns)) == True{} : Bool}) ->
@@ -219,12 +219,6 @@ def masked(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat ->
       Equal.trans(Nat,Nat.add(Nat.add(first,gap),0n),Nat.add(first,gap),limit(context),Addition.zero_right(Nat.add(first,gap)),whole)),
     grouped(~Element,~Part,~value,~Context,~part,~view,~source,~base,~size,~used,~present,context,first,0n,Addition.zero_right(first)))
 
-# A count clipped to a limit is at most the limit.
-def limited(+limit: U32,+count: U32) -> {Nat.is_le(U32.to_nat(U32.min(limit,count)),U32.to_nat(limit)) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat(U32.min(limit,count)),Nat.min(U32.to_nat(limit),U32.to_nat(count)),U32Extrema.minimum(limit,count)) :
-    {Nat.is_le(_,U32.to_nat(limit)) == True{} : Bool}
-  NatExtrema.minimum_left(U32.to_nat(limit),U32.to_nat(count))
-
 # An index is below a count clipped to a limit exactly when it is below both.
 def clipped_both(+index: Nat,+limit: U32,+count: U32) ->
   {Nat.is_lt(index,U32.to_nat(U32.min(limit,count))) == Nat.is_lt(index,U32.to_nat(limit)) && Nat.is_lt(index,U32.to_nat(count)) : Bool}:
@@ -256,61 +250,6 @@ def word_compared(+index: Nat,+limit: U32,+count: U32,+limit_ok: {U32.is_le(limi
     Comparison.lt(U32.from_nat(index),count),
     Equal.cong(Nat,Bool,value => Nat.is_lt(value,U32.to_nat(count)),U32.to_nat(U32.from_nat(index)),index,Bounds.roundtrip(index,limit,limit_ok,small)))
 
-# An index below the limit but not below the clipped count is not below the
-# count.
-def clipped_beyond(+index: Nat,+limit: U32,+count: U32,+small: {Nat.is_lt(index,U32.to_nat(limit)) == True{} : Bool},
-  +outside: {Nat.is_lt(index,U32.to_nat(U32.min(limit,count))) == False{} : Bool}) -> {Nat.is_lt(index,U32.to_nat(count)) == False{} : Bool}:
-  +bound = U32.to_nat(limit)
-  +total = U32.to_nat(count)
-  Equal.trans(Bool,Nat.is_lt(index,total),Nat.is_lt(index,bound) && Nat.is_lt(index,total),False{},
-    Equal.cong(Bool,Bool,first => first && Nat.is_lt(index,total),True{},Nat.is_lt(index,bound),Equal.sym(Bool,Nat.is_lt(index,bound),True{},small)),
-    Equal.trans(Bool,Nat.is_lt(index,bound) && Nat.is_lt(index,total),Nat.is_lt(index,U32.to_nat(U32.min(limit,count))),False{},
-      Equal.sym(Bool,Nat.is_lt(index,U32.to_nat(U32.min(limit,count))),Nat.is_lt(index,bound) && Nat.is_lt(index,total),clipped_both(index,limit,count)),outside))
-
-# An index below a count clipped to a limit is below the count as a word.
-def clipped_inside(+index: Nat,+limit: U32,+count: U32,+limit_ok: {U32.is_le(limit,2147483648) == True{} : Bool},
-  +below: {Nat.is_lt(index,U32.to_nat(U32.min(limit,count))) == True{} : Bool}) -> {U32.is_lt(U32.from_nat(index),count) == True{} : Bool}:
-  Equal.trans(Bool,U32.is_lt(U32.from_nat(index),count),Nat.is_lt(index,U32.to_nat(count)),True{},
-    word_compared(index,limit,count,limit_ok,Bounds.strict_le(index,U32.to_nat(limit),clipped_small(index,limit,count,below))),
-    clipped_below(index,limit,count,below))
-
-# An index below the limit but not below the clipped count is not below the
-# count as a word.
-def clipped_outside(+index: Nat,+limit: U32,+count: U32,+limit_ok: {U32.is_le(limit,2147483648) == True{} : Bool},
-  +small: {Nat.is_lt(index,U32.to_nat(limit)) == True{} : Bool},
-  +outside: {Nat.is_lt(index,U32.to_nat(U32.min(limit,count))) == False{} : Bool}) -> {U32.is_lt(U32.from_nat(index),count) == False{} : Bool}:
-  Equal.trans(Bool,U32.is_lt(U32.from_nat(index),count),Nat.is_lt(index,U32.to_nat(count)),False{},
-    word_compared(index,limit,count,limit_ok,Bounds.strict_le(index,U32.to_nat(limit),small)),
-    clipped_beyond(index,limit,count,small,outside))
-
-# A row counted from a first word is below a count exactly when it is below
-# the rows the count leaves after first.
-def offset_compared(+first: U32,+row: Nat,+count: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
-  +ordered: {Nat.is_le(U32.to_nat(first),U32.to_nat(count)) == True{} : Bool},
-  +room: {Nat.is_le(Nat.add(U32.to_nat(first),row),U32.to_nat(cap)) == True{} : Bool},
-  +count_room: {Nat.is_le(U32.to_nat(count),U32.to_nat(cap)) == True{} : Bool}) ->
-  {U32.is_lt((first + U32.from_nat(row) : U32),count) == Nat.is_lt(row,U32.to_nat((count - first : U32))) : Bool}:
-  +start = U32.to_nat(first)
-  +total = U32.to_nat(count)
-  +sum = (first + U32.from_nat(row) : U32)
-  +left = Nat.sub(total,start)
-  +row_small = Order.transitive(row,Nat.add(start,row),U32.to_nat(cap),
-    %Order.commutative(row,start) : {Nat.is_le(row,_) == True{} : Bool} Order.le_add(row,start),room)
-  +row_exact = Bounds.roundtrip(row,cap,cap_ok,row_small)
-  +sum_exact = Equal.trans(Nat,U32.to_nat(sum),Nat.add(start,U32.to_nat(U32.from_nat(row))),Nat.add(start,row),
-    Arithmetic.add(first,U32.from_nat(row),cap,cap_ok,
-      %Equal.sym(Nat,U32.to_nat(U32.from_nat(row)),row,row_exact) : {Nat.is_le(Nat.add(start,_),U32.to_nat(cap)) == True{} : Bool} room),
-    Equal.cong(Nat,Nat,value => Nat.add(start,value),U32.to_nat(U32.from_nat(row)),row,row_exact))
-  +difference = Arithmetic.subtract(count,first,cap,cap_ok,ordered,Order.transitive(left,total,U32.to_nat(cap),Order.sub_le(total,start),count_room))
-  %Equal.sym(Nat,U32.to_nat((count - first : U32)),left,difference) : {U32.is_lt(sum,count) == Nat.is_lt(row,_) : Bool}
-  %Equal.sym(Bool,U32.is_lt(sum,count),Nat.is_lt(U32.to_nat(sum),total),Comparison.lt(sum,count)) : {_ == Nat.is_lt(row,left) : Bool}
-  %Equal.sym(Nat,U32.to_nat(sum),Nat.add(start,row),sum_exact) : {Nat.is_lt(_,total) == Nat.is_lt(row,left) : Bool}
-  %Order.restore_shift(start,total,ordered) : {Nat.is_lt(Nat.add(start,row),_) == Nat.is_lt(row,left) : Bool}
-  Order.lt_offset(start,row,left)
-
-# Every write of a view of rows by columns elements has a property when each
-# cell has it at its address. The cells read an environment passed at run
-# time.
 def every_columns(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,~Environment: Data,~Target: Data,~target: @+environment: Environment -> Target,
   ~Holds: @+target: Target -> U32 -> Element -> Data,~view: @+environment: Environment -> Views.View,~part: @+environment: Environment -> Part,
   ~rows: @+environment: Environment -> Nat,~columns: @+environment: Environment -> Nat,
@@ -328,7 +267,7 @@ def every_columns(~Element: Data,~Part: Data,~value: @+part: Part -> @+position:
         Order.below_sum(column,more) : {Nat.is_lt(column,columns(environment)) == True{} : Bool}}
       +later = every_columns(~Element,~Part,~value,~Environment,~Target,~target,~Holds,~view,~part,~rows,~columns,~cell,environment,row,row_inside,more,1n+column,
         %Addition.successor_right(column,more) : {_ == columns(environment) : Nat} room)
-      Shape.Both{cell(environment,row,column,row_inside,inside),
+      KernelGemm.Both{cell(environment,row,column,row_inside,inside),
         %Addition.successor_right(first,column) : Every.Every(~Element,~Target,~Holds,target(environment),writes_from(~Element,~Part,~value,more,_,view(environment),part(environment))) later}
 def every_rows(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,~Environment: Data,~Target: Data,~target: @+environment: Environment -> Target,
   ~Holds: @+target: Target -> U32 -> Element -> Data,~view: @+environment: Environment -> Views.View,~part: @+environment: Environment -> Part,
@@ -369,6 +308,90 @@ def every_plane(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: N
   Every.Every(~Element,~Target,~Holds,target(environment),writes(~Element,~Part,~value,Nat.mul(rows(environment),columns(environment)),view(environment),part(environment))):
   every_rows(~Element,~Part,~value,~Environment,~Target,~target,~Holds,~view,~part,~rows,~columns,~cell,environment,rows(environment),0n,{==})
 
+# Two parts written through one view of rows by columns elements write the
+# same list when they agree at each cell.
+def agreeing_columns(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,~Environment: Data,~view: @+environment: Environment -> Views.View,
+  ~left: @+environment: Environment -> Part,~right: @+environment: Environment -> Part,~rows: @+environment: Environment -> Nat,~columns: @+environment: Environment -> Nat,
+  ~cell: @+environment: Environment -> @+row: Nat -> @+column: Nat -> @+row_inside: {Nat.is_lt(row,rows(environment)) == True{} : Bool} ->
+    @+column_inside: {Nat.is_lt(column,columns(environment)) == True{} : Bool} ->
+    {value(left(environment),Nat.add(Nat.mul(row,columns(environment)),column)) == value(right(environment),Nat.add(Nat.mul(row,columns(environment)),column)) : Element},
+  +environment: Environment,+row: Nat,+row_inside: {Nat.is_lt(row,rows(environment)) == True{} : Bool},rest: Nat,+column: Nat,+room: {Nat.add(column,rest) == columns(environment) : Nat}) ->
+  {writes_from(~Element,~Part,~value,rest,Nat.add(Nat.mul(row,columns(environment)),column),view(environment),left(environment)) ==
+    writes_from(~Element,~Part,~value,rest,Nat.add(Nat.mul(row,columns(environment)),column),view(environment),right(environment)) : List<&2,Writes.Assignment<Element>>}:
+  match rest:
+    case 0n: {==}
+    case 1n+ +more:
+      +first = Nat.mul(row,columns(environment))
+      +position = Nat.add(first,column)
+      +inside = {
+        %room : {Nat.is_lt(column,_) == True{} : Bool}
+        Order.below_sum(column,more) : {Nat.is_lt(column,columns(environment)) == True{} : Bool}}
+      +later = agreeing_columns(~Element,~Part,~value,~Environment,~view,~left,~right,~rows,~columns,~cell,environment,row,row_inside,more,1n+column,
+        %Addition.successor_right(column,more) : {_ == columns(environment) : Nat} room)
+      +tail = writes_from(~Element,~Part,~value,more,1n+position,view(environment),right(environment))
+      %cell(environment,row,column,row_inside,inside) :
+        {Writes.Put{Copy.address(view(environment),position),value(left(environment),position)} <> writes_from(~Element,~Part,~value,more,1n+position,view(environment),left(environment)) ==
+          Writes.Put{Copy.address(view(environment),position),_} <> tail : List<&2,Writes.Assignment<Element>>}
+      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,
+        writes => Writes.Put{Copy.address(view(environment),position),value(left(environment),position)} <> writes,
+        writes_from(~Element,~Part,~value,more,1n+position,view(environment),left(environment)),tail,
+        %Addition.successor_right(first,column) :
+          {writes_from(~Element,~Part,~value,more,_,view(environment),left(environment)) == writes_from(~Element,~Part,~value,more,_,view(environment),right(environment)) :
+            List<&2,Writes.Assignment<Element>>}
+        later)
+def agreeing_rows(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,~Environment: Data,~view: @+environment: Environment -> Views.View,
+  ~left: @+environment: Environment -> Part,~right: @+environment: Environment -> Part,~rows: @+environment: Environment -> Nat,~columns: @+environment: Environment -> Nat,
+  ~cell: @+environment: Environment -> @+row: Nat -> @+column: Nat -> @+row_inside: {Nat.is_lt(row,rows(environment)) == True{} : Bool} ->
+    @+column_inside: {Nat.is_lt(column,columns(environment)) == True{} : Bool} ->
+    {value(left(environment),Nat.add(Nat.mul(row,columns(environment)),column)) == value(right(environment),Nat.add(Nat.mul(row,columns(environment)),column)) : Element},
+  +environment: Environment,rest: Nat,+row: Nat,+room: {Nat.add(row,rest) == rows(environment) : Nat}) ->
+  {writes_from(~Element,~Part,~value,Nat.mul(rest,columns(environment)),Nat.mul(row,columns(environment)),view(environment),left(environment)) ==
+    writes_from(~Element,~Part,~value,Nat.mul(rest,columns(environment)),Nat.mul(row,columns(environment)),view(environment),right(environment)) : List<&2,Writes.Assignment<Element>>}:
+  match rest:
+    case 0n: {==}
+    case 1n+ +more:
+      +width = columns(environment)
+      +first = Nat.mul(row,width)
+      +row_inside = {
+        %room : {Nat.is_lt(row,_) == True{} : Bool}
+        Order.below_sum(row,more) : {Nat.is_lt(row,rows(environment)) == True{} : Bool}}
+      +line = agreeing_columns(~Element,~Part,~value,~Environment,~view,~left,~right,~rows,~columns,~cell,environment,row,row_inside,width,0n,{==})
+      +later = agreeing_rows(~Element,~Part,~value,~Environment,~view,~left,~right,~rows,~columns,~cell,environment,more,1n+row,
+        %Addition.successor_right(row,more) : {_ == rows(environment) : Nat} room)
+      +left_here = writes_from(~Element,~Part,~value,width,first,view(environment),left(environment))
+      +right_here = writes_from(~Element,~Part,~value,width,first,view(environment),right(environment))
+      +left_rest = writes_from(~Element,~Part,~value,Nat.mul(more,width),Nat.add(first,width),view(environment),left(environment))
+      +right_rest = writes_from(~Element,~Part,~value,Nat.mul(more,width),Nat.add(first,width),view(environment),right(environment))
+      +left_whole = writes_from(~Element,~Part,~value,Nat.add(width,Nat.mul(more,width)),first,view(environment),left(environment))
+      +right_whole = writes_from(~Element,~Part,~value,Nat.add(width,Nat.mul(more,width)),first,view(environment),right(environment))
+      +here = {%Addition.zero_right(first) : {writes_from(~Element,~Part,~value,width,_,view(environment),left(environment)) ==
+          writes_from(~Element,~Part,~value,width,_,view(environment),right(environment)) : List<&2,Writes.Assignment<Element>>}
+        line : {left_here == right_here : List<&2,Writes.Assignment<Element>>}}
+      +there = {%Order.commutative(width,first) : {writes_from(~Element,~Part,~value,Nat.mul(more,width),_,view(environment),left(environment)) ==
+          writes_from(~Element,~Part,~value,Nat.mul(more,width),_,view(environment),right(environment)) : List<&2,Writes.Assignment<Element>>}
+        later : {left_rest == right_rest : List<&2,Writes.Assignment<Element>>}}
+      Equal.trans(List<&2,Writes.Assignment<Element>>,left_whole,List.append(&2,Writes.Assignment<Element>,left_here,left_rest),right_whole,
+        split(~Element,~Part,~value,width,Nat.mul(more,width),first,view(environment),left(environment)),
+        Equal.trans(List<&2,Writes.Assignment<Element>>,List.append(&2,Writes.Assignment<Element>,left_here,left_rest),
+          List.append(&2,Writes.Assignment<Element>,right_here,left_rest),right_whole,
+          Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,writes => List.append(&2,Writes.Assignment<Element>,writes,left_rest),
+            left_here,right_here,here),
+          Equal.trans(List<&2,Writes.Assignment<Element>>,List.append(&2,Writes.Assignment<Element>,right_here,left_rest),
+            List.append(&2,Writes.Assignment<Element>,right_here,right_rest),right_whole,
+            Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,writes => List.append(&2,Writes.Assignment<Element>,right_here,writes),
+              left_rest,right_rest,there),
+            Equal.sym(List<&2,Writes.Assignment<Element>>,right_whole,List.append(&2,Writes.Assignment<Element>,right_here,right_rest),
+              split(~Element,~Part,~value,width,Nat.mul(more,width),first,view(environment),right(environment))))))
+def agreeing_plane(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,~Environment: Data,~view: @+environment: Environment -> Views.View,
+  ~left: @+environment: Environment -> Part,~right: @+environment: Environment -> Part,~rows: @+environment: Environment -> Nat,~columns: @+environment: Environment -> Nat,
+  ~cell: @+environment: Environment -> @+row: Nat -> @+column: Nat -> @+row_inside: {Nat.is_lt(row,rows(environment)) == True{} : Bool} ->
+    @+column_inside: {Nat.is_lt(column,columns(environment)) == True{} : Bool} ->
+    {value(left(environment),Nat.add(Nat.mul(row,columns(environment)),column)) == value(right(environment),Nat.add(Nat.mul(row,columns(environment)),column)) : Element},
+  +environment: Environment) ->
+  {writes(~Element,~Part,~value,Nat.mul(rows(environment),columns(environment)),view(environment),left(environment)) ==
+    writes(~Element,~Part,~value,Nat.mul(rows(environment),columns(environment)),view(environment),right(environment)) : List<&2,Writes.Assignment<Element>>}:
+  agreeing_rows(~Element,~Part,~value,~Environment,~view,~left,~right,~rows,~columns,~cell,environment,rows(environment),0n,{==})
+
 # The writes of a view of rows by columns elements contain the address of
 # each cell.
 def covered_plane(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,+rows: Nat,+columns: Nat,+row: Nat,+column: Nat,+view: Views.View,+part: Part,
@@ -377,85 +400,3 @@ def covered_plane(~Element: Data,~Part: Data,~value: @+part: Part -> @+position:
   covered(~Element,~Part,~value,Nat.mul(rows,columns),Nat.add(Nat.mul(row,columns),column),view,part,RowMajor.radix(row,rows,column,columns,row_inside,column_inside))
 
 # ---- Views at consecutive addresses ----
-
-# A view whose elements lie at consecutive addresses writes the consecutive
-# list.
-def on_line(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,count: Nat,+position: Nat,+view: Views.View,+part: Part,
-  +base: Nat,line: Copy.Line(view,base,count,position)) ->
-  {writes_from(~Element,~Part,~value,count,position,view,part) == Consecutive.writes(~Element,~Part,~value,count,base,position,part) : List<&2,Writes.Assignment<Element>>}:
-  match count:
-    case 0n: {==}
-    case 1n+ +rest:
-      Shape.Both{here,later} = line
-      +start = U32.from_nat(Nat.add(base,position))
-      %Equal.sym(U32,Copy.address(view,position),start,here) :
-        {Writes.Put{_,value(part,position)} <> writes_from(~Element,~Part,~value,rest,1n+position,view,part) ==
-          Writes.Put{start,value(part,position)} <> Consecutive.writes(~Element,~Part,~value,rest,base,1n+position,part) : List<&2,Writes.Assignment<Element>>}
-      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,tail => Writes.Put{start,value(part,position)} <> tail,
-        writes_from(~Element,~Part,~value,rest,1n+position,view,part),Consecutive.writes(~Element,~Part,~value,rest,base,1n+position,part),
-        on_line(~Element,~Part,~value,rest,1n+position,view,part,base,later))
-
-# The writes of a contiguous view at an address of the view store the
-# element there; before the view and after it the previous element stays.
-def contiguous_hit(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,+count: Nat,+axes: List<&2,Views.Axis>,+offset: U32,+part: Part,
-  +previous: Element,index: Nat,+length: U32,
-  +nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},+contiguous: {Views.is_contiguous(Views.View{axes,offset}) == True{} : Bool},
-  +exact: {ShapeLaws.elements(Views.axis_extents(axes)) == count : Nat},+inside: {Nat.is_lt(index,count) == True{} : Bool},
-  +bound: {Nat.is_le(Nat.add(U32.to_nat(offset),count),U32.to_nat(length)) == True{} : Bool}) ->
-  {Readback.selected(~Element,writes(~Element,~Part,~value,count,Views.View{axes,offset},part),U32.from_nat(Nat.add(U32.to_nat(offset),index)),previous) == value(part,index) : Element}:
-  +view = {Views.View{axes,offset} : Views.View}
-  %Equal.sym(List<&2,Writes.Assignment<Element>>,writes_from(~Element,~Part,~value,count,0n,view,part),Consecutive.writes(~Element,~Part,~value,count,U32.to_nat(offset),0n,part),
-    on_line(~Element,~Part,~value,count,0n,view,part,U32.to_nat(offset),Copy.contiguous_start(axes,offset,count,nonempty,contiguous,exact))) :
-    {Readback.selected(~Element,_,U32.from_nat(Nat.add(U32.to_nat(offset),index)),previous) == value(part,index) : Element}
-  Consecutive.hit(~Element,~Part,~value,count,U32.to_nat(offset),0n,part,previous,index,length,bound,inside)
-def contiguous_before(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,+count: Nat,+axes: List<&2,Views.Axis>,+offset: U32,+part: Part,
-  +previous: Element,+query: Nat,+length: U32,
-  +nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},+contiguous: {Views.is_contiguous(Views.View{axes,offset}) == True{} : Bool},
-  +exact: {ShapeLaws.elements(Views.axis_extents(axes)) == count : Nat},+before: {Nat.is_lt(query,U32.to_nat(offset)) == True{} : Bool},
-  +bound: {Nat.is_le(Nat.add(U32.to_nat(offset),count),U32.to_nat(length)) == True{} : Bool}) ->
-  {Readback.selected(~Element,writes(~Element,~Part,~value,count,Views.View{axes,offset},part),U32.from_nat(query),previous) == previous : Element}:
-  +view = {Views.View{axes,offset} : Views.View}
-  %Equal.sym(List<&2,Writes.Assignment<Element>>,writes_from(~Element,~Part,~value,count,0n,view,part),Consecutive.writes(~Element,~Part,~value,count,U32.to_nat(offset),0n,part),
-    on_line(~Element,~Part,~value,count,0n,view,part,U32.to_nat(offset),Copy.contiguous_start(axes,offset,count,nonempty,contiguous,exact))) :
-    {Readback.selected(~Element,_,U32.from_nat(query),previous) == previous : Element}
-  Consecutive.before(~Element,~Part,~value,count,U32.to_nat(offset),0n,part,previous,query,length,bound,
-    %Equal.sym(Nat,Nat.add(U32.to_nat(offset),0n),U32.to_nat(offset),Addition.zero_right(U32.to_nat(offset))) : {Nat.is_lt(query,_) == True{} : Bool} before)
-def contiguous_after(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,+count: Nat,+axes: List<&2,Views.Axis>,+offset: U32,+part: Part,
-  +previous: Element,+query: Nat,+length: U32,
-  +nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool},+contiguous: {Views.is_contiguous(Views.View{axes,offset}) == True{} : Bool},
-  +exact: {ShapeLaws.elements(Views.axis_extents(axes)) == count : Nat},+beyond: {Nat.is_le(Nat.add(U32.to_nat(offset),count),query) == True{} : Bool},
-  +query_inside: {Nat.is_lt(query,U32.to_nat(length)) == True{} : Bool}) ->
-  {Readback.selected(~Element,writes(~Element,~Part,~value,count,Views.View{axes,offset},part),U32.from_nat(query),previous) == previous : Element}:
-  +view = {Views.View{axes,offset} : Views.View}
-  %Equal.sym(List<&2,Writes.Assignment<Element>>,writes_from(~Element,~Part,~value,count,0n,view,part),Consecutive.writes(~Element,~Part,~value,count,U32.to_nat(offset),0n,part),
-    on_line(~Element,~Part,~value,count,0n,view,part,U32.to_nat(offset),Copy.contiguous_start(axes,offset,count,nonempty,contiguous,exact))) :
-    {Readback.selected(~Element,_,U32.from_nat(query),previous) == previous : Element}
-  Consecutive.after(~Element,~Part,~value,count,U32.to_nat(offset),0n,part,previous,query,length,beyond,query_inside)
-
-# Every write of a view that fits a length lies below a capacity of at least
-# that length.
-def inside_from(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,count: Nat,+position: Nat,+view: Views.View,+part: Part,+length: U32,+capacity: U32,
-  +fits: {Views.fits_nonempty(False{},view,length) == True{} : Bool},+room: {Nat.is_le(U32.to_nat(length),U32.to_nat(capacity)) == True{} : Bool}) ->
-  Readback.Inside(~Element,capacity,writes_from(~Element,~Part,~value,count,position,view,part)):
-  match count:
-    case 0n: Unit{}
-    case 1n+ +rest:
-      +address = Copy.address(view,position)
-      Shape.Both{
-        %Equal.sym(Bool,U32.is_lt(address,capacity),Nat.is_lt(U32.to_nat(address),U32.to_nat(capacity)),Comparison.lt(address,capacity)) : {_ == True{} : Bool}
-        Bounds.nat_trans(U32.to_nat(address),U32.to_nat(length),U32.to_nat(capacity),Copy.address_inside(view,position,length,fits),room),
-        inside_from(~Element,~Part,~value,rest,1n+position,view,part,length,capacity,fits,room)}
-
-# An axis of extent one adds nothing to the addresses of a view.
-def unit_axis(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,count: Nat,+position: Nat,+stride: U32,+axes: List<&2,Views.Axis>,+offset: U32,
-  +part: Part) ->
-  {writes_from(~Element,~Part,~value,count,position,Views.View{Views.Axis{1,stride} <> axes,offset},part) ==
-    writes_from(~Element,~Part,~value,count,position,Views.View{axes,offset},part) : List<&2,Writes.Assignment<Element>>}:
-  match count:
-    case 0n: {==}
-    case 1n+ +rest:
-      Equal.cong(List<&2,Writes.Assignment<Element>>,List<&2,Writes.Assignment<Element>>,
-        tail => Writes.Put{Copy.address(Views.View{axes,offset},position),value(part,position)} <> tail,
-        writes_from(~Element,~Part,~value,rest,1n+position,Views.View{Views.Axis{1,stride} <> axes,offset},part),
-        writes_from(~Element,~Part,~value,rest,1n+position,Views.View{axes,offset},part),
-        unit_axis(~Element,~Part,~value,rest,1n+position,stride,axes,offset,part))

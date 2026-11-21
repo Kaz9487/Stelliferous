@@ -17,6 +17,8 @@ import ./u32_comparison.bend as Comparison
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./contiguous_copy_readback.bend as Offsets
+import ./list_storage_readback.bend as ListRead
+import ./bounded_u32_arithmetic.bend as Arithmetic
 
 def output_tree(~Reader: Data,~Element: Data,result: AccessLaws.ModelResult<Reader,Element>) -> Tree.Tree<Element>:
   AccessLaws.ModelResult{reader,output} = result
@@ -164,6 +166,41 @@ def folded(~Reader: Data,~Element: Data,~Context: Data,~sample: Reader -> Contex
             Query{count,position,depth,capacity,reader,context},output) : Tree.Tree<Element>}
       folded(~Reader,~Element,~Context,~sample,~place,~identity,Query{count,position,depth,capacity,reader,context},rest,(start + 1 : U32),
         Tree.write(Element,output,start,sample(reader,context,start)))
+
+# The samples of positions first, first + 1, ... in order.
+type Sampled<-Reader: Data,-Context: Data> is Data:
+  Sampled{reader: Reader,context: Context}
+
+def sampled(~Reader: Data,~Element: Data,~Context: Data,~sample: Reader -> Context -> U32 -> Element,source: Sampled<Reader,Context>,position: Nat) -> Element:
+  Sampled{reader,context} = source
+  sample(reader,context,U32.from_nat(position))
+
+# A traversal that places position p at base + p writes its samples as one
+# sequence from base + first.
+def sequence(~Reader: Data,~Element: Data,~Context: Data,~sample: Reader -> Context -> U32 -> Element,~place: Context -> U32 -> U32,~base: Context -> U32,
+  ~affine: @+context: Context -> @+position: U32 -> {place(context,position) == (base(context) + position : U32) : U32},
+  count: Nat,+first: Nat,+context: Context,+reader: Reader,+output: Tree.Tree<Element>) ->
+  {run(~Reader,~Element,~Context,~sample,~place,count,U32.from_nat(first),context,reader,output) ==
+    Tree.write_sequence(~Element,ListRead.enumerate(~Element,~Sampled<Reader,Context>,~sampled(~Reader,~Element,~Context,~sample),count,first,Sampled{reader,context}),
+      (base(context) + U32.from_nat(first) : U32),output) : Tree.Tree<Element>}:
+  match count:
+    case 0n: {==}
+    case 1n+ +rest:
+      +position = U32.from_nat(first)
+      +start = base(context)
+      +value = sample(reader,context,position)
+      +written = Tree.write(Element,output,(start + position : U32),value)
+      +values = ListRead.enumerate(~Element,~Sampled<Reader,Context>,~sampled(~Reader,~Element,~Context,~sample),rest,1n+first,Sampled{reader,context})
+      %Equal.sym(U32,place(context,position),(start + position : U32),affine(context,position)) :
+        {run(~Reader,~Element,~Context,~sample,~place,rest,(position + 1 : U32),context,reader,Tree.write(Element,output,_,value)) ==
+          Tree.write_sequence(~Element,values,((start + position : U32) + 1 : U32),written) : Tree.Tree<Element>}
+      %Equal.sym(U32,(position + 1 : U32),U32.from_nat(1n+first),Bounds.increment_encoded(first)) :
+        {run(~Reader,~Element,~Context,~sample,~place,rest,_,context,reader,written) == Tree.write_sequence(~Element,values,((start + position : U32) + 1 : U32),written) : Tree.Tree<Element>}
+      %Equal.sym(U32,((start + position : U32) + 1 : U32),(start + (position + 1 : U32) : U32),Arithmetic.add_associative(start,position,1)) :
+        {run(~Reader,~Element,~Context,~sample,~place,rest,U32.from_nat(1n+first),context,reader,written) == Tree.write_sequence(~Element,values,_,written) : Tree.Tree<Element>}
+      %Equal.sym(U32,(position + 1 : U32),U32.from_nat(1n+first),Bounds.increment_encoded(first)) :
+        {run(~Reader,~Element,~Context,~sample,~place,rest,U32.from_nat(1n+first),context,reader,written) == Tree.write_sequence(~Element,values,(start + _ : U32),written) : Tree.Tree<Element>}
+      sequence(~Reader,~Element,~Context,~sample,~place,~base,~affine,rest,1n+first,context,reader,written)
 
 # Inside the written count, a position of the output holds its own sample.
 def stored(~Reader: Data,~Element: Data,~Context: Data,~sample: Reader -> Context -> U32 -> Element,~place: Context -> U32 -> U32,

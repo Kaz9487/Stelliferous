@@ -27,25 +27,12 @@ def observed_extents(result: Maybe<&2,Views.View>,fallback: List<&2,U32>) -> Lis
     case None{}: fallback
     case Some{Views.View{axes,offset}}: Views.axis_extents(axes)
 
-def observed_offset(result: Maybe<&2,Views.View>,fallback: U32) -> U32:
-  match result:
-    case None{}: fallback
-    case Some{Views.View{axes,offset}}: offset
-
 def built_shape(+reversed: List<&2,U32>,+stride: Maybe<&2,U32>,+axes: List<&2,Views.Axis>,+offset: U32) ->
   {observed_extents(Views.build_axes(reversed,stride,axes,offset),List.reverse.go(&2,U32,reversed,Views.axis_extents(axes))) ==
     List.reverse.go(&2,U32,reversed,Views.axis_extents(axes)) : List<&2,U32>}:
   match reversed stride:
     case Nil{} Some{value}: {==}
     case Con{size,tail} Some{value}: built_shape(tail,Shapes.checked_multiply(value,size),Views.Axis{size,value} <> axes,offset)
-    case Nil{} None{}: {==}
-    case Con{head,tail} None{}: {==}
-
-def built_offset(+reversed: List<&2,U32>,+stride: Maybe<&2,U32>,+axes: List<&2,Views.Axis>,+offset: U32) ->
-  {observed_offset(Views.build_axes(reversed,stride,axes,offset),offset) == offset : U32}:
-  match reversed stride:
-    case Nil{} Some{value}: {==}
-    case Con{size,tail} Some{value}: built_offset(tail,Shapes.checked_multiply(value,size),Views.Axis{size,value} <> axes,offset)
     case Nil{} None{}: {==}
     case Con{head,tail} None{}: {==}
 
@@ -62,13 +49,6 @@ def contiguous_shape(+extents: List<&2,U32>,+offset: U32) ->
   {observed_extents(Views.contiguous(Shapes.Shape{extents},offset),extents) == extents : List<&2,U32>}:
   contiguous_count_shape(Shapes.numel(Shapes.Shape{extents}),extents,offset)
 
-def contiguous_count_offset(+count: Maybe<&2,U32>,+extents: List<&2,U32>,+offset: U32) ->
-  {observed_offset(Views.contiguous_count(count,extents,offset),offset) == offset : U32}:
-  match count:
-    case None{}: {==}
-    case Some{+value}: built_offset(List.reverse(&2,U32,extents),Some{Bool.pick(U32,U32.is_zero(value),0,1)},Nil{},offset)
-
-# A view has as many extents as axes.
 def extents_length(+axes: List<&2,Views.Axis>) -> {List.length(&2,U32,Views.axis_extents(axes)) == List.length(&2,Views.Axis,axes) : Nat}:
   match axes:
     case []: {==}

@@ -1,10 +1,10 @@
 import Base
 import ../ordered_matrix.bend as OrderedMatrix
 import ./sequence_membership.bend as Members
-import ./storage_shape.bend as Shape
 import ./ordered_ranges.bend as Ranges
 import ./natural_addition.bend as Addition
 import ./traversal_array_refinement.bend as Traversals
+import ../kernel_gemm.bend as KernelGemm
 
 def shifted_key(first: Nat,index: Nat) -> Nat:
   Nat.add(first,index)
@@ -15,6 +15,17 @@ def map_keys(~Key: Data,~Mapped: Data,~Context: Data,~map: Context -> Key -> Map
   match keys:
     case Nil{}: []
     case key <> rest: map(context,key) <> map_keys(~Key,~Mapped,~Context,~map,rest,context)
+
+def mapped_cat(~Key: Data,~Mapped: Data,~Context: Data,~map: Context -> Key -> Mapped,left: List<&2,Key>,+right: List<&2,Key>,+context: Context) ->
+  {OrderedMatrix.cat(Mapped,map_keys(~Key,~Mapped,~Context,~map,left,context),map_keys(~Key,~Mapped,~Context,~map,right,context)) ==
+    map_keys(~Key,~Mapped,~Context,~map,OrderedMatrix.cat(Key,left,right),context) : List<&2,Mapped>}:
+  match left:
+    case Nil{}: {==}
+    case +key <> +rest:
+      Equal.cong(List<&2,Mapped>,List<&2,Mapped>,tail => map(context,key) <> tail,
+        OrderedMatrix.cat(Mapped,map_keys(~Key,~Mapped,~Context,~map,rest,context),map_keys(~Key,~Mapped,~Context,~map,right,context)),
+        map_keys(~Key,~Mapped,~Context,~map,OrderedMatrix.cat(Key,rest,right),context),
+        mapped_cat(~Key,~Mapped,~Context,~map,rest,right,context))
 
 def range_keys_shift(count: Nat,+position: Nat,+first: Nat) ->
   {map_keys(~Nat,~Nat,~Nat,~shifted_key,Ranges.range(count,position),first) == Ranges.range(count,Nat.add(first,position)) : List<&2,Nat>}:
@@ -28,17 +39,17 @@ def range_keys_shift(count: Nat,+position: Nat,+first: Nat) ->
 
 def mapped_sample(~Key: Data,~Mapped: Data,~Column: Data,~Source: Data,~Context: Data,
   ~map: Context -> Key -> Mapped,~input: Source -> Column -> Mapped -> F32,
-  combined: Shape.Both<Context,Source>,column: Column,key: Key) -> F32:
-  Shape.Both{context,source} = combined
+  combined: KernelGemm.Both<Context,Source>,column: Column,key: Key) -> F32:
+  KernelGemm.Both{context,source} = combined
   input(source,column,map(context,key))
 
 def dot_reindexed(~Key: Data,~Mapped: Data,~Row: Data,~Column: Data,~Source: Data,~Context: Data,
   ~map: Context -> Key -> Mapped,~input: Source -> Column -> Mapped -> F32,~weight: Source -> Row -> Mapped -> F32,
   +keys: List<&2,Key>,+context: Context,+row: Row,+column: Column,+source: Source,+initial: F32) ->
   {OrderedMatrix.dot(~Row,~Mapped,~Column,~Source,~input,~weight,map_keys(~Key,~Mapped,~Context,~map,keys,context),row,column,source,initial) ==
-    OrderedMatrix.dot(~Row,~Key,~Column,~Shape.Both<Context,Source>,
+    OrderedMatrix.dot(~Row,~Key,~Column,~KernelGemm.Both<Context,Source>,
       ~mapped_sample(~Key,~Mapped,~Column,~Source,~Context,~map,~input),
-      ~mapped_sample(~Key,~Mapped,~Row,~Source,~Context,~map,~weight),keys,row,column,Shape.Both{context,source},initial) : F32}:
+      ~mapped_sample(~Key,~Mapped,~Row,~Source,~Context,~map,~weight),keys,row,column,KernelGemm.Both{context,source},initial) : F32}:
   match keys:
     case Nil{}: {==}
     case +key <> +rest:
@@ -53,7 +64,7 @@ def MatchingSamples(~Key: Data,~LeftRow: Data,~LeftColumn: Data,~LeftSource: Dat
   ~right_input: RightSource -> RightColumn -> Key -> F32,~right_weight: RightSource -> RightRow -> Key -> F32,
   keys: List<&2,Key>,+left_row: LeftRow,+left_column: LeftColumn,+left_source: LeftSource,
   +right_row: RightRow,+right_column: RightColumn,+right_source: RightSource) -> Data:
-  Members.All(Key,{key => Shape.Both<
+  Members.All(Key,{key => KernelGemm.Both<
     {left_input(left_source,left_column,key) == right_input(right_source,right_column,key) : F32},
     {left_weight(left_source,left_row,key) == right_weight(right_source,right_row,key) : F32}> : Key -> Data},keys)
 
@@ -69,8 +80,8 @@ def dot_congruence(~Key: Data,~LeftRow: Data,~LeftColumn: Data,~LeftSource: Data
   match keys:
     case Nil{}: {==}
     case +key <> +rest:
-      Shape.Both{head,tail} = agreements
-      Shape.Both{same_input,same_weight} = head
+      KernelGemm.Both{head,tail} = agreements
+      KernelGemm.Both{same_input,same_weight} = head
       %Equal.sym(F32,left_input(left_source,left_column,key),right_input(right_source,right_column,key),same_input) :
         {OrderedMatrix.dot(~LeftRow,~Key,~LeftColumn,~LeftSource,~left_input,~left_weight,rest,left_row,left_column,left_source,
           (initial + _ * left_weight(left_source,left_row,key) : F32)) ==
@@ -140,20 +151,3 @@ def row_split(~R: Data,~K: Data,~C: Data,~P: Data,~x: P -> C -> K -> F32,~w: P -
           OrderedMatrix.matmul(~R,~K,~C,~P,~x,~w,~bias,OrderedMatrix.cat(R,tail,b),ks,cs,p)) == OrderedMatrix.cat(F32,OrderedMatrix.row(~R,~K,~C,
             ~P,~x,~w,~bias,cs,ks,r,p),_) : List<&2,F32>}
       {==}
-
-# A finite leaf agreement lifts through the existing ordered dot and List fold.
-# The premise is required only at keys visited by this reduction.
-def dot_fold_agrees(~Key: Data,~Row: Data,~Column: Data,~Source: Data,~Context: Data,
-  ~input: Source -> Column -> Key -> F32,~weight: Source -> Row -> Key -> F32,
-  ~term: Context -> Key -> F32,+keys: List<&2,Key>,+row: Row,+column: Column,+source: Source,+context: Context,+initial: F32,
-  matches: Members.All(Key,{key => {(input(source,column,key) * weight(source,row,key) : F32) == term(context,key) : F32} : Key -> Data},keys)) ->
-  {OrderedMatrix.dot(~Row,~Key,~Column,~Source,~input,~weight,keys,row,column,source,initial) ==
-    List.foldl(~&2,~F32,~F32,~F32.add,Traversals.collect_values_context(~&2,~F32,~Key,~Context,~term,keys,context),initial) : F32}:
-  match keys:
-    case Nil{}: {==}
-    case +key <> +rest:
-      Shape.Both{head,tail} = matches
-      %Equal.sym(F32,(input(source,column,key) * weight(source,row,key) : F32),term(context,key),head) :
-        {OrderedMatrix.dot(~Row,~Key,~Column,~Source,~input,~weight,rest,row,column,source,(initial + _ : F32)) ==
-          List.foldl(~&2,~F32,~F32,~F32.add,Traversals.collect_values_context(~&2,~F32,~Key,~Context,~term,rest,context),(initial + term(context,key) : F32)) : F32}
-      dot_fold_agrees(~Key,~Row,~Column,~Source,~Context,~input,~weight,~term,rest,row,column,source,context,(initial + term(context,key) : F32),tail)

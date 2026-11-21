@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 OUT = ROOT / 'out/results/math_accuracy'
 BUILD = ROOT / 'out/build/math_accuracy'
 SOURCE = ROOT / 'out/checks/math_accuracy.bend'
-ACTIVATIONS = ['identity', 'relu', 'relu6', 'leaky_relu', 'hard_sigmoid', 'hard_swish', 'sigmoid', 'tanh', 'silu', 'gelu_tanh']
-FUNCTIONS = ['sigmoid', 'silu', 'tanh', 'gelu_tanh', 'exp', 'log'] + [name + '_derivative' for name in ACTIVATIONS]
+ACTIVATIONS = ['identity', 'relu', 'relu6', 'leaky_relu', 'hard_sigmoid', 'hard_swish', 'sigmoid', 'tanh', 'silu', 'gelu_tanh', 'gelu']
+FUNCTIONS = ['sigmoid', 'silu', 'tanh', 'gelu_tanh', 'gelu', 'exp', 'log'] + [name + '_derivative' for name in ACTIVATIONS]
 
 
 def call(name, tensor):
@@ -74,7 +74,7 @@ def measure(block, bits, names):
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     subprocess.run([compare, 'input', str(base), str(count), 'input.bin'], cwd=work, check=True)
-    subprocess.run([str(BUILD / 'functions'), '--threads', '1', '--gpu', 'off'], cwd=work, check=True,
+    subprocess.run([str(BUILD / 'functions'), '+RTS', '--threads', '1', '--gpu', 'off', '-RTS'], cwd=work, check=True,
                    capture_output=True)
     path = OUT / 'blocks' / f'{bits}_{block:05d}.json'
     kept = json.loads(path.read_text()) if path.is_file() else []
@@ -149,7 +149,7 @@ def sample(count, seed, names, region, magnitude_bounds=(), sample_blocks=(), bl
     work = OUT / 'sample_work'
     work.mkdir(parents=True, exist_ok=True)
     (work / 'input.bin').write_bytes(struct.pack(f'<{count}I', *words))
-    subprocess.run([str(BUILD / 'functions'), '--threads', '1', '--gpu', 'off'],
+    subprocess.run([str(BUILD / 'functions'), '+RTS', '--threads', '1', '--gpu', 'off', '-RTS'],
                    cwd=work, check=True, capture_output=True)
     rows = []
     for name in names:

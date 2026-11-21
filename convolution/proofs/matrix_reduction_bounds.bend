@@ -1,4 +1,3 @@
-import ../../lib/proofs/storage_shape.bend as Shape
 # Every key in the actual frozen K-axis enumeration is in its rectangular bounds.
 import Base
 import ../specification.bend as ConvSpec
@@ -7,10 +6,11 @@ import ../../lib/ordered_matrix.bend as OrderedMatrix
 import ./convolution_guard_facts.bend as Guards
 import ../../lib/proofs/nat_order.bend as Order
 import ../../lib/proofs/sequence_membership.bend as Members
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def IndexBounds(+p: ConvSpec.Problem,index: MatrixSpec.Reduction) -> Data:
   MatrixSpec.KIndex{input_channel_index,kernel_row_index,kernel_column_index} = index
-  Shape.Both<{Nat.is_lt(input_channel_index,Guards.input_channel_count(p)) == True{} : Bool},Shape.Both<{Nat.is_lt(kernel_row_index,Guards.kernel(p)) == True{} : Bool},{Nat.is_lt(kernel_column_index,
+  KernelGemm.Both<{Nat.is_lt(input_channel_index,Guards.input_channel_count(p)) == True{} : Bool},KernelGemm.Both<{Nat.is_lt(kernel_row_index,Guards.kernel(p)) == True{} : Bool},{Nat.is_lt(kernel_column_index,
       Guards.kernel(p)) == True{} : Bool}>>
 
 def AllBounds(+p: ConvSpec.Problem,indices: List<&2,MatrixSpec.Reduction>) -> Data:
@@ -27,7 +27,7 @@ def column_bounds(+p: ConvSpec.Problem,+count: Nat,+kernel_column_index: Nat,+ke
     case 0n:
       Unit{}
     case 1n+ +rest:
-      Shape.Both{Shape.Both{input_channel_in_bounds,Shape.Both{kernel_row_in_bounds,Order.room_index(kernel_column_index,rest,Guards.kernel(p),room)}},column_bounds(p,rest,1n+kernel_column_index,kernel_row_index,input_channel_index,
+      KernelGemm.Both{KernelGemm.Both{input_channel_in_bounds,KernelGemm.Both{kernel_row_in_bounds,Order.room_index(kernel_column_index,rest,Guards.kernel(p),room)}},column_bounds(p,rest,1n+kernel_column_index,kernel_row_index,input_channel_index,
           input_channel_in_bounds,kernel_row_in_bounds,Order.advance_room(kernel_column_index,rest,Guards.kernel(p),room))}
 
 def row_bounds(+p: ConvSpec.Problem,+count: Nat,+kernel_row_index: Nat,+input_channel_index: Nat,+input_channel_in_bounds: {Nat.is_lt(input_channel_index,Guards.input_channel_count(p)) == True{} : Bool},

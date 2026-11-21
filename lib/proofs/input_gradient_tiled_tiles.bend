@@ -1,11 +1,11 @@
 # Readback of the actual contiguous shift fill, with the original source owner.
 import Base
-import ../kernel_input_gradient.bend as Kernel
+import ../kernel_input_gradient_fill.bend as Kernel
 import ../kernel_tile.bend as Tile
 import ../kernel_spatial_packing.bend as Spatial
 import ../traversal_array.bend as Traversal
 import ../traversal_loop.bend as Loop
-import ./input_gradient_tiled_refinement.bend as Execution
+import ./kernel_input_gradient_fill_refinement.bend as Execution
 import ./storage_tree_model.bend as Tree
 import ./kernel_spatial_packing_samples.bend as Samples
 import ./traversal_array_refinement.bend as Arrays
@@ -19,57 +19,76 @@ import ./storage_shape.bend as Shape
 import ./indexed_output_readback.bend as OutputReadback
 import ./natural_addition.bend as Addition
 import ./u32_comparison.bend as Comparison
-import ./loop_projection.bend as Projection
+import ./word_multiplication.bend as WordMultiplication
 
 type Shift is Data:
-  Shift{input: Tree.Tree<F32>,destination: U32,row: U32,column: U32,first: U32,base: U32,plane: U32,height: U32,width: U32,shifts: Nat}
+  Shift{input: Tree.Tree<Tile.Tile8>,destination: U32,row: U32,column: U32,first: U32,base: U32,groups: U32,height: U32,width: U32,shifts: Nat,channel: U32}
+
+def shift_input(context: Shift) -> Tree.Tree<Tile.Tile8>:
+  Shift{input,destination,row,column,first,base,groups,height,width,shifts,channel} = context
+  input
+
+def shift_block(context: Shift,position: U32) -> Spatial.PixelBlock:
+  Shift{input,destination,row,column,first,base,groups,height,width,shifts,channel} = context
+  Spatial.PixelBlock{row,(column + position : U32),(base + channel / 8 : U32),height,width,1,groups}
+
+def field_sample(~field: Tile.Tile8 -> F32,+context: Shift,position: U32) -> Tile.Tile8:
+  Samples.pure_vector(~Tile.Tile8,~field,shift_input(context),shift_block(context,position))
+
+type Selection is Data:
+  Selection{half: Bool,low: Bool,first: Bool}
+
+def selection(context: Shift) -> Selection:
+  Shift{input,destination,row,column,first,base,groups,height,width,shifts,channel} = context
+  +lane = (channel % 8 : U32)
+  Selection{U32.is_lt(lane,4),U32.is_lt((lane % 4 : U32),2),U32.is_zero((lane % 2 : U32))}
+
+def selected_vector(selection: Selection,input: Tree.Tree<Tile.Tile8>,context: Spatial.PixelBlock) -> Tile.Tile8:
+  match selection:
+    case Selection{True{},True{},True{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane0,input,context)
+    case Selection{True{},True{},False{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane1,input,context)
+    case Selection{True{},False{},True{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane2,input,context)
+    case Selection{True{},False{},False{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane3,input,context)
+    case Selection{False{},True{},True{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane4,input,context)
+    case Selection{False{},True{},False{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane5,input,context)
+    case Selection{False{},False{},True{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane6,input,context)
+    case Selection{False{},False{},False{}}: Samples.pure_vector(~Tile.Tile8,~Tile.lane7,input,context)
+
+def selected_sample(selection: Selection,+context: Shift,position: U32) -> Tile.Tile8:
+  selected_vector(selection,shift_input(context),shift_block(context,position))
 
 def sample(context: Shift,position: U32) -> Tile.Tile8:
-  Shift{input,destination,row,column,first,base,plane,height,width,shifts} = context
-  Samples.pure_vector(input,Spatial.PixelBlock{row,(column + position : U32),base,height,width,1})
+  +context = context
+  selected_sample(selection(context),context,position)
+
+def field_update(~field: Tile.Tile8 -> F32,position: U32,context: Shift,tiles: Tree.Tree<Tile.Tile8>) -> Tree.Tree<Tile.Tile8>:
+  Shift{input,+destination,row,column,first,base,groups,height,width,shifts,channel} = context
+  +position = position
+  Tree.write(Tile.Tile8,tiles,(destination + position : U32),field_sample(~field,context,position))
 
 def update(position: U32,context: Shift,tiles: Tree.Tree<Tile.Tile8>) -> Tree.Tree<Tile.Tile8>:
-  Shift{input,+destination,row,column,first,base,plane,height,width,shifts} = context
+  Shift{input,+destination,row,column,first,base,groups,height,width,shifts,channel} = context
   +position = position
   Tree.write(Tile.Tile8,tiles,(destination + position : U32),sample(context,position))
 
 def represent(context: Shift,position: U32,tiles: Tree.Tree<Tile.Tile8>) -> Execution.Fill:
-  Shift{input,destination,row,column,first,base,plane,height,width,shifts} = context
+  Shift{input,destination,row,column,first,base,groups,height,width,shifts,channel} = context
   +position = position
-  Execution.Fill{input,tiles,(destination + position : U32),row,(column + position : U32),first,base,plane,height,width,shifts}
+  Execution.Fill{input,tiles,(destination + position : U32),row,(column + position : U32),first,base,groups,height,width,shifts,channel}
 
-def step_matches(+context: Shift,+position: U32,+tiles: Tree.Tree<Tile.Tile8>) ->
-  {Execution.fill_shift(represent(context,position,tiles)) == represent(context,(position + 1 : U32),update(position,context,tiles)) : Execution.Fill}:
-  Shift{input,+destination,row,+column,first,base,plane,height,width,shifts} = context
+def step_matches(~field: Tile.Tile8 -> F32,+context: Shift,+position: U32,+tiles: Tree.Tree<Tile.Tile8>) ->
+  {Execution.fill_shift(~field,represent(context,position,tiles)) == represent(context,(position + 1 : U32),field_update(~field,position,context,tiles)) : Execution.Fill}:
+  Shift{input,+destination,row,+column,first,base,groups,height,width,shifts,channel} = context
   %Equal.sym(U32,((destination + position : U32) + 1 : U32),(destination + (position + 1 : U32) : U32),Arithmetic.add_associative(destination,position,1)) :
-    {Execution.Fill{input,update(position,context,tiles),_,row,((column + position : U32) + 1 : U32),first,base,plane,height,width,shifts} ==
-      represent(context,(position + 1 : U32),update(position,context,tiles)) : Execution.Fill}
+    {Execution.Fill{input,field_update(~field,position,context,tiles),_,row,((column + position : U32) + 1 : U32),first,base,groups,height,width,shifts,channel} ==
+      represent(context,(position + 1 : U32),field_update(~field,position,context,tiles)) : Execution.Fill}
   %Equal.sym(U32,((column + position : U32) + 1 : U32),(column + (position + 1 : U32) : U32),Arithmetic.add_associative(column,position,1)) :
-    {Execution.Fill{input,update(position,context,tiles),(destination + (position + 1 : U32) : U32),row,_,first,base,plane,height,width,shifts} ==
-      represent(context,(position + 1 : U32),update(position,context,tiles)) : Execution.Fill}
+    {Execution.Fill{input,field_update(~field,position,context,tiles),(destination + (position + 1 : U32) : U32),row,_,first,base,groups,height,width,shifts,channel} ==
+      represent(context,(position + 1 : U32),field_update(~field,position,context,tiles)) : Execution.Fill}
   {==}
-
-def tiles(state: Execution.Fill) -> Tree.Tree<Tile.Tile8>:
-  Execution.Fill{input,tiles,index,row,column,first,base,plane,height,width,shifts} = state
-  tiles
-
-def tiles_represent(+context: Shift,+position: U32,+output: Tree.Tree<Tile.Tile8>) ->
-  {tiles(represent(context,position,output)) == output : Tree.Tree<Tile.Tile8>}:
-  Shift{input,destination,row,column,first,base,plane,height,width,shifts} = context
-  {==}
-
-def filled(+count: Nat,+context: Shift,+output: Tree.Tree<Tile.Tile8>) ->
-  {tiles(Loop.run(~Execution.Fill,~Execution.fill_shift,count,represent(context,0,output))) ==
-    Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,count,0,context,output) : Tree.Tree<Tile.Tile8>}:
-  +written = Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,count,0,context,output)
-  %Equal.sym(Execution.Fill,Loop.run(~Execution.Fill,~Execution.fill_shift,count,represent(context,0,output)),
-    represent(context,(0 + U32.from_nat(count) : U32),written),
-    Arrays.indexed_loop(~Execution.Fill,~Tree.Tree<Tile.Tile8>,~Shift,~Execution.fill_shift,~update,~represent,~step_matches,count,0,context,output)) :
-    {tiles(_) == written : Tree.Tree<Tile.Tile8>}
-  tiles_represent(context,(0 + U32.from_nat(count) : U32),written)
 
 def destination(context: Shift) -> U32:
-  Shift{input,destination,row,column,first,base,plane,height,width,shifts} = context
+  Shift{input,destination,row,column,first,base,groups,height,width,shifts,channel} = context
   destination
 
 type Query is Data:
@@ -93,16 +112,13 @@ def same_step(+position: U32,+query: Query,+output: Tree.Tree<Tile.Tile8>) ->
 def affine_step_matches(+position: U32,+query: Query,+output: Tree.Tree<Tile.Tile8>) ->
   {queried(position,query,output) == Indexed.affine_update(~Tile.Tile8,~Shift,~sample,position,affine(query),output) : Tree.Tree<Tile.Tile8>}:
   Query{context,count,index,depth,capacity} = query
-  Shift{input,destination,row,column,first,base,plane,height,width,shifts} = context
+  Shift{input,destination,row,column,first,base,groups,height,width,shifts,channel} = context
   {==}
 
 def readback(+query: Query,+output: Tree.Tree<Tile.Tile8>,evidence: Indexed.AffineFrame<Tile.Tile8,Shift,affine(query),output>) ->
-  {Tree.read(Tile.Tile8,tiles(Loop.run(~Execution.Fill,~Execution.fill_shift,Indexed.affine_count(~Shift,affine(query)),represent(shift(query),0,output))),
+  {Tree.read(Tile.Tile8,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,Indexed.affine_count(~Shift,affine(query)),0,shift(query),output),
     Indexed.affine_address(~Shift,affine(query))) == Indexed.affine_wanted(~Tile.Tile8,~Shift,~sample,affine(query)) : Tile.Tile8}:
   Query{context,count,index,depth,capacity} = query
-  %Equal.sym(Tree.Tree<Tile.Tile8>,tiles(Loop.run(~Execution.Fill,~Execution.fill_shift,count,represent(context,0,output))),
-    Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,count,0,context,output),filled(count,context,output)) :
-    {Tree.read(Tile.Tile8,_,Indexed.affine_address(~Shift,affine(query))) == Indexed.affine_wanted(~Tile.Tile8,~Shift,~sample,affine(query)) : Tile.Tile8}
   %Arrays.indexed_fold_change_context(~Tree.Tree<Tile.Tile8>,~Query,~Shift,~shift,~queried,~update,~same_step,count,0,query,output) :
     {Tree.read(Tile.Tile8,_,Indexed.affine_address(~Shift,affine(query))) == Indexed.affine_wanted(~Tile.Tile8,~Shift,~sample,affine(query)) : Tile.Tile8}
   %Equal.sym(Tree.Tree<Tile.Tile8>,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Query,~queried,count,0,query,output),
@@ -112,66 +128,99 @@ def readback(+query: Query,+output: Tree.Tree<Tile.Tile8>,evidence: Indexed.Affi
   Indexed.affine_readback(~Tile.Tile8,~Shift,~sample,affine(query),output,evidence)
 
 type Channels is Data:
-  Channels{input: Tree.Tree<F32>,destination: U32,row: U32,column: U32,base: U32,plane: U32,height: U32,width: U32,shifts: U32}
+  Channels{input: Tree.Tree<Tile.Tile8>,destination: U32,row: U32,column: U32,base: U32,groups: U32,height: U32,width: U32,shifts: U32}
 
 def channel_shift(context: Channels,channel: U32) -> Shift:
-  Channels{input,destination,row,+column,base,+plane,height,width,+shifts} = context
+  Channels{input,destination,row,+column,base,+groups,height,width,+shifts} = context
   +channel = channel
-  Shift{input,(destination + channel * shifts : U32),row,column,column,(base + channel * plane : U32),plane,height,width,U32.to_nat(shifts)}
+  Shift{input,(destination + channel * shifts : U32),row,column,column,base,groups,height,width,U32.to_nat(shifts),channel}
 
 def channel_represent(context: Channels,channel: U32,output: Tree.Tree<Tile.Tile8>) -> Execution.Fill:
-  Channels{input,destination,row,+column,base,+plane,height,width,+shifts} = context
+  Channels{input,destination,row,+column,base,+groups,height,width,+shifts} = context
   +channel = channel
-  Execution.Fill{input,output,(destination + channel * shifts : U32),row,column,column,(base + channel * plane : U32),plane,height,width,U32.to_nat(shifts)}
+  Execution.Fill{input,output,(destination + channel * shifts : U32),row,column,column,base,groups,height,width,U32.to_nat(shifts),channel}
 
 def channel_update(channel: U32,context: Channels,output: Tree.Tree<Tile.Tile8>) -> Tree.Tree<Tile.Tile8>:
-  Channels{input,destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,destination,row,column,base,groups,height,width,+shifts} = context
   Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,U32.to_nat(shifts),0,channel_shift(context,channel),output)
 
 def channel_initial(+context: Channels,+channel: U32,+output: Tree.Tree<Tile.Tile8>) ->
   {represent(channel_shift(context,channel),0,output) == channel_represent(context,channel,output) : Execution.Fill}:
-  Channels{input,+destination,row,+column,base,plane,height,width,+shifts} = context
+  Channels{input,+destination,row,+column,base,groups,height,width,+shifts} = context
   %Equal.sym(U32,((destination + channel * shifts : U32) + 0 : U32),(destination + channel * shifts : U32),Arithmetic.add_zero((destination + channel * shifts : U32))) :
-    {Execution.Fill{input,output,_,row,(column + 0 : U32),column,(base + channel * plane : U32),plane,height,width,U32.to_nat(shifts)} == channel_represent(context,channel,output) : Execution.Fill}
+    {Execution.Fill{input,output,_,row,(column + 0 : U32),column,base,groups,height,width,U32.to_nat(shifts),channel} == channel_represent(context,channel,output) : Execution.Fill}
   %Equal.sym(U32,(column + 0 : U32),column,Arithmetic.add_zero(column)) :
-    {Execution.Fill{input,output,(destination + channel * shifts : U32),row,_,column,(base + channel * plane : U32),plane,height,width,U32.to_nat(shifts)} == channel_represent(context,channel,output) : Execution.Fill}
+    {Execution.Fill{input,output,(destination + channel * shifts : U32),row,_,column,base,groups,height,width,U32.to_nat(shifts),channel} == channel_represent(context,channel,output) : Execution.Fill}
   {==}
 
-def channel_step_matches(+context: Channels,+channel: U32,+output: Tree.Tree<Tile.Tile8>) ->
-  {Execution.fill_channel(channel_represent(context,channel,output)) == channel_represent(context,(channel + 1 : U32),channel_update(channel,context,output)) : Execution.Fill}:
-  Channels{+input,+destination,+row,+column,+base,+plane,+height,+width,+shifts} = context
+def same_context(context: Shift) -> Shift:
+  context
+
+def selected_field(~choice: Selection,context: Shift) -> Data:
+  {selection(context) == choice : Selection}
+
+def field_step(~field: Tile.Tile8 -> F32,~choice: Selection,
+  ~agrees: @+context: Shift -> @+position: U32 -> {selected_sample(choice,context,position) == field_sample(~field,context,position) : Tile.Tile8},
+  +position: U32,+context: Shift,+output: Tree.Tree<Tile.Tile8>,equation: selected_field(~choice,context)) ->
+  {update(position,context,output) == field_update(~field,position,same_context(context),output) : Tree.Tree<Tile.Tile8>}:
+  Shift{input,+destination,row,column,first,base,groups,height,width,shifts,channel} = context
+  Equal.cong(Tile.Tile8,Tree.Tree<Tile.Tile8>,value => Tree.write(Tile.Tile8,output,(destination + position : U32),value),
+    sample(context,position),field_sample(~field,context,position),
+    %Equal.sym(Selection,selection(context),choice,equation) : {selected_sample(_,context,position) == field_sample(~field,context,position) : Tile.Tile8}
+    agrees(context,position))
+
+def field_channel_step(~field: Tile.Tile8 -> F32,~choice: Selection,
+  ~agrees: @+context: Shift -> @+position: U32 -> {selected_sample(choice,context,position) == field_sample(~field,context,position) : Tile.Tile8},
+  +context: Channels,+channel: U32,+output: Tree.Tree<Tile.Tile8>,equation: selected_field(~choice,channel_shift(context,channel))) ->
+  {Execution.fill_lane(~field,channel_represent(context,channel,output)) == channel_represent(context,(channel + 1 : U32),channel_update(channel,context,output)) : Execution.Fill}:
+  Channels{+input,+destination,+row,+column,+base,+groups,+height,+width,+shifts} = context
   +shift = channel_shift(context,channel)
-  +written = channel_update(channel,context,output)
+  +written = Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~field_update(~field),U32.to_nat(shifts),0,shift,output)
+  %Equal.sym(Tree.Tree<Tile.Tile8>,channel_update(channel,context,output),written,
+    Arrays.indexed_fold_change_context_under(~Tree.Tree<Tile.Tile8>,~Shift,~Shift,~same_context,~selected_field(~choice),
+      ~update,~field_update(~field),~field_step(~field,~choice,~agrees),U32.to_nat(shifts),0,shift,output,equation)) :
+    {Execution.fill_lane(~field,channel_represent(context,channel,output)) == channel_represent(context,(channel + 1 : U32),_) : Execution.Fill}
   %channel_initial(context,channel,output) :
-    {Execution.next_channel(Loop.run(~Execution.Fill,~Execution.fill_shift,U32.to_nat(shifts),_)) == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
-  %Equal.sym(Execution.Fill,Loop.run(~Execution.Fill,~Execution.fill_shift,U32.to_nat(shifts),represent(shift,0,output)),
+    {Execution.next_channel(Loop.run(~Execution.Fill,~Execution.fill_shift(~field),U32.to_nat(shifts),_)) == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
+  %Equal.sym(Execution.Fill,Loop.run(~Execution.Fill,~Execution.fill_shift(~field),U32.to_nat(shifts),represent(shift,0,output)),
     represent(shift,(0 + U32.from_nat(U32.to_nat(shifts)) : U32),written),
-    Arrays.indexed_loop(~Execution.Fill,~Tree.Tree<Tile.Tile8>,~Shift,~Execution.fill_shift,~update,~represent,~step_matches,U32.to_nat(shifts),0,shift,output)) :
+    Arrays.indexed_loop(~Execution.Fill,~Tree.Tree<Tile.Tile8>,~Shift,~Execution.fill_shift(~field),~field_update(~field),~represent,~step_matches(~field),U32.to_nat(shifts),0,shift,output)) :
     {Execution.next_channel(_) == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
   %Equal.sym(U32,U32.from_nat(U32.to_nat(shifts)),shifts,Arithmetic.native_roundtrip(shifts)) :
     {Execution.next_channel(represent(shift,(0 + _ : U32),written)) == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
   %Equal.sym(U32,(0 + shifts : U32),shifts,Arithmetic.add_zero_left(shifts)) :
     {Execution.next_channel(represent(shift,_,written)) == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
   %Equal.sym(U32,((destination + channel * shifts : U32) + shifts : U32),(destination + (channel * shifts + shifts : U32) : U32),Arithmetic.add_associative(destination,(channel * shifts : U32),shifts)) :
-    {Execution.Fill{input,written,_,row,column,column,((base + channel * plane : U32) + plane : U32),plane,height,width,U32.to_nat(shifts)} == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
+    {Execution.Fill{input,written,_,row,column,column,base,groups,height,width,U32.to_nat(shifts),(channel + 1 : U32)} == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
   %Arithmetic.multiply_successor(channel,shifts) :
-    {Execution.Fill{input,written,(destination + _ : U32),row,column,column,((base + channel * plane : U32) + plane : U32),plane,height,width,U32.to_nat(shifts)} == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
-  %Equal.sym(U32,((base + channel * plane : U32) + plane : U32),(base + (channel * plane + plane : U32) : U32),Arithmetic.add_associative(base,(channel * plane : U32),plane)) :
-    {Execution.Fill{input,written,(destination + (channel + 1) * shifts : U32),row,column,column,_,plane,height,width,U32.to_nat(shifts)} == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
-  %Arithmetic.multiply_successor(channel,plane) :
-    {Execution.Fill{input,written,(destination + (channel + 1) * shifts : U32),row,column,column,(base + _ : U32),plane,height,width,U32.to_nat(shifts)} == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
+    {Execution.Fill{input,written,(destination + _ : U32),row,column,column,base,groups,height,width,U32.to_nat(shifts),(channel + 1 : U32)} == channel_represent(context,(channel + 1 : U32),written) : Execution.Fill}
   {==}
 
+def selected_channel_step(half: Bool,low: Bool,first: Bool,+context: Channels,+channel: U32,+output: Tree.Tree<Tile.Tile8>,
+  equation: {selection(channel_shift(context,channel)) == Selection{half,low,first} : Selection}) ->
+  {Execution.fill_selected(half,low,first,channel_represent(context,channel,output)) == channel_represent(context,(channel + 1 : U32),channel_update(channel,context,output)) : Execution.Fill}:
+  match half low first:
+    case True{} True{} True{}: field_channel_step(~Tile.lane0,~Selection{True{},True{},True{}},~(context => position => {==}),context,channel,output,equation)
+    case True{} True{} False{}: field_channel_step(~Tile.lane1,~Selection{True{},True{},False{}},~(context => position => {==}),context,channel,output,equation)
+    case True{} False{} True{}: field_channel_step(~Tile.lane2,~Selection{True{},False{},True{}},~(context => position => {==}),context,channel,output,equation)
+    case True{} False{} False{}: field_channel_step(~Tile.lane3,~Selection{True{},False{},False{}},~(context => position => {==}),context,channel,output,equation)
+    case False{} True{} True{}: field_channel_step(~Tile.lane4,~Selection{False{},True{},True{}},~(context => position => {==}),context,channel,output,equation)
+    case False{} True{} False{}: field_channel_step(~Tile.lane5,~Selection{False{},True{},False{}},~(context => position => {==}),context,channel,output,equation)
+    case False{} False{} True{}: field_channel_step(~Tile.lane6,~Selection{False{},False{},True{}},~(context => position => {==}),context,channel,output,equation)
+    case False{} False{} False{}: field_channel_step(~Tile.lane7,~Selection{False{},False{},False{}},~(context => position => {==}),context,channel,output,equation)
+
+def channel_step_matches(+context: Channels,+channel: U32,+output: Tree.Tree<Tile.Tile8>) ->
+  {Execution.fill_channel(channel_represent(context,channel,output)) == channel_represent(context,(channel + 1 : U32),channel_update(channel,context,output)) : Execution.Fill}:
+  Channels{input,destination,row,column,base,groups,height,width,shifts} = context
+  +lane = (channel % 8 : U32)
+  selected_channel_step(U32.is_lt(lane,4),U32.is_lt((lane % 4 : U32),2),U32.is_zero((lane % 2 : U32)),context,channel,output,{==})
 def read_before(+query: Query,+address: U32,+output: Tree.Tree<Tile.Tile8>,
   frame: Indexed.AffineFrame<Tile.Tile8,Shift,affine(query),output>,
   before: {Nat.is_lt(U32.to_nat(address),U32.to_nat(Indexed.affine_base(~Shift,affine(query)))) == True{} : Bool},
   inside: {U32.is_lt(address,Indexed.affine_capacity(~Shift,affine(query))) == True{} : Bool}) ->
-  {Tree.read(Tile.Tile8,tiles(Loop.run(~Execution.Fill,~Execution.fill_shift,Indexed.affine_count(~Shift,affine(query)),represent(shift(query),0,output))),address) ==
+  {Tree.read(Tile.Tile8,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,Indexed.affine_count(~Shift,affine(query)),0,shift(query),output),address) ==
     Tree.read(Tile.Tile8,output,address) : Tile.Tile8}:
   Query{context,count,index,depth,capacity} = query
-  %Equal.sym(Tree.Tree<Tile.Tile8>,tiles(Loop.run(~Execution.Fill,~Execution.fill_shift,count,represent(context,0,output))),
-    Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,count,0,context,output),filled(count,context,output)) :
-    {Tree.read(Tile.Tile8,_,address) == Tree.read(Tile.Tile8,output,address) : Tile.Tile8}
   %Arrays.indexed_fold_change_context(~Tree.Tree<Tile.Tile8>,~Query,~Shift,~shift,~queried,~update,~same_step,count,0,query,output) :
     {Tree.read(Tile.Tile8,_,address) == Tree.read(Tile.Tile8,output,address) : Tile.Tile8}
   %Equal.sym(Tree.Tree<Tile.Tile8>,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Query,~queried,count,0,query,output),
@@ -194,7 +243,7 @@ def channel_base_exact(+destination: U32,+shifts: U32,+channel: Nat,+capacity: U
   +channel_exact = Bounds.roundtrip(channel,capacity,capacity_ok,channel_room)
   +product_exact = {
     %channel_exact : {U32.to_nat((U32.from_nat(channel) * shifts : U32)) == Nat.mul(_,U32.to_nat(shifts)) : Nat}
-    Arithmetic.multiply(U32.from_nat(channel),shifts,capacity,capacity_ok,
+    WordMultiplication.bounded_multiply(U32.from_nat(channel),shifts,capacity,capacity_ok,
       %Equal.sym(Nat,U32.to_nat(U32.from_nat(channel)),channel,channel_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(shifts)),U32.to_nat(capacity)) == True{} : Bool} product_room) :
       {U32.to_nat((U32.from_nat(channel) * shifts : U32)) == product : Nat}}
   %product_exact : {U32.to_nat((destination + U32.from_nat(channel) * shifts : U32)) == Nat.add(U32.to_nat(destination),_) : Nat}
@@ -232,10 +281,10 @@ def channel_capacity(query: ChannelQuery) -> U32:
   ChannelQuery{context,count,channel,shift,depth,capacity} = query
   capacity
 def channel_destination(context: Channels) -> U32:
-  Channels{input,destination,row,column,base,plane,height,width,shifts} = context
+  Channels{input,destination,row,column,base,groups,height,width,shifts} = context
   destination
 def channel_shifts(context: Channels) -> U32:
-  Channels{input,destination,row,column,base,plane,height,width,shifts} = context
+  Channels{input,destination,row,column,base,groups,height,width,shifts} = context
   shifts
 def channel_address(+query: ChannelQuery) -> U32:
   (destination(channel_shift(channel_context(query),U32.from_nat(channel_index(query)))) + U32.from_nat(selected_shift(query)) : U32)
@@ -262,7 +311,7 @@ def channel_range_room(+query: ChannelQuery,+channel: Nat,
   +inside: {Nat.is_lt(channel,channel_count(query)) == True{} : Bool}) ->
   {Nat.is_le(Nat.add(U32.to_nat(destination(channel_shift(channel_context(query),U32.from_nat(channel)))),U32.to_nat(channel_shifts(channel_context(query)))),U32.to_nat(channel_capacity(query))) == True{} : Bool}:
   ChannelQuery{context,+count,selected,shift,depth,+capacity} = query
-  Channels{input,+destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,+destination,row,column,base,groups,height,width,+shifts} = context
   +base_room = Order.transitive(Nat.add(U32.to_nat(destination),Nat.mul(channel,U32.to_nat(shifts))),Nat.add(U32.to_nat(destination),Nat.mul(count,U32.to_nat(shifts))),U32.to_nat(capacity),
     Order.offset_le(U32.to_nat(destination),Nat.mul(channel,U32.to_nat(shifts)),Nat.mul(count,U32.to_nat(shifts)),RowMajor.mul_le(channel,count,U32.to_nat(shifts),Bounds.strict_le(channel,count,inside))),room)
   %Equal.sym(Nat,U32.to_nat((destination + U32.from_nat(channel) * shifts : U32)),Nat.add(U32.to_nat(destination),Nat.mul(channel,U32.to_nat(shifts))),
@@ -279,7 +328,7 @@ def placed_context(query: Indexed.Query<Unit,Shift>) -> Shift:
 def placed_same(+position: U32,+query: Indexed.Query<Unit,Shift>,+output: Tree.Tree<Tile.Tile8>) ->
   {Indexed.placed_update(~Unit,~Tile.Tile8,~Shift,~placed_sample,~place,position,query,output) == update(position,placed_context(query),output) : Tree.Tree<Tile.Tile8>}:
   Indexed.Query{count,index,depth,capacity,Unit{},context} = query
-  Shift{input,destination,row,column,first,base,plane,height,width,shifts} = context
+  Shift{input,destination,row,column,first,base,groups,height,width,shifts,channel} = context
   {==}
 
 def placed_run(+count: Nat,+context: Shift,+output: Tree.Tree<Tile.Tile8>) ->
@@ -298,28 +347,18 @@ def shift_capacity(+count: Nat,+context: Shift,+output: Tree.Tree<Tile.Tile8>) -
   %placed_run(count,context,output) : {Tree.capacity(Tile.Tile8,_) == Tree.capacity(Tile.Tile8,output) : U32}
   Indexed.capacity(~Unit,~Tile.Tile8,~Shift,~placed_sample,~place,count,0,context,Unit{},output)
 
-def fill_balance(depth: Nat,state: Execution.Fill) -> Data:
-  Shape.Balanced(Tile.Tile8,depth,tiles(state))
-
-def fill_keeps_balance(+depth: Nat,+state: Execution.Fill,evidence: Shape.Balanced(Tile.Tile8,depth,tiles(state))) ->
-  Shape.Balanced(Tile.Tile8,depth,tiles(Execution.fill_shift(state))):
-  Execution.Fill{+input,+output,+index,+row,+column,first,+base,plane,+height,+width,shifts} = state
-  Shape.write(Tile.Tile8,depth,output,index,Samples.pure_vector(input,Spatial.PixelBlock{row,column,base,height,width,1}),evidence)
-
 def shift_balanced(+count: Nat,+context: Shift,+output: Tree.Tree<Tile.Tile8>,+depth: Nat,
   balanced: Shape.Balanced(Tile.Tile8,depth,output)) ->
   Shape.Balanced(Tile.Tile8,depth,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Shift,~update,count,0,context,output)):
-  %filled(count,context,output) : Shape.Balanced(Tile.Tile8,depth,_)
-  Projection.preserves_invariant(~Execution.Fill,~Nat,~fill_balance,~Execution.fill_shift,~fill_keeps_balance,count,depth,represent(context,0,output),
-    %Equal.sym(Tree.Tree<Tile.Tile8>,tiles(represent(context,0,output)),output,tiles_represent(context,0,output)) : Shape.Balanced(Tile.Tile8,depth,_) balanced)
-
+  %placed_run(count,context,output) : Shape.Balanced(Tile.Tile8,depth,_)
+  Indexed.balanced(~Unit,~Tile.Tile8,~Shift,~placed_sample,~place,count,0,context,Unit{},output,depth,balanced)
 def channel_frame(query: ChannelQuery,output: Tree.Tree<Tile.Tile8>) -> Data:
   ChannelFrame<query,output>
 
 def channel_frame_step(+query: ChannelQuery,+position: U32,+output: Tree.Tree<Tile.Tile8>,evidence: ChannelFrame<query,output>) ->
   ChannelFrame<query,channel_queried(position,query,output)>:
   ChannelQuery{context,count,channel,shift,+depth,+capacity} = query
-  Channels{input,destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,destination,row,column,base,groups,height,width,+shifts} = context
   ChannelFrame{capacity_equal,balanced,depth_ok,capacity_ok,room,channel_inside,shift_inside} = evidence
   ChannelFrame{Equal.trans(U32,Tree.capacity(Tile.Tile8,channel_queried(position,query,output)),Tree.capacity(Tile.Tile8,output),capacity,
       shift_capacity(U32.to_nat(shifts),channel_shift(context,position),output),capacity_equal),
@@ -328,12 +367,10 @@ def channel_frame_step(+query: ChannelQuery,+position: U32,+output: Tree.Tree<Ti
 def channel_at_target(+query: ChannelQuery,+output: Tree.Tree<Tile.Tile8>,evidence: ChannelFrame<query,output>) ->
   {channel_read(query,channel_queried(U32.from_nat(channel_index(query)),query,output)) == channel_wanted(query) : Tile.Tile8}:
   ChannelQuery{context,count,+channel,+shift,+depth,+capacity} = query
-  Channels{input,destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,destination,row,column,base,groups,height,width,+shifts} = context
   ChannelFrame{capacity_equal,balanced,depth_ok,+capacity_ok,+room,+channel_inside,+shift_inside} = evidence
   +selected = {Query{channel_shift(context,U32.from_nat(channel)),U32.to_nat(shifts),shift,depth,capacity} : Query}
   +selected_context = channel_shift(context,U32.from_nat(channel))
-  %filled(U32.to_nat(shifts),selected_context,output) :
-    {Tree.read(Tile.Tile8,_,channel_address(query)) == channel_wanted(query) : Tile.Tile8}
   readback(selected,output,Indexed.AffineFrame{capacity_equal,balanced,depth_ok,capacity_ok,
     channel_range_room(query,channel,capacity_ok,room,Order.positive_bound(shift,U32.to_nat(shifts),shift_inside),channel_inside),shift_inside})
 
@@ -342,7 +379,7 @@ def channel_base_room(+query: ChannelQuery,+channel: Nat,
   inside: {Nat.is_le(channel,channel_count(query)) == True{} : Bool}) ->
   {Nat.is_le(Nat.add(U32.to_nat(channel_destination(channel_context(query))),Nat.mul(channel,U32.to_nat(channel_shifts(channel_context(query))))),U32.to_nat(channel_capacity(query))) == True{} : Bool}:
   ChannelQuery{context,+count,selected,shift,depth,+capacity} = query
-  Channels{input,+destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,+destination,row,column,base,groups,height,width,+shifts} = context
   Order.transitive(Nat.add(U32.to_nat(destination),Nat.mul(channel,U32.to_nat(shifts))),Nat.add(U32.to_nat(destination),Nat.mul(count,U32.to_nat(shifts))),U32.to_nat(capacity),
     Order.offset_le(U32.to_nat(destination),Nat.mul(channel,U32.to_nat(shifts)),Nat.mul(count,U32.to_nat(shifts)),RowMajor.mul_le(channel,count,U32.to_nat(shifts),inside)),room)
 
@@ -353,7 +390,7 @@ def channel_address_exact(+query: ChannelQuery,
   +shift_inside: {Nat.is_lt(selected_shift(query),U32.to_nat(channel_shifts(channel_context(query)))) == True{} : Bool}) ->
   {U32.to_nat(channel_address(query)) == Nat.add(U32.to_nat(channel_destination(channel_context(query))),Nat.add(Nat.mul(channel_index(query),U32.to_nat(channel_shifts(channel_context(query)))),selected_shift(query))) : Nat}:
   ChannelQuery{context,count,+channel,+shift,depth,+capacity} = query
-  Channels{input,+destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,+destination,row,column,base,groups,height,width,+shifts} = context
   +positive = Order.positive_bound(shift,U32.to_nat(shifts),shift_inside)
   +channel_base = (destination + U32.from_nat(channel) * shifts : U32)
   +base_exact = channel_base_exact(destination,shifts,channel,capacity,capacity_ok,positive,channel_base_room(query,channel,room,Bounds.strict_le(channel,count,channel_inside)))
@@ -370,7 +407,7 @@ def channel_later(+query: ChannelQuery,+position: Nat,+output: Tree.Tree<Tile.Ti
   after: {Nat.is_lt(channel_index(query),position) == True{} : Bool},inside: {Nat.is_lt(position,channel_count(query)) == True{} : Bool}) ->
   {channel_read(query,channel_queried(U32.from_nat(position),query,output)) == channel_read(query,output) : Tile.Tile8}:
   ChannelQuery{context,+count,+channel,+shift,+depth,+capacity} = query
-  Channels{input,+destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,+destination,row,column,base,groups,height,width,+shifts} = context
   ChannelFrame{capacity_equal,balanced,depth_ok,+capacity_ok,+room,+channel_inside,+shift_inside} = evidence
   +inside = inside
   +positive = Order.positive_bound(shift,U32.to_nat(shifts),shift_inside)
@@ -393,8 +430,6 @@ def channel_later(+query: ChannelQuery,+position: Nat,+output: Tree.Tree<Tile.Ti
     Order.offset_lt(U32.to_nat(destination),Nat.add(Nat.mul(channel,U32.to_nat(shifts)),shift),Nat.mul(position,U32.to_nat(shifts)),
       RowMajor.radix(channel,position,shift,U32.to_nat(shifts),after,shift_inside)) :
       {Nat.is_lt(U32.to_nat(channel_address(query)),U32.to_nat(Indexed.affine_base(~Shift,affine(selected)))) == True{} : Bool}}
-  %filled(U32.to_nat(shifts),selected_context,output) :
-    {Tree.read(Tile.Tile8,_,channel_address(query)) == channel_read(query,output) : Tile.Tile8}
   read_before(selected,channel_address(query),output,Indexed.AffineFrame{capacity_equal,balanced,depth_ok,capacity_ok,range_room,positive},before,address_inside)
 
 def channel_same_step(+position: U32,+query: ChannelQuery,+output: Tree.Tree<Tile.Tile8>) ->
@@ -410,36 +445,32 @@ def channels_readback(+query: ChannelQuery,+output: Tree.Tree<Tile.Tile8>,+evide
     ~channel_frame_step,~channel_at_target,~channel_later,query,output,evidence,channel_inside)
 
 def initial_channel(context: Channels,output: Tree.Tree<Tile.Tile8>) -> Execution.Fill:
-  Channels{input,destination,row,+column,base,plane,height,width,shifts} = context
-  Execution.Fill{input,output,destination,row,column,column,base,plane,height,width,U32.to_nat(shifts)}
+  Channels{input,destination,row,+column,base,groups,height,width,shifts} = context
+  Execution.Fill{input,output,destination,row,column,column,base,groups,height,width,U32.to_nat(shifts),0}
 
 def channel_zero(+context: Channels,+output: Tree.Tree<Tile.Tile8>) ->
   {channel_represent(context,0,output) == initial_channel(context,output) : Execution.Fill}:
-  Channels{input,+destination,row,+column,+base,+plane,height,width,+shifts} = context
+  Channels{input,+destination,row,+column,base,groups,height,width,+shifts} = context
   %Equal.sym(U32,(0 * shifts : U32),0,Arithmetic.multiply_zero_left(shifts)) :
-    {Execution.Fill{input,output,(destination + _ : U32),row,column,column,(base + 0 * plane : U32),plane,height,width,U32.to_nat(shifts)} == initial_channel(context,output) : Execution.Fill}
-  %Equal.sym(U32,(0 * plane : U32),0,Arithmetic.multiply_zero_left(plane)) :
-    {Execution.Fill{input,output,(destination + 0 : U32),row,column,column,(base + _ : U32),plane,height,width,U32.to_nat(shifts)} == initial_channel(context,output) : Execution.Fill}
+    {Execution.Fill{input,output,(destination + _ : U32),row,column,column,base,groups,height,width,U32.to_nat(shifts),0} == initial_channel(context,output) : Execution.Fill}
   %Equal.sym(U32,(destination + 0 : U32),destination,Arithmetic.add_zero(destination)) :
-    {Execution.Fill{input,output,_,row,column,column,(base + 0 : U32),plane,height,width,U32.to_nat(shifts)} == initial_channel(context,output) : Execution.Fill}
-  %Equal.sym(U32,(base + 0 : U32),base,Arithmetic.add_zero(base)) :
-    {Execution.Fill{input,output,destination,row,column,column,_,plane,height,width,U32.to_nat(shifts)} == initial_channel(context,output) : Execution.Fill}
+    {Execution.Fill{input,output,_,row,column,column,base,groups,height,width,U32.to_nat(shifts),0} == initial_channel(context,output) : Execution.Fill}
   {==}
-
-def group_channels(position: U32,context: Kernel.Filling,input: Tree.Tree<F32>) -> Channels:
-  Kernel.Filling{Kernel.Tiling{groups,+shifts,+outputs,+column_low,+kernel,height,+width,+chunk_groups,chunk_rows},+low,base,plane,+first,+source_rows,+group,+span} = context
+def group_channels(position: U32,context: Kernel.Filling,input: Tree.Tree<Tile.Tile8>) -> Channels:
+  Kernel.Filling{+shifts,+outputs,+column_low,+kernel,+width,+chunk_groups,+low,base,groups,+first,+source_rows,+group,+span} = context
   +position = position
   Channels{input,((position / span * chunk_groups + position % span) * (outputs * shifts + 1) : U32),
-    (position / span + low - kernel - first : U32),((position % span + group) * 8 + column_low - kernel : U32),base,plane,source_rows,width,shifts}
+    (position / span + low - kernel - first : U32),((position % span + group) * 8 + column_low - kernel : U32),base,groups,source_rows,width,shifts}
 
 def group_outputs(context: Kernel.Filling) -> Nat:
-  Kernel.Filling{Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,chunk_groups,chunk_rows},low,base,plane,first,source_rows,group,span} = context
+  Kernel.Filling{shifts,outputs,column_low,kernel,width,chunk_groups,low,base,groups,first,source_rows,group,span} = context
   U32.to_nat(outputs)
 
-def group_written(+position: U32,+context: Kernel.Filling,+input: Tree.Tree<F32>,+output: Tree.Tree<Tile.Tile8>) ->
+def group_written(+position: U32,+context: Kernel.Filling,+input: Tree.Tree<Tile.Tile8>,+output: Tree.Tree<Tile.Tile8>) ->
   {Execution.fill_group(position,context,Execution.Owners{input,output}) ==
     Execution.Owners{input,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Channels,~channel_update,group_outputs(context),0,group_channels(position,context,input),output)} : Execution.Owners}:
-  Kernel.Filling{Kernel.Tiling{groups,+shifts,+outputs,+column_low,+kernel,height,+width,+chunk_groups,chunk_rows},+low,+base,+plane,+first,+source_rows,+group,+span} = context
+  Kernel.Filling{+shifts,+outputs,+column_low,+kernel,+width,+chunk_groups,+low,+base,+groups,+first,+source_rows,+group,+span} = context
+
   +channels = group_channels(position,context,input)
   +written = Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Channels,~channel_update,U32.to_nat(outputs),0,channels,output)
   %channel_zero(channels,output) :
@@ -488,7 +519,7 @@ def before_unchanged(+context: BeforeQuery,+position: Nat,+output: Tree.Tree<Til
   {before_read(context,before_update(U32.from_nat(position),context,output)) == before_read(context,output) : Tile.Tile8}:
   BeforeQuery{query,+address,original} = context
   ChannelQuery{channels,count,channel,+shift,+depth,+capacity} = query
-  Channels{input,+destination,row,column,base,plane,height,width,+shifts} = channels
+  Channels{input,+destination,row,column,base,groups,height,width,+shifts} = channels
   BeforeFrame{channels_evidence,observed_inside,before} = evidence
   ChannelFrame{capacity_equal,balanced,depth_ok,+capacity_ok,+room,channel_inside,+shift_inside} = channels_evidence
   +selected = selected
@@ -502,7 +533,6 @@ def before_unchanged(+context: BeforeQuery,+position: Nat,+output: Tree.Tree<Til
       {Nat.is_lt(U32.to_nat(address),_) == True{} : Bool}
     Bounds.nat_trans(U32.to_nat(address),U32.to_nat(destination),Nat.add(U32.to_nat(destination),Nat.mul(position,U32.to_nat(shifts))),before,Order.le_add(U32.to_nat(destination),Nat.mul(position,U32.to_nat(shifts)))) :
       {Nat.is_lt(U32.to_nat(address),U32.to_nat(Indexed.affine_base(~Shift,affine(shift_query)))) == True{} : Bool}}
-  %filled(U32.to_nat(shifts),shift_context,output) : {Tree.read(Tile.Tile8,_,address) == Tree.read(Tile.Tile8,output,address) : Tile.Tile8}
   read_before(shift_query,address,output,Indexed.AffineFrame{capacity_equal,balanced,depth_ok,capacity_ok,range_room,positive},earlier,observed_inside)
 
 def before_same(+position: U32,+context: BeforeQuery,+output: Tree.Tree<Tile.Tile8>) ->
@@ -529,7 +559,7 @@ def kept_capacity_fixed(+position: U32,+context: Channels,+capacity: U32) -> {ke
 
 def channel_capacity_step(+position: U32,+context: Channels,+output: Tree.Tree<Tile.Tile8>) ->
   {Tree.capacity(Tile.Tile8,channel_update(position,context,output)) == kept_capacity(position,context,Tree.capacity(Tile.Tile8,output)) : U32}:
-  Channels{input,destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,destination,row,column,base,groups,height,width,+shifts} = context
   shift_capacity(U32.to_nat(shifts),channel_shift(context,position),output)
 
 def tree_capacity(output: Tree.Tree<Tile.Tile8>) -> U32:
@@ -549,7 +579,7 @@ def channel_balance_step(+query: ChannelQuery,+index: Nat,+output: Tree.Tree<Til
   inside: {Nat.is_lt(index,channel_count(query)) == True{} : Bool},balanced: Shape.Balanced(Tile.Tile8,channel_depth(query),output)) ->
   Shape.Balanced(Tile.Tile8,channel_depth(query),channel_queried(U32.from_nat(index),query,output)):
   ChannelQuery{context,count,channel,shift,+depth,capacity} = query
-  Channels{input,destination,row,column,base,plane,height,width,+shifts} = context
+  Channels{input,destination,row,column,base,groups,height,width,+shifts} = context
   shift_balanced(U32.to_nat(shifts),channel_shift(context,U32.from_nat(index)),output,depth,balanced)
 
 def channels_balanced(+count: Nat,+context: Channels,+output: Tree.Tree<Tile.Tile8>,+depth: Nat,balanced: Shape.Balanced(Tile.Tile8,depth,output)) ->

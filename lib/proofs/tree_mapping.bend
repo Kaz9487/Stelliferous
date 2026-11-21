@@ -3,6 +3,7 @@
 import Base
 import ./storage_tree_model.bend as Tree
 import ./storage_shape.bend as Shape
+import ../kernel_gemm.bend as KernelGemm
 
 def map(~Element: Data,~Result: Data,~Context: Data,~observe: Context -> Element -> Result,
   +context: Context,tree: Tree.Tree<Element>) -> Tree.Tree<Result>:
@@ -17,8 +18,8 @@ def map_preserves_balance(~Element: Data,~Result: Data,~Context: Data,~observe: 
     case 0n Tree.Node{left,right}: balanced
     case 1n+rest Tree.Leaf{value}: balanced
     case 1n+ +rest Tree.Node{+left,+right}:
-      Shape.Both{left_balanced,right_balanced} = balanced
-      Shape.Both{map_preserves_balance(~Element,~Result,~Context,~observe,context,rest,left,left_balanced),
+      KernelGemm.Both{left_balanced,right_balanced} = balanced
+      KernelGemm.Both{map_preserves_balance(~Element,~Result,~Context,~observe,context,rest,left,left_balanced),
         map_preserves_balance(~Element,~Result,~Context,~observe,context,rest,right,right_balanced)}
 
 def map_preserves_capacity(~Element: Data,~Result: Data,~Context: Data,~observe: Context -> Element -> Result,

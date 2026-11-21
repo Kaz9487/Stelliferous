@@ -197,3 +197,14 @@ def native_encoded_multiply(+left: Nat,+right: Nat) ->
   %Equal.sym(U32,U32.from_nat(Nat.mul(left,right)),U32{WordArithmetic.encode(Nat.mul(left,right),32n)},WordArithmetic.native_encoding(Nat.mul(left,right))) :
     {U32{Word.mul(32n,WordArithmetic.encode(left,32n),WordArithmetic.encode(right,32n))} == _ : U32}
   Equal.cong(Word(32n),U32,word => U32{word},Word.mul(32n,WordArithmetic.encode(left,32n),WordArithmetic.encode(right,32n)),WordArithmetic.encode(Nat.mul(left,right),32n),encoded_multiply(left,right,32n))
+
+# Two words of known numbers whose product fits multiply to that product.
+def multiply_exact(+a: U32,+b: U32,+an: Nat,+bn: Nat,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
+  +a_exact: {U32.to_nat(a) == an : Nat},+b_exact: {U32.to_nat(b) == bn : Nat},+room: {Nat.is_le(Nat.mul(an,bn),U32.to_nat(cap)) == True{} : Bool}) ->
+  {U32.to_nat((a * b : U32)) == Nat.mul(an,bn) : Nat}:
+  %a_exact : {U32.to_nat((a * b : U32)) == Nat.mul(_,bn) : Nat}
+  %b_exact : {U32.to_nat((a * b : U32)) == Nat.mul(U32.to_nat(a),_) : Nat}
+  bounded_multiply(a,b,cap,cap_ok,
+    %Equal.sym(Nat,U32.to_nat(a),an,a_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(b)),U32.to_nat(cap)) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(b),bn,b_exact) : {Nat.is_le(Nat.mul(an,_),U32.to_nat(cap)) == True{} : Bool}
+    room)

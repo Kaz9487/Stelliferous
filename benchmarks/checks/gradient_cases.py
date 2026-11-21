@@ -111,7 +111,7 @@ def generate():
     SOURCE.write_text('''import Base
 import ../../lib/tensor_f32.bend as F
 import ../../lib/tensor_convolution_gradient.bend as Gradient
-import ../../lib/tensor_parameter_gradient.bend as Grouped
+import ../../lib/tensor_tiled.bend as Tiled
 
 def folder() -> String:
   "out/results/gradients/"
@@ -160,8 +160,8 @@ def parameter_case(+name: String,+tag: String,+x: List<&2,U32>,+d: List<&2,U32>,
   do IO<F.Tensor()>:
     x : F.Tensor() <- F.load_raw(folder() ++ name ++ "_x.bin",x)
     d : F.Tensor() <- F.load_raw(folder() ++ name ++ "_d.bin",d)
-    d : F.Tensor() <- parameter_saved(name,tag,Grouped.weight(F.with_workers(x,workers),F.with_workers(d,workers),k,s,p,group))
-    bias_group_saved(name,tag,Grouped.bias(d,group))
+    d : F.Tensor() <- parameter_saved(name,tag,Gradient.weight_grouped(F.with_workers(x,workers),F.with_workers(d,workers),k,s,p,group))
+    bias_group_saved(name,tag,Gradient.bias_cells(Gradient.channel_lanes(Tiled.shape(d)),group))
 
 def main() -> IO(Unit):
   do IO<Unit>:
@@ -212,7 +212,7 @@ def main():
     if not cc:
         raise SystemExit('The gradient cases need clang on PATH or CC.')
     subprocess.run([cc, '-O3', '-ffp-contract=off', '-std=c11', str(generated), '-lpthread', '-lm', '-o', str(BUILD / 'gradients')], check=True)
-    subprocess.run([str(BUILD / 'gradients'), '--threads', str(max(WORKERS)), '--gpu', 'off'], cwd=ROOT, check=True, capture_output=True)
+    subprocess.run([str(BUILD / 'gradients'), '+RTS', '--threads', str(max(WORKERS)), '--gpu', 'off', '-RTS'], cwd=ROOT, check=True, capture_output=True)
     failures = compare()
     (REPORT / 'status.json').write_text(json.dumps(dict(input_cases=len(INPUT), parameter_cases=len(PARAMETERS), workers=WORKERS, failures=failures), indent=2))
     assert not failures, failures

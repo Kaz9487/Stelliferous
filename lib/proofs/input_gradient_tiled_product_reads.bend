@@ -1,7 +1,10 @@
-# Actual job read pointers coincide with the complete phase-packing addresses.
+# A phase job reads the weights of its unit and the tiles of its grid: step t
+# of the job is weight slot unit * inner + t of the packed phase and entry t
+# of the grid.
 import Base
+import ../kernel_tile.bend as Tile
 import ../kernel_input_gradient.bend as Kernel
-import ../machine_limits.bend as Machine
+import ../kernel_gemm.bend as Gemm
 import ./input_gradient_tiled_chunk_reads.bend as Chunks
 import ./input_gradient_tiled_chunk_geometry.bend as GeometryChunks
 import ./input_gradient_tiled_job_geometry.bend as Jobs
@@ -9,197 +12,206 @@ import ./input_gradient_tiled_phase_index.bend as Index
 import ./input_gradient_tiled_pack_values.bend as Packed
 import ./input_gradient_tiled_packing_bounds.bend as PackingBounds
 import ./input_gradient_tiled_weight_reads.bend as Weights
+import ./input_gradient_tiled_entry_reads.bend as Lookup
 import ./input_gradient_phase_packing.bend as Packing
 import ./input_gradient_phase_domain.bend as Domain
 import ./input_gradient_tiled_leaf_execution.bend as Execution
-import ./input_gradient_tiled_jobs.bend as NativeJobs
-import ./input_gradient_tiled_reduction.bend as Reduction
-import ./storage_buffer_model.bend as Buffer
-import ./storage_tree_model.bend as Tree
-import ../kernel_tile.bend as Tile
-import ./input_gradient_tiled_fill.bend as Fill
-import ./input_gradient_tiled_lookup.bend as Lookup
-import ./input_gradient_tiled_weights.bend as PackedWeights
-import ./input_gradient_tiled_offsets.bend as Offsets
-import ./nat_ceiling.bend as Ceiling
+import ./kernel_gemm_spec.bend as GemmSpec
+import ./traversal_reduction_refinement.bend as ReductionLaws
+import ./ordered_reduction_split.bend as Ordered
+import ./ordered_ranges.bend as Ranges
+import ./nat_division.bend as Division
+import ./natural_addition.bend as Addition
 import ./bounded_u32_arithmetic.bend as Arithmetic
-import ./word_subtraction.bend as Subtraction
 import ./encoded_coordinates.bend as Encoded
-import ./u32_division.bend as Division
-import ./machine_limit_bounds.bend as Limits
-import ./nat_to_u32_bounds.bend as Bounds
+import ./row_major_index.bend as RowMajor
 import ./nat_order.bend as Order
-import ./word_arithmetic.bend as WordArithmetic
-import ./input_gradient_tiled_reduction.bend as Natural
+import ./storage_buffer_model.bend as Buffer
 
-def weight_bounds(+phase: Jobs.Phase) -> PackingBounds.Query:
-  Packed.reflag(True{},Index.packing_bounds(phase))
-def offset_bounds(+phase: Jobs.Phase) -> PackingBounds.Query:
-  Packed.reflag(False{},Index.packing_bounds(phase))
+# The packed weights of a phase start at the prefix sum of the phases before.
 def weight_base(+phase: Jobs.Phase) -> U32:
-  PackingBounds.prefix_word(weight_bounds(phase),Index.ordinal(phase))
-def offset_base(+phase: Jobs.Phase) -> U32:
-  PackingBounds.prefix_word(offset_bounds(phase),Index.ordinal(phase))
-# The packing bases of a selection are the prefix sums at its phase.
+  PackingBounds.prefix_word(Index.packing_bounds(phase),Index.ordinal(phase))
 type Bases<-selection: Chunks.Selection> is Data:
-  Bases{weights: {Chunks.weight_base(Chunks.query(selection)) == weight_base(Chunks.phase(selection)) : U32},
-    offsets: {Chunks.offset_base(Chunks.query(selection)) == offset_base(Chunks.phase(selection)) : U32}}
-def context_weight(context: Kernel.Context) -> U32:
-  Kernel.Context{source,weight} = context
-  weight
-def plan_unit(+work: Jobs.Work,+wb: U32,+ob: U32,+line: Nat,+group: Nat,+unit: Nat) -> U32:
-  (Jobs.job_index(work,line,group,unit) % Jobs.plan_units(Execution.work_plan(Execution.work(Jobs.context(Jobs.phase(work)),Jobs.chunk(work),wb,ob))) : U32)
-def plan_unit_exact(+work: Jobs.Work,+active: Jobs.Active<Jobs.phase(work)>,+wb: U32,+ob: U32,+line: Nat,+group: Nat,+unit: Nat,+inside: Jobs.Inside<work,line,group,unit>) ->
-  {plan_unit(work,wb,ob,line,group,unit) == U32.from_nat(unit) : U32}:
-  Jobs.Work{Jobs.Phase{+call,e,y,x,yi,xi},+chunk} = work
-  Domain.Call{+g,b,l,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{geometry,+layout},first,count,target,plane},row,rows,low,chunk_group} = chunk
-  Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,cg,cr0} = layout
-  Encoded.encoding(plan_unit(work,wb,ob,line,group,unit),unit,Jobs.unit_decode(work,active,line,group,unit,inside))
-def unit_half_exact(+phase: Jobs.Phase,+unit: Nat,+inside: {Nat.is_lt(unit,U32.to_nat(Jobs.units(Jobs.geometry(phase)))) == True{} : Bool}) ->
-  {(U32.from_nat(unit) / 2 : U32) == U32.from_nat(Nat.div(unit,2n)) : U32}:
-  Jobs.Phase{+call,e,y,x,yi,xi} = phase
-  Domain.Call{+g,+b,+l,facts} = call
-  +cap = Machine.capacity(l)
-  +room = Jobs.phase_units_room(phase)
-  +unit_room = Order.transitive(U32.to_nat(Jobs.units(g)),Domain.channels(g),U32.to_nat(cap),room,Domain.channels_capacity_room(call))
-  +exact = Bounds.roundtrip(unit,cap,Limits.capacity_fits(l),Bounds.strict_le(unit,U32.to_nat(cap),Bounds.nat_trans(unit,U32.to_nat(Jobs.units(g)),U32.to_nat(cap),inside,unit_room)))
-  Encoded.encoding((U32.from_nat(unit) / 2 : U32),Nat.div(unit,2n),
-    %exact : {U32.to_nat((U32.from_nat(unit) / 2 : U32)) == Nat.div(_,2n) : Nat} Division.divide(U32.from_nat(unit),2,Machine.half_word(l),Limits.half_word_fits(l),
-      Order.transitive(4n,7n,U32.to_nat(Machine.half_word(l)),{==},Order.transitive(7n,U32.to_nat(cap),U32.to_nat(Machine.half_word(l)),Bounds.as_nat_le(7,cap,Limits.seven_within_capacity(l)),Bounds.as_nat_le(cap,Machine.half_word(l),Limits.capacity_within_half(l)))),{==}))
+  Bases{weights: {Chunks.weight_base(Chunks.query(selection)) == weight_base(Chunks.phase(selection)) : U32}}
 
-def weight_pointer_matches(+work: Jobs.Work,+active: Jobs.Active<Jobs.phase(work)>,+wb: U32,+ob: U32,+line: Nat,+group: Nat,+unit: Nat,+tap: Nat,+inside: Jobs.Inside<work,line,group,unit>,+readers: NativeJobs.Readers) ->
-  {(context_weight(Reduction.native_context(NativeJobs.initial_loop(Jobs.job_index(work,line,group,unit),Execution.work_plan(Execution.work(Jobs.context(Jobs.phase(work)),Jobs.chunk(work),wb,ob)),readers))) + (ob + U32.from_nat(tap)) : U32) ==
-    (wb + U32.from_nat(Nat.add(Nat.mul(Nat.div(unit,2n),U32.to_nat(Kernel.phase_inner(Jobs.context(Jobs.phase(work))))),tap)) : U32) : U32}:
-  Jobs.Work{+phase,+chunk} = work
-  Jobs.Phase{+call,e,y,x,yi,xi} = phase
-  Domain.Call{+g,b,l,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{geometry,+layout},first,count,target,plane},row,rows,low,chunk_group} = chunk
-  Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,cg,cr0} = layout
-  Jobs.Inside{li,gi,+ui} = inside
-  NativeJobs.Readers{tiles,weights,offsets} = readers
-  +uw = plan_unit(work,wb,ob,line,group,unit)
-  +inner = Kernel.phase_inner(Jobs.context(phase))
-  +block = Nat.div(unit,2n)
-  +scale = (uw / 2 * inner : U32)
-  +start = (wb - ob : U32)
-  +q = U32.from_nat(tap)
-  +unit_equal = plan_unit_exact(work,active,wb,ob,line,group,unit,inside)
-  +half_equal = Equal.trans(U32,(uw / 2 : U32),(U32.from_nat(unit) / 2 : U32),U32.from_nat(block),Equal.cong(U32,U32,value => (value / 2 : U32),uw,U32.from_nat(unit),unit_equal),unit_half_exact(phase,unit,ui))
-  +scale_equal = Equal.cong(U32,U32,value => (value * inner : U32),(uw / 2 : U32),U32.from_nat(block),half_equal)
-  +tail = Equal.trans(U32,(scale + (ob + q) : U32),((scale + ob) + q : U32),(ob + (scale + q) : U32),Equal.sym(U32,((scale + ob) + q : U32),(scale + (ob + q) : U32),Arithmetic.add_associative(scale,ob,q)),
-    Equal.trans(U32,((scale + ob) + q : U32),((ob + scale) + q : U32),(ob + (scale + q) : U32),Equal.cong(U32,U32,value => (value + q : U32),(scale + ob : U32),(ob + scale : U32),Arithmetic.add_commutative(scale,ob)),Arithmetic.add_associative(ob,scale,q)))
-  +restored = Equal.trans(U32,((start + scale) + (ob + q) : U32),(start + (scale + (ob + q)) : U32),(wb + (scale + q) : U32),Arithmetic.add_associative(start,scale,(ob + q : U32)),
-    Equal.trans(U32,(start + (scale + (ob + q)) : U32),(start + (ob + (scale + q)) : U32),(wb + (scale + q) : U32),Equal.cong(U32,U32,value => (start + value : U32),(scale + (ob + q) : U32),(ob + (scale + q) : U32),tail),
-      Equal.trans(U32,(start + (ob + (scale + q)) : U32),((start + ob) + (scale + q) : U32),(wb + (scale + q) : U32),Equal.sym(U32,((start + ob) + (scale + q) : U32),(start + (ob + (scale + q)) : U32),Arithmetic.add_associative(start,ob,(scale + q : U32))),Equal.cong(U32,U32,value => (value + (scale + q) : U32),(start + ob : U32),wb,Subtraction.add_subtract(wb,ob)))))
-  Equal.trans(U32,((start + scale) + (ob + q) : U32),(wb + (scale + q) : U32),(wb + U32.from_nat(Nat.add(Nat.mul(block,U32.to_nat(inner)),tap)) : U32),restored,
-    Equal.cong(U32,U32,value => (wb + value : U32),(scale + q : U32),U32.from_nat(Nat.add(Nat.mul(block,U32.to_nat(inner)),tap)),
-      Equal.trans(U32,(scale + q : U32),(U32.from_nat(block) * inner + q : U32),U32.from_nat(Nat.add(Nat.mul(block,U32.to_nat(inner)),tap)),Equal.cong(U32,U32,value => (value + q : U32),scale,(U32.from_nat(block) * inner : U32),scale_equal),
-        %Arithmetic.native_roundtrip(inner) : {(U32.from_nat(block) * _ + q : U32) == U32.from_nat(Nat.add(Nat.mul(block,U32.to_nat(inner)),tap)) : U32} Encoded.encoded_madd(block,U32.to_nat(inner),tap))))
+# ---- The taps of a job ----
 
-def packed_weight_read(+reduction: Chunks.Reduction,+original: Buffer.Model<F32>) -> Tile.Tile8:
-  +phase = Chunks.phase(Chunks.selection(reduction))
-  +q = Weights.packed_query(phase,original,Nat.div(Chunks.unit(reduction),2n),Packing.phase_index(Jobs.context(phase),Chunks.output(reduction),Chunks.tap_row(reduction),Chunks.tap_column(reduction)))
-  Weights.weight(Packed.read(q,Packed.complete(q,Packed.initial(q))))
+def job_cursor(+job: Gemm.Job<Kernel.Cursor()>) -> Kernel.Cursor():
+  Gemm.Job{first,depth,cursor,store} = job
+  cursor
+
+def plan_weight(+plan: Kernel.Plan,+index: U32) -> U32:
+  Kernel.Plan{+units,groups,+inner,source_base,row_step,group_step,target_base,target_row,step,plane,channels,columns,+weight_base,
+    tap_columns,tap_rows,row_jump,output_jump} = plan
+  +index = index
+  (weight_base + index % units * inner : U32)
+
+def taps_key(+grid: GemmSpec.Grid,+weight: U32) -> Gemm.Both<Nat,GemmSpec.Grid>:
+  Gemm.Both{U32.to_nat(weight),grid}
+
+def keyed(count: Nat,+key: Gemm.Both<Nat,GemmSpec.Grid>) -> List<&2,ReductionLaws.AddressPair>:
+  Ordered.map_keys(~Nat,~ReductionLaws.AddressPair,~Gemm.Both<Nat,GemmSpec.Grid>,~GemmSpec.both_key(~Nat,~Nat,~GemmSpec.Grid,~GemmSpec.offset_word,~GemmSpec.grid_read),
+    Ranges.range(count,0n),key)
+
+def advanced(+first: U32,+second: Gemm.Entries) ->
+  {Kernel.entries(Gemm.Both{first,second}) == Gemm.Step{Pair.fst(U32,U32,Gemm.direct(first)),Pair.fst(U32,Gemm.Entries,Gemm.entry(second)),
+    Gemm.Both{Pair.snd(U32,U32,Gemm.direct(first)),Pair.snd(U32,Gemm.Entries,Gemm.entry(second))}} : Gemm.Step<Kernel.Cursor()>}:
+  Gemm.Entries{+address,+column,+row,+columns,+rows,+row_jump,+output_jump} = second
+  {==}
+
+# The first entry of a grid from position 0 is its base.
+def grid_start(+source: U32,+row_step: U32,+columns: U32,+rows: U32,+output_jump: U32,
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool},+rows_positive: {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool}) ->
+  {Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump} == GemmSpec.grid_entry(GemmSpec.Grid{source,U32.to_nat(row_step),columns,rows,output_jump,0n},0n) : Gemm.Entries}:
+  +grid = {GemmSpec.Grid{source,U32.to_nat(row_step),columns,rows,output_jump,0n} : GemmSpec.Grid}
+  %Equal.sym(Nat & Nat,Nat.divmod(0n,U32.to_nat(columns)),(0n,0n),Division.small(0n,U32.to_nat(columns),columns_positive)) :
+    {Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump} == GemmSpec.grid_cell(grid,_) : Gemm.Entries}
+  %Equal.sym(Nat & Nat,Nat.divmod(0n,U32.to_nat(rows)),(0n,0n),Division.small(0n,U32.to_nat(rows),rows_positive)) :
+    {Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump} == GemmSpec.grid_placed(grid,_,0n) : Gemm.Entries}
+  %Equal.sym(U32,U32.from_nat(U32.to_nat(row_step)),row_step,Arithmetic.native_roundtrip(row_step)) :
+
+    {Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump} == Gemm.Entries{(source + 0 : U32),0,0,columns,rows,(_ - columns + 1 : U32),output_jump} : Gemm.Entries}
+  %Equal.sym(U32,(source + 0 : U32),source,Arithmetic.add_zero(source)) :
+
+    {Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump} == Gemm.Entries{_,0,0,columns,rows,(row_step - columns + 1 : U32),output_jump} : Gemm.Entries}
+  %Equal.sym(U32,((row_step - columns : U32) + 1 : U32),(row_step - (columns - 1 : U32) : U32),Arithmetic.subtract_difference(row_step,columns,1)) :
+
+    {Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump} == Gemm.Entries{source,0,0,columns,rows,_,output_jump} : Gemm.Entries}
+  {==}
+
+# A direct weight reader and a grid reader step together: step t reads
+# weight + t and entry t of the grid.
+def grid_taps(+source: U32,+row_step: U32,+columns: U32,+rows: U32,+output_jump: U32,+weight: U32,+count: Nat,
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool},+rows_positive: {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool}) ->
+  {GemmSpec.taps(~Kernel.Cursor(),~Kernel.entries,count,Gemm.Both{weight,Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump}}) ==
+    keyed(count,taps_key(GemmSpec.Grid{source,U32.to_nat(row_step),columns,rows,output_jump,0n},weight)) : List<&2,ReductionLaws.AddressPair>}:
+  +entries = {Gemm.Entries{source,0,0,columns,rows,(row_step - (columns - 1) : U32),output_jump} : Gemm.Entries}
+  +grid = {GemmSpec.Grid{source,U32.to_nat(row_step),columns,rows,output_jump,0n} : GemmSpec.Grid}
+  +base = U32.to_nat(weight)
+  +tiles = Ordered.map_keys(~Nat,~U32,~GemmSpec.Grid,~GemmSpec.grid_read,Ranges.range(count,0n),grid)
+  +weights = Ordered.map_keys(~Nat,~U32,~Nat,~GemmSpec.offset_word,Ranges.range(count,0n),base)
+  +wanted = keyed(count,taps_key(grid,weight))
+  %Equal.sym(List<&2,ReductionLaws.AddressPair>,GemmSpec.taps(~Kernel.Cursor(),~Kernel.entries,count,Gemm.Both{weight,entries}),
+      GemmSpec.paired(GemmSpec.reads(~U32,~Gemm.direct,count,weight),GemmSpec.reads(~Gemm.Entries,~Gemm.entry,count,entries)),
+      GemmSpec.both_taps(~U32,~Gemm.Entries,~Gemm.direct,~Gemm.entry,~Kernel.entries,~advanced,count,weight,entries)) :
+    {_ == wanted : List<&2,ReductionLaws.AddressPair>}
+  %Equal.sym(Gemm.Entries,entries,GemmSpec.grid_entry(grid,0n),grid_start(source,row_step,columns,rows,output_jump,columns_positive,rows_positive)) :
+    {GemmSpec.paired(GemmSpec.reads(~U32,~Gemm.direct,count,weight),GemmSpec.reads(~Gemm.Entries,~Gemm.entry,count,_)) == wanted : List<&2,ReductionLaws.AddressPair>}
+  %Equal.sym(List<&2,U32>,GemmSpec.reads(~Gemm.Entries,~Gemm.entry,count,GemmSpec.grid_entry(grid,0n)),tiles,
+      GemmSpec.entry_reads(count,grid,0n,columns_positive,rows_positive)) :
+    {GemmSpec.paired(GemmSpec.reads(~U32,~Gemm.direct,count,weight),_) == wanted : List<&2,ReductionLaws.AddressPair>}
+  +start = Equal.trans(U32,weight,U32.from_nat(base),U32.from_nat(Nat.add(base,0n)),
+    Equal.sym(U32,U32.from_nat(base),weight,Arithmetic.native_roundtrip(weight)),
+    Equal.cong(Nat,U32,U32.from_nat,base,Nat.add(base,0n),Equal.sym(Nat,Nat.add(base,0n),base,Addition.zero_right(base))))
+  +direct = Equal.trans(List<&2,U32>,GemmSpec.reads(~U32,~Gemm.direct,count,weight),GemmSpec.reads(~U32,~Gemm.direct,count,U32.from_nat(Nat.add(base,0n))),weights,
+    Equal.cong(U32,List<&2,U32>,first => GemmSpec.reads(~U32,~Gemm.direct,count,first),weight,U32.from_nat(Nat.add(base,0n)),start),
+    GemmSpec.direct_reads(count,base,0n))
+  %Equal.sym(List<&2,U32>,GemmSpec.reads(~U32,~Gemm.direct,count,weight),weights,direct) :
+    {GemmSpec.paired(_,tiles) == wanted : List<&2,ReductionLaws.AddressPair>}
+  GemmSpec.paired_keys(~Nat,~Nat,~GemmSpec.Grid,~GemmSpec.offset_word,~GemmSpec.grid_read,Ranges.range(count,0n),base,grid)
+
+# The taps of job index of a phase chunk are the weights from its unit's slot
+# and entries of its grid.
+def phase_job(+phase: Kernel.Phase,+chunk: Kernel.Chunk,+wb: U32,+index: U32) -> Gemm.Job<Kernel.Cursor()>:
+  Kernel.job(Execution.work_plan(Execution.work(phase,chunk,wb)),index)
+def phase_key(+phase: Kernel.Phase,+chunk: Kernel.Chunk,+wb: U32,+index: U32) -> Gemm.Both<Nat,GemmSpec.Grid>:
+  +plan = Execution.work_plan(Execution.work(phase,chunk,wb))
+  taps_key(Lookup.job_grid(plan,index),plan_weight(plan,index))
+def phase_taps(+phase: Kernel.Phase,+chunk: Kernel.Chunk,+wb: U32,+index: U32,
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(Packing.phase_columns(phase))) == True{} : Bool},
+  +rows_positive: {Nat.is_lt(0n,U32.to_nat(Packing.phase_rows(phase))) == True{} : Bool}) ->
+  {GemmSpec.taps(~Kernel.Cursor(),~Kernel.entries,U32.to_nat(Kernel.phase_inner(phase)),job_cursor(phase_job(phase,chunk,wb,index))) ==
+    keyed(U32.to_nat(Kernel.phase_inner(phase)),phase_key(phase,chunk,wb,index)) : List<&2,ReductionLaws.AddressPair>}:
+  Kernel.Phase{Kernel.Geometry{+c,o,+h,+w,+k,+s,p,gh,gw},Kernel.Axis{+yf,+yc,yt,+yr,+ys},Kernel.Axis{+xf,+xc,xt,+xr,+xs},+inner} = phase
+  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{geometry,+layout},+first,count,+target},+chunk_row,+rows,+low,+chunk_group} = chunk
+  Kernel.Tiling{groups,+shifts,+outputs,+column_low,kernel,height,width,+cg,cr} = layout
+  +units = ((c + 7) / 8 : U32)
+  +phase_groups = ((xc + 7) / 8 : U32)
+  +span = Bool.pick(U32,U32.is_lt(chunk_group,phase_groups),U32.min(cg,(phase_groups - chunk_group : U32)),0)
+  +block = (outputs * shifts + 1 : U32)
+  +step = (cg * block : U32)
+  +start = Bool.pick(U32,U32.is_lt(yf,chunk_row),((chunk_row - yf + s - 1) / s : U32),0)
+  +source = ((start + ys + k - low) * step + xs + k - column_low : U32)
+  +base = (source + index / units / span * step + index / units % span * block : U32)
+  +jump = (shifts - (yr - 1) * step - (xr - 1) : U32)
+  grid_taps(base,step,xr,yr,jump,(wb + index % units * inner : U32),U32.to_nat(inner),columns_positive,rows_positive)
+
+# ---- The steps of a job ----
+
+# Step t of a grid tap list reads entry (output, row, column) when t is the
+# row-major index of that entry.
+def entry_step(+phase: Kernel.Phase,+chunk: Kernel.Chunk,+wb: U32,+index: U32,+output: Nat,+row: Nat,+column: Nat,
+  +row_inside: {Nat.is_lt(row,U32.to_nat(Packing.phase_rows(phase))) == True{} : Bool},
+  +column_inside: {Nat.is_lt(column,U32.to_nat(Packing.phase_columns(phase))) == True{} : Bool}) ->
+  {GemmSpec.grid_read(Lookup.job_grid(Execution.work_plan(Execution.work(phase,chunk,wb)),index),Packing.phase_index(phase,output,row,column)) ==
+    Lookup.read_address(Lookup.phase_read(phase,chunk,wb,index,output,row,column)) : U32}:
+  Kernel.Phase{Kernel.Geometry{+c,o,+h,+w,+k,+s,p,gh,gw},Kernel.Axis{+yf,+yc,yt,+yr,+ys},Kernel.Axis{+xf,+xc,xt,+xr,+xs},+inner} = phase
+  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{geometry,+layout},+first,count,+target},+chunk_row,+rows,+low,+chunk_group} = chunk
+  Kernel.Tiling{groups,+shifts,+outputs,+column_low,kernel,height,width,+cg,cr} = layout
+  +units = ((c + 7) / 8 : U32)
+  +phase_groups = ((xc + 7) / 8 : U32)
+  +span = Bool.pick(U32,U32.is_lt(chunk_group,phase_groups),U32.min(cg,(phase_groups - chunk_group : U32)),0)
+  +block = (outputs * shifts + 1 : U32)
+  +step = (cg * block : U32)
+  +start = Bool.pick(U32,U32.is_lt(yf,chunk_row),((chunk_row - yf + s - 1) / s : U32),0)
+  +source = ((start + ys + k - low) * step + xs + k - column_low : U32)
+  +base = (source + index / units / span * step + index / units % span * block : U32)
+  +jump = (shifts - (yr - 1) * step - (xr - 1) : U32)
+  +columns_positive = Order.positive_bound(column,U32.to_nat(xr),column_inside)
+  +rows_positive = Order.positive_bound(row,U32.to_nat(yr),row_inside)
+  Equal.trans(U32,GemmSpec.grid_read(GemmSpec.Grid{base,U32.to_nat(step),xr,yr,jump,0n},RowMajor.index(output,U32.to_nat(yr),U32.to_nat(xr),row,column)),
+    GemmSpec.grid_at_word(GemmSpec.Grid{base,U32.to_nat(step),xr,yr,jump,0n},output,row,column),
+    Lookup.read_address(Lookup.phase_read(phase,chunk,wb,index,output,row,column)),
+    GemmSpec.grid_read_index(base,U32.to_nat(step),xr,yr,jump,output,row,column,row_inside,column_inside),
+    Lookup.entry_word(phase,chunk,wb,index,output,row,column,columns_positive,rows_positive))
+
+# Step t of the weights reads weight + t.
+def weight_step(+weight: U32,+step: Nat) -> {GemmSpec.offset_word(U32.to_nat(weight),step) == (weight + U32.from_nat(step) : U32) : U32}:
+  Equal.trans(U32,U32.from_nat(Nat.add(U32.to_nat(weight),step)),(U32.from_nat(U32.to_nat(weight)) + U32.from_nat(step) : U32),(weight + U32.from_nat(step) : U32),
+    GemmSpec.encoded_sum(U32.to_nat(weight),step),
+    Equal.cong(U32,U32,value => (value + U32.from_nat(step) : U32),U32.from_nat(U32.to_nat(weight)),weight,Arithmetic.native_roundtrip(weight)))
+
+# ---- The job of a reduction ----
+
 def plan(+reduction: Chunks.Reduction) -> Kernel.Plan:
   +selected = Chunks.selection(reduction)
   +q = Chunks.query(selected)
-  Execution.work_plan(Execution.work(Jobs.context(Chunks.phase(selected)),Chunks.chunk(q),Chunks.weight_base(q),Chunks.offset_base(q)))
+  Execution.work_plan(Execution.work(Jobs.context(Chunks.phase(selected)),Chunks.chunk(q),Chunks.weight_base(q)))
 def job_index(+reduction: Chunks.Reduction) -> U32:
   Jobs.job_index(Chunks.work(Chunks.selection(reduction)),Chunks.line(reduction),Chunks.local_group(reduction),Chunks.unit(reduction))
+def job(+reduction: Chunks.Reduction) -> Gemm.Job<Kernel.Cursor()>:
+  Kernel.job(plan(reduction),job_index(reduction))
+def key(+reduction: Chunks.Reduction) -> Gemm.Both<Nat,GemmSpec.Grid>:
+  +selected = Chunks.selection(reduction)
+  phase_key(Jobs.context(Chunks.phase(selected)),Chunks.chunk(Chunks.query(selected)),Chunks.weight_base(Chunks.query(selected)),job_index(reduction))
+def count(+reduction: Chunks.Reduction) -> Nat:
+  U32.to_nat(Kernel.phase_inner(Jobs.context(Chunks.phase(Chunks.selection(reduction)))))
 def tap(+reduction: Chunks.Reduction) -> Nat:
   Packing.phase_index(Jobs.context(Chunks.phase(Chunks.selection(reduction))),Chunks.output(reduction),Chunks.tap_row(reduction),Chunks.tap_column(reduction))
-def readers(+reduction: Chunks.Reduction,+original: Buffer.Model<F32>) -> NativeJobs.Readers:
-  +packed = Weights.full_state(Chunks.phase(Chunks.selection(reduction)),original)
-  NativeJobs.Readers{Fill.tree(Chunks.filled(reduction)),Packed.weight_tree(packed),Packed.offset_tree(packed)}
-def initial(+reduction: Chunks.Reduction,+original: Buffer.Model<F32>) -> Reduction.Loop:
-  NativeJobs.initial_loop(job_index(reduction),plan(reduction),readers(reduction,original))
-def weight_read(+reduction: Chunks.Reduction,+original: Buffer.Model<F32>) -> Tile.Tile8:
-  Tree.read(Tile.Tile8,Packed.weight_tree(Weights.full_state(Chunks.phase(Chunks.selection(reduction)),original)),
-    (context_weight(Reduction.native_context(initial(reduction,original))) + (Chunks.offset_base(Chunks.query(Chunks.selection(reduction))) + U32.from_nat(tap(reduction))) : U32))
-def weight_read_matches(+reduction: Chunks.Reduction,+valid: Chunks.Valid<reduction>,+bases: Bases<Chunks.selection(reduction)>,+original: Buffer.Model<F32>) ->
-  {weight_read(reduction,original) == packed_weight_read(reduction,original) : Tile.Tile8}:
+
+# The weight slot a step reads is its slot in the packed phase.
+def weight_slot(+reduction: Chunks.Reduction,+valid: Chunks.Valid<reduction>,+bases: Bases<Chunks.selection(reduction)>,+original: Buffer.Model<Tile.Tile8>,+step: Nat) ->
+  {(plan_weight(plan(reduction),job_index(reduction)) + U32.from_nat(step) : U32) ==
+    Packed.address(Weights.packed_query(Chunks.phase(Chunks.selection(reduction)),original,Chunks.unit(reduction),step)) : U32}:
   Chunks.Reduction{+selected,+line,+local_group,+unit,oc,tr,tc} = reduction
   Chunks.Selection{+q,y,x,yi,xi} = selected
-  Chunks.Query{+grid,first,target,plane,source,chunk_row,chunk_group,+wb,+ob} = q
-  GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
+  Chunks.Query{+grid,first,target,source,chunk_row,chunk_group,+wb} = q
+  GeometryChunks.Grid{+call,e,leaf_count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
   Chunks.Valid{ci,room,fits,+enabled,+ji,oi,ri,coli} = valid
-  Bases{+wb_equal,ob_equal} = bases
-  +phase = Chunks.phase(selected)
-  +pq = Weights.packed_query(phase,original,Nat.div(unit,2n),tap(reduction))
-  +full = Weights.full_state(phase,original)
-  +complete = Packed.complete(pq,Packed.initial(pq))
-  +tree = Packed.weight_tree(full)
-  +address = (context_weight(Reduction.native_context(initial(reduction,original))) + (ob + U32.from_nat(tap(reduction))) : U32)
-  +slot = U32.from_nat(Nat.add(Nat.mul(Nat.div(unit,2n),U32.to_nat(Kernel.phase_inner(Jobs.context(phase)))),tap(reduction)))
-  +address_equal = Equal.trans(U32,address,(wb + slot : U32),Packed.weight_address(pq),weight_pointer_matches(Chunks.work(selected),Jobs.active_phase(phase,enabled),wb,ob,line,local_group,unit,tap(reduction),ji,readers(reduction,original)),Equal.cong(U32,U32,base => (base + slot : U32),wb,weight_base(phase),wb_equal))
-  Equal.trans(Tile.Tile8,weight_read(reduction,original),Tree.read(Tile.Tile8,tree,Packed.weight_address(pq)),packed_weight_read(reduction,original),Equal.cong(U32,Tile.Tile8,Tree.read(Tile.Tile8,tree),address,Packed.weight_address(pq),address_equal),
-    Equal.cong(PackedWeights.Packed,Tile.Tile8,state => Tree.read(Tile.Tile8,Packed.weight_tree(state),Packed.weight_address(pq)),full,complete,Equal.sym(PackedWeights.Packed,complete,full,Weights.full_state_matches(phase,original,Nat.div(unit,2n),tap(reduction)))))
-
-def offset_read(+reduction: Chunks.Reduction,+original: Buffer.Model<F32>) -> U32:
-  Tree.read(U32,Packed.offset_tree(Weights.full_state(Chunks.phase(Chunks.selection(reduction)),original)),(Chunks.offset_base(Chunks.query(Chunks.selection(reduction))) + U32.from_nat(tap(reduction)) : U32))
-def offset_read_matches(+reduction: Chunks.Reduction,+valid: Chunks.Valid<reduction>,+bases: Bases<Chunks.selection(reduction)>,+original: Buffer.Model<F32>) ->
-  {offset_read(reduction,original) == Offsets.value(PackedWeights.phase_table(Jobs.context(Chunks.phase(Chunks.selection(reduction))),Kernel.tiling(Jobs.geometry(Chunks.phase(Chunks.selection(reduction)))),0),U32.from_nat(tap(reduction))) : U32}:
-  Chunks.Reduction{+selected,line,local_group,+unit,+oc,+tr,+tc} = reduction
-  Chunks.Selection{+q,y,x,yi,xi} = selected
-  Chunks.Query{+grid,first,target,plane,source,chunk_row,chunk_group,wb,+ob} = q
-  GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
-  Domain.Call{+g,b,l,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  Chunks.Valid{ci,room,fits,enabled,+ji,+oi,+ri,+coli} = valid
-  Jobs.Inside{li,gi,+ui} = ji
-  Bases{wb_equal,+ob_equal} = bases
-  +phase = Chunks.phase(selected)
-  +block = Nat.div(unit,2n)
-  +pq = Weights.packed_query(phase,original,block,tap(reduction))
-  +full = Weights.full_state(phase,original)
-  +complete = Packed.complete(pq,Packed.initial(pq))
-  +tree = Packed.offset_tree(full)
-  +block_inside = {%Equal.sym(Nat,Weights.block_count(phase),Ceiling.ceiling(Domain.channels(g),8n),Weights.block_count_exact(phase)) : {Nat.is_lt(block,_) == True{} : Bool} Weights.block_inside(phase,unit,ui) : {Nat.is_lt(block,Weights.block_count(phase)) == True{} : Bool}}
-  +tap_inside = Weights.tap_index_inside(phase,oc,tr,tc,oi,ri,coli)
-  +address_equal = Equal.cong(U32,U32,base => (base + U32.from_nat(tap(reduction)) : U32),ob,offset_base(phase),ob_equal)
-  +wanted = Offsets.value(PackedWeights.phase_table(Jobs.context(phase),Kernel.tiling(g),0),U32.from_nat(tap(reduction)))
-  Equal.trans(U32,offset_read(reduction,original),Tree.read(U32,tree,Packed.offset_address(pq)),wanted,
-    Equal.cong(U32,U32,Tree.read(U32,tree),(ob + U32.from_nat(tap(reduction)) : U32),Packed.offset_address(pq),address_equal),
-    Equal.trans(U32,Tree.read(U32,tree,Packed.offset_address(pq)),Weights.offset(Packed.read(pq,complete)),wanted,
-      Equal.cong(PackedWeights.Packed,U32,state => Tree.read(U32,Packed.offset_tree(state),Packed.offset_address(pq)),full,complete,Equal.sym(PackedWeights.Packed,complete,full,Weights.full_state_matches(phase,original,block,tap(reduction)))),
-      Weights.packed_offset_readback(phase,original,block,tap(reduction),block_inside,tap_inside)))
-
-def input_read(+reduction: Chunks.Reduction,+original: Buffer.Model<F32>) -> Tile.Tile8:
-  Tree.read(Tile.Tile8,Fill.tree(Chunks.filled(reduction)),(Lookup.context_source(Reduction.native_context(initial(reduction,original))) + offset_read(reduction,original) : U32))
-def input_read_matches(+reduction: Chunks.Reduction,+valid: Chunks.Valid<reduction>,+bases: Bases<Chunks.selection(reduction)>,+original: Buffer.Model<F32>) ->
-  {input_read(reduction,original) == Tree.read(Tile.Tile8,Fill.tree(Chunks.filled(reduction)),Lookup.read_address(Chunks.sample(reduction))) : Tile.Tile8}:
-  Chunks.Reduction{+selected,+line,+local_group,+unit,oc,tr,tc} = reduction
-  Chunks.Selection{+q,y,x,yi,xi} = selected
-  Chunks.Query{+grid,first,target,plane,source,chunk_row,chunk_group,+wb,+ob} = q
-  GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
-  Domain.Call{+g,b,l,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  +phase = Jobs.context(Chunks.phase(selected))
-  +job_readers = readers(reduction,original)
-  +source = Lookup.context_source(Reduction.native_context(initial(reduction,original)))
-  +wanted_offset = Offsets.value(PackedWeights.phase_table(phase,Kernel.tiling(g),0),U32.from_nat(tap(reduction)))
-  +at_base = Offsets.value(PackedWeights.phase_table(phase,Lookup.chunk_layout(Chunks.chunk(q)),ob),U32.from_nat(tap(reduction)))
-  +table_same = {{==} : {wanted_offset == at_base : U32}}
-  +address_equal = Equal.trans(U32,(source + offset_read(reduction,original) : U32),(source + wanted_offset : U32),Lookup.read_address(Chunks.sample(reduction)),Equal.cong(U32,U32,value => (source + value : U32),offset_read(reduction,original),wanted_offset,offset_read_matches(reduction,valid,bases,original)),
-    Equal.trans(U32,(source + wanted_offset : U32),(source + at_base : U32),Lookup.read_address(Chunks.sample(reduction)),Equal.cong(U32,U32,value => (source + value : U32),wanted_offset,at_base,table_same),Lookup.source_table_matches(phase,Chunks.chunk(q),wb,ob,job_index(reduction),U32.from_nat(tap(reduction)),job_readers)))
-  Equal.cong(U32,Tile.Tile8,Tree.read(Tile.Tile8,Fill.tree(Chunks.filled(reduction))),(source + offset_read(reduction,original) : U32),Lookup.read_address(Chunks.sample(reduction)),address_equal)
-
-# The natural address tape observes those same MAC operands at every ordinal.
-def initial_index(+reduction: Chunks.Reduction,+original: Buffer.Model<F32>) ->
-  {Natural.loop_index(initial(reduction,original)) == Chunks.offset_base(Chunks.query(Chunks.selection(reduction))) : U32}:
-  Chunks.Reduction{+selected,line,group,unit,out,row,column} = reduction
-  Chunks.Selection{+query,y,x,yi,xi} = selected
-  Chunks.Query{+grid,first,target,plane,source,chunk_row,chunk_group,wb,ob} = query
-  GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
-  Domain.Call{+g,b,l,facts} = call
-  Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  {==}
-def natural_address(+base: U32,+index: Nat) -> {U32.from_nat(Nat.add(U32.to_nat(base),index)) == (base + U32.from_nat(index) : U32) : U32}:
-  Equal.trans(U32,U32.from_nat(Nat.add(U32.to_nat(base),index)),(U32.from_nat(U32.to_nat(base)) + U32.from_nat(index) : U32),(base + U32.from_nat(index) : U32),
-    Equal.sym(U32,(U32.from_nat(U32.to_nat(base)) + U32.from_nat(index) : U32),U32.from_nat(Nat.add(U32.to_nat(base),index)),WordArithmetic.native_add(U32.to_nat(base),index)),
-    Equal.cong(U32,U32,value => (value + U32.from_nat(index) : U32),U32.from_nat(U32.to_nat(base)),base,Arithmetic.native_roundtrip(base)))
+  Bases{+wb_equal} = bases
+  +work = Chunks.work(selected)
+  +inner = Kernel.phase_inner(Jobs.context(Chunks.phase(selected)))
+  +native_unit = (job_index(reduction) % Jobs.native_units(work) : U32)
+  +t = U32.from_nat(step)
+  +unit_equal = Encoded.encoding(native_unit,unit,Jobs.unit_decode(work,Jobs.active_phase(Chunks.phase(selected),enabled),line,local_group,unit,ji))
+  +slot = Nat.add(Nat.mul(unit,U32.to_nat(inner)),step)
+  +scaled = Equal.trans(U32,((wb + native_unit * inner : U32) + t : U32),(wb + (native_unit * inner + t : U32) : U32),(wb + U32.from_nat(slot) : U32),
+    Arithmetic.add_associative(wb,(native_unit * inner : U32),t),
+    Equal.cong(U32,U32,value => (wb + value : U32),(native_unit * inner + t : U32),U32.from_nat(slot),
+      Equal.trans(U32,(native_unit * inner + t : U32),(U32.from_nat(unit) * inner + t : U32),U32.from_nat(slot),
+        Equal.cong(U32,U32,value => (value * inner + t : U32),native_unit,U32.from_nat(unit),unit_equal),
+        %Arithmetic.native_roundtrip(inner) : {(U32.from_nat(unit) * _ + t : U32) == U32.from_nat(slot) : U32} Encoded.encoded_madd(unit,U32.to_nat(inner),step))))
+  Equal.trans(U32,((wb + native_unit * inner : U32) + t : U32),(wb + U32.from_nat(slot) : U32),(weight_base(Chunks.phase(selected)) + U32.from_nat(slot) : U32),scaled,
+    Equal.cong(U32,U32,value => (value + U32.from_nat(slot) : U32),wb,weight_base(Chunks.phase(selected)),wb_equal))

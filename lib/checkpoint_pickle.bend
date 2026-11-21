@@ -11,7 +11,7 @@ type Value is Data:
   Flag{value: Bool}
   Integer{word: U32}
   Float{high: U32,low: U32}
-  Text{text: String}
+  Unicode{text: String}
   Sequence{items: List<&2,Value>}
   Items{items: List<&2,Value>}
   Dict{entries: List<&2,Value>}
@@ -45,7 +45,7 @@ type Line is Data:
 
 def same_key(left: Value,right: Value) -> Bool:
   match left right:
-    case Text{left} Text{right}: String.eq(left,right)
+    case Unicode{left} Unicode{right}: String.eq(left,right)
     case Integer{left} Integer{right}: U32.is_eq(left,right)
     case left right: False{}
 
@@ -68,7 +68,7 @@ def assign_pairs(pairs: List<&2,Value>,entries: List<&2,Value>) -> List<&2,Value
 def get(entries: List<&2,Value>,+key: String) -> Value:
   match entries:
     case Nil{}: Absent{}
-    case Con{Sequence{Con{Text{+name},Con{+value,others}}},rest}: Bool.pick(Value,String.eq(name,key),value,get(rest,key))
+    case Con{Sequence{Con{Unicode{+name},Con{+value,others}}},rest}: Bool.pick(Value,String.eq(name,key),value,get(rest,key))
     case Con{entry,rest}: get(rest,key)
 
 # The items above the mark, oldest first, and the stack below it.
@@ -158,7 +158,7 @@ def get_long(bytes: List<&2,U32>,machine: Machine) -> Step:
 
 # Text: a length, then that many UTF-8 bytes.
 def text_of(+length: U32,+bytes: List<&2,U32>,machine: Machine) -> Step:
-  Running{List.drop(&2,U32,bytes,U32.to_nat(length)),push(Text{Bytes.text(List.take(&2,U32,bytes,U32.to_nat(length)))},machine)}
+  Running{List.drop(&2,U32,bytes,U32.to_nat(length)),push(Unicode{Bytes.text(List.take(&2,U32,bytes,U32.to_nat(length)))},machine)}
 
 def text_short(bytes: List<&2,U32>,machine: Machine) -> Step:
   match bytes:
@@ -186,7 +186,7 @@ def global(bytes: List<&2,U32>,machine: Machine) -> Step:
 def stack_global(bytes: List<&2,U32>,machine: Machine) -> Step:
   Machine{stack,memo,capacity,next} = machine
   match stack:
-    case Con{Text{name},Con{Text{module},rest}}: Running{bytes,Machine{Global{module,name} <> rest,memo,capacity,next}}
+    case Con{Unicode{name},Con{Unicode{module},rest}}: Running{bytes,Machine{Global{module,name} <> rest,memo,capacity,next}}
     case stack: Halted{"STACK_GLOBAL without two strings"}
 
 # Numbers
@@ -297,7 +297,9 @@ def build(bytes: List<&2,U32>,machine: Machine) -> Step:
   Machine{stack,memo,capacity,next} = machine
   match stack:
     case Con{state,Con{Object{class,arguments,old},rest}}: Running{bytes,Machine{Object{class,arguments,state} <> rest,memo,capacity,next}}
-    case stack: Halted{"BUILD on a value that is not an object"}
+    # The attributes of an OrderedDict, such as the _metadata of a state dict, leave its items.
+    case Con{state,Con{Dict{entries},rest}}: Running{bytes,Machine{Dict{entries} <> rest,memo,capacity,next}}
+    case stack: Halted{"BUILD on a value that is not an object or a dictionary"}
 
 # An OrderedDict call with no arguments is a dictionary, so its items can follow.
 def called(ordered: Bool,callable: Value,arguments: Value) -> Value:

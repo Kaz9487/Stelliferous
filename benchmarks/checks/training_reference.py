@@ -159,6 +159,40 @@ def batch_norm_evaluate(x, gamma, beta, running_mean, running_variance, epsilon)
     return add(multiply(xhat, spread(gamma)), spread(beta))
 
 
+def line_mean(values):
+    """The mean along the last axis, in the shape with that extent 1."""
+    values = np.asarray(values, F32)
+    return divide(sum8(values, (values.ndim - 1,)), F32(values.shape[-1]))[..., None]
+
+
+def layer_norm_forward(x, gamma, beta, epsilon):
+    """x [...,D]: (output, xhat, deviation) as LayerNorm.forward computes them."""
+    difference = subtract(x, line_mean(x))
+    deviation = divide(F32(1), np.sqrt(add(line_mean(multiply(difference, difference)), F32(epsilon))))
+    xhat = multiply(difference, deviation)
+    return add(multiply(xhat, gamma), beta), xhat, deviation
+
+
+def layer_norm_backward(dy, xhat, deviation, gamma):
+    """(dx, dgamma, dbeta) as LayerNorm.backward computes them."""
+    dy = np.asarray(dy, F32)
+    axes = tuple(range(dy.ndim - 1))
+    dz = multiply(dy, gamma)
+    inner = subtract(subtract(dz, line_mean(dz)), multiply(xhat, line_mean(multiply(dz, xhat))))
+    return multiply(inner, deviation), sum8(multiply(dy, xhat), axes), sum8(dy, axes)
+
+
+def sgd_with(parameter, gradient, velocity, rate, momentum, decay):
+    """(parameter, velocity) after one step of Optimizer.sgd_with; a velocity of None is still."""
+    direction = add(gradient, multiply(parameter, F32(decay))) if decay != 0 else gradient
+    if momentum == 0:
+        moved, velocity = direction, None
+    else:
+        moved = direction if velocity is None else add(multiply(velocity, F32(momentum)), direction)
+        velocity = moved
+    return subtract(parameter, multiply(moved, F32(rate))), velocity
+
+
 def updated(parameter, gradient, rate):
     return subtract(parameter, multiply(F32(rate), gradient))
 

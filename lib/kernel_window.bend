@@ -58,14 +58,3 @@ def padded(positions: U32) -> U32:
 # back by first / stride rows. A window that starts at row 0 keeps the offset.
 def start(+offset: U32,+stride: U32,+output_width: U32,+first: U32) -> U32:
   Bool.pick(U32,U32.is_zero(first),offset,(offset - first / stride * output_width : U32))
-
-# Channel c copies count values from c * source_stride + source_start to
-# c * target_stride. Each plane is one contiguous copy.
-def copy_planes(remaining: Nat,+channel: U32,+count: U32,+source_stride: U32,+source_start: U32,+target_stride: U32,
-  owners: Array<F32> & Array<F32>) -> Array<F32> & Array<F32>:
-  match remaining:
-    case 0n: owners
-    case 1n+rest:
-      (source,target) = owners
-      copy_planes(rest,(channel + 1 : U32),count,source_stride,source_start,target_stride,
-        Traversal.copy(~F32,U32.to_nat(count),(channel * source_stride + source_start : U32),(channel * target_stride : U32),source,target))

@@ -2,16 +2,14 @@
 # Native capacity is a U32; extent is unbounded and does not assert no overflow.
 import Base
 import ./storage_tree_model.bend as Tree
+import ../kernel_gemm.bend as KernelGemm
 
-type Both<-Left: Data,-Right: Data> is Data:
-  Both{left: Left,right: Right}
-
-def first(-Left: Data,-Right: Data,evidence: Both<Left,Right>) -> Left:
-  Both{left,right} = evidence
+def first(-Left: Data,-Right: Data,evidence: KernelGemm.Both<Left,Right>) -> Left:
+  KernelGemm.Both{left,right} = evidence
   left
 
-def second(-Left: Data,-Right: Data,evidence: Both<Left,Right>) -> Right:
-  Both{left,right} = evidence
+def second(-Left: Data,-Right: Data,evidence: KernelGemm.Both<Left,Right>) -> Right:
+  KernelGemm.Both{left,right} = evidence
   right
 
 law Balanced:
@@ -26,7 +24,7 @@ def Balanced(Element,depth,tree):
     case 0n Tree.Node{left,right}: Empty
     case 1n+rest Tree.Leaf{value}: Empty
     case 1n+ +rest Tree.Node{left,right}:
-      Both<Balanced(Element,rest,left),Balanced(Element,rest,right)>
+      KernelGemm.Both<Balanced(Element,rest,left),Balanced(Element,rest,right)>
 
 def extent(depth: Nat) -> Nat:
   match depth:
@@ -36,7 +34,7 @@ def extent(depth: Nat) -> Nat:
 def fresh(-Element: Data,+depth: Nat,+value: Element) -> Balanced(Element,depth,Tree.fresh(Element,depth,value)):
   match depth:
     case 0n: Unit{}
-    case 1n+ +rest: Both{fresh(Element,rest,value),fresh(Element,rest,value)}
+    case 1n+ +rest: KernelGemm.Both{fresh(Element,rest,value),fresh(Element,rest,value)}
 
 def store_node(-Element: Data,+depth: Nat,+left: Tree.Tree<Element>,+right: Tree.Tree<Element>,
   +half: U32,+index: U32,+value: Element,+choose_left: Bool,
@@ -47,8 +45,8 @@ def store_node(-Element: Data,+depth: Nat,+left: Tree.Tree<Element>,+right: Tree
     Tree.Node{Tree.store(Element,left,half,index,value),right},
     Tree.Node{left,Tree.store(Element,right,half,(index - half : U32),value)})):
   match choose_left:
-    case True{}: Both{left_stored,right_balanced}
-    case False{}: Both{left_balanced,right_stored}
+    case True{}: KernelGemm.Both{left_stored,right_balanced}
+    case False{}: KernelGemm.Both{left_balanced,right_stored}
 
 def store(-Element: Data,+depth: Nat,+tree: Tree.Tree<Element>,+capacity: U32,+index: U32,+value: Element,
   balanced: Balanced(Element,depth,tree)) -> Balanced(Element,depth,Tree.store(Element,tree,capacity,index,value)):
@@ -57,7 +55,7 @@ def store(-Element: Data,+depth: Nat,+tree: Tree.Tree<Element>,+capacity: U32,+i
     case 0n Tree.Node{left,right}: match balanced:
     case 1n+rest Tree.Leaf{previous}: match balanced:
     case 1n+ +rest Tree.Node{+left,+right}:
-      Both{+left_balanced,+right_balanced} = balanced
+      KernelGemm.Both{+left_balanced,+right_balanced} = balanced
       store_node(Element,rest,left,right,U32.shr(capacity),index,value,U32.is_lt(index,U32.shr(capacity)),
         left_balanced,right_balanced,
         store(Element,rest,left,U32.shr(capacity),index,value,left_balanced),
@@ -74,7 +72,7 @@ def capacity(-Element: Data,+depth: Nat,+tree: Tree.Tree<Element>,balanced: Bala
     case 0n Tree.Node{left,right}: match balanced:
     case 1n+rest Tree.Leaf{value}: match balanced:
     case 1n+ +rest Tree.Node{+left,+right}:
-      Both{left_balanced,right_balanced} = balanced
+      KernelGemm.Both{left_balanced,right_balanced} = balanced
       %capacity(Element,rest,left,left_balanced) : {U32.shl(Tree.capacity(Element,left)) == U32.shl(_) : U32}
       {==}
 
@@ -87,8 +85,8 @@ def unique_depth(-Element: Data,tree: Tree.Tree<Element>,left_depth: Nat,right_d
     case Tree.Node{left_tree,right_tree} 0n right_depth: match left:
     case Tree.Node{left_tree,right_tree} 1n+left_depth 0n: match right:
     case Tree.Node{+left_tree,right_tree} 1n+ +left_depth 1n+ +right_depth:
-      Both{left_balanced,left_other} = left
-      Both{right_balanced,right_other} = right
+      KernelGemm.Both{left_balanced,left_other} = left
+      KernelGemm.Both{right_balanced,right_other} = right
       Equal.cong(Nat,Nat,depth => 1n+depth,left_depth,right_depth,unique_depth(Element,left_tree,left_depth,right_depth,left_balanced,right_balanced))
 
 # Balanced trees at the same depth expose the same native capacity.

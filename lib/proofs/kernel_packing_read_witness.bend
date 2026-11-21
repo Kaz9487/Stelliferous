@@ -6,65 +6,35 @@ import ./traversal_witness.bend as TraversalWitness
 import ../kernel_tile.bend as Tile
 import ./kernel_tile_witness.bend as TileWitness
 
-def family(-input: Array<F32>) -> Data:
-  Witness.ArrayWitness<F32,input>
+def family(~Element: Data,-input: Array<Element>) -> Data:
+  Witness.ArrayWitness<Element,input>
 
-def masked(-input: Array<F32>,+inside: Bool,-result: Array<F32> & F32,observed: Witness.Read<F32,input,result>) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.mask_pixel(inside,result)>:
+def masked(~Element: Data,~field: Element -> F32,-input: Array<Element>,+inside: Bool,-result: Array<Element> & Element,observed: Witness.Read<Element,input,result>) ->
+  TraversalWitness.Sample<Array<Element>,F32,input,PackingSamples.mask_field(~Element,~field,inside,result)>:
   Witness.Read{value,equation} = observed
-  %Equal.sym(Array<F32> & F32,result,(input,value),equation) : TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.mask_pixel(inside,_)>
-  TraversalWitness.Sample{PackingSamples.masked(value,inside),{==}}
+  %Equal.sym(Array<Element> & Element,result,(input,value),equation) : TraversalWitness.Sample<Array<Element>,F32,input,PackingSamples.mask_field(~Element,~field,inside,_)>
+  TraversalWitness.Sample{PackingSamples.masked(field(value),inside),{==}}
 
-def masked_read(-input: Array<F32>,+inside: Bool,-result: Array<F32> & F32,observed: Witness.Read<F32,input,result>) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,Packing.masked(inside,result)>:
+def masked_read(~Element: Data,~field: Element -> F32,-input: Array<Element>,+inside: Bool,-result: Array<Element> & Element,observed: Witness.Read<Element,input,result>) ->
+  TraversalWitness.Sample<Array<Element>,F32,input,Packing.masked_field(~Element,inside,Packing.field_of(~Element,~field,result))>:
   Witness.Read{value,equation} = observed
-  %Equal.sym(Array<F32> & F32,result,(input,value),equation) : TraversalWitness.Sample<Array<F32>,F32,input,Packing.masked(inside,_)>
-  TraversalWitness.Sample{PackingSamples.masked(value,inside),{==}}
+  %Equal.sym(Array<Element> & Element,result,(input,value),equation) :
+    TraversalWitness.Sample<Array<Element>,F32,input,Packing.masked_field(~Element,inside,Packing.field_of(~Element,~field,_))>
+  TraversalWitness.Sample{PackingSamples.masked(field(value),inside),{==}}
 
-def pixel(-input: Array<F32>,+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,Packing.pixel(input,row,column,channel,height,width)>:
-  +index = (channel + row * width + column : U32)
-  masked_read(input,U32.is_lt(row,height) && U32.is_lt(column,width),Array.get(F32,input,index),Witness.observed(F32,input,index,evidence))
+def pixel(~Element: Data,~field: Element -> F32,-input: Array<Element>,+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,+step: U32,evidence: family(~Element,input)) ->
+  TraversalWitness.Sample<Array<Element>,F32,input,Packing.pixel(~Element,~field,input,row,column,channel,height,width,step)>:
+  +index = (channel + (row * width + column) * step : U32)
+  masked_read(~Element,~field,input,U32.is_lt(row,height) && U32.is_lt(column,width),Array.get(Element,input,index),Witness.observed(Element,input,index,evidence))
 
-def row_read(-input: Array<F32>,context: Packing.PixelBlock,index: Nat,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,Packing.read_block_pixel(input,context,index)>:
-  Packing.PixelBlock{row,column,channel,height,width,stride} = context
-  pixel(input,row,(column + U32.from_nat(index) * stride : U32),channel,height,width,evidence)
+def row_read(~Element: Data,~field: Element -> F32,-input: Array<Element>,context: Packing.PixelBlock,index: Nat,evidence: family(~Element,input)) ->
+  TraversalWitness.Sample<Array<Element>,F32,input,Packing.read_block_pixel(~Element,~field,input,context,index)>:
+  Packing.PixelBlock{row,column,channel,height,width,+stride,step} = context
+  pixel(~Element,~field,input,row,(column + U32.from_nat(index) * stride : U32),channel,height,width,step,evidence)
 
-def row_block(-input: Array<F32>,+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,+stride: U32,+next_row: U32,+offset: U32,+output_width: U32,+kernel_column: U32,+padding: U32,+evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,Packing.block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>:
-  TileWitness.tail(~Array<F32>,~Packing.PixelBlock,~family,~Packing.read_block_pixel,~row_read,input,Packing.PixelBlock{row,column,channel,height,width,stride},
-    Packing.pixel(input,row,column,channel,height,width),evidence,pixel(input,row,column,channel,height,width,evidence))
-
-def wrap_pixel(same: Bool,-input: Array<F32>,+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,+stride: U32,+next_row: U32,+offset: U32,+output_width: U32,+kernel_column: U32,+padding: U32,+lane: U32,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,Packing.wrap_pixel(same,input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding,lane)>:
-  match same:
-    case True{}: pixel(input,row,(column + lane * stride : U32),channel,height,width,evidence)
-    case False{}: pixel(input,next_row,((offset + lane - output_width) * stride + kernel_column - padding : U32),channel,height,width,evidence)
-
-def wrap_lane(-input: Array<F32>,+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,+stride: U32,+next_row: U32,+offset: U32,+output_width: U32,+kernel_column: U32,+padding: U32,+lane: U32,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,Packing.wrap_lane(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding,lane)>:
-  wrap_pixel(U32.is_lt((offset + lane : U32),output_width),input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding,lane,evidence)
-
-def wrap_read(-input: Array<F32>,context: Packing.WrapBlock,index: Nat,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,Packing.read_wrap_pixel(input,context,index)>:
-  Packing.WrapBlock{+row,+column,+channel,+height,+width,+stride,+next_row,+offset,+output_width,+kernel_column,+padding} = context
-  wrap_lane(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding,U32.from_nat(index),evidence)
-
-def wrap_block(-input: Array<F32>,+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,+stride: U32,+next_row: U32,+offset: U32,+output_width: U32,+kernel_column: U32,+padding: U32,+evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,Packing.wrap_block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>:
-  TileWitness.tail(~Array<F32>,~Packing.WrapBlock,~family,~Packing.read_wrap_pixel,~wrap_read,input,Packing.WrapBlock{row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding},
-    Packing.pixel(input,row,column,channel,height,width),evidence,pixel(input,row,column,channel,height,width,evidence))
-
-def address(-input: Array<F32>,address: PackingSamples.PixelAddress,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.read_pixel_address(input,address)>:
-  PackingSamples.PixelAddress{+index,inside} = address
-  masked(input,inside,Array.get(F32,input,index),Witness.observed(F32,input,index,evidence))
-
-def window_read(-input: Array<F32>,context: PackingSamples.WindowPixelBlock,index: Nat,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.read_window_pixel(input,context,index)>:
-  address(input,PackingSamples.window_pixel_address(context,index),evidence)
-
-def window_first(-input: Array<F32>,+position: U32,+reduction: U32,+base: U32,+height: U32,+width: U32,+tap_rows: U32,+tap_columns: U32,+stride: U32,+row_origin: U32,+column_origin: U32,+output_width: U32,evidence: family(input)) ->
-  TraversalWitness.Sample<Array<F32>,F32,input,PackingSamples.window_pixel(input,position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width)>:
-  window_read(input,PackingSamples.window_pixel_block(position,reduction,base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width),0n,evidence)
+def row_block(~Element: Data,~field: Element -> F32,-input: Array<Element>,+row: U32,+column: U32,+channel: U32,+height: U32,+width: U32,+stride: U32,+next_row: U32,+offset: U32,+output_width: U32,
+  +kernel_column: U32,+padding: U32,+step: U32,+evidence: family(~Element,input)) ->
+  TraversalWitness.Sample<Array<Element>,Tile.Tile8,input,Packing.block(~Element,~field,input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding,step)>:
+  TileWitness.tail(~Array<Element>,~Packing.PixelBlock,~family(~Element),~Packing.read_block_pixel(~Element,~field),~row_read(~Element,~field),input,
+    Packing.PixelBlock{row,column,channel,height,width,stride,step},
+    Packing.pixel(~Element,~field,input,row,column,channel,height,width,step),evidence,pixel(~Element,~field,input,row,column,channel,height,width,step,evidence))

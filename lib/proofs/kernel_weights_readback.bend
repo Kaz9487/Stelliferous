@@ -1,4 +1,10 @@
 import Base
+import ../math_sequence.bend as Sequence
+import ./bounded_u32_arithmetic.bend as Arithmetic
+import ./kernel_tile_refinement.bend as TileLaws
+import ./nat_division_order.bend as DivisionOrder
+import ./word_arithmetic.bend as WordArithmetic
+import ./word_multiplication.bend as Multiplication
 import ../kernel_weights.bend as Weights
 import ../kernel_tile.bend as Tile
 import ../storage_buffer.bend as Storage
@@ -97,3 +103,31 @@ def read_mapped_rows(~Context: Data,~offset: Context -> U32 -> U32,+tree: Tree.T
   {Weights.read_mapped_rows(~Context,~offset,Tree.pack(F32,tree),context,index) == (Tree.pack(F32,tree),sample_mapped_rows(~Context,~offset,tree,context,index)) : Array<F32> & Tile.Tile8}:
   Weights.MappedRows{rows,row,destination,context,bases} = context
   read_rows(tree,rows,row,offset(context,index),bases)
+
+def lane_word(first: U32,lane: Sequence.Index(8n)) -> U32:
+  match lane:
+    case Sequence.First{}: first
+    case Sequence.Next{Sequence.First{}}: (first + 1 : U32)
+    case Sequence.Next{Sequence.Next{Sequence.First{}}}: (first + 2 : U32)
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}: (first + 3 : U32)
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}: (first + 4 : U32)
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}: (first + 5 : U32)
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}}: (first + 6 : U32)
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}}}: (first + 7 : U32)
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{empty}}}}}}}}:
+      match empty:
+
+def sample_lane(+tree: Tree.Tree<F32>,+rows: U32,+inner: U32,+first: U32,+index: U32,+lane: Sequence.Index(8n)) ->
+  {Tile.element_at(lane,sample_linear(tree,rows,inner,first,index)) ==
+    value(tree,rows,inner,lane_word(first,lane),index) : F32}:
+  match lane:
+    case Sequence.First{}: {==}
+    case Sequence.Next{Sequence.First{}}: {==}
+    case Sequence.Next{Sequence.Next{Sequence.First{}}}: {==}
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}: {==}
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}: {==}
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}: {==}
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}}: {==}
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}}}: {==}
+    case Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{empty}}}}}}}}:
+      match empty:

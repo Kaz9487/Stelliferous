@@ -40,7 +40,7 @@ def conv(x: F.Tensor(),+name: String,stride: U32,padding: U32) -> F.Model(F.Tens
 
 ```sh
 node scripts/bend_launcher.mjs examples/yolov5/yolov5n.bend -o out/models/yolov5n
-YOLO_OUTPUT=out ./out/models/yolov5n --threads 4      # forward ... ms，以及 out/pred.npy
+YOLO_OUTPUT=out ./out/models/yolov5n +RTS --threads 4 -RTS      # forward ... ms，以及 out/pred.npy
 ```
 
 | 變數 | 意義 | 預設 |

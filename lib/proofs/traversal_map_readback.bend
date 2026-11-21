@@ -132,6 +132,22 @@ def inside_indexed(~Element: Data,~Context: Data,~operation: Context -> U32 -> E
 def run(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,count: Nat,position: U32,context: Context,input: Tree.Tree<Element>) -> Tree.Tree<Element>:
   run_indexed(~Element,~Context,~ArrayLaws.unindexed(~Element,~Context,~operation),count,position,context,input)
 
+def represented(~Element: Data,~Context: Data,+state: Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Context>) ->
+  {Traversal.mapped_output(~Element,~Context,ArrayLaws.represent_map(~Element,~Context,state)) == Tree.pack(Element,output(~Element,~Context,state)) : Array<Element>}:
+  Traversal.State{Unit{},output,position,context} = state
+  {==}
+
+# The in-place map of a packed tree from position on packs the map of the tree.
+def packed(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,+count: Nat,+position: U32,+context: Context,+input: Tree.Tree<Element>) ->
+  {Traversal.map_in_place(~Element,~Context,~operation,count,position,context,Tree.pack(Element,input)) ==
+    Tree.pack(Element,run(~Element,~Context,~operation,count,position,context,input)) : Array<Element>}:
+  %Equal.sym(Traversal.State<&2,&1,Unit,Array<Element>,Context>,
+    Loop.run(~Traversal.State<&2,&1,Unit,Array<Element>,Context>,~Traversal.map_step(~Element,~Context,~operation),count,Traversal.State{Unit{},Tree.pack(Element,input),position,context}),
+    ArrayLaws.represent_map(~Element,~Context,Loop.run(~Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Context>,~ArrayLaws.model_map_step(~Element,~Context,~ArrayLaws.unindexed(~Element,~Context,~operation)),count,Traversal.State{Unit{},input,position,context})),
+    ArrayLaws.map_loop_refines_model(~Element,~Context,~operation,count,Traversal.State{Unit{},input,position,context})) :
+    {Traversal.mapped_output(~Element,~Context,_) == Tree.pack(Element,run(~Element,~Context,~operation,count,position,context,input)) : Array<Element>}
+  represented(~Element,~Context,Loop.run(~Traversal.State<&2,&2,Unit,Tree.Tree<Element>,Context>,~ArrayLaws.model_map_step(~Element,~Context,~ArrayLaws.unindexed(~Element,~Context,~operation)),count,Traversal.State{Unit{},input,position,context}))
+
 def capacity(~Element: Data,~Context: Data,~operation: Context -> Element -> Element,count: Nat,+position: U32,+context: Context,+input: Tree.Tree<Element>) ->
   {Tree.capacity(Element,run(~Element,~Context,~operation,count,position,context,input)) == Tree.capacity(Element,input) : U32}:
   capacity_indexed(~Element,~Context,~ArrayLaws.unindexed(~Element,~Context,~operation),count,position,context,input)

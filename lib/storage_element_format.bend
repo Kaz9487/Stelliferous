@@ -10,6 +10,7 @@ type Format is Data:
   BFloat16{}
   Int64{}
   Int32{}
+  U8{}
 
 # Bytes per element.
 def width(format: Format) -> U32:
@@ -20,6 +21,7 @@ def width(format: Format) -> U32:
     case BFloat16{}: 2
     case Int64{}: 8
     case Int32{}: 4
+    case U8{}: 1
 
 # IEEE half: a sign, five exponent bits and ten fraction bits. A normal value
 # keeps its fraction and gains 112 on the exponent; infinities and NaNs keep
@@ -143,3 +145,4 @@ def widen(format: Format,+low: U32,+high: U32) -> F32:
     case BFloat16{}: Fp32.from_bits((low * 65536 : U32))
     case Int64{}: integer(low,high)
     case Int32{}: integer(low,extended(low))
+    case U8{}: U32.to_f32(low)

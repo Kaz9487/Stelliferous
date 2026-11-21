@@ -3,11 +3,11 @@ import Base
 import ./tensor_cursor_model.bend as Model
 import ./tensor_cursor_refinement.bend as Cursor
 import ./tensor_cursor_order.bend as Order
-import ./storage_shape.bend as Shape
 import ./binary_radix.bend as Radix
 import ./nat_order.bend as NatOrder
 import ./word_encoding.bend as Words
 import ./row_major_index.bend as RowMajor
+import ../kernel_gemm.bend as KernelGemm
 
 def layout(axes: List<&2,Model.Coordinate>) -> List<&2,Model.Coordinate>:
   match axes:
@@ -104,8 +104,8 @@ def unique(+left: List<&2,Model.Coordinate>,+right: List<&2,Model.Coordinate>,
       Empty.absurd({Con{head,tail} == Nil{} : List<&2,Model.Coordinate>},Words.false_true(
         Equal.cong(List<&2,Model.Coordinate>,Bool,empty,layout(head <> tail),layout([]),same)))
     case Con{Model.Coordinate{+le,+lc,+ls},+lt} Con{Model.Coordinate{+re,+rc,+rs},+rt}:
-      Shape.Both{+li,+lv} = valid_left
-      Shape.Both{+ri,+rv} = valid_right
+      KernelGemm.Both{+li,+lv} = valid_left
+      KernelGemm.Both{+ri,+rv} = valid_right
       +ee = Equal.cong(List<&2,Model.Coordinate>,Nat,extent,layout(Model.Coordinate{le,lc,ls} <> lt),layout(Model.Coordinate{re,rc,rs} <> rt),same)
       +ss = Equal.cong(List<&2,Model.Coordinate>,Nat,stride,layout(Model.Coordinate{le,lc,ls} <> lt),layout(Model.Coordinate{re,rc,rs} <> rt),same)
       +tt = Equal.cong(List<&2,Model.Coordinate>,List<&2,Model.Coordinate>,later,layout(Model.Coordinate{le,lc,ls} <> lt),layout(Model.Coordinate{re,rc,rs} <> rt),same)

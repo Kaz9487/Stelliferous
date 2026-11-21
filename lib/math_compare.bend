@@ -1,6 +1,7 @@
 # IEEE comparisons expressed as 32-bit masks, including unordered inputs.
 import Base
 import ./math_fp32.bend as FP32
+import ./math_choice.bend as Choice
 
 # One for a nonzero word, zero otherwise, without a Bool match.
 def nonzero(+word: U32) -> U32:
@@ -66,7 +67,7 @@ type Bounds is Data:
 
 def clamp(bounds: Bounds,element: F32) -> F32:
   Bounds{low,high} = bounds
-  F32.min(F32.max(element,low),high)
+  Choice.smaller(Choice.larger(element,low),high)
 
 # Binary element order is left then right.
 def less_elements(left: F32,right: F32) -> F32:
@@ -98,13 +99,3 @@ def select(mask: F32,yes: F32,no: F32) -> F32:
   +selected = (0 - U32.shrn((magnitude + 2147483647 : U32),31n) : U32)
   FP32.from_bits((U32.and(U32{yes_word},selected) + U32{no_word} * (selected + 1 : U32) : U32))
 
-def selected(value: F32,mask: F32) -> F32:
-  select(mask,value,0.0)
-
-def rejected(value: F32,mask: F32) -> F32:
-  select(mask,0.0,value)
-
-def union(left: F32,right: F32) -> F32:
-  F32{left_word} = left
-  F32{right_word} = right
-  FP32.from_bits(U32.or(U32{left_word},U32{right_word}))

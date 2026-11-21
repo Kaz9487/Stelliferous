@@ -31,3 +31,4 @@ def read_pair(
   +context = context
   +index = index
   read_at(~State,~Context,~Element,~Nat,~read,state,context,index,Nat.add(index,stride))
+

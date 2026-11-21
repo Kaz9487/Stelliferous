@@ -9,13 +9,15 @@ Host steps use the Python that runs this file. Generated files go under out/.
 import argparse
 import os
 from pathlib import Path
+import shutil
+import platform
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent
 WINDOWS = sys.platform == 'win32'
 CASES = ['bus_320', 'bus_640', 'zidane_320', 'zidane_640']
-INTEGRATION_ENTRIES = ['convolution', 'scalar_convolution', 'array_api', 'array_api_zero_workspace', 'band_layout']
+INTEGRATION_ENTRIES = ['convolution', 'scalar_convolution', 'array_api', 'array_api_zero_workspace', 'tensor_flow']
 
 
 def run(command, failure):
@@ -62,6 +64,19 @@ def layout(options):
     python('scripts/check_layout.py', failure='The layout check did not pass')
 
 
+def dependencies(options):
+    # Upstream resolves imports from POSIX paths, so Windows runs it in WSL.
+    if WINDOWS:
+        distribution = ['-d', os.environ['BEND_WSL_DISTRO']] if os.environ.get('BEND_WSL_DISTRO') else []
+        command = ['wsl.exe', *distribution, '--cd', ROOT, '--exec', 'sh', '-c',
+                   '. scripts/linux_environment.sh && exec bun scripts/bend_dependencies.ts "$@"', 'bend_dependencies']
+    else:
+        local_bun = ROOT / '.tools/bun/node_modules/@oven/bun-linux-x64/bin/bun'
+        command = [local_bun if platform.machine() == 'x86_64' and local_bun.is_file() else 'bun', 'scripts/bend_dependencies.ts']
+    # A query prints its own error, such as an ambiguous name.
+    sys.exit(subprocess.run([str(part) for part in [*command, *options.query]], cwd=ROOT).returncode)
+
+
 def summary(options):
     python('scripts/summarize_validation.py', failure='The summary could not be written')
 
@@ -69,7 +84,7 @@ def summary(options):
 def integration(options):
     (ROOT / 'out/build/integration').mkdir(parents=True, exist_ok=True)
     python('benchmarks/checks/generate_cases.py', failure='Integration cases could not be generated')
-    python('benchmarks/checks/band_cases.py', failure='Band cases could not be generated')
+    python('benchmarks/checks/tensor_flow_cases.py', failure='The tensor flow cases could not be generated')
     for entry in INTEGRATION_ENTRIES:
         bend(f'out/checks/{entry}.bend', f'out/build/integration/{entry}.c')
     linux('sh', 'benchmarks/checks/run.sh', failure='Native integration did not pass')
@@ -103,6 +118,15 @@ def model(options):
     print(f'PASS: out/results/{case}/{report}')
 
 
+def vit(options):
+    if not (ROOT / 'out/results/vit_b16/reference.json').is_file():
+        python('examples/vit_b16/prepare_reference.py', failure='The official reference could not be prepared')
+    (ROOT / 'out/models').mkdir(parents=True, exist_ok=True)
+    bend('examples/vit_b16/vit_b16.bend', 'out/models/vit_b16.c')
+    linux('sh', 'examples/vit_b16/build_run.sh', options.threads, failure='The native model did not build or run')
+    python('examples/vit_b16/compare_results.py', '--threads', options.threads, failure='The numerical comparison did not pass')
+
+
 def checkpoint(options):
     (ROOT / 'out/models').mkdir(parents=True, exist_ok=True)
     bend('examples/yolov5/load_checkpoint.bend', 'out/models/load_checkpoint.c')
@@ -117,9 +141,26 @@ def checkpoint(options):
 
 
 def training(options):
-    (ROOT / 'out/build/training').mkdir(parents=True, exist_ok=True)
-    bend('benchmarks/training/epoch.bend', 'out/build/training/epoch.c')
-    linux('sh', 'benchmarks/training/run_epoch.sh', options.threads, failure='The training epoch did not build or run')
+    linux_python('examples/resnet20/prepare.py', failure='CIFAR-10 or the initial weights could not be prepared')
+    (ROOT / 'out/models').mkdir(parents=True, exist_ok=True)
+    bend('examples/resnet20/resnet20.bend', 'out/models/resnet20.c')
+    results = 'out/results/resnet20'
+    if options.epochs:
+        trained, twin = f'{results}/bend_{options.threads}t', f'{results}/torch_{options.threads}t'
+        linux('sh', 'examples/resnet20/build_run.sh', options.threads, options.epochs, 390, 5, 10000, trained, twin, failure='The training did not build or run')
+        linux_python('examples/resnet20/compare_results.py', options.epochs, trained, '--torch', twin, failure='The results could not be compared')
+        return
+    # two short epochs on 1, 2, 4 and 8 threads, and the second one again from the checkpoint of the first
+    check = f'{results}/check'
+    shutil.rmtree(ROOT / check, ignore_errors=True)
+    short = [3, 1, 200]
+    for threads in [1, 2, 4, 8]:
+        twin = [f'{check}/torch'] if threads == 4 else []
+        linux('sh', 'examples/resnet20/build_run.sh', threads, 2, *short, f'{check}/bend_{threads}t', *twin, failure='The training did not build or run')
+    for epochs in [1, 2]:
+        linux('sh', 'examples/resnet20/build_run.sh', 4, epochs, *short, f'{check}/resumed', failure='The resumed training did not run')
+    folders = [f'{check}/bend_{threads}t' for threads in [1, 2, 4, 8]] + [f'{check}/resumed']
+    linux_python('examples/resnet20/compare_results.py', 2, *folders, '--torch', f'{check}/torch', '--tolerance', '1e-5', failure='The training check did not pass')
 
 
 def benchmark(options):
@@ -157,10 +198,12 @@ ACTIONS = {
     'api': (api, 'programs against the public API, compared bit for bit with NumPy'),
     'gradients': (gradients, 'convolution gradients, losses, one training step, batch normalization and 40 learning steps, compared bit for bit with the reference on 1, 2, 4 and 8 workers and the learning steps with PyTorch'),
     'model': (model, 'YOLOv5n: generate, compile, run and compare with the reference'),
+    'vit': (vit, 'ViT-B/16: compile, run and compare with PyTorch'),
     'checkpoint': (checkpoint, 'load the official .pt checkpoint in Bend and compare every tensor with torch.load'),
     'benchmark': (benchmark, 'time single convolution shapes'),
     'backends': (backends, 'time the YOLOv5n forward on NumPy, Stelliferous and PyTorch'),
-    'training': (training, 'time one epoch of a ResNet-20-shaped network in Stelliferous and PyTorch'),
+    'training': (training, 'ResNet-20 on CIFAR-10: two short epochs compared bit for bit on 1, 2, 4 and 8 threads and after a resume, and the first loss with PyTorch; --epochs E trains E full epochs in both'),
+    'dependencies': (dependencies, 'where each Bend declaration and file is used: unused imports, unreached declarations, why NAME, users NAME, deps NAME'),
     'summary': (summary, 'list which recorded results passed, without rerunning them'),
 }
 
@@ -176,6 +219,11 @@ def main():
             command.add_argument('--threads', type=int, default=1)
         if name == 'training':
             command.add_argument('--threads', type=int, default=4)
+            command.add_argument('--epochs', type=int, default=0, help='full epochs to reach, continuing after the last one written')
+        if name == 'vit':
+            command.add_argument('--threads', type=int, default=1)
+        if name == 'dependencies':
+            command.add_argument('query', nargs=argparse.REMAINDER, help='unused [PREFIX], why NAME, users NAME or deps NAME; help lists them')
         if name == 'backends':
             command.add_argument('--cuda', action='store_true', help='also run the handwritten C and CUDA comparisons')
     options = parser.parse_args()

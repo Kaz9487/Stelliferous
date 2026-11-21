@@ -45,7 +45,7 @@ def at(+seed: Chunks.Reduction,+index: Nat) -> Chunks.Reduction:
 def valid_at_from(+seed: Chunks.Reduction,+valid: Chunks.Valid<seed>,+index: Nat,coordinates: Coordinates.Bounded<Domain.outputs(Jobs.geometry(Chunks.phase(Chunks.selection(seed)))),rows(Chunks.phase(Chunks.selection(seed))),columns(Chunks.phase(Chunks.selection(seed))),values(Chunks.phase(Chunks.selection(seed)),index)>) -> Chunks.Valid<at(seed,index)>:
   Chunks.Reduction{+selected,line,group,unit,out,row,column} = seed
   Chunks.Selection{+query,y,x,yi,xi} = selected
-  Chunks.Query{+grid,first,target,plane,source,chunk_row,chunk_group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,chunk_row,chunk_group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -62,7 +62,7 @@ def tap_exact(+seed: Chunks.Reduction,+valid: Chunks.Valid<seed>,+index: Nat,+in
   exact(Chunks.phase(selected),enabled,index,inside)
 def leaf_band_at_from(+seed: Chunks.Reduction,+valid: Chunks.Valid<seed>,+index: Nat,+coordinates: Coordinates.Bounded<Domain.outputs(Jobs.geometry(Chunks.phase(Chunks.selection(seed)))),rows(Chunks.phase(Chunks.selection(seed))),columns(Chunks.phase(Chunks.selection(seed))),values(Chunks.phase(Chunks.selection(seed)),index)>) ->
   {Chunks.leaf_band(at(seed,index),valid_at_from(seed,valid,index,coordinates)) == Chunks.leaf_band(seed,valid) : Bands.Query}:
-  Chunks.Reduction{Chunks.Selection{Chunks.Query{+grid,first,target,plane,source,chunk_row,chunk_group,wb,ob},y,x,yi,xi},line,group,unit,out,row,column} = seed
+  Chunks.Reduction{Chunks.Selection{Chunks.Query{+grid,first,target,source,chunk_row,chunk_group,wb},y,x,yi,xi},line,group,unit,out,row,column} = seed
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g

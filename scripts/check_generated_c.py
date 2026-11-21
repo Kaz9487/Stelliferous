@@ -1,4 +1,5 @@
-"""Reject generated C in which a guarded constructor became shared.
+"""Reject generated C in which a guarded constructor became shared or witness
+code became native code.
 
 The official compiler marks every constructor of a program as shared when a
 live definition duplicates a value whose type is computed by a type function
@@ -14,6 +15,12 @@ through its iterations, makes the compiler share every View constructor, and
 each match on a view then takes the reference-counting path. The launcher
 checks every compilation with --any-program, which leaves the View out: a
 program's own definitions may share a view, as the internal view checks do.
+
+A live certificate is a depth and an equation, and the evidence of its
+equation stays inside a rewrite, which the compiler erases. Evidence passed
+as a live argument runs: a fold certificate then folds the array again,
+reading every element through its witness tree. No function of a witness
+module may appear in native code.
 """
 
 import re
@@ -22,22 +29,24 @@ from pathlib import Path
 
 PROGRAM_WIDE = 'a duplicated value with a computed, value-indexed type made every constructor shared'
 ANY_PROGRAM = {
-    'LIB_TRAVERSAL_PARTITION_LEAF': PROGRAM_WIDE,
-    'LIB_TRAVERSAL_PARTITION_FORK': PROGRAM_WIDE,
+    'lib_traversal_partition_Leaf': PROGRAM_WIDE,
+    'lib_traversal_partition_Fork': PROGRAM_WIDE,
 }
-GUARDED = dict(ANY_PROGRAM, LIB_TENSOR_VIEW_VIEW='a View value is used more than once; build the view again for each use')
+GUARDED = dict(ANY_PROGRAM, lib_tensor_view_View='a View value is used more than once; build the view again for each use')
 
 
 def check(path, guarded=GUARDED):
     text = Path(path).read_text(encoding='utf-8', errors='replace')
     ids = {name: int(value) for name, value in re.findall(r'#define CID__*(\w+) (\d+)\n', text)}
-    # Each constructor row is { arity, shared }.
-    table = re.search(r'CID_T\[\]\[2\] = \{(.*)\};', text)
+    # Each constructor row is { arity, hot, spine }.
+    table = re.search(r'CID_T\[\] = \{(.*)\};', text)
     if not table:
         return [f'{path}: no constructor sharing table']
-    shared = [int(flag) for flag in re.findall(r'\{\s*\d+\s*,\s*(\d+)\s*\}', table.group(1))]
+    shared = [int(flag) for flag in re.findall(r'\{\s*\d+\s*,\s*(\d+)\s*,\s*\d+\s*\}', table.group(1))]
     present = [name for name in guarded if name in ids]
     errors = [f'{path}: {name} is shared; {guarded[name]}' for name in present if shared[ids[name]]]
+    witnesses = sorted(set(re.findall(r'\b(?:FID|spin)_+(lib_proofs_\w*witness_[a-z]\w*?)(?:_k\d+|_\d+)?\b', text)))
+    errors += [f'{path}: {name} is native code; keep certificate evidence inside a rewrite' for name in witnesses]
     print(f'{path}: {sum(shared)} of {len(shared)} constructors shared; guarded {len(present)}')
     return errors
 

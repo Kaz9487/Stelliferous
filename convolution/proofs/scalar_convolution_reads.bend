@@ -44,8 +44,8 @@ def canonical_input_matches_spec(+limits: Machine.Limits,+problem: ConvSpec.Prob
   +row = (U32.from_nat(output_row) * U32.from_nat(stride) + U32.from_nat(kernel_row) : U32)
   +column = (U32.from_nat(output_column) * U32.from_nat(stride) + U32.from_nat(kernel_column) : U32)
   Equal.trans(Array<F32> & F32,input_read(problem,ScalarConv.pack(Guards.input(problem)),channel,output_row,output_column,kernel_row,kernel_column),
-    Packing.pixel(ScalarConv.pack(input),(row - U32.from_nat(padding) : U32),(column - U32.from_nat(padding) : U32),
-      (U32.from_nat(channel) * U32.from_nat(height) * U32.from_nat(width) : U32),U32.from_nat(height),U32.from_nat(width)),
+    Packing.pixel(~F32,~Packing.identity,ScalarConv.pack(input),(row - U32.from_nat(padding) : U32),(column - U32.from_nat(padding) : U32),
+      (U32.from_nat(channel) * U32.from_nat(height) * U32.from_nat(width) : U32),U32.from_nat(height),U32.from_nat(width),1),
     (ScalarConv.pack(input),ConvSpec.sample(problem,channel,output_row,output_column,kernel_row,kernel_column)),
     InputRead.padded_pixel_matches_packed(input,U32.from_nat(channel),U32.from_nat(input_channel_count),U32.from_nat(height),U32.from_nat(width),row,column,U32.from_nat(padding),
       (U32.from_nat(input_channel_count) * U32.from_nat(height) * U32.from_nat(width) : U32),Support.input_ready_facts(limits,problem,facts,bounds),NativeSampleRefinement.input_shape(limits,problem,facts,bounds),
@@ -56,8 +56,8 @@ def canonical_input_matches_spec(+limits: Machine.Limits,+problem: ConvSpec.Prob
       NativeSampleRefinement.width_positive(limits,problem,facts,bounds),Lengths.input_length(limits,problem,facts,bounds),Machine.coordinate(limits),Limits.coordinate_fits(limits),
       NativeSampleRefinement.height_padding(limits,problem,bounds),NativeSampleRefinement.width_padding(limits,problem,bounds)),
     %Equal.sym(Array<F32>,ScalarConv.pack(input),Inputs.input_owner(problem,Inputs.from_lists(limits,problem,valid,supported)),ListStorage.packed(input)) :
-      {Packing.pixel(_,(row - U32.from_nat(padding) : U32),(column - U32.from_nat(padding) : U32),
-        (U32.from_nat(channel) * U32.from_nat(height) * U32.from_nat(width) : U32),U32.from_nat(height),U32.from_nat(width)) ==
+      {Packing.pixel(~F32,~Packing.identity,_,(row - U32.from_nat(padding) : U32),(column - U32.from_nat(padding) : U32),
+        (U32.from_nat(channel) * U32.from_nat(height) * U32.from_nat(width) : U32),U32.from_nat(height),U32.from_nat(width),1) ==
         (_,ConvSpec.sample(problem,channel,output_row,output_column,kernel_row,kernel_column)) : Array<F32> & F32}
     NativeSampleRefinement.native_sample(limits,problem,Inputs.from_lists(limits,problem,valid,supported),channel,output_row,output_column,kernel_row,kernel_column,valid,supported,channel_bound,output_row_bound,output_column_bound,kernel_row_bound,kernel_column_bound))
 
@@ -94,7 +94,7 @@ def input_matches_spec(+limits: Machine.Limits,+problem: ConvSpec.Problem,+input
     (Inputs.input_owner(problem,inputs),ConvSpec.sample(problem,channel,output_row,output_column,kernel_row,kernel_column)) : Array<F32> & F32}:
   ConvSpec.Problem{shape,+input,weights,bias} = problem
   ConvSpec.Shape{+input_channel_count,output_channel_count,+height,+width,kernel,+stride,+padding} = shape
-  Inputs.Contract{+input_evidence,weight_evidence,bias_evidence} = inputs
+  Inputs.Contract{+input_evidence,weight_evidence,bias_evidence,parameters} = inputs
   +facts = Guards.valid(problem,valid)
   +bounds = Support.scalar(limits,problem,supported)
   +row = (U32.from_nat(output_row) * U32.from_nat(stride) + U32.from_nat(kernel_row) : U32)
@@ -115,7 +115,7 @@ def bias_matches_spec(+limits: Machine.Limits,+problem: ConvSpec.Problem,+inputs
   {Storage.read_or(F32,0.0,Inputs.bias_owner(problem,inputs),U32.from_nat(output_channel),U32.from_nat(Guards.output_channel_count(problem))) ==
     (Inputs.bias_owner(problem,inputs),ConvSpec.bias_at(problem,output_channel)) : Array<F32> & F32}:
   ConvSpec.Problem{shape,+input,+weights,+bias} = problem
-  Inputs.Contract{input_evidence,weight_evidence,+bias_evidence} = inputs
+  Inputs.Contract{input_evidence,weight_evidence,+bias_evidence,parameters} = inputs
   +facts = Guards.valid(problem,valid)
   +bounds = Support.scalar(limits,problem,supported)
   +address_exact = Bounds.roundtrip(output_channel,Machine.capacity(limits),Limits.capacity_fits(limits),

@@ -57,7 +57,7 @@ def supplied_inputs(+shape: ConvSpec.Shape,+input_length: Nat,+weight_length: Na
   weight_room: {Nat.is_le(weight_length,U32.to_nat(Tree.capacity(F32,weights))) == True{} : Bool},
   bias_room: {Nat.is_le(bias_length,U32.to_nat(Tree.capacity(F32,bias))) == True{} : Bool}) ->
   Inputs.Contract<problem(shape,input_length,weight_length,bias_length,input,weights,bias)>:
-  Inputs.Contract{Inputs.prefix_evidence(input_length,input,input_room),Inputs.prefix_evidence(weight_length,weights,weight_room),Inputs.prefix_evidence(bias_length,bias,bias_room)}
+  Inputs.Contract{Inputs.prefix_evidence(input_length,input,input_room),Inputs.prefix_evidence(weight_length,weights,weight_room),Inputs.prefix_evidence(bias_length,bias,bias_room),Inputs.ArrayParameters{}}
 
 # Both APIs use the same machine envelope. Validation supplies the shape/length
 # equalities; no numerical-result premise is accepted here.

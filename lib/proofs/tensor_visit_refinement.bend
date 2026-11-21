@@ -40,28 +40,6 @@ def visit(~Element: Data,+count: Nat,+state: Traversal.State<&2,&2,Tree.Tree<Ele
   Visit.visit(~Array<Element>,~Tree.Tree<Element>,~Element,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack,
     ~Cursor.read(~Element),~sample(~Element),~CursorLaws.next,~read_matches(~Element),count,state)
 
-def address(coordinates: CursorLaws.Coordinates) -> U32:
-  CursorLaws.Coordinates{axes,offset,valid} = coordinates
-  U32.from_nat(CursorModel.address(axes,offset))
-
-def target_matches(+coordinates: CursorLaws.Coordinates) ->
-  {Cursor.target(CursorLaws.pack(coordinates)) == Traversal.Target{CursorLaws.pack(CursorLaws.next(coordinates)),address(coordinates)} : Traversal.Target<Cursor.Cursor>}:
-  CursorLaws.Coordinates{+axes,+offset,+valid} = coordinates
-  %Equal.sym(Cursor.Cursor,Cursor.advance(CursorLaws.represent_axes(axes),U32.from_nat(CursorModel.address(axes,offset))),CursorLaws.represent(CursorModel.advance(axes),offset),
-    CursorLaws.advance(axes,offset,valid)) :
-    {Traversal.Target{_,U32.from_nat(CursorModel.address(axes,offset))} ==
-      Traversal.Target{CursorLaws.pack(CursorLaws.next(CursorLaws.Coordinates{axes,offset,valid})),address(CursorLaws.Coordinates{axes,offset,valid})} : Traversal.Target<Cursor.Cursor>}
-  {==}
-
-def spread(~Element: Data,+count: Nat,+state: Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,CursorLaws.Coordinates>) ->
-  {Loop.run(~Traversal.State<&1,&1,Array<Element>,Array<Element>,Cursor.Cursor>,~Traversal.spread_step(~Element,~Cursor.Cursor,~Cursor.target),count,
-      Visit.represent(~Array<Element>,~Tree.Tree<Element>,~Element,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack,state)) ==
-    Visit.represent(~Array<Element>,~Tree.Tree<Element>,~Element,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack,
-      Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,CursorLaws.Coordinates>,
-        ~Visit.model_spread_step(~Element,~CursorLaws.Coordinates,~address,~CursorLaws.next),count,state)) :
-    Traversal.State<&1,&1,Array<Element>,Array<Element>,Cursor.Cursor>}:
-  Visit.spread(~Element,~Cursor.Cursor,~CursorLaws.Coordinates,~CursorLaws.pack,~Cursor.target,~address,~CursorLaws.next,~target_matches,count,state)
-
 def update(~Element: Data,~operation: Element -> Element -> Element,+count: Nat,
   +state: Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,CursorLaws.Coordinates>) ->
   {Traversal.visit_update(~Array<Element>,~Element,~Cursor.Cursor,~Cursor.read(~Element),~operation,count,
@@ -73,13 +51,3 @@ def update(~Element: Data,~operation: Element -> Element -> Element,+count: Nat,
   Visit.update(~Array<Element>,~Tree.Tree<Element>,~Element,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack,
     ~Cursor.read(~Element),~sample(~Element),~CursorLaws.next,~operation,~read_matches(~Element),count,state)
 
-def fold(~Element: Data,~Accumulator: Data,~operation: Accumulator -> Element -> Accumulator,+count: Nat,
-  +state: Traversal.State<&2,&2,Tree.Tree<Element>,Accumulator,CursorLaws.Coordinates>) ->
-  {Traversal.visit_fold(~Array<Element>,~Element,~Accumulator,~Cursor.Cursor,~Cursor.read(~Element),~operation,count,
-      Visit.represent_fold(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack,state)) ==
-    Visit.represent_fold(~Array<Element>,~Tree.Tree<Element>,~Accumulator,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack,
-      Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Accumulator,CursorLaws.Coordinates>,
-        ~Visit.model_fold_step(~Tree.Tree<Element>,~Element,~Accumulator,~CursorLaws.Coordinates,~sample(~Element),~CursorLaws.next,~operation),count,state)) :
-    Traversal.State<&1,&2,Array<Element>,Accumulator,Cursor.Cursor>}:
-  Visit.fold(~Array<Element>,~Tree.Tree<Element>,~Element,~Accumulator,~Cursor.Cursor,~CursorLaws.Coordinates,~ArrayLaws.pack_tree(~Element),~CursorLaws.pack,
-    ~Cursor.read(~Element),~sample(~Element),~CursorLaws.next,~operation,~read_matches(~Element),count,state)

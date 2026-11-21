@@ -38,6 +38,24 @@ def append_length(~Element: Data,left: List<&2,Element>,+right: List<&2,Element>
       %append_length(~Element,rest,right) : {1n+List.length(&2,Element,List.append(&2,Element,rest,right)) == 1n+_ : Nat}
       {==}
 
+# A list followed by nothing.
+def append_empty(~Element: Data,+items: List<&2,Element>) -> {List.append(&2,Element,items,[]) == items : List<&2,Element>}:
+  match items:
+    case Nil{}: {==}
+    case Con{+head,+tail}:
+      %Equal.sym(List<&2,Element>,List.append(&2,Element,tail,[]),tail,append_empty(~Element,tail)) : {head <> _ == head <> tail : List<&2,Element>}
+      {==}
+
+# Lists appended in either grouping.
+def append_associative(~Element: Data,first: List<&2,Element>,+second: List<&2,Element>,+third: List<&2,Element>) ->
+  {List.append(&2,Element,List.append(&2,Element,first,second),third) == List.append(&2,Element,first,List.append(&2,Element,second,third)) : List<&2,Element>}:
+  match first:
+    case Nil{}: {==}
+    case Con{+head,tail}:
+      Equal.cong(List<&2,Element>,List<&2,Element>,others => head <> others,
+        List.append(&2,Element,List.append(&2,Element,tail,second),third),List.append(&2,Element,tail,List.append(&2,Element,second,third)),
+        append_associative(~Element,tail,second,third))
+
 def concatenated(~Element: Data,+first: List<&2,Element>,+second: List<&2,Element>,+offset: U32,+tree: Tree.Tree<Element>) ->
   {Tree.write_sequence(~Element,List.append(&2,Element,first,second),offset,tree) ==
     Tree.write_sequence(~Element,second,end_position(~Element,first,offset),Tree.write_sequence(~Element,first,offset,tree)) : Tree.Tree<Element>}:
@@ -109,33 +127,48 @@ def preserved(~Element: Data,values: List<&2,Element>,+offset: Nat,+query: Nat,+
           Order.lt_succ(query,offset,Bounds.strict_le(query,offset,before))),
         Readback.read_preserved(~Element,depth,tree,U32.from_nat(offset),U32.from_nat(query),head,balanced,limit,inside(offset,Tree.capacity(Element,tree),index_inside),inside(query,Tree.capacity(Element,tree),query_inside),distinct(offset,query,Tree.capacity(Element,tree),index_inside,query_inside,before)))
 
-def outside(~Element: Data,values: List<&2,Element>,+offset: Nat,+query: Nat,+depth: Nat,+tree: Tree.Tree<Element>,+balanced: Shape.Balanced(Element,depth,tree),+limit: {Nat.is_le(depth,30n) == True{} : Bool},
-  +room: {Nat.is_le(Nat.add(offset,List.length(&2,Element,values)),U32.to_nat(Tree.capacity(Element,tree))) == True{} : Bool},
-  +query_inside: {Nat.is_lt(query,U32.to_nat(Tree.capacity(Element,tree))) == True{} : Bool},
-  +separate: Interval.Outside<offset,List.length(&2,Element,values),query>) ->
+def distinct_after(+first: Nat,+second: Nat,+capacity: U32,+first_bound: {Nat.is_lt(first,U32.to_nat(capacity)) == True{} : Bool},
+  +second_bound: {Nat.is_lt(second,U32.to_nat(capacity)) == True{} : Bool},ordered: {Nat.is_lt(first,second) == True{} : Bool}) ->
+  {U32.is_eq(U32.from_nat(first),U32.from_nat(second)) == False{} : Bool}:
+  %Equal.sym(Bool,U32.is_eq(U32.from_nat(first),U32.from_nat(second)),Nat.is_eq(U32.to_nat(U32.from_nat(first)),U32.to_nat(U32.from_nat(second))),Comparison.eq(U32.from_nat(first),U32.from_nat(second))) : {_ == False{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.from_nat(first)),first,FullRange.roundtrip(first,capacity,Bounds.strict_le(first,U32.to_nat(capacity),first_bound))) : {Nat.is_eq(_,U32.to_nat(U32.from_nat(second))) == False{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.from_nat(second)),second,FullRange.roundtrip(second,capacity,Bounds.strict_le(second,U32.to_nat(capacity),second_bound))) : {Nat.is_eq(first,_) == False{} : Bool}
+  Order.less_not_equal(first,second,ordered)
+
+# Addresses past a list write keep their values.
+def preserved_after(~Element: Data,values: List<&2,Element>,+offset: Nat,+query: Nat,+depth: Nat,+tree: Tree.Tree<Element>,+balanced: Shape.Balanced(Element,depth,tree),
+  +limit: {Nat.is_le(depth,30n) == True{} : Bool},+room: {Nat.is_le(Nat.add(offset,List.length(&2,Element,values)),U32.to_nat(Tree.capacity(Element,tree))) == True{} : Bool},
+  +query_inside: {Nat.is_lt(query,U32.to_nat(Tree.capacity(Element,tree))) == True{} : Bool},+after: {Nat.is_le(Nat.add(offset,List.length(&2,Element,values)),query) == True{} : Bool}) ->
   {Tree.read(Element,Tree.write_sequence(~Element,values,U32.from_nat(offset),tree),U32.from_nat(query)) == Tree.read(Element,tree,U32.from_nat(query)) : Element}:
   match values:
-    case Nil{}: {==}
+    case []: {==}
     case +head <> +rest:
-      +capacity = Tree.capacity(Element,tree)
-      +index_inside = Order.room_index(offset,List.length(&2,Element,rest),U32.to_nat(capacity),room)
+      +index_inside = Order.room_index(offset,List.length(&2,Element,rest),U32.to_nat(Tree.capacity(Element,tree)),room)
       +written = Tree.write(Element,tree,U32.from_nat(offset),head)
-      +same_capacity = Readback.write_capacity(~Element,tree,U32.from_nat(offset),head)
-      +different = {
-        %Equal.sym(Bool,U32.is_eq(U32.from_nat(offset),U32.from_nat(query)),Nat.is_eq(U32.to_nat(U32.from_nat(offset)),U32.to_nat(U32.from_nat(query))),Comparison.eq(U32.from_nat(offset),U32.from_nat(query))) : {_ == False{} : Bool}
-        %Equal.sym(Nat,U32.to_nat(U32.from_nat(offset)),offset,FullRange.roundtrip(offset,capacity,Bounds.strict_le(offset,U32.to_nat(capacity),index_inside))) : {Nat.is_eq(_,U32.to_nat(U32.from_nat(query))) == False{} : Bool}
-        %Equal.sym(Nat,U32.to_nat(U32.from_nat(query)),query,FullRange.roundtrip(query,capacity,Bounds.strict_le(query,U32.to_nat(capacity),query_inside))) : {Nat.is_eq(offset,_) == False{} : Bool}
-        %Order.equal_symmetric(query,offset) : {_ == False{} : Bool}
-        Interval.outside_head(offset,List.length(&2,Element,rest),query,separate) : {U32.is_eq(U32.from_nat(offset),U32.from_nat(query)) == False{} : Bool}}
+      +capacity = Readback.write_capacity(~Element,tree,U32.from_nat(offset),head)
+      +later = {
+        %Addition.successor_right(offset,List.length(&2,Element,rest)) : {Nat.is_le(_,query) == True{} : Bool}
+        after : {Nat.is_le(Nat.add(1n+offset,List.length(&2,Element,rest)),query) == True{} : Bool}}
+      +below = Order.le_lt_trans(offset,Nat.add(offset,List.length(&2,Element,rest)),query,Order.le_add(offset,List.length(&2,Element,rest)),
+        Bounds.predecessor_strict(Nat.add(offset,List.length(&2,Element,rest)),query,later))
       %Equal.sym(U32,(U32.from_nat(offset) + 1 : U32),U32.from_nat(1n+offset),Bounds.increment_encoded(offset)) :
         {Tree.read(Element,Tree.write_sequence(~Element,rest,_,written),U32.from_nat(query)) == Tree.read(Element,tree,U32.from_nat(query)) : Element}
-      Equal.trans(Element,Tree.read(Element,Tree.write_sequence(~Element,rest,U32.from_nat(1n+offset),written),U32.from_nat(query)),Tree.read(Element,written,U32.from_nat(query)),Tree.read(Element,tree,U32.from_nat(query)),
-        outside(~Element,rest,1n+offset,query,depth,written,Shape.write(Element,depth,tree,U32.from_nat(offset),head,balanced),limit,
-          %Equal.sym(U32,Tree.capacity(Element,written),capacity,same_capacity) : {Nat.is_le(Nat.add(1n+offset,List.length(&2,Element,rest)),U32.to_nat(_)) == True{} : Bool}
-          Order.advance_room(offset,List.length(&2,Element,rest),U32.to_nat(capacity),room),
-          %Equal.sym(U32,Tree.capacity(Element,written),capacity,same_capacity) : {Nat.is_lt(query,U32.to_nat(_)) == True{} : Bool} query_inside,
-          Interval.outside_tail(offset,List.length(&2,Element,rest),query,separate)),
-        Readback.read_preserved(~Element,depth,tree,U32.from_nat(offset),U32.from_nat(query),head,balanced,limit,inside(offset,capacity,index_inside),inside(query,capacity,query_inside),different))
+      Equal.trans(Element,Tree.read(Element,Tree.write_sequence(~Element,rest,U32.from_nat(1n+offset),written),U32.from_nat(query)),Tree.read(Element,written,U32.from_nat(query)),
+        Tree.read(Element,tree,U32.from_nat(query)),
+        preserved_after(~Element,rest,1n+offset,query,depth,written,Shape.write(Element,depth,tree,U32.from_nat(offset),head,balanced),limit,
+          %Equal.sym(U32,Tree.capacity(Element,written),Tree.capacity(Element,tree),capacity) : {Nat.is_le(Nat.add(1n+offset,List.length(&2,Element,rest)),U32.to_nat(_)) == True{} : Bool}
+          Order.advance_room(offset,List.length(&2,Element,rest),U32.to_nat(Tree.capacity(Element,tree)),room),
+          %Equal.sym(U32,Tree.capacity(Element,written),Tree.capacity(Element,tree),capacity) : {Nat.is_lt(query,U32.to_nat(_)) == True{} : Bool} query_inside,later),
+        Readback.read_preserved(~Element,depth,tree,U32.from_nat(offset),U32.from_nat(query),head,balanced,limit,inside(offset,Tree.capacity(Element,tree),index_inside),
+          inside(query,Tree.capacity(Element,tree),query_inside),distinct_after(offset,query,Tree.capacity(Element,tree),index_inside,query_inside,below)))
+
+# A list write keeps a tree balanced.
+def sequence_balanced(~Element: Data,values: List<&2,Element>,+offset: U32,+depth: Nat,+tree: Tree.Tree<Element>,+balanced: Shape.Balanced(Element,depth,tree)) ->
+  Shape.Balanced(Element,depth,Tree.write_sequence(~Element,values,offset,tree)):
+  match values:
+    case []: balanced
+    case +head <> +rest:
+      sequence_balanced(~Element,rest,(offset + 1 : U32),depth,Tree.write(Element,tree,offset,head),Shape.write(Element,depth,tree,offset,head,balanced))
 
 def listed(~Element: Data,+values: List<&2,Element>,index: Nat,+offset: Nat,+depth: Nat,+tree: Tree.Tree<Element>,+fallback: Element,+balanced: Shape.Balanced(Element,depth,tree),+limit: {Nat.is_le(depth,30n) == True{} : Bool},
   +room: {Nat.is_le(Nat.add(offset,List.length(&2,Element,values)),U32.to_nat(Tree.capacity(Element,tree))) == True{} : Bool},

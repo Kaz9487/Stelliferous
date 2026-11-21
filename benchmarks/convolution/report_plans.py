@@ -93,7 +93,7 @@ def plans(requests):
     executable = directory / 'plans'
     subprocess.run([os.environ.get('CC', 'clang'), '-O3', '-ffp-contract=off', '-std=c11',
                     str(generated), '-lpthread', '-lm', '-o', str(executable)], check=True)
-    result = subprocess.run([str(executable), '--threads', '1', '--gpu', 'off'], check=True, capture_output=True, text=True)
+    result = subprocess.run([str(executable), '+RTS', '--threads', '1', '--gpu', 'off', '-RTS'], check=True, capture_output=True, text=True)
     records = []
     for line, (shape, workers, budget) in zip(result.stdout.splitlines(), requests, strict=True):
         strategy, depth, workspace, time = line.split()

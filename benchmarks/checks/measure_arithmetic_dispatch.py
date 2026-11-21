@@ -110,7 +110,7 @@ def main():
                 order = list(binaries) if iteration % 2 == 0 else list(reversed(binaries))
                 for variant in order:
                     start = time.perf_counter_ns()
-                    run = subprocess.run([str(binaries[variant]), '--threads', '1', '--gpu', 'off'],
+                    run = subprocess.run([str(binaries[variant]), '+RTS', '--threads', '1', '--gpu', 'off', '-RTS'],
                                          capture_output=True, text=True, check=True)
                     elapsed = (time.perf_counter_ns() - start) / 1e6
                     outputs.setdefault(variant, run.stdout)

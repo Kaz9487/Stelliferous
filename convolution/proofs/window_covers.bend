@@ -22,10 +22,10 @@ import ./concrete_support_guard.bend as Support
 import ./supported_padded_coordinates.bend as Padded
 import ./supported_coordinate_bounds.bend as SupportedCoordinateBounds
 import ./reduction_coordinate_bounds.bend as Coordinates
-import ./window_samples.bend as Samples
 import ./window_positions.bend as Positions
 import ./window_start.bend as Start
 import ./window_contents.bend as Contents
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
 
 def or_cases(+first: Bool,+second: Bool,+truth: {first || second == True{} : Bool}) ->
   Either<&2,&2,{first == True{} : Bool},{second == True{} : Bool}>:
@@ -145,7 +145,7 @@ def top_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvSp
           Order.le_add(Nat.mul(out_height,stride),Guards.kernel(problem)),SupportedCoordinateBounds.row_envelope(limits,problem,support)))
       +top_exact = {%stride_exact : {U32.to_nat((quotient_word * stride_word : U32)) == Nat.mul(Nat.div(start,out_width),_) : Nat}
         %quotient_exact : {U32.to_nat((quotient_word * stride_word : U32)) == Nat.mul(_,U32.to_nat(stride_word)) : Nat}
-        Arithmetic.multiply(quotient_word,stride_word,coordinate,Limits.coordinate_fits(limits),
+        WordMultiplication.bounded_multiply(quotient_word,stride_word,coordinate,Limits.coordinate_fits(limits),
           %Equal.sym(Nat,U32.to_nat(quotient_word),Nat.div(start,out_width),quotient_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(stride_word)),U32.to_nat(coordinate)) == True{} : Bool}
           %Equal.sym(Nat,U32.to_nat(stride_word),stride,stride_exact) : {Nat.is_le(Nat.mul(Nat.div(start,out_width),_),U32.to_nat(coordinate)) == True{} : Bool}
           top_room) : {U32.to_nat((quotient_word * stride_word : U32)) == Nat.mul(Nat.div(start,out_width),stride) : Nat}}
@@ -215,7 +215,7 @@ def bottom_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Con
       +whole_room = Order.transitive(Nat.add(start,count),Support.padded(problem),cap,range,Padded.padded_bound(limits,problem,facts,fast))
       +sum_word = (offset + span : U32)
       +sum_exact = Arithmetic.add(offset,span,capacity,Limits.capacity_fits(limits),whole_room)
-      +whole_positive = Bounds.nat_trans(0n,count,Nat.add(start,count),span_positive,Samples.le_after(start,count))
+      +whole_positive = Bounds.nat_trans(0n,count,Nat.add(start,count),span_positive,Order.right_le(start,count))
       +last = Nat.sub(Nat.add(start,count),1n)
       +last_word = (sum_word - 1 : U32)
       +last_exact = {%sum_exact : {U32.to_nat(last_word) == Nat.sub(_,1n) : Nat}
@@ -248,7 +248,7 @@ def bottom_cover(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {Con
       +product_word = (quotient_word * stride_word : U32)
       +product_exact = {%stride_exact : {U32.to_nat(product_word) == Nat.mul(row,_) : Nat}
         %quotient_exact : {U32.to_nat(product_word) == Nat.mul(_,U32.to_nat(stride_word)) : Nat}
-        Arithmetic.multiply(quotient_word,stride_word,coordinate,Limits.coordinate_fits(limits),
+        WordMultiplication.bounded_multiply(quotient_word,stride_word,coordinate,Limits.coordinate_fits(limits),
           %Equal.sym(Nat,U32.to_nat(quotient_word),row,quotient_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(stride_word)),U32.to_nat(coordinate)) == True{} : Bool}
           %Equal.sym(Nat,U32.to_nat(stride_word),stride,stride_exact) : {Nat.is_le(Nat.mul(row,_),U32.to_nat(coordinate)) == True{} : Bool}
           product_room) : {U32.to_nat(product_word) == Nat.mul(row,stride) : Nat}}
@@ -365,7 +365,7 @@ def copy_facts(+limits: Machine.Limits,+problem: ConvSpec.Problem,+valid: {ConvS
   +doubled = Nat.add(padding,padding)
   +doubled_exact = {%Equal.sym(Nat,Nat.add(padding,0n),padding,Addition.zero_right(padding)) : {doubled == Nat.add(padding,_) : Nat}
     {==} : {doubled == Nat.mul(2n,padding) : Nat}}
-  +count_le = Order.transitive(count,Nat.add(start,count),height,Samples.le_after(start,count),fits_height)
+  +count_le = Order.transitive(count,Nat.add(start,count),height,Order.right_le(start,count),fits_height)
   +outer_room = {%Equal.sym(Nat,Nat.add(Nat.add(count,padding),padding),Nat.add(count,doubled),Addition.associative(count,padding,padding)) :
       {Nat.is_le(_,U32.to_nat(coordinate)) == True{} : Bool}
     Order.transitive(Nat.add(count,doubled),Nat.add(height,Nat.mul(2n,padding)),U32.to_nat(coordinate),

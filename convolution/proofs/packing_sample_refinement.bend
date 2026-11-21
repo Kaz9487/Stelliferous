@@ -18,35 +18,42 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../specification.bend as ConvSpec
 import ../scalar_kernel.bend as ScalarConv
 import ../../lib/kernel_spatial_packing.bend as Packing
+import ../../lib/proofs/kernel_spatial_packing_samples.bend as Reads
 import ../../lib/kernel_packing_samples.bend as PackingSamples
 import ../../lib/kernel_tile.bend as Tile
 import ./packing_tabulation.bend as PackingTabulation
 import ./packed_reduction_samples.bend as ReductionSamples
 
-def masks(+inside: Bool,pair: Array<F32> & F32) -> {PackingSamples.mask_pixel(inside,pair) == Packing.masked(inside,pair) : Array<F32> & F32}:
+def masks(+inside: Bool,pair: Array<F32> & F32) -> {PackingSamples.mask_pixel(inside,pair) == Packing.masked_field(~F32,inside,Packing.field_of(~F32,~Packing.identity,pair)) : Array<F32> & F32}:
   (x,v) = pair
   {==}
 
 def decoded(+x: Tree.Tree<F32>,+pos: U32,+q: U32,+h: U32,+w: U32,+k: U32,+stride: U32,+pad: U32,+output_width: U32,+input_channel_index: U32,+output_row_index: U32,+output_column_index: U32,
   +kernel_row_index: U32,+kernel_column_index: U32,eic: {(q / (k * k) : U32) == input_channel_index : U32},eoy: {(pos / output_width : U32) == output_row_index : U32},eox: {(pos % output_width : U32) == output_column_index : U32},
   eky: {((q / k) % k : U32) == kernel_row_index : U32},ekx: {(q % k : U32) == kernel_column_index : U32}) -> {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,
-    output_width) == Packing.pixel(Tree.pack(F32,x),(output_row_index * stride + kernel_row_index - pad : U32),(output_column_index * stride + kernel_column_index - pad : U32),(input_channel_index * h * w : U32),h,
-    w) : Array<F32> & F32}:
-  %eic : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(Tree.pack(F32,x),(output_row_index * stride + kernel_row_index - pad : U32),
-      (output_column_index * stride + kernel_column_index - pad : U32),(_ * h * w : U32),h,w) : Array<F32> & F32}
-  %eoy : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(Tree.pack(F32,x),(_ * stride + kernel_row_index - pad : U32),
-      (output_column_index * stride + kernel_column_index - pad : U32),((q / (k * k) : U32) * h * w : U32),h,w) : Array<F32> & F32}
-  %eox : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(Tree.pack(F32,x),
-      ((pos / output_width : U32) * stride + kernel_row_index - pad : U32),(_ * stride + kernel_column_index - pad : U32),((q / (k * k) : U32) * h * w : U32),h,w) : Array<F32> & F32}
-  %eky : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(Tree.pack(F32,x),
+    output_width) == Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),(output_row_index * stride + kernel_row_index - pad : U32),(output_column_index * stride + kernel_column_index - pad : U32),(input_channel_index * h * w : U32),h,
+    w,1) : Array<F32> & F32}:
+  %eic : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),(output_row_index * stride + kernel_row_index - pad : U32),
+      (output_column_index * stride + kernel_column_index - pad : U32),(_ * h * w : U32),h,w,1) : Array<F32> & F32}
+  %eoy : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),(_ * stride + kernel_row_index - pad : U32),
+      (output_column_index * stride + kernel_column_index - pad : U32),((q / (k * k) : U32) * h * w : U32),h,w,1) : Array<F32> & F32}
+  %eox : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),
+      ((pos / output_width : U32) * stride + kernel_row_index - pad : U32),(_ * stride + kernel_column_index - pad : U32),((q / (k * k) : U32) * h * w : U32),h,w,1) : Array<F32> & F32}
+  %eky : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),
       ((pos / output_width : U32) * stride + _ - pad : U32),((pos % output_width : U32) * stride + kernel_column_index - pad : U32),((q / (k * k) : U32) * h * w : U32),h,
-      w) : Array<F32> & F32}
-  %ekx : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(Tree.pack(F32,x),
+      w,1) : Array<F32> & F32}
+  %ekx : {PackingSamples.pixel(Tree.pack(F32,x),pos,q,h,w,k,stride,pad,output_width) == Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),
       ((pos / output_width : U32) * stride + ((q / k) % k : U32) - pad : U32),((pos % output_width : U32) * stride + _ - pad : U32),
-      ((q / (k * k) : U32) * h * w : U32),h,w) : Array<F32> & F32}
-  masks(U32.is_lt(((pos / output_width) * stride + (q / k) % k - pad : U32),h) && U32.is_lt(((pos % output_width) * stride + q % k - pad : U32),w),Array.get(F32,
-      Tree.pack(F32,x),
-      ((q / (k * k)) * h * w + ((pos / output_width) * stride + (q / k) % k - pad : U32) * w + ((pos % output_width) * stride + q % k - pad : U32) : U32)))
+      ((q / (k * k) : U32) * h * w : U32),h,w,1) : Array<F32> & F32}
+  +row = ((pos / output_width) * stride + (q / k) % k - pad : U32)
+  +column = ((pos % output_width) * stride + q % k - pad : U32)
+  +base = ((q / (k * k)) * h * w : U32)
+  +inside = U32.is_lt(row,h) && U32.is_lt(column,w)
+  Equal.trans(Array<F32> & F32,PackingSamples.mask_pixel(inside,Array.get(F32,Tree.pack(F32,x),(base + row * w + column : U32))),Packing.masked_field(~F32,inside,Packing.field_of(~F32,~Packing.identity,Array.get(F32,Tree.pack(F32,x),(base + row * w + column : U32)))),
+    Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),row,column,base,h,w,1),
+    masks(inside,Array.get(F32,Tree.pack(F32,x),(base + row * w + column : U32))),
+    Equal.sym(Array<F32> & F32,Packing.pixel(~F32,~Packing.identity,Tree.pack(F32,x),row,column,base,h,w,1),Packing.masked_field(~F32,inside,Packing.field_of(~F32,~Packing.identity,Array.get(F32,Tree.pack(F32,x),(base + row * w + column : U32)))),
+      Reads.unit_step_pixel(~F32,~Packing.identity,Tree.pack(F32,x),row,column,base,h,w)))
 
 def native_pixel_decoded(+limits: Machine.Limits,+p: ConvSpec.Problem,+storage_contract: Inputs.Contract<p>,+pos: U32,+q: U32,+input_channel_index: Nat,+output_row_index: Nat,+output_column_index: Nat,+kernel_row_index: Nat,+kernel_column_index: Nat,
   +valid: {ConvSpec.valid(p) == True{} : Bool},+supported: {ScalarConv.supported_with_limits(limits,p) == True{} : Bool},

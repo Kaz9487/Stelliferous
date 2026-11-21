@@ -12,6 +12,8 @@ import ./tensor_file.bend as Files
 import ./tensor_model.bend as Models
 import ./tensor_view.bend as Views
 import ./tensor_shape.bend as Shapes
+import ./storage_copy.bend as Copy
+import ./storage_buffer.bend as Buffers
 
 def Tensor() -> Type:
   Tensors.Tensor<F32>
@@ -74,7 +76,7 @@ def described_numbers(plain: Bool,+name: String,+kind: String,+key: String,+offs
 # The persistent id of a storage: ('storage', torch.<Kind>Storage, key, location, count).
 def described_storage(+name: String,id: Pickle.Value,+offset: U32,+sizes: List<&2,Pickle.Value>,+strides: List<&2,Pickle.Value>) -> Described:
   match id:
-    case Pickle.Sequence{Con{Pickle.Text{tag},Con{Pickle.Global{module,kind},Con{Pickle.Text{key},others}}}}:
+    case Pickle.Sequence{Con{Pickle.Unicode{tag},Con{Pickle.Global{module,kind},Con{Pickle.Unicode{key},others}}}}:
       described_numbers(all_numbers(sizes) && all_numbers(strides),name,kind,key,offset,sizes,strides)
     case id: Unusable{name,"has a storage reference of an unknown form"}
 
@@ -121,7 +123,7 @@ def listed(set: Pickle.Value) -> List<&2,Pickle.Value>:
 def named(names: List<&2,Pickle.Value>,+name: String) -> Bool:
   match names:
     case Nil{}: False{}
-    case Con{Pickle.Text{+text},rest}: String.eq(text,name) || named(rest,name)
+    case Con{Pickle.Unicode{+text},rest}: String.eq(text,name) || named(rest,name)
     case Con{other,rest}: named(rest,name)
 
 def entries_of(value: Pickle.Value) -> List<&2,Pickle.Value>:
@@ -134,16 +136,16 @@ def entries_of(value: Pickle.Value) -> List<&2,Pickle.Value>:
 def own(entries: List<&2,Pickle.Value>,+prefix: String,+excluded: List<&2,Pickle.Value>,+found: List<&2,Described>) -> List<&2,Described>:
   match entries:
     case Nil{}: found
-    case Con{Pickle.Sequence{Con{Pickle.Text{+name},Con{Pickle.Absent{},others}}},rest}: own(rest,prefix,excluded,found)
-    case Con{Pickle.Sequence{Con{Pickle.Text{+name},Con{value,others}}},rest}:
+    case Con{Pickle.Sequence{Con{Pickle.Unicode{+name},Con{Pickle.Absent{},others}}},rest}: own(rest,prefix,excluded,found)
+    case Con{Pickle.Sequence{Con{Pickle.Unicode{+name},Con{value,others}}},rest}:
       own(rest,prefix,excluded,Bool.pick(List<&2,Described>,named(excluded,name),found,described(prefix ++ name,value) <> found))
     case Con{entry,rest}: own(rest,prefix,excluded,found)
 
 def children(entries: List<&2,Pickle.Value>,+prefix: String) -> List<&2,Task>:
   match entries:
     case Nil{}: []
-    case Con{Pickle.Sequence{Con{Pickle.Text{name},Con{Pickle.Absent{},others}}},rest}: children(rest,prefix)
-    case Con{Pickle.Sequence{Con{Pickle.Text{name},Con{module,others}}},rest}: Task{prefix ++ name ++ ".",module} <> children(rest,prefix)
+    case Con{Pickle.Sequence{Con{Pickle.Unicode{name},Con{Pickle.Absent{},others}}},rest}: children(rest,prefix)
+    case Con{Pickle.Sequence{Con{Pickle.Unicode{name},Con{module,others}}},rest}: Task{prefix ++ name ++ ".",module} <> children(rest,prefix)
     case Con{entry,rest}: children(rest,prefix)
 
 def state_of(module: Pickle.Value) -> List<&2,Pickle.Value>:
@@ -166,7 +168,7 @@ def walk(fuel: Nat,todo: List<&2,Task>,found: List<&2,Described>) -> List<&2,Des
 def plain(entries: List<&2,Pickle.Value>,found: List<&2,Described>) -> List<&2,Described>:
   match entries:
     case Nil{}: List.reverse(&2,Described,found)
-    case Con{Pickle.Sequence{Con{Pickle.Text{+name},Con{value,others}}},rest}: plain(rest,described(name,value) <> found)
+    case Con{Pickle.Sequence{Con{Pickle.Unicode{+name},Con{value,others}}},rest}: plain(rest,described(name,value) <> found)
     case Con{entry,rest}: plain(rest,found)
 
 def is_module(value: Pickle.Value) -> Bool:
@@ -230,11 +232,18 @@ def reach(empty: Bool,axes: List<&2,Views.Axis>) -> Maybe<&2,U32>:
     case True{}: Some{0}
     case False{}: Shapes.checked_add_to(last_address(axes),1)
 
+def strided_values(status: Tensors.Status,+axes: List<&2,Views.Axis>,+count: U32,storage: Buffers.Buffer<F32>) -> Buffers.Buffer<F32>:
+  match status:
+    case Tensors.Usable{}:
+      Pair.snd(Buffers.Buffer<F32>,Buffers.Buffer<F32>,Copy.view(~F32,False{},count,Views.View{axes,0},0,storage,Tensors.buffer(~F32,0.0,count)))
+    case Tensors.Failed{problem}: storage
+
 # A row-major view is read as the tensor itself. Any other view is read as the
 # elements it reaches and copied through the view into row-major storage.
 def strided(tensor: Tensor(),+axes: List<&2,Views.Axis>,+shape: List<&2,U32>) -> Tensor():
-  Tensors.with_whole(~F32,~Tensor(),tensor,storage => reached => fill => status => workers =>
-    Tensors.result_of(~F32,Tensors.gather_status(~F32,operation(),status,Some{Views.View{axes,0}},[],shape,shape,storage,reached,fill,workers)))
+  Tensors.with_whole(~F32,~Tensor(),tensor,storage => source => fill => status => workers =>
+    +status = status
+    Tensors.values(~F32,strided_values(status,axes,Tensors.count_or_zero(shape),storage),shape,fill,status,workers))
 
 def rearranged(pair: File & Tensor(),+axes: List<&2,Views.Axis>,+shape: List<&2,U32>) -> File & Tensor():
   (file,tensor) = pair
@@ -296,7 +305,7 @@ def name_of(described: Described) -> String:
 
 def entered(pair: File & Tensor(),+name: String,store: Models.Store,remaining: List<&2,Described>) -> Loading:
   (file,tensor) = pair
-  Loading{file,Models.Entry{name,tensor,store},remaining}
+  Loading{file,Models.Entry{name,Models.stored(tensor),store},remaining}
 
 # The described tensors are visited last first, so the store lists them in order.
 def load_all(fuel: Nat,loading: Loading,+path: String,+records: List<&2,Archive.Record>,+prefix: List<&2,U32>) -> IO(Loading):

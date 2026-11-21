@@ -8,6 +8,7 @@ import ./word_power_of_two.bend as Power
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./bounded_u32_arithmetic.bend as Arithmetic
+import ../kernel_gemm.bend as KernelGemm
 
 def capacity_node(~Element: Data,+left: Tree.Tree<Element>,+right: Tree.Tree<Element>,+half: U32,+index: U32,+value: Element,choice: Bool,
   left_capacity: {Tree.capacity(Element,Tree.store(Element,left,half,index,value)) == Tree.capacity(Element,left) : U32}) ->
@@ -104,7 +105,7 @@ def fetch_preserved(~Element: Data,+depth: Nat,tree: Tree.Tree<Element>,+index: 
     case 0n Tree.Node{left,right}: match balanced:
     case 1n+rest Tree.Leaf{old}: match balanced:
     case 1n+ +rest Tree.Node{+left,+right}:
-      Shape.Both{+left_balanced,+right_balanced} = balanced
+      KernelGemm.Both{+left_balanced,+right_balanced} = balanced
       +half_equal = Power.native_half_power(rest,Bounds.predecessor_strict(rest,31n,limit))
       other_node(~Element,left,right,Address.capacity(1n+rest),index,query,value,U32.is_lt(index,U32.shr(Address.capacity(1n+rest))),U32.is_lt(query,U32.shr(Address.capacity(1n+rest))),{==},{==},
         in_left => query_left =>

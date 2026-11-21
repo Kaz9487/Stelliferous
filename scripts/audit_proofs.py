@@ -8,9 +8,8 @@ dependencies or treating conditional theorems as discharged applications.
 from pathlib import Path
 import argparse
 import json
-import os
-import platform
 import re
+import os
 import subprocess
 import sys
 from reporting import write_report
@@ -19,14 +18,8 @@ ROOT = next(
     parent for parent in Path(__file__).resolve().parents if (parent / 'bend.cmd').is_file()
 )
 REPORT = ROOT / 'out/results/proof-audit'
-ENTRY_OFFICIAL = [
-    'scripts/check_official.bend',
-    'convolution/proofs/matrix_matches_convolution.bend',
-    'convolution/proofs/matrix_axis_partitions.bend',
-    'convolution/proofs/matrix_axis_lengths.bend',
-    'convolution/proofs/array_api_validation.bend',
-    'convolution/proofs/reference_refinement.bend',
-]
+# The entry imports every proof, the roots among them.
+ENTRY_OFFICIAL = ['scripts/check_official.bend']
 parser = argparse.ArgumentParser()
 parser.add_argument('--check', action='store_true')
 args = parser.parse_args()
@@ -35,8 +28,10 @@ REPORT.mkdir(parents=True, exist_ok=True)
 
 
 
+# Lexical: resolving every path costs a dozen file system calls each, minutes
+# on a mounted drive, and the sources hold no links.
 def relative(p):
-    return p.resolve().relative_to(ROOT.resolve()).as_posix()
+    return Path(os.path.normpath(p)).relative_to(ROOT).as_posix()
 
 
 if args.check:
@@ -45,9 +40,6 @@ if args.check:
             [sys.executable, str(ROOT / 'scripts' / gate)],
             cwd=ROOT,
             capture_output=True,
-            # The gate runs seven official entries sequentially. A large
-            # component closure can use most of its own 120-second budget.
-            timeout=600,
         )
         output = (p.stdout + p.stderr).decode('utf-8', errors='replace')
         (REPORT / (gate + '.log')).write_text(output, encoding='utf-8')
@@ -55,18 +47,8 @@ if args.check:
             raise SystemExit(f'Proof gate failed: {gate}; see out/results/proof-audit')
 
 # The upstream parser supplies navigation references only; official acceptance
-# above remains the sole proof verdict. Keep the map current after renaming.
-# Upstream resolves imports from POSIX paths, so Windows runs it in WSL.
-if sys.platform == 'win32':
-    distribution = ['-d', os.environ['BEND_WSL_DISTRO']] if os.environ.get('BEND_WSL_DISTRO') else []
-    dependencies = ['wsl.exe', *distribution, '--cd', str(ROOT), '--exec', 'sh', '-c',
-                    '. scripts/linux_environment.sh && exec bun scripts/proof_dependencies.ts']
-else:
-    local_bun = ROOT / '.tools/bun/node_modules/@oven/bun-linux-x64/bin/bun'
-    if not (platform.machine() == 'x86_64' and local_bun.is_file()):
-        local_bun = 'bun'
-    dependencies = [str(local_bun), str(ROOT / 'scripts/proof_dependencies.ts')]
-subprocess.run(dependencies, cwd=ROOT, check=True, timeout=180)
+# above remains the sole proof verdict.
+subprocess.run([sys.executable, str(ROOT / 'run.py'), 'dependencies'], cwd=ROOT, check=True, timeout=600)
 
 
 files = {}
@@ -182,19 +164,11 @@ judgments = {
     (
         'convolution/proofs/packed_inference_refinement.bend',
         'run_readback_matches_matrix',
-    ): 'Actual packed Array execution to the frozen ordered matrix values for any caller storage satisfying the common contents/capacity contract; includes weight reorder, input row windows (copied bands over aligned rows, the caller input otherwise), packing, arbitrary split depth, four-row GEMM jobs at eight positions and gather.',
-    (
-        'lib/proofs/write_program_readback.bend',
-        'MatchingWritesHaveValue',
-    ): 'A premise family, not a proof that actual writes are correct. Multiple matching writes of the same value are allowed.',
-    (
-        'convolution/proofs/packing_contents.bend',
-        'packing_contents',
-    ): 'The actual packer of tiles * inner entries, at every output width and start position, stores the flat tabulation of its entries. Validity, support, total capacity and a start range ending within seven of the output grid are premises; prepare and band leaves discharge them.',
+    ): 'Actual cells execution to the frozen ordered matrix values: boundary tiling, copied cell windows, packing, arbitrary split depth, shared GEMM, cell gather and boundary untile. The root discharges the contents and capacity premises.',
     (
         'convolution/proofs/packing_readback.bend',
         'allocated_readback',
-    ): 'The flat tabulation over a freshly allocated buffer reads back the native pixel of each lane; positive count, capacity bound and query range remain premises and are discharged by prepared_packing_samples.leaf_samples.',
+    ): 'The flat tabulation over a freshly allocated buffer reads back the native pixel of each lane; positive count, capacity bound and query range remain premises and are discharged by workspace_packing_samples.workspace_samples.',
     (
         'convolution/proofs/matrix_reduction_order.bend',
         'matrix_reduction_is_consecutive',
@@ -202,11 +176,11 @@ judgments = {
     (
         'convolution/proofs/gemm_dot_matches_matrix.bend',
         'job_dot',
-    ): 'Ordered FP32 accumulator of one four-row GEMM job at eight positions, row and lane equals the frozen matrix dot over the reordered weights under a LeafCertificate and valid group/output membership. Certificate is produced by actual prepare; caller scheduling and output writes remain separate.',
+    ): 'Ordered FP32 accumulator of a GEMM job equals the frozen matrix dot under a packing certificate that samples the problem values and valid group/output membership. Array boundary packing and public cells each establish their parameter-source contract; caller scheduling and output writes are separate.',
     (
-        'convolution/proofs/microkernel_leaf_readback.bend',
-        'leaf_every_position',
-    ): 'Every in-range output of an actual pack plus four-row GEMM leaf at eight positions reads back the frozen matrix value plus bias. Takes a LeafCertificate premise (discharged by the gather proofs from actual prepare), rebuilds the certificate for its own allocated pack buffer, and uses complete coverage for full and partial channel blocks.',
+        'convolution/proofs/array_leaf_cells.bend',
+        'leaf_cells_every_position',
+    ): 'Every in-range lane of an Array leaf, packed into fresh tiles as the problem values and multiplied into fresh output cells, reads back the frozen matrix value plus bias. The span bound, alignment and range premises come from the geometry of the root layout.',
     (
         'convolution/proofs/array_api_validation.bend',
         'validation_matches_spec',
@@ -282,22 +256,22 @@ write_report(
         ),
     ],
 )
-dependencies = json.loads((REPORT / 'dependencies.json').read_text(encoding='utf-8'))
+dependencies = json.loads((ROOT / 'out/results/dependencies/dependencies.json').read_text(encoding='utf-8'))
 write_report(
     REPORT / 'dependencies.md',
     [
         ('# Proof references', '# 證明引用導覽'),
         (
-            '[Reference data](dependencies.json) contains signature and body references from the official parser, including types and all branches. [Semantic obligations](../../../docs/proofs.md) explain the execution paths. The following interfaces have independent uses outside the root.',
-            '[引用資料](dependencies.json) 記錄官方 parser 的簽章與內容引用，包含型別及所有分支。[語意責任](../../../docs/proofs.zh-TW.md)說明執行路徑。以下介面在根定理之外也有獨立用途。',
+            '[Reference data](../dependencies/dependencies.json) contains signature and body references from the official parser, including types and all branches; `python run.py dependencies` queries it. [Semantic obligations](../../../docs/proofs.md) explain the execution paths. The theorems below are the proof roots.',
+            '[引用資料](../dependencies/dependencies.json) 記錄官方 parser 的簽章與內容引用，包含型別及所有分支，`python run.py dependencies` 可以查詢。[語意責任](../../../docs/proofs.zh-TW.md)說明執行路徑。以下定理是證明的根。',
         ),
         (
-            '| Module | Interface |\n|---|---|',
-            '| 模組 | 介面 |\n|---|---|',
+            '| Module | Theorem | Purpose |\n|---|---|---|',
+            '| 模組 | 定理 | 用途 |\n|---|---|---|',
         ),
         '\n'.join(
-            f'| [{item["file"]}](../../../{item["file"]}) | `{item["symbol"].rsplit(".", 1)[-1]}` |'
-            for item in dependencies['retained_interfaces']
+            f'| [{dependencies["declarations"][item["name"]]["file"]}](../../../{dependencies["declarations"][item["name"]]["file"]}) | `{item["name"].rsplit(".", 1)[-1]}` | {item["reason"]} |'
+            for item in dependencies['roots']['proof']
         ),
     ],
 )

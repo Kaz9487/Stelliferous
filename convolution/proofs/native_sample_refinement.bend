@@ -126,20 +126,20 @@ law native_sample:
   for +output_column_in_bounds: {Nat.is_lt(output_column_index,ConvSpec.out_width(p)) == True{} : Bool}
   for +kernel_row_in_bounds: {Nat.is_lt(kernel_row_index,Guards.kernel(p)) == True{} : Bool}
   for +kernel_column_in_bounds: {Nat.is_lt(kernel_column_index,Guards.kernel(p)) == True{} : Bool}
-  {Packing.pixel(Inputs.input_owner(p,storage_contract),
+  {Packing.pixel(~F32,~Packing.identity,Inputs.input_owner(p,storage_contract),
       ((U32.from_nat(output_row_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_row_index) : U32) - U32.from_nat(Guards.pad(p)) :
         U32),((U32.from_nat(output_column_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_column_index) : U32) -
         U32.from_nat(Guards.pad(p)) : U32),(U32.from_nat(input_channel_index) * U32.from_nat(Guards.height(p)) *
-        U32.from_nat(Guards.width(p)) : U32),U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p))) == (Inputs.input_owner(p,storage_contract),ConvSpec.sample(p,input_channel_index,output_row_index,output_column_index,kernel_row_index,kernel_column_index)) : Array<F32> & F32}
+        U32.from_nat(Guards.width(p)) : U32),U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),1) == (Inputs.input_owner(p,storage_contract),ConvSpec.sample(p,input_channel_index,output_row_index,output_column_index,kernel_row_index,kernel_column_index)) : Array<F32> & F32}
 def native_sample(limits,p,storage_contract,input_channel_index,output_row_index,output_column_index,kernel_row_index,kernel_column_index,valid,supported,input_channel_in_bounds,output_row_in_bounds,output_column_in_bounds,kernel_row_in_bounds,kernel_column_in_bounds):
   +v = Guards.valid(p,valid)
   +support = Support.scalar(limits,p,supported)
   +eic = channel_exact(limits,p,input_channel_index,support,input_channel_in_bounds)
-  %logical_sample(p,input_channel_index,output_row_index,output_column_index,kernel_row_index,kernel_column_index) : {Packing.pixel(Inputs.input_owner(p,storage_contract),
+  %logical_sample(p,input_channel_index,output_row_index,output_column_index,kernel_row_index,kernel_column_index) : {Packing.pixel(~F32,~Packing.identity,Inputs.input_owner(p,storage_contract),
       ((U32.from_nat(output_row_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_row_index) : U32) - U32.from_nat(Guards.pad(p)) :
         U32),((U32.from_nat(output_column_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_column_index) : U32) -
         U32.from_nat(Guards.pad(p)) : U32),(U32.from_nat(input_channel_index) * U32.from_nat(Guards.height(p)) *
-        U32.from_nat(Guards.width(p)) : U32),U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p))) == (Inputs.input_owner(p,storage_contract),_) : Array<F32> & F32}
+        U32.from_nat(Guards.width(p)) : U32),U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),1) == (Inputs.input_owner(p,storage_contract),_) : Array<F32> & F32}
   %value_exact(Guards.input(p),U32.from_nat(input_channel_index),U32.from_nat(Guards.height(p)),
     U32.from_nat(Guards.width(p)),(U32.from_nat(output_row_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_row_index) : U32),
     (U32.from_nat(output_column_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_column_index) : U32),U32.from_nat(Guards.pad(p)),input_channel_index,
@@ -147,11 +147,11 @@ def native_sample(limits,p,storage_contract,input_channel_index,output_row_index
         Guards.stride(p)),kernel_column_index),Guards.pad(p),eic,SupportedCoordinateBounds.height_exact(limits,p,support),
     SupportedCoordinateBounds.width_exact(limits,p,support),SupportedCoordinateBounds.row_coordinate(limits,p,output_row_index,kernel_row_index,v,support,output_row_in_bounds,kernel_row_in_bounds),
     SupportedCoordinateBounds.col_coordinate(limits,p,output_column_index,kernel_column_index,v,support,output_column_in_bounds,kernel_column_in_bounds),SupportedCoordinateBounds.pad_exact(limits,p,
-      support)) : {Packing.pixel(Inputs.input_owner(p,storage_contract),
+      support)) : {Packing.pixel(~F32,~Packing.identity,Inputs.input_owner(p,storage_contract),
       ((U32.from_nat(output_row_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_row_index) : U32) - U32.from_nat(Guards.pad(p)) :
         U32),((U32.from_nat(output_column_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_column_index) : U32) -
         U32.from_nat(Guards.pad(p)) : U32),(U32.from_nat(input_channel_index) * U32.from_nat(Guards.height(p)) *
-        U32.from_nat(Guards.width(p)) : U32),U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p))) == (Inputs.input_owner(p,storage_contract),_) : Array<F32> & F32}
+        U32.from_nat(Guards.width(p)) : U32),U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),1) == (Inputs.input_owner(p,storage_contract),_) : Array<F32> & F32}
   PaddedPixelAddress.native_pixel(Guards.input(p),Inputs.input_sequence(p,storage_contract),U32.from_nat(input_channel_index),U32.from_nat(Guards.input_channel_count(p)),
     U32.from_nat(Guards.height(p)),U32.from_nat(Guards.width(p)),
     (U32.from_nat(output_row_index) * U32.from_nat(Guards.stride(p)) + U32.from_nat(kernel_row_index) : U32),

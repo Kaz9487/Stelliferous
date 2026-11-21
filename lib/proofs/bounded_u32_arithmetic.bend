@@ -8,6 +8,7 @@ import ./natural_addition.bend as Addition
 import ./nat_order.bend as Order
 import ./u32_comparison.bend as Comparison
 import ./row_major_index.bend as RowMajor
+import ./word_encoding.bend as Words
 
 def count_within(+count: U32,+length: Nat,+capacity: U32,+upper: U32,exact: {U32.to_nat(count) == length : Nat},
   room: {Nat.is_le(length,U32.to_nat(capacity)) == True{} : Bool},capacity_bound: {U32.is_le(capacity,upper) == True{} : Bool}) ->
@@ -66,6 +67,13 @@ def add_associative(+a: U32,+b: U32,+c: U32) -> {((a + b : U32) + c : U32) == (a
   %native_roundtrip(b) : {((U32.from_nat(U32.to_nat(a)) + _ : U32) + c : U32) == (U32.from_nat(U32.to_nat(a)) + (_ + c : U32) : U32) : U32}
   %native_roundtrip(c) : {((U32.from_nat(U32.to_nat(a)) + U32.from_nat(U32.to_nat(b)) : U32) + _ : U32) == (U32.from_nat(U32.to_nat(a)) + (U32.from_nat(U32.to_nat(b)) + _ : U32) : U32) : U32}
   encoded_add_associative(U32.to_nat(a),U32.to_nat(b),U32.to_nat(c))
+
+# Swap the last two terms of a sum.
+def add_swap(+first: U32,+second: U32,+third: U32) -> {((first + second : U32) + third : U32) == ((first + third : U32) + second : U32) : U32}:
+  Equal.trans(U32,((first + second : U32) + third : U32),(first + (second + third : U32) : U32),((first + third : U32) + second : U32),add_associative(first,second,third),
+    Equal.trans(U32,(first + (second + third : U32) : U32),(first + (third + second : U32) : U32),((first + third : U32) + second : U32),
+      Equal.cong(U32,U32,value => (first + value : U32),(second + third : U32),(third + second : U32),add_commutative(second,third)),
+      Equal.sym(U32,((first + third : U32) + second : U32),(first + (third + second : U32) : U32),add_associative(first,third,second))))
 
 def subtract_from_sum(+a: U32,+b: U32,+c: U32) -> {((a + b : U32) - c : U32) == (a + (b - c : U32) : U32) : U32}:
   %Subtraction.add_subtract(b,c) : {((a + _ : U32) - c : U32) == (a + (b - c : U32) : U32) : U32}
@@ -148,10 +156,6 @@ def subtract_zero(+value: U32) -> {(value - 0 : U32) == value : U32}:
     Equal.trans(U32,U32.from_nat(Nat.sub(U32.to_nat(value),0n)),U32.from_nat(U32.to_nat(value)),value,
       Equal.cong(Nat,U32,U32.from_nat,Nat.sub(U32.to_nat(value),0n),U32.to_nat(value),Order.subtract_zero(U32.to_nat(value))),native_roundtrip(value)))
 
-def multiply(+a: U32,+b: U32,+cap: U32,cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},h: {Nat.is_le(Nat.mul(U32.to_nat(a),U32.to_nat(b)),
-      U32.to_nat(cap)) == True{} : Bool}) -> {U32.to_nat(U32.mul(a,b)) == Nat.mul(U32.to_nat(a),U32.to_nat(b)) : Nat}:
-  Multiplication.bounded_multiply(a,b,cap,cap_ok,h)
-
 def from_nat_exact(+count: U32,+length: Nat,exact: {U32.to_nat(count) == length : Nat}) -> {U32.from_nat(length) == count : U32}:
   %exact : {U32.from_nat(_) == count : U32}
   native_roundtrip(count)
@@ -162,7 +166,7 @@ def multiply_add_exact(+a: U32,+radix: U32,+rest: U32,+capacity: U32,+capacity_o
   +room: {Nat.is_le(Nat.add(Nat.mul(U32.to_nat(a),U32.to_nat(radix)),U32.to_nat(rest)),U32.to_nat(capacity)) == True{} : Bool}) ->
   {U32.to_nat((a * radix + rest : U32)) == Nat.add(Nat.mul(U32.to_nat(a),U32.to_nat(radix)),U32.to_nat(rest)) : Nat}:
   +product = Nat.mul(U32.to_nat(a),U32.to_nat(radix))
-  +exact = multiply(a,radix,capacity,capacity_ok,
+  +exact = Multiplication.bounded_multiply(a,radix,capacity,capacity_ok,
     Order.transitive(product,Nat.add(product,U32.to_nat(rest)),U32.to_nat(capacity),Order.le_add(product,U32.to_nat(rest)),room))
   %exact : {U32.to_nat((a * radix + rest : U32)) == Nat.add(_,U32.to_nat(rest)) : Nat}
   add((a * radix : U32),rest,capacity,capacity_ok,
@@ -190,6 +194,16 @@ def word_nonzero_positive(+extent: U32,nonzero: {U32.is_zero(extent) == False{} 
   Order.nonzero_positive(U32.to_nat(extent),{
     %Comparison.eq(extent,0) : {_ == False{} : Bool}
     nonzero : {Nat.is_eq(U32.to_nat(extent),0n) == False{} : Bool}})
+
+# A positive word is not zero.
+def classified_nonzero(zero: Bool,+count: U32,+classified: {U32.is_zero(count) == zero : Bool},+positive: {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool}) -> {zero == False{} : Bool}:
+  match zero:
+    case False{}: {==}
+    case True{}:
+      Empty.absurd({True{} == False{} : Bool},Words.false_true(%word_zero(count,classified) : {Nat.is_lt(0n,U32.to_nat(_)) == True{} : Bool} positive))
+
+def word_positive_nonzero(+count: U32,+positive: {Nat.is_lt(0n,U32.to_nat(count)) == True{} : Bool}) -> {U32.is_zero(count) == False{} : Bool}:
+  classified_nonzero(U32.is_zero(count),count,{==},positive)
 
 # Zero channels, rows or width make the actual modular local count zero.
 # These producers need no positive-width or whole-tensor indexing envelope.
@@ -262,6 +276,29 @@ def multiply_additive(+left: U32,+right: U32,+factor: U32) ->
     WordArithmetic.native_add(Nat.mul(a,c),Nat.mul(b,c)) : {(left * factor + right * factor : U32) == U32.from_nat(products) : U32}}
   Equal.trans(U32,((left + right : U32) * factor : U32),U32.from_nat(Nat.mul(sum,c)),(left * factor + right * factor : U32),left_exact,
     Equal.trans(U32,U32.from_nat(Nat.mul(sum,c)),U32.from_nat(products),(left * factor + right * factor : U32),Equal.cong(Nat,U32,U32.from_nat,Nat.mul(sum,c),products,RowMajor.distrib(a,b,c)),Equal.sym(U32,(left * factor + right * factor : U32),U32.from_nat(products),right_exact)))
+def multiply_subtractive(+left: U32,+right: U32,+factor: U32) ->
+  {((left - right : U32) * factor : U32) == (left * factor - right * factor : U32) : U32}:
+  +part = ((left - right : U32) * factor : U32)
+  +removed = (right * factor : U32)
+  +total = (left * factor : U32)
+  +sum = Equal.trans(U32,(part + removed : U32),(((left - right : U32) + right : U32) * factor : U32),total,
+    Equal.sym(U32,(((left - right : U32) + right : U32) * factor : U32),(part + removed : U32),multiply_additive((left - right : U32),right,factor)),
+    Equal.cong(U32,U32,value => (value * factor : U32),((left - right : U32) + right : U32),left,Subtraction.add_subtract(left,right)))
+  Equal.trans(U32,part,((part + removed : U32) - removed : U32),(total - removed : U32),
+    Equal.sym(U32,((part + removed : U32) - removed : U32),part,Subtraction.subtract_add(part,removed)),
+    Equal.cong(U32,U32,value => (value - removed : U32),(part + removed : U32),total,sum))
+
+def negative_step(+position: U32,+step: U32,+prefix: U32) ->
+  {(position * (0 - step : U32) + prefix : U32) == (prefix - position * step : U32) : U32}:
+  +negative = (0 - step : U32)
+  +product = (position * step : U32)
+  +scaled = Equal.trans(U32,(position * negative : U32),(negative * position : U32),(0 - product : U32),multiply_commutative(position,negative),
+    %multiply_zero_left(position) : {((0 - step : U32) * position : U32) == (_ - product : U32) : U32}
+    %multiply_commutative(step,position) : {((0 - step : U32) * position : U32) == (0 * position - _ : U32) : U32}
+    multiply_subtractive(0,step,position))
+  %Equal.sym(U32,(position * negative : U32),(0 - product : U32),scaled) : {(_ + prefix : U32) == (prefix - product : U32) : U32}
+  Equal.trans(U32,((0 - product : U32) + prefix : U32),(prefix + (0 - product : U32) : U32),(prefix - product : U32),add_commutative((0 - product : U32),prefix),add_zero_subtract(prefix,product))
+
 def multiply_associative(+left: U32,+middle: U32,+right: U32) ->
   {(left * middle * right : U32) == (left * (middle * right : U32) : U32) : U32}:
   +a = U32.to_nat(left)
@@ -279,3 +316,36 @@ def multiply_associative(+left: U32,+middle: U32,+right: U32) ->
     Multiplication.native_encoded_multiply(a,Nat.mul(b,c)) : {(left * (middle * right : U32) : U32) == U32.from_nat(last) : U32}}
   Equal.trans(U32,(left * middle * right : U32),U32.from_nat(first),(left * (middle * right : U32) : U32),left_exact,
     Equal.trans(U32,U32.from_nat(first),U32.from_nat(last),(left * (middle * right : U32) : U32),Equal.cong(Nat,U32,U32.from_nat,first,last,RowMajor.assoc(a,b,c)),Equal.sym(U32,(left * (middle * right : U32) : U32),U32.from_nat(last),right_exact)))
+
+# Sums, differences and products of words equal the natural-number values
+# of their operands when the result stays below a word bound.
+def sum_exact(+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},+left: U32,+right: U32,+left_value: Nat,+right_value: Nat,
+  +left_exact: {U32.to_nat(left) == left_value : Nat},+right_exact: {U32.to_nat(right) == right_value : Nat},
+  +bounded: {Nat.is_le(Nat.add(left_value,right_value),U32.to_nat(cap)) == True{} : Bool}) -> {U32.to_nat((left + right : U32)) == Nat.add(left_value,right_value) : Nat}:
+  %left_exact : {U32.to_nat((left + right : U32)) == Nat.add(_,right_value) : Nat}
+  %right_exact : {U32.to_nat((left + right : U32)) == Nat.add(U32.to_nat(left),_) : Nat}
+  add(left,right,cap,cap_ok,
+    %Equal.sym(Nat,U32.to_nat(left),left_value,left_exact) : {Nat.is_le(Nat.add(_,U32.to_nat(right)),U32.to_nat(cap)) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(right),right_value,right_exact) : {Nat.is_le(Nat.add(left_value,_),U32.to_nat(cap)) == True{} : Bool}
+    bounded)
+
+def difference_exact(+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},+left: U32,+right: U32,+left_value: Nat,+right_value: Nat,+left_exact: {U32.to_nat(left) == left_value : Nat},
+  +right_exact: {U32.to_nat(right) == right_value : Nat},+ordered: {Nat.is_le(right_value,left_value) == True{} : Bool},
+  +bounded: {Nat.is_le(left_value,U32.to_nat(cap)) == True{} : Bool}) -> {U32.to_nat((left - right : U32)) == Nat.sub(left_value,right_value) : Nat}:
+  %left_exact : {U32.to_nat((left - right : U32)) == Nat.sub(_,right_value) : Nat}
+  %right_exact : {U32.to_nat((left - right : U32)) == Nat.sub(U32.to_nat(left),_) : Nat}
+  subtract(left,right,cap,cap_ok,
+    %Equal.sym(Nat,U32.to_nat(right),right_value,right_exact) : {Nat.is_le(_,U32.to_nat(left)) == True{} : Bool}
+      %Equal.sym(Nat,U32.to_nat(left),left_value,left_exact) : {Nat.is_le(right_value,_) == True{} : Bool} ordered,
+    Order.transitive(Nat.sub(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(left),U32.to_nat(cap),Order.sub_le(U32.to_nat(left),U32.to_nat(right)),
+      %Equal.sym(Nat,U32.to_nat(left),left_value,left_exact) : {Nat.is_le(_,U32.to_nat(cap)) == True{} : Bool} bounded))
+
+def product_exact(+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},+left: U32,+right: U32,+left_value: Nat,+right_value: Nat,
+  +left_exact: {U32.to_nat(left) == left_value : Nat},+right_exact: {U32.to_nat(right) == right_value : Nat},
+  +bounded: {Nat.is_le(Nat.mul(left_value,right_value),U32.to_nat(cap)) == True{} : Bool}) -> {U32.to_nat((left * right : U32)) == Nat.mul(left_value,right_value) : Nat}:
+  %left_exact : {U32.to_nat((left * right : U32)) == Nat.mul(_,right_value) : Nat}
+  %right_exact : {U32.to_nat((left * right : U32)) == Nat.mul(U32.to_nat(left),_) : Nat}
+  Multiplication.bounded_multiply(left,right,cap,cap_ok,
+    %Equal.sym(Nat,U32.to_nat(left),left_value,left_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(right)),U32.to_nat(cap)) == True{} : Bool}
+    %Equal.sym(Nat,U32.to_nat(right),right_value,right_exact) : {Nat.is_le(Nat.mul(left_value,_),U32.to_nat(cap)) == True{} : Bool}
+    bounded)

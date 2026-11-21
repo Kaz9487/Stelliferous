@@ -4,6 +4,8 @@ import ./paired_read_refinement.bend as ReadLaws
 import ../kernel_block.bend as Block
 import ../math_sequence.bend as Sequence
 import ../kernel_tile.bend as Tile
+import ./word_encoding.bend as WordEncoding
+import ./nat_division.bend as Division
 
 type SampleContext<-Model: Data,-Context: Data> is Data:
   SampleContext{model: Model,context: Context}
@@ -128,6 +130,34 @@ def lane_of(lane: Nat) -> Sequence.Index(8n):
                             case 0n: Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}}
                             case 1n+g: Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.Next{Sequence.First{}}}}}}}}
 
+# A lane below eight is its own index.
+def lane_value_of(+lane: Nat,small: {Nat.is_lt(lane,8n) == True{} : Bool}) -> {Sequence.index_value(8n,lane_of(lane)) == lane : Nat}:
+  match lane:
+    case 0n: {==}
+    case 1n+a:
+      match a:
+        case 0n: {==}
+        case 1n+b:
+          match b:
+            case 0n: {==}
+            case 1n+c:
+              match c:
+                case 0n: {==}
+                case 1n+d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+g:
+                              match g:
+                                case 0n: {==}
+                                case 1n+h:
+                                  Empty.absurd({Sequence.index_value(8n,lane_of(8n+h)) == 8n+h : Nat},WordEncoding.false_true(Equal.trans(Bool,False{},Nat.is_lt(h,0n),True{},Equal.sym(Bool,Nat.is_lt(h,0n),False{},Division.lt_zero(h)),small)))
+
 def select_lane(lane: Nat,values: Tile.Tile8) -> F32:
   match lane:
     case 0n: Tile.lane0(values)
@@ -150,6 +180,30 @@ def select_lane(lane: Nat,values: Tile.Tile8) -> F32:
                           match f:
                             case 0n: Tile.lane6(values)
                             case 1n+g: Tile.lane7(values)
+
+# Every lane of a filled tile holds its value.
+def filled_lane(+lane: Nat,+value: F32) -> {select_lane(lane,Tile.filled(value)) == value : F32}:
+  match lane:
+    case 0n: {==}
+    case 1n+ +a:
+      match a:
+        case 0n: {==}
+        case 1n+ +b:
+          match b:
+            case 0n: {==}
+            case 1n+ +c:
+              match c:
+                case 0n: {==}
+                case 1n+ +d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+ +e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+ +f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+g: {==}
 
 def selected_lane(+lane: Nat,+values: Tile.Tile8) ->
   {select_lane(lane,values) == Tile.element_at(lane_of(lane),values) : F32}:
@@ -209,3 +263,166 @@ def tiles_equal(+left: Tile.Tile8,+right: Tile.Tile8,
   %e6 : {Tile.Tile{Tile.lane0(left),Tile.lane1(left),Tile.lane2(left),Tile.lane3(left),Tile.lane4(left),Tile.lane5(left),Tile.lane6(left),Tile.lane7(left)} == Tile.Tile{Tile.lane0(left),Tile.lane1(left),Tile.lane2(left),Tile.lane3(left),Tile.lane4(left),Tile.lane5(left),_,Tile.lane7(right)} : Tile.Tile8}
   %e7 : {Tile.Tile{Tile.lane0(left),Tile.lane1(left),Tile.lane2(left),Tile.lane3(left),Tile.lane4(left),Tile.lane5(left),Tile.lane6(left),Tile.lane7(left)} == Tile.Tile{Tile.lane0(left),Tile.lane1(left),Tile.lane2(left),Tile.lane3(left),Tile.lane4(left),Tile.lane5(left),Tile.lane6(left),_} : Tile.Tile8}
   {==}
+
+# A lane of the update of tiles is the update of their lanes.
+def updated_lane(+accumulator: Tile.Tile8,+input: Tile.Tile8,+weight: Tile.Tile8,+lane: Nat) ->
+  {select_lane(lane,Tile.update_lanes(accumulator,input,weight)) == (select_lane(lane,accumulator) + (select_lane(lane,input) * select_lane(lane,weight) : F32) : F32) : F32}:
+  Tile.Tile{a0,a1,a2,a3,a4,a5,a6,a7} = accumulator
+  Tile.Tile{x0,x1,x2,x3,x4,x5,x6,x7} = input
+  Tile.Tile{w0,w1,w2,w3,w4,w5,w6,w7} = weight
+  match lane:
+    case 0n: {==}
+    case 1n+a:
+      match a:
+        case 0n: {==}
+        case 1n+b:
+          match b:
+            case 0n: {==}
+            case 1n+c:
+              match c:
+                case 0n: {==}
+                case 1n+d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+g: {==}
+
+# A lane of an update by one value is the lane plus the product.
+def updated_by_value(~times: F32 -> F32 -> F32,+accumulator: Tile.Tile8,+lane_tile: Tile.Tile8,+row_value: F32,+lane: Nat) ->
+  {select_lane(lane,Tile.update(~times,accumulator,lane_tile,row_value)) ==
+    (select_lane(lane,accumulator) + times(select_lane(lane,lane_tile),row_value) : F32) : F32}:
+  Tile.Tile{+a0,+a1,+a2,+a3,+a4,+a5,+a6,+a7} = accumulator
+  Tile.Tile{+x0,+x1,+x2,+x3,+x4,+x5,+x6,+x7} = lane_tile
+  match lane:
+    case 0n: {==}
+    case 1n+ +a:
+      match a:
+        case 0n: {==}
+        case 1n+ +b:
+          match b:
+            case 0n: {==}
+            case 1n+ +c:
+              match c:
+                case 0n: {==}
+                case 1n+ +d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+ +e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+ +f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+ +g: {==}
+
+# A lane of the sum of tiles is the sum of their lanes.
+def added_lane(+left: Tile.Tile8,+right: Tile.Tile8,+lane: Nat) ->
+  {select_lane(lane,Tile.plus(left,right)) == (select_lane(lane,left) + select_lane(lane,right) : F32) : F32}:
+  Tile.Tile{a0,a1,a2,a3,a4,a5,a6,a7} = left
+  Tile.Tile{b0,b1,b2,b3,b4,b5,b6,b7} = right
+  match lane:
+    case 0n: {==}
+    case 1n+a:
+      match a:
+        case 0n: {==}
+        case 1n+b:
+          match b:
+            case 0n: {==}
+            case 1n+c:
+              match c:
+                case 0n: {==}
+                case 1n+d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+g: {==}
+
+def times_lane(+left: Tile.Tile8,+right: Tile.Tile8,+lane: Nat) ->
+  {select_lane(lane,Tile.times(left,right)) == (select_lane(lane,left) * select_lane(lane,right) : F32) : F32}:
+  Tile.Tile{a0,a1,a2,a3,a4,a5,a6,a7} = left
+  Tile.Tile{b0,b1,b2,b3,b4,b5,b6,b7} = right
+  match lane:
+    case 0n: {==}
+    case 1n+a:
+      match a:
+        case 0n: {==}
+        case 1n+b:
+          match b:
+            case 0n: {==}
+            case 1n+c:
+              match c:
+                case 0n: {==}
+                case 1n+d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+g: {==}
+
+def square_lane(+left: Tile.Tile8,+right: Tile.Tile8,+lane: Nat) ->
+  {select_lane(lane,Tile.times(Tile.minus(left,right),Tile.minus(left,right))) ==
+    ((select_lane(lane,left) - select_lane(lane,right) : F32) * (select_lane(lane,left) - select_lane(lane,right) : F32) : F32) : F32}:
+  Tile.Tile{a0,a1,a2,a3,a4,a5,a6,a7} = left
+  Tile.Tile{b0,b1,b2,b3,b4,b5,b6,b7} = right
+  match lane:
+    case 0n: {==}
+    case 1n+a:
+      match a:
+        case 0n: {==}
+        case 1n+b:
+          match b:
+            case 0n: {==}
+            case 1n+c:
+              match c:
+                case 0n: {==}
+                case 1n+d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+g: {==}
+
+# A lane of a sum of tiles is the sum of their lanes.
+def plus_lane(+left: Tile.Tile8,+right: Tile.Tile8,+lane: Nat) ->
+  {select_lane(lane,Tile.plus(left,right)) == (select_lane(lane,left) + select_lane(lane,right) : F32) : F32}:
+  Tile.Tile{+a0,+a1,+a2,+a3,+a4,+a5,+a6,+a7} = left
+  Tile.Tile{+b0,+b1,+b2,+b3,+b4,+b5,+b6,+b7} = right
+  match lane:
+    case 0n: {==}
+    case 1n+ +a:
+      match a:
+        case 0n: {==}
+        case 1n+ +b:
+          match b:
+            case 0n: {==}
+            case 1n+ +c:
+              match c:
+                case 0n: {==}
+                case 1n+ +d:
+                  match d:
+                    case 0n: {==}
+                    case 1n+ +e:
+                      match e:
+                        case 0n: {==}
+                        case 1n+ +f:
+                          match f:
+                            case 0n: {==}
+                            case 1n+g: {==}

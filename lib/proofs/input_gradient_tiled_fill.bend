@@ -3,10 +3,10 @@ import Base
 import ../tensor.bend as Tensors
 import ./tensor_allocation_depth.bend as Depth
 import ./word_power_of_two.bend as Power
-import ../kernel_input_gradient.bend as Kernel
+import ../kernel_input_gradient_fill.bend as Kernel
 import ../kernel_tile.bend as Tile
 import ../traversal_array.bend as Traversal
-import ./input_gradient_tiled_refinement.bend as Execution
+import ./kernel_input_gradient_fill_refinement.bend as Execution
 import ./input_gradient_tiled_tiles.bend as Tiles
 import ./input_gradient_tiled_bounds.bend as Groups
 import ./storage_tree_model.bend as Tree
@@ -20,14 +20,15 @@ import ./nat_division_order.bend as Division
 import ./natural_addition.bend as Addition
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./u32_comparison.bend as Comparison
+import ./word_multiplication.bend as WordMultiplication
 
 type Query is Data:
-  Query{context: Kernel.Filling,input: Tree.Tree<F32>,rows: Nat,position: Nat,channel: Nat,shift: Nat,depth: Nat,capacity: U32}
+  Query{context: Kernel.Filling,input: Tree.Tree<Tile.Tile8>,rows: Nat,position: Nat,channel: Nat,shift: Nat,depth: Nat,capacity: U32}
 
 def filling(query: Query) -> Kernel.Filling:
   Query{context,input,rows,position,channel,shift,depth,capacity} = query
   context
-def original(query: Query) -> Tree.Tree<F32>:
+def original(query: Query) -> Tree.Tree<Tile.Tile8>:
   Query{context,input,rows,position,channel,shift,depth,capacity} = query
   input
 def rows(query: Query) -> Nat:
@@ -49,20 +50,17 @@ def capacity(query: Query) -> U32:
   Query{context,input,rows,position,channel,shift,depth,capacity} = query
   capacity
 def span(context: Kernel.Filling) -> U32:
-  Kernel.Filling{layout,low,base,plane,first,rows,group,span} = context
+  Kernel.Filling{shifts,outputs,column_low,kernel,width,chunk_groups,low,base,groups,first,rows,group,span} = context
   span
 def groups(context: Kernel.Filling) -> U32:
-  Kernel.Filling{Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,chunk_groups,chunk_rows},low,base,plane,first,rows,group,span} = context
+  Kernel.Filling{shifts,outputs,column_low,kernel,width,chunk_groups,low,base,groups,first,rows,group,span} = context
   chunk_groups
 def shifts(context: Kernel.Filling) -> U32:
-  Kernel.Filling{Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,chunk_groups,chunk_rows},low,base,plane,first,rows,group,span} = context
+  Kernel.Filling{shifts,outputs,column_low,kernel,width,chunk_groups,low,base,groups,first,rows,group,span} = context
   shifts
-def tiling_outputs(layout: Kernel.Tiling) -> U32:
-  Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,chunk_groups,chunk_rows} = layout
-  outputs
 def outputs(context: Kernel.Filling) -> U32:
-  Kernel.Filling{layout,low,base,plane,first,rows,group,span} = context
-  tiling_outputs(layout)
+  Kernel.Filling{shifts,outputs,column_low,kernel,width,chunk_groups,low,base,groups,first,rows,group,span} = context
+  outputs
 def block(+context: Kernel.Filling) -> U32:
   (outputs(context) * shifts(context) + 1 : U32)
 def block_size(+context: Kernel.Filling) -> Nat:
@@ -82,11 +80,8 @@ def address(query: Query) -> U32:
   Tiles.channel_address(selected_channels(query))
 def wanted(query: Query) -> Tile.Tile8:
   Tiles.channel_wanted(selected_channels(query))
-def tree(state: Execution.Owners) -> Tree.Tree<Tile.Tile8>:
-  Execution.Owners{input,tiles} = state
-  tiles
 def read(query: Query,state: Execution.Owners) -> Tile.Tile8:
-  Tree.read(Tile.Tile8,tree(state),address(query))
+  Tree.read(Tile.Tile8,Execution.tiles(state),address(query))
 def update(index: U32,query: Query,state: Execution.Owners) -> Execution.Owners:
   Execution.fill_group(index,filling(query),state)
 
@@ -101,9 +96,9 @@ type Facts<-query: Query> is Data:
     shift_inside: {Nat.is_lt(shift(query),U32.to_nat(shifts(filling(query)))) == True{} : Bool}}
 
 type Frame<-query: Query,-state: Execution.Owners> is Data:
-  Frame{source: {Execution.source(state) == original(query) : Tree.Tree<F32>},
-    capacity_equal: {Tree.capacity(Tile.Tile8,tree(state)) == capacity(query) : U32},
-    balanced: Shape.Balanced(Tile.Tile8,depth(query),tree(state)),depth_ok: {Nat.is_le(depth(query),31n) == True{} : Bool},facts: Facts<query>}
+  Frame{source: {Execution.source(state) == original(query) : Tree.Tree<Tile.Tile8>},
+    capacity_equal: {Tree.capacity(Tile.Tile8,Execution.tiles(state)) == capacity(query) : U32},
+    balanced: Shape.Balanced(Tile.Tile8,depth(query),Execution.tiles(state)),depth_ok: {Nat.is_le(depth(query),31n) == True{} : Bool},facts: Facts<query>}
 
 def frame(query: Query,state: Execution.Owners) -> Data:
   Frame<query,state>
@@ -144,7 +139,7 @@ def group_base_exact(+query: Query,+index: Nat,+facts: Facts<query>,inside: {Nat
   {U32.to_nat(Tiles.channel_destination(Tiles.group_channels(U32.from_nat(index),filling(query),original(query)))) ==
     Nat.mul(Groups.group_position(index,U32.to_nat(span(filling(query))),U32.to_nat(groups(filling(query)))),block_size(filling(query))) : Nat}:
   Query{context,input,+rows,position,channel,shift,depth,+capacity} = query
-  Kernel.Filling{Kernel.Tiling{groups,+shifts,+outputs,column_low,kernel,height,width,+chunk_groups,chunk_rows},low,base,plane,first,source_rows,group,+span} = context
+  Kernel.Filling{+shifts,+outputs,column_low,kernel,width,+chunk_groups,low,base,groups,first,source_rows,group,+span} = context
   Facts{+capacity_ok,+span_positive,+span_ordered,+double_span,+room,position_inside,channel_inside,shift_inside} = facts
   +size_exact = block_exact(query,facts)
   +size_positive = {
@@ -169,9 +164,10 @@ def group_channel_room(+query: Query,+index: Nat,+facts: Facts<query>,+inside: {
         Order.below_sum(product,0n)),room))
 
 def channels_frame_at(+query: Query,+index: Nat,+state: Execution.Owners,+evidence: Frame<query,state>,inside: {Nat.is_lt(index,count(query)) == True{} : Bool}) ->
-  Tiles.ChannelFrame<at_group(query,index),tree(state)>:
+  Tiles.ChannelFrame<at_group(query,index),Execution.tiles(state)>:
   Query{context,input,rows,position,channel,shift,depth,capacity} = query
-  Kernel.Filling{Kernel.Tiling{layout_groups,+shift_count,+output_count,column_low,kernel,height,width,chunk_groups,chunk_rows},low,source_base,source_plane,source_first,source_rows,source_group,group_span} = context
+  Kernel.Filling{+shift_count,+output_count,column_low,kernel,width,chunk_groups,low,source_base,source_groups,source_first,source_rows,source_group,group_span} = context
+
   Frame{source,capacity_equal,balanced,depth_ok,+facts} = evidence
   Facts{capacity_ok,span_positive,span_ordered,double_span,room,position_inside,channel_inside,shift_inside} = facts
   Tiles.ChannelFrame{capacity_equal,balanced,depth_ok,capacity_ok,group_channel_room(query,index,facts,inside),channel_inside,shift_inside}
@@ -179,7 +175,8 @@ def channels_frame_at(+query: Query,+index: Nat,+state: Execution.Owners,+eviden
 def at_target(+query: Query,+state: Execution.Owners,evidence: Frame<query,state>) ->
   {read(query,update(U32.from_nat(position(query)),query,state)) == wanted(query) : Tile.Tile8}:
   Query{+context,+input,rows,+position,channel,shift,depth,capacity} = query
-  Kernel.Filling{Kernel.Tiling{layout_groups,+shift_count,+output_count,column_low,kernel,height,width,chunk_groups,chunk_rows},low,source_base,source_plane,source_first,source_rows,source_group,group_span} = context
+  Kernel.Filling{+shift_count,+output_count,column_low,kernel,width,chunk_groups,low,source_base,source_groups,source_first,source_rows,source_group,group_span} = context
+
   Execution.Owners{+source,+tiles} = state
   Frame{+source_equal,+capacity_equal,+balanced,+depth_ok,+facts} = evidence
   Facts{capacity_ok,span_positive,span_ordered,double_span,room,+position_inside,channel_inside,shift_inside} = facts
@@ -187,7 +184,7 @@ def at_target(+query: Query,+state: Execution.Owners,evidence: Frame<query,state
   +written = Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Tiles.Channels,~Tiles.channel_update,Tiles.group_outputs(context),0,Tiles.group_channels(U32.from_nat(position),context,source),tiles)
   %Equal.sym(Execution.Owners,update(U32.from_nat(position),query,state),Execution.Owners{source,written},Tiles.group_written(U32.from_nat(position),context,source,tiles)) :
     {read(query,_) == wanted(query) : Tile.Tile8}
-  %Equal.sym(Tree.Tree<F32>,source,input,source_equal) :
+  %Equal.sym(Tree.Tree<Tile.Tile8>,source,input,source_equal) :
     {Tree.read(Tile.Tile8,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Tiles.Channels,~Tiles.channel_update,Tiles.group_outputs(context),0,Tiles.group_channels(U32.from_nat(position),context,_),tiles),address(query)) == wanted(query) : Tile.Tile8}
   Tiles.channels_readback(selected_channels(query),tiles,channels_frame_at(query,position,state,evidence,position_inside))
 
@@ -195,7 +192,8 @@ def address_exact(+query: Query,+state: Execution.Owners,+evidence: Frame<query,
   {U32.to_nat(address(query)) == Nat.add(Nat.mul(Groups.group_position(position(query),U32.to_nat(span(filling(query))),U32.to_nat(groups(filling(query)))),block_size(filling(query))),
     Nat.add(Nat.mul(channel(query),U32.to_nat(shifts(filling(query)))),shift(query))) : Nat}:
   Query{+context,input,rows,+position,+channel,+shift,depth,capacity} = query
-  Kernel.Filling{Kernel.Tiling{layout_groups,+shift_count,+output_count,column_low,kernel,height,width,chunk_groups,chunk_rows},low,source_base,source_plane,source_first,source_rows,source_group,group_span} = context
+  Kernel.Filling{+shift_count,+output_count,column_low,kernel,width,chunk_groups,low,source_base,source_groups,source_first,source_rows,source_group,group_span} = context
+
   Frame{source,capacity_equal,balanced,depth_ok,+facts} = evidence
   Facts{+capacity_ok,span_positive,span_ordered,double_span,room,+position_inside,+channel_inside,+shift_inside} = facts
   +base = Tiles.channel_destination(Tiles.channel_context(selected_channels(query)))
@@ -209,7 +207,8 @@ def later(+query: Query,+index: Nat,+state: Execution.Owners,evidence: Frame<que
   after: {Nat.is_lt(position(query),index) == True{} : Bool},inside: {Nat.is_lt(index,count(query)) == True{} : Bool}) ->
   {read(query,update(U32.from_nat(index),query,state)) == read(query,state) : Tile.Tile8}:
   Query{+context,+input,+rows,+position,+channel,+shift,depth,+capacity} = query
-  Kernel.Filling{Kernel.Tiling{layout_groups,+shift_count,+output_count,column_low,kernel,height,width,chunk_groups,chunk_rows},low,source_base,source_plane,source_first,source_rows,source_group,group_span} = context
+  Kernel.Filling{+shift_count,+output_count,column_low,kernel,width,chunk_groups,low,source_base,source_groups,source_first,source_rows,source_group,group_span} = context
+
   Execution.Owners{+source,+tiles} = state
   Frame{+source_equal,+capacity_equal,+balanced,+depth_ok,+facts} = evidence
   Facts{+capacity_ok,+span_positive,+span_ordered,double_span,+room,+position_inside,+channel_inside,+shift_inside} = facts
@@ -237,7 +236,7 @@ def later(+query: Query,+index: Nat,+state: Execution.Owners,evidence: Frame<que
   +written = Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Tiles.Channels,~Tiles.channel_update,Tiles.group_outputs(context),0,Tiles.group_channels(U32.from_nat(index),context,source),tiles)
   %Equal.sym(Execution.Owners,update(U32.from_nat(index),query,state),Execution.Owners{source,written},Tiles.group_written(U32.from_nat(index),context,source,tiles)) :
     {read(query,_) == read(query,state) : Tile.Tile8}
-  %Equal.sym(Tree.Tree<F32>,source,input,source_equal) :
+  %Equal.sym(Tree.Tree<Tile.Tile8>,source,input,source_equal) :
     {Tree.read(Tile.Tile8,Traversal.indexed_fold(~Tree.Tree<Tile.Tile8>,~Tiles.Channels,~Tiles.channel_update,Tiles.group_outputs(context),0,Tiles.group_channels(U32.from_nat(index),context,_),tiles),address(query)) == read(query,state) : Tile.Tile8}
   Tiles.channels_read_before(at_group(query,index),address(query),tiles,channels_frame_at(query,index,state,evidence,inside),observed_inside,before)
 
@@ -254,7 +253,7 @@ def readback(+query: Query,+state: Execution.Owners,+evidence: Frame<query,state
   OutputReadback.complete_readback(~Execution.Owners,~Query,~Tile.Tile8,~count,~position,~wanted,~frame,~read,~update,~frame_step,~at_target,~later,query,state,evidence,position_inside)
 
 # Allocation facts for an actual guarded tile quantity.
-def allocated_query(context: Kernel.Filling,input: Tree.Tree<F32>,rows: Nat,position: Nat,channel: Nat,shift: Nat,count: U32) -> Query:
+def allocated_query(context: Kernel.Filling,input: Tree.Tree<Tile.Tile8>,rows: Nat,position: Nat,channel: Nat,shift: Nat,count: U32) -> Query:
   +count = count
   +depth = Tensors.depth_for((count + 1 : U32))
   Query{context,input,rows,position,channel,shift,depth,U32.shln(1,depth)}
@@ -317,7 +316,7 @@ def initial_guarded_frame(+query: Query,+word_count: U32,
   +balanced = Shape.fresh(Tile.Tile8,depth(query),Tile.filled(0.0))
   Frame{{==},Equal.trans(U32,Tree.capacity(Tile.Tile8,Tree.fresh(Tile.Tile8,depth(query),Tile.filled(0.0))),U32.shln(1,depth(query)),capacity(query),Shape.capacity(Tile.Tile8,depth(query),Tree.fresh(Tile.Tile8,depth(query),Tile.filled(0.0)),balanced),Equal.sym(U32,capacity(query),U32.shln(1,depth(query)),capacity_exact)),balanced,depth_ok,facts}
 
-def allocated_frame(+context: Kernel.Filling,+input: Tree.Tree<F32>,+rows: Nat,+position: Nat,+channel: Nat,+shift: Nat,+word_count: U32,
+def allocated_frame(+context: Kernel.Filling,+input: Tree.Tree<Tile.Tile8>,+rows: Nat,+position: Nat,+channel: Nat,+shift: Nat,+word_count: U32,
   +count_exact: {U32.to_nat(word_count) == tile_count(allocated_query(context,input,rows,position,channel,shift,word_count)) : Nat},
   +guard: Depth.Guarded<word_count>,
   +span_ordered: {Nat.is_le(U32.to_nat(span(context)),U32.to_nat(groups(context))) == True{} : Bool},
@@ -340,7 +339,7 @@ def count_exact(+query: Query,+row_count: U32,+rows_exact: {U32.to_nat(row_count
   {U32.to_nat((row_count * span(filling(query)) : U32)) == count(query) : Nat}:
   Facts{+capacity_ok,span_positive,span_ordered,double_span,room,position_inside,channel_inside,shift_inside} = facts
   %rows_exact : {U32.to_nat((row_count * span(filling(query)) : U32)) == Nat.mul(_,U32.to_nat(span(filling(query)))) : Nat}
-  Arithmetic.multiply(row_count,span(filling(query)),capacity(query),capacity_ok,
+  WordMultiplication.bounded_multiply(row_count,span(filling(query)),capacity(query),capacity_ok,
     %Equal.sym(Nat,U32.to_nat(row_count),rows(query),rows_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(span(filling(query)))),U32.to_nat(capacity(query))) == True{} : Bool} count_room(query,facts))
 def frame_facts(-query: Query,-state: Execution.Owners,evidence: Frame<query,state>) -> Facts<query>:
   Frame{source,capacity_equal,balanced,depth_ok,facts} = evidence

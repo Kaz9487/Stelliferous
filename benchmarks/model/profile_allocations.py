@@ -118,8 +118,8 @@ def instrument_operations(source, operations):
         replace(anchor, anchor + validate_id + 'if(profile_phase!=profile_operation)'
                 '{fprintf(stderr,"allocation save while paused\\n");exit(2);}'
                 f'profile_operation++;profile_phase={phases};', 'save entry validates and pauses')
-        anchor = 'free(label);return term_pak(CID_UNIT,0);'
-        replace(anchor, 'free(label);profile_phase=profile_operation;return term_pak(CID_UNIT,0);',
+        anchor = 'free(label);return term_pak(CID_Unit,0);'
+        replace(anchor, 'free(label);profile_phase=profile_operation;return term_pak(CID_Unit,0);',
                 'save return resumes next operation')
         mode = 'save_pause_resume'
         protocol = 'Forward begin/previous save return to current save entry; unmarked operands/computation are counted and state-save C/IO is paused. Bend/IO dispatch bookkeeping can differ from explicit effects.'
@@ -207,7 +207,7 @@ def main():
         folder.mkdir()
         environment = dict(os.environ, BEND_OUTDIR=str(folder), BEND_DUMP='1', BEND_REPETITIONS='1')
         environment.pop('BEND_TRACE_FILE', None)
-        subprocess.run([str(binaries[name]), '--threads', str(args.threads), '--gpu', 'off'],
+        subprocess.run([str(binaries[name]), '+RTS', '--threads', str(args.threads), '--gpu', 'off', '-RTS'],
                        cwd=ROOT, env=environment, check=True, stdout=subprocess.DEVNULL)
         samples = [json.loads(line) for line in (folder / 'native_samples.jsonl').read_text().splitlines()]
         if [sample['sample'] for sample in samples] != [0]:

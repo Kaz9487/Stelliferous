@@ -25,6 +25,10 @@ import ./encoded_coordinates.bend as Encoded
 import ./u32_shift.bend as Shift
 import ./word_arithmetic.bend as WordArithmetic
 import ./indexed_output_readback.bend as Indexed
+import ./tensor_allocation_depth.bend as Depth
+import ./kernel_tile_refinement.bend as TileLaws
+import ./u32_comparison.bend as Comparison
+import ../kernel_gemm.bend as KernelGemm
 
 type Owners is Data:
   Owners{input: Tree.Tree<F32>,output: Tree.Tree<Tile.Tile8>}
@@ -154,8 +158,6 @@ def run_matches(+rows: U32,+inner: U32,+input: Tree.Tree<F32>) ->
     Equal.cong(Array<F32> & Array<Tile.Tile8>,Array<Tile.Tile8>,Weights.reordered,actual,represent(result),run_mapped_matches(~Unit,~Weights.identity,rows,inner,inner,Unit{},input)),
     output_matches(result))
 
-
-
 def map_value_with(~Context: Data,~offset: Context -> U32 -> U32,~row_bases: Context -> @+row_stride: U32 -> @+row: U32 -> Weights.Bases,context: RowsMapContext<Context>,position: U32,previous: Tile.Tile8) -> Tile.Tile8:
   RowsMapContext{input,Weights.MappedRows{rows,row,+destination,context,bases}} = context
   WeightsReadback.sample_mapped_rows(~Context,~offset,input,Weights.MappedRows{rows,row,destination,context,bases},(position - destination : U32))
@@ -267,12 +269,12 @@ def query_update_with(~Context: Data,~offset: Context -> U32 -> U32,~row_bases: 
 def QueryFrame(~Context: Data,query: Query<Context>,owners: Owners) -> Data:
   +query = query
   +owners = owners
-  Shape.Both<{input_tree(owners) == query_input(~Context,query) : Tree.Tree<F32>},Shape.Balanced(Tile.Tile8,query_depth(~Context,query),output(owners))>
+  KernelGemm.Both<{input_tree(owners) == query_input(~Context,query) : Tree.Tree<F32>},Shape.Balanced(Tile.Tile8,query_depth(~Context,query),output(owners))>
 
 def query_frame_step_with(~Context: Data,~offset: Context -> U32 -> U32,~row_bases: Context -> @+row_stride: U32 -> @+row: U32 -> Weights.Bases,+query: Query<Context>,+index: U32,+owners: Owners,frame: QueryFrame(~Context,query,owners)) -> QueryFrame(~Context,query,query_update_with(~Context,~offset,~row_bases,index,query,owners)):
-  Shape.Both{same,balanced} = frame
+  KernelGemm.Both{same,balanced} = frame
   +layout = query_layout(~Context,query)
-  Shape.Both{Equal.trans(Tree.Tree<F32>,input_tree(block_mapped_with(~Context,~offset,~row_bases,index,layout,owners)),input_tree(owners),query_input(~Context,query),block_mapped_input_with(~Context,~offset,~row_bases,index,layout,owners),same),{
+  KernelGemm.Both{Equal.trans(Tree.Tree<F32>,input_tree(block_mapped_with(~Context,~offset,~row_bases,index,layout,owners)),input_tree(owners),query_input(~Context,query),block_mapped_input_with(~Context,~offset,~row_bases,index,layout,owners),same),{
     %Equal.sym(Tree.Tree<Tile.Tile8>,output(block_mapped_with(~Context,~offset,~row_bases,index,layout,owners)),MapReadback.run_indexed(~Tile.Tile8,~RowsMapContext<Context>,~map_value_with(~Context,~offset,~row_bases),U32.to_nat(mapped_inner(~Context,layout)),(index * mapped_inner(~Context,layout) : U32),RowsMapContext{input_tree(owners),block_context_with(~Context,~row_bases,index,layout)},output(owners)),block_as_map_with(~Context,~offset,~row_bases,index,layout,owners)) : Shape.Balanced(Tile.Tile8,query_depth(~Context,query),_)
     MapReadback.balanced_indexed(~Tile.Tile8,~RowsMapContext<Context>,~map_value_with(~Context,~offset,~row_bases),U32.to_nat(mapped_inner(~Context,layout)),(index * mapped_inner(~Context,layout) : U32),RowsMapContext{input_tree(owners),block_context_with(~Context,~row_bases,index,layout)},output(owners),query_depth(~Context,query),balanced) : Shape.Balanced(Tile.Tile8,query_depth(~Context,query),output(block_mapped_with(~Context,~offset,~row_bases,index,layout,owners)))}}
 
@@ -334,7 +336,7 @@ def map_value_block_with(~Context: Data,~offset: Context -> U32 -> U32,~row_base
 
 def query_target_written_with(~Context: Data,~offset: Context -> U32 -> U32,~row_bases: Context -> @+row_stride: U32 -> @+row: U32 -> Weights.Bases,+query: Query<Context>,+owners: Owners,frame: QueryFrame(~Context,query,owners)) ->
   {query_read(~Context,query,query_update_with(~Context,~offset,~row_bases,U32.from_nat(query_target(~Context,query)),query,owners)) == query_wanted_with(~Context,~offset,~row_bases,query) : Tile.Tile8}:
-  Shape.Both{+same,+balanced} = frame
+  KernelGemm.Both{+same,+balanced} = frame
   +layout = query_layout(~Context,query)
   +index = U32.from_nat(query_target(~Context,query))
   +count = query_width(~Context,query)
@@ -360,7 +362,7 @@ def query_target_written_with(~Context: Data,~offset: Context -> U32 -> U32,~row
 def query_later_with(~Context: Data,~offset: Context -> U32 -> U32,~row_bases: Context -> @+row_stride: U32 -> @+row: U32 -> Weights.Bases,+query: Query<Context>,+index: Nat,+owners: Owners,frame: QueryFrame(~Context,query,owners),
   after: {Nat.is_lt(query_target(~Context,query),index) == True{} : Bool},inside: {Nat.is_lt(index,query_limit(~Context,query)) == True{} : Bool}) ->
   {query_read(~Context,query,query_update_with(~Context,~offset,~row_bases,U32.from_nat(index),query,owners)) == query_read(~Context,query,owners) : Tile.Tile8}:
-  Shape.Both{same,+balanced} = frame
+  KernelGemm.Both{same,+balanced} = frame
   +inside = inside
   +layout = query_layout(~Context,query)
   +native = U32.from_nat(index)
@@ -406,9 +408,11 @@ def mapped_lookup_with(~Context: Data,~offset: Context -> U32 -> U32,~row_bases:
     Equal.cong(Owners,Tile.Tile8,owners => query_read(~Context,query,owners),inner_result,outer,
       Equal.sym(Owners,outer,inner_result,ArrayLaws.indexed_fold_change_context(~Owners,~Query<Context>,~Weights.MappedLayout<Context>,~query_layout(~Context),~query_update_with(~Context,~offset,~row_bases),~block_mapped_with(~Context,~offset,~row_bases),~query_update_matches_with(~Context,~offset,~row_bases),count,0,query,initial))),
     Indexed.complete_readback(~Owners,~Query<Context>,~Tile.Tile8,~query_limit(~Context),~query_target(~Context),~query_wanted_with(~Context,~offset,~row_bases),~QueryFrame(~Context),~query_read(~Context),~query_update_with(~Context,~offset,~row_bases),~query_frame_step_with(~Context,~offset,~row_bases),~query_target_written_with(~Context,~offset,~row_bases),~query_later_with(~Context,~offset,~row_bases),query,initial,
-      Shape.Both{{==},Shape.fresh(Tile.Tile8,mapped_depth(~Context,layout),Tile.filled(0.0))},target_inside))
+      KernelGemm.Both{{==},Shape.fresh(Tile.Tile8,mapped_depth(~Context,layout),Tile.filled(0.0))},target_inside))
 
 def mapped_lookup(~Context: Data,~offset: Context -> U32 -> U32,+query: Query<Context>) ->
   {query_read(~Context,query,run_mapped(~Context,~offset,mapped_rows(~Context,query_layout(~Context,query)),mapped_inner(~Context,query_layout(~Context,query)),mapped_stride(~Context,query_layout(~Context,query)),mapped_context(~Context,query_layout(~Context,query)),query_input(~Context,query))) == query_wanted(~Context,~offset,query) : Tile.Tile8}:
   Query{Weights.MappedLayout{+rows,+inner,+row_stride,+context},+input,+target,+tap,+depth_ok,+room,+target_inside,+tap_inside} = query
   mapped_lookup_with(~Context,~offset,~Weights.linear_bases(~Context),query)
+
+# Boundary tiling is the identity source mapping of the packed-row kernel.

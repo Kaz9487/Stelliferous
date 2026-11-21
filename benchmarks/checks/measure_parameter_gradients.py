@@ -11,6 +11,7 @@ import platform
 import shutil
 import statistics
 import subprocess
+import sys
 import numpy as np
 from gradient_reference import F32, output_size, weight_gradient, bias_gradient, input_gradient
 
@@ -45,9 +46,7 @@ def main():
 import ../../lib/tensor_f32.bend as F
 import ../../lib/tensor.bend as T
 import ../../lib/storage_buffer.bend as Storage
-import ../../lib/tensor_parameter_gradient.bend as G
 import ../../lib/tensor_convolution_gradient.bend as Gradient
-import ../../lib/kernel_input_gradient.bend as InputKernel
 import ../../lib/math_activation.bend as Act
 
 # Reuse the existing file/phase-clock effects; all tensor arithmetic is Bend.
@@ -59,7 +58,7 @@ def Lab.load(i: U32,count: U32) -> IO(Array<F32>):
   import "../../benchmarks/convolution/io.c"
 def Lab.start() -> IO(Unit):
   import "../../benchmarks/convolution/io.c"
-def Lab.reordered(a: Array<U32>) -> IO(Array<U32>):
+def Lab.prepared(a: Array<U32>) -> IO(Array<U32>):
   import "../../benchmarks/convolution/io.c"
 def Lab.computed(a: Array<U32>) -> IO(Array<U32>):
   import "../../benchmarks/convolution/io.c"
@@ -76,6 +75,10 @@ def bias_result(pair: F.Tensor() & F.Tensor()) -> F.Tensor():
   (gradient,d) = pair
   gradient
 
+def input_result(pair: F.Tensor() & F.Tensor()) -> F.Tensor():
+  (gradient,weights) = pair
+  gradient
+
 def stored(result: Result<&2,&1,T.Problem,Storage.Buffer<F32>>) -> IO(Unit):
   match result:
     case Fail{problem}: IO.print("failed")
@@ -87,16 +90,16 @@ def stored(result: Result<&2,&1,T.Problem,Storage.Buffer<F32>>) -> IO(Unit):
 def measured(result: F.Tensor()) -> IO(Unit):
   do IO<Unit>:
     result : F.Tensor() <- F.expect(result)
-    stored(T.into_storage(~F32,result))
+    stored(F.into_storage(result))
 
 type Case is Data:
   Case{kind: U32,n: U32,c: U32,o: U32,h: U32,w: U32,k: U32,s: U32,p: U32,oh: U32,ow: U32,g: U32,workers: U32}
 
 def selected(kind: U32,x: F.Tensor(),d: F.Tensor(),weights: F.Tensor(),bias: F.Tensor(),+k: U32,+s: U32,+p: U32,+g: U32,+h: U32,+w: U32,+n: U32,+c: U32,+o: U32,+oh: U32,+ow: U32) -> IO(Unit):
   match kind:
-    case 0: measured(weight_result(G.weight(x,d,k,s,p,g)))
-    case 1: measured(bias_result(G.bias(d,g)))
-    case 3: measured(bias_result(Gradient.input(d,weights,s,p,h,w)))
+    case 0: measured(weight_result(Gradient.weight_grouped(x,d,k,s,p,g)))
+    case 1: measured(bias_result(Gradient.bias_cells(Gradient.channel_lanes(F.shape(d)),g)))
+    case 3: measured(input_result(Gradient.input(d,weights,s,p,h,w)))
     case kind: measured(F.conv2d(x,weights,bias,s,p,Act.identity()))
 
 def run(context: Case) -> IO(Unit):
@@ -134,12 +137,13 @@ def main() -> IO(Unit):
     workers : U32 <- Lab.param(12)
     reps : U32 <- Lab.reps()
     loaded : Array<F32> <- Lab.load(0,1)
-    dummy : Array<U32> <- Lab.reordered(Array.new(U32,0n,0))
+    dummy : Array<U32> <- Lab.prepared(Array.new(U32,0n,0))
     dummy : Array<U32> <- Lab.computed(dummy)
     repeat(U32.to_nat(reps),Case{kind,n,c,o,h,w,k,s,p,oh,ow,g,workers})
 ''')
     np.ones(1,F32).tofile(REPORT/'input.bin')
     generated = SOURCE.with_suffix('.c')
+    subprocess.run([sys.executable, '-B', 'scripts/toolchain_rules/lint.py', str(SOURCE)], cwd=ROOT, check=True)
     subprocess.run(['node', 'scripts/bend_launcher.mjs', str(SOURCE), '-o', str(generated)], cwd=ROOT, check=True)
     cc = os.environ.get('CC') or shutil.which('clang-19') or shutil.which('clang')
     binary = REPORT / 'benchmark'
@@ -161,7 +165,7 @@ def main() -> IO(Unit):
                     native_kind = {'weight':0,'bias':1,'forward':2,'input':3}[kind]
                     np.array([native_kind,n,ci,co,h,w,k,s,p,oh,ow,group,workers],'<u4').tofile(REPORT/'config.bin')
                     (REPORT/'bend_samples.jsonl').unlink(missing_ok=True)
-                    subprocess.run([str(binary),'--threads',str(workers),'--gpu','off'],cwd=REPORT,env=dict(os.environ,CONV_REPS='16' if options.input else '4'),check=True,capture_output=True)
+                    subprocess.run([str(binary),'+RTS','--threads',str(workers),'--gpu','off','-RTS'],cwd=REPORT,env=dict(os.environ,CONV_REPS='16' if options.input else '4'),check=True,capture_output=True)
                     samples[(kind,group)] = [json.loads(line)['total_ms'] for line in (REPORT/'bend_samples.jsonl').read_text().splitlines()][1:]
                     if kind != 'forward':
                         expected = input_gradient(d, np.fromfile(REPORT/'w.bin',F32).reshape(co,ci,k,k),h,w,s,p) if kind == 'input' else weight_gradient(x,d,k,s,p,group) if kind == 'weight' else bias_gradient(d,group)

@@ -7,14 +7,12 @@ import ../tensor_shape.bend as Shapes
 import ../machine_limits.bend as Machine
 import ./tensor_shape_refinement.bend as ShapeLaws
 import ./tensor_count_completion.bend as CountCompletion
-import ./tensor_count_refinement.bend as Count
 import ./tensor_view_metadata_refinement.bend as Metadata
 import ./nat_order.bend as Order
 import ./row_major_index.bend as RowMajor
 import ./natural_addition.bend as Addition
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./u32_full_range.bend as FullRange
-import ./word_multiplication.bend as Multiplication
 import ./nat_to_u32_bounds.bend as Bounds
 import ./boolean_logic.bend as Boolean
 import ./u32_comparison.bend as Comparison
@@ -36,19 +34,16 @@ def axes(view: Views.View) -> List<&2,Views.Axis>:
   Views.View{axes,offset} = view
   axes
 
-def zero_product(+right: U32) -> {U32.mul(0,right) == 0 : U32}:
-  Multiplication.native_multiply(0,right)
-
 def built_empty(+reversed: List<&2,U32>,+axes: List<&2,Views.Axis>,+offset: U32,+limit: U32,+maximum: {limit == Machine.word_max() : U32}) ->
   {Views.build_axes(reversed,Some{0},axes,offset) == Some{Views.View{axis_model(reversed,0,axes),offset}} : Maybe<&2,Views.View>}:
   match reversed:
     case []: {==}
     case +head <> +tail:
       %Equal.sym(Maybe<&2,U32>,Shapes.checked_multiply(0,head),Some{0},
-        %zero_product(head) : {Shapes.checked_multiply(0,head) == Some{_} : Maybe<&2,U32>}
+        %Arithmetic.multiply_zero_left(head) : {Shapes.checked_multiply(0,head) == Some{_} : Maybe<&2,U32>}
         CountCompletion.checked_product(0,head,limit,maximum,Order.zero_le(U32.to_nat(limit)))) :
         {Views.build_axes(tail,_,Views.Axis{head,0} <> axes,offset) == Some{Views.View{axis_model(tail,U32.mul(0,head),Views.Axis{head,0} <> axes),offset}} : Maybe<&2,Views.View>}
-      %Equal.sym(U32,U32.mul(0,head),0,zero_product(head)) : {Views.build_axes(tail,Some{0},Views.Axis{head,0} <> axes,offset) == Some{Views.View{axis_model(tail,_,Views.Axis{head,0} <> axes),offset}} : Maybe<&2,Views.View>}
+      %Equal.sym(U32,U32.mul(0,head),0,Arithmetic.multiply_zero_left(head)) : {Views.build_axes(tail,Some{0},Views.Axis{head,0} <> axes,offset) == Some{Views.View{axis_model(tail,_,Views.Axis{head,0} <> axes),offset}} : Maybe<&2,Views.View>}
       built_empty(tail,Views.Axis{head,0} <> axes,offset,limit,maximum)
 
 def built_nonempty(+reversed: List<&2,U32>,+stride: U32,+axes: List<&2,Views.Axis>,+offset: U32,+limit: U32,+maximum: {limit == Machine.word_max() : U32},
@@ -118,13 +113,6 @@ def canonical_shape(+extents: List<&2,U32>,+count: U32,+exact: {ShapeLaws.elemen
   {Views.axis_extents_of(canonical_view(extents,count)) == extents : List<&2,U32>}:
   %view(extents,count,exact) : {Metadata.observed_extents(_,extents) == extents : List<&2,U32>}
   Metadata.contiguous_shape(extents,0)
-
-def target_counted_from_count(+extents: List<&2,U32>,+count: U32,evidence: Count.Count<ShapeLaws.elements(extents),count>) ->
-  {Views.numel(canonical_view(extents,count)) == Some{count} : Maybe<&2,U32>}:
-  Count.Count{+exact,bounded} = evidence
-  %Equal.sym(List<&2,U32>,Views.axis_extents_of(canonical_view(extents,count)),extents,
-    canonical_shape(extents,count,exact)) : {Shapes.numel(Shapes.Shape{_}) == Some{count} : Maybe<&2,U32>}
-  CountCompletion.numel(extents,count,exact)
 
 # A successful build from an already contiguous suffix remains contiguous.
 def ContiguousResult(result: Maybe<&2,Views.View>) -> Data:

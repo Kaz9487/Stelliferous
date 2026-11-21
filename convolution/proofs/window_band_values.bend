@@ -75,17 +75,6 @@ def evidence(+count: Nat,+band: Band,+tree: Tree.Tree<F32>,+contents: Contents(c
       {Nat.is_le(_,U32.to_nat(Tree.capacity(F32,tree))) == True{} : Bool}
     room}
 
-def read(+count: Nat,+band: Band,+tree: Tree.Tree<F32>,+contents: Contents(count,band,tree),
-  +room: {Nat.is_le(count,U32.to_nat(Tree.capacity(F32,tree))) == True{} : Bool},+position: Nat,
-  +inside: {Nat.is_lt(position,count) == True{} : Bool}) ->
-  {Tree.read(F32,tree,U32.from_nat(position)) == value(band,position) : F32}:
-  %Equal.sym(F32,Tree.read(F32,tree,U32.from_nat(position)),Maybe.default(&2,F32,List.get(&2,F32,values(count,0n,band),position),0.0),
-    StorageLaws.stored_sequence_element(~F32,0.0,count,values(count,0n,band),StorageLaws.SequenceEvidence{tree,contents,room},position,inside)) :
-    {_ == value(band,position) : F32}
-  %Equal.sym(Maybe<&2,F32>,List.get(&2,F32,values(count,0n,band),position),Some{value(band,position)},get(count,0n,band,position,inside)) :
-    {Maybe.default(&2,F32,_,0.0) == value(band,position) : F32}
-  {==}
-
 # A tree whose reads agree with a band at every index below the limit holds
 # the band as its leading read sequence.
 def listed(~Context: Data,~tree_of: Context -> Tree.Tree<F32>,~band_of: Context -> Band,~limit_of: Context -> Nat,

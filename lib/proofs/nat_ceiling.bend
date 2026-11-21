@@ -132,3 +132,28 @@ def upper_comparison(+value: Nat,+divisor: Nat,+position: Nat,+positive: {Nat.is
   %Equal.sym(Bool,Nat.is_lt(Nat.mul(position,divisor),value),Bool.not(Nat.is_le(value,Nat.mul(position,divisor))),Order.strict_complement(Nat.mul(position,divisor),value)) : {Nat.is_lt(position,ceiling(value,divisor)) == _ : Bool}
   %lower_comparison(value,divisor,position,positive) : {Nat.is_lt(position,ceiling(value,divisor)) == Bool.not(_) : Bool}
   Order.strict_complement(position,ceiling(value,divisor))
+
+# Whole divisors in front of a value add to its quotient.
+def quotient_after(+groups: Nat,+value: Nat,+divisor: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) ->
+  {Nat.add(groups,Nat.div(value,divisor)) == Nat.div(Nat.add(Nat.mul(groups,divisor),value),divisor) : Nat}:
+  +quotient = Nat.div(value,divisor)
+  +remainder = Nat.mod(value,divisor)
+  +front = Nat.mul(groups,divisor)
+  +split = {
+    %Equal.sym(Nat,Nat.mul(Nat.add(groups,quotient),divisor),Nat.add(front,Nat.mul(quotient,divisor)),RowMajor.distrib(groups,quotient,divisor)) :
+      {Nat.add(front,value) == Nat.add(_,remainder) : Nat}
+    %Equal.sym(Nat,Nat.add(Nat.add(front,Nat.mul(quotient,divisor)),remainder),Nat.add(front,Nat.add(Nat.mul(quotient,divisor),remainder)),Addition.associative(front,Nat.mul(quotient,divisor),remainder)) :
+      {Nat.add(front,value) == _ : Nat}
+    Equal.cong(Nat,Nat,part => Nat.add(front,part),value,Nat.add(Nat.mul(quotient,divisor),remainder),DivisionOrder.quotient_exact(value,divisor,positive)) :
+    {Nat.add(front,value) == Nat.add(Nat.mul(Nat.add(groups,quotient),divisor),remainder) : Nat}}
+  Equal.sym(Nat,Nat.div(Nat.add(front,value),divisor),Nat.add(groups,quotient),
+    Equal.cong(Nat & Nat,Nat,pair => Pair.fst(Nat,Nat,pair),Nat.divmod(Nat.add(front,value),divisor),(Nat.add(groups,quotient),remainder),
+      Division.unique(Nat.add(front,value),divisor,Nat.add(groups,quotient),remainder,split,positive,DivisionOrder.remainder_small(value,divisor,positive))))
+
+# Filled groups of eight in front of a value add to its ceiling.
+def ceiling_after(+groups: Nat,+value: Nat) -> {Nat.add(groups,ceiling(value,8n)) == ceiling(Nat.add(Nat.mul(groups,8n),value),8n) : Nat}:
+  %shifted_formula(value,8n,{==}) : {Nat.add(groups,_) == ceiling(Nat.add(Nat.mul(groups,8n),value),8n) : Nat}
+  %shifted_formula(Nat.add(Nat.mul(groups,8n),value),8n,{==}) : {Nat.add(groups,Nat.div(Nat.add(value,7n),8n)) == _ : Nat}
+  %Equal.sym(Nat,Nat.add(Nat.add(Nat.mul(groups,8n),value),7n),Nat.add(Nat.mul(groups,8n),Nat.add(value,7n)),Addition.associative(Nat.mul(groups,8n),value,7n)) :
+    {Nat.add(groups,Nat.div(Nat.add(value,7n),8n)) == Nat.div(_,8n) : Nat}
+  quotient_after(groups,Nat.add(value,7n),8n,{==})

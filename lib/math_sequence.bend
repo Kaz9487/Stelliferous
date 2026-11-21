@@ -55,18 +55,3 @@ def get(-Element: Data,length: Nat,index: Index(length),vector: Values(Element,l
         case Next{index}:
           Elements{head,tail} = vector
           get(Element,rest,index,tail)
-
-def replicate(-Element: Data,length: Nat,+value: Element) -> Values(Element,length):
-  match length:
-    case 0n: Unit{}
-    case 1n+rest: Elements{value,replicate(Element,rest,value)}
-
-
-def zip_map(~Element: Data,~Context: Data,~combine: Context -> Element -> Element -> Element,
-  length: Nat,+context: Context,left: Values(Element,length),right: Values(Element,length)) -> Values(Element,length):
-  match length:
-    case 0n: Unit{}
-    case 1n+rest:
-      Elements{left_head,left_tail} = left
-      Elements{right_head,right_tail} = right
-      Elements{combine(context,left_head,right_head),zip_map(~Element,~Context,~combine,rest,context,left_tail,right_tail)}

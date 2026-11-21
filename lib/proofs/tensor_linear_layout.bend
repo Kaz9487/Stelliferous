@@ -7,12 +7,12 @@ import ./tensor_contiguous_bounds.bend as ContiguousBounds
 import ./tensor_view_bounds.bend as ViewBounds
 import ./tensor_cursor_model.bend as CursorModel
 import ./boolean_logic.bend as Boolean
-import ./storage_shape.bend as Shape
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./row_major_index.bend as RowMajor
 import ./word_encoding.bend as WordEncoding
 import ./bounded_u32_arithmetic.bend as Arithmetic
+import ../kernel_gemm.bend as KernelGemm
 
 law Layout:
   for axes: List<&2,Views.Axis>
@@ -22,7 +22,7 @@ def Layout(axes):
   match axes:
     case []: Unit
     case Views.Axis{extent,stride} <> tail:
-      Shape.Both<Boolean.When(Nat.is_lt(1n,U32.to_nat(extent)),{U32.to_nat(stride) == ShapeLaws.elements(Views.axis_extents(tail)) : Nat}),Layout(tail)>
+      KernelGemm.Both<Boolean.When(Nat.is_lt(1n,U32.to_nat(extent)),{U32.to_nat(stride) == ShapeLaws.elements(Views.axis_extents(tail)) : Nat}),Layout(tail)>
 
 law LayoutResult:
   for result: Maybe<&2,U32>
@@ -53,7 +53,7 @@ def selected_layout(+valid: Bool,+extent: U32,+stride: U32,+count: U32,+tail: Li
   match valid:
     case False{}: Unit{}
     case True{}:
-      output_layout(Shapes.checked_multiply(extent,count),Views.Axis{extent,stride} <> tail,Shape.Both{{
+      output_layout(Shapes.checked_multiply(extent,count),Views.Axis{extent,stride} <> tail,KernelGemm.Both{{
         %Equal.sym(Nat,ShapeLaws.elements(Views.axis_extents(tail)),U32.to_nat(count),counted) : Boolean.When(Nat.is_lt(1n,U32.to_nat(extent)),{U32.to_nat(stride) == _ : Nat})
         head_rule(U32.to_nat(extent),U32.to_nat(stride),U32.to_nat(count),ContiguousBounds.stride_guard(extent,stride,count,guard)) :
           Boolean.When(Nat.is_lt(1n,U32.to_nat(extent)),{U32.to_nat(stride) == ShapeLaws.elements(Views.axis_extents(tail)) : Nat})},layout})
@@ -64,7 +64,7 @@ def axis_layout(+inner: Maybe<&2,U32>,+extent: U32,+stride: U32,+tail: List<&2,V
   match inner:
     case None{}: Unit{}
     case Some{+count}:
-      Shape.Both{counted,span} = facts
+      KernelGemm.Both{counted,span} = facts
       selected_layout(U32.is_le(extent,1) || U32.is_eq(stride,count),extent,stride,count,tail,{==},counted,layout)
 
 def layout_result(+axes: List<&2,Views.Axis>,nonempty: {Shapes.has_zero(Views.axis_extents(axes)) == False{} : Bool}) -> LayoutResult(Views.contiguous_size(axes),axes):
@@ -95,7 +95,7 @@ def Linear(axes,stride):
   match axes:
     case []: Unit
     case CursorModel.Coordinate{extent,coordinate,actual} <> tail:
-      Shape.Both<{actual == stride : Nat},Linear(tail,Nat.mul(stride,extent))>
+      KernelGemm.Both<{actual == stride : Nat},Linear(tail,Nat.mul(stride,extent))>
 
 def included_linear(+extent: Nat,+stride: Nat,+tail_count: Nat,+reversed: List<&2,CursorModel.Coordinate>,
   positive: {Nat.is_lt(0n,extent) == True{} : Bool},
@@ -107,7 +107,7 @@ def included_linear(+extent: Nat,+stride: Nat,+tail_count: Nat,+reversed: List<&
       %Addition.zero_right(tail_count) : Linear(reversed,_)
       previous
     case 2n+ +rest:
-      Shape.Both{head,{
+      KernelGemm.Both{head,{
         %RowMajor.multiply_commutative(2n+rest,tail_count) : Linear(reversed,_)
         previous : Linear(reversed,Nat.mul(tail_count,2n+rest))}}
 
@@ -117,7 +117,7 @@ def prepared_linear(+axes: List<&2,Views.Axis>,+reversed: List<&2,CursorModel.Co
   match axes:
     case []: previous
     case Views.Axis{+extent,+stride} <> +tail:
-      Shape.Both{head,tail_layout} = layout
+      KernelGemm.Both{head,tail_layout} = layout
       prepared_linear(tail,Bool.pick(List<&2,CursorModel.Coordinate>,Nat.is_lt(1n,U32.to_nat(extent)),CursorModel.Coordinate{U32.to_nat(extent),0n,U32.to_nat(stride)} <> reversed,reversed),
         Boolean.or_false_right(U32.is_zero(extent),Shapes.has_zero(Views.axis_extents(tail)),nonempty),tail_layout,
         included_linear(U32.to_nat(extent),U32.to_nat(stride),ShapeLaws.elements(Views.axis_extents(tail)),reversed,
@@ -134,7 +134,7 @@ def linear_address(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,+stride: 
       %Equal.sym(Nat,Nat.mul(stride,0n),0n,RowMajor.multiply_zero_right(stride)) : {offset == Nat.add(offset,_) : Nat}
       Equal.sym(Nat,Nat.add(offset,0n),offset,Addition.zero_right(offset))
     case CursorModel.Coordinate{+extent,+coordinate,+actual} <> +tail:
-      Shape.Both{equal,tail_linear} = linear
+      KernelGemm.Both{equal,tail_linear} = linear
       %Equal.sym(Nat,actual,stride,equal) : {Nat.add(Nat.mul(coordinate,_),CursorModel.address(tail,offset)) == Nat.add(offset,Nat.mul(stride,CursorModel.position(CursorModel.Coordinate{extent,coordinate,actual} <> tail))) : Nat}
       %Equal.sym(Nat,CursorModel.address(tail,offset),Nat.add(offset,Nat.mul(Nat.mul(stride,extent),CursorModel.position(tail))),linear_address(tail,offset,Nat.mul(stride,extent),tail_linear)) :
         {Nat.add(Nat.mul(coordinate,stride),_) == Nat.add(offset,Nat.mul(stride,Nat.add(coordinate,Nat.mul(extent,CursorModel.position(tail))))) : Nat}
@@ -152,12 +152,12 @@ def selected_linear(+selected: Bool,+extent: Nat,+coordinate: Nat,+actual: Nat,+
   Linear(Bool.pick(List<&2,CursorModel.Coordinate>,selected,CursorModel.Coordinate{extent,1n+coordinate,actual} <> tail,
     CursorModel.Coordinate{extent,0n,actual} <> CursorModel.advance(tail)),stride):
   match selected:
-    case True{}: Shape.Both{head,tail_linear}
-    case False{}: Shape.Both{head,next_linear}
+    case True{}: KernelGemm.Both{head,tail_linear}
+    case False{}: KernelGemm.Both{head,next_linear}
 
 def advance_linear(+axes: List<&2,CursorModel.Coordinate>,+stride: Nat,linear: Linear(axes,stride)) -> Linear(CursorModel.advance(axes),stride):
   match axes:
     case []: Unit{}
     case CursorModel.Coordinate{+extent,+coordinate,+actual} <> +tail:
-      Shape.Both{head,+tail_linear} = linear
+      KernelGemm.Both{head,+tail_linear} = linear
       selected_linear(Nat.is_lt(1n+coordinate,extent),extent,coordinate,actual,tail,stride,head,tail_linear,advance_linear(tail,Nat.mul(stride,extent),tail_linear))

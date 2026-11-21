@@ -1,241 +1,398 @@
-# The packer hands back its input unchanged and keeps the witness of its
-# output: every loop of kernel_spatial_packing preserves both.
+# The packer hands back what it reads and keeps the witness of what it
+# writes: the transpose reads cells and writes pairs, the pack reads pairs
+# and writes tiles, both at the depth they started with.
 import Base
 import ../traversal_loop.bend as Loop
 import ../kernel_spatial_packing.bend as Packing
-import ../kernel_packing_samples.bend as PackingSamples
 import ../kernel_tile.bend as Tile
 import ./storage_witness.bend as Witness
 import ./traversal_witness.bend as TraversalWitness
 import ./kernel_packing_read_witness.bend as PackingReadWitness
-import ./kernel_tile_witness.bend as TileWitness
 
-type RowCursor is Data:
-  RowCursor{index: U32,channel: U32,kernel_row: U32,kernel_column: U32,row: U32,offset: U32,window: Packing.Stencil,tap_rows: Nat,tap_columns: Nat}
+# ---- The transpose ----
 
-def restore_row(input: Array<F32>,output: Array<Tile.Tile8>,cursor: RowCursor) -> Packing.RowTiles():
-  RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns} = cursor
-  Packing.RowTile{input,output,i,c,kr,kc,row,offset,window,tap_rows,tap_columns}
+type RowingCursor is Data:
+  RowingCursor{column: U32,write: U32,row: U32,in_row: U32,row_tiles: U32,first_column: U32,channel_base: U32,height: U32,width: U32,stride: U32,groups: U32,channels: U32}
 
-type RowEvidence<-input: Array<F32>,-depth: Nat,-state: Packing.RowTiles()> is Data:
-  RowEvidence{-output: Array<Tile.Tile8>,cursor: RowCursor,equation: {state == restore_row(input,output,cursor) : Packing.RowTiles()},balanced: Witness.Witness(Tile.Tile8,depth,output)}
+def restore_rowing(input: Array<Tile.Tile8>,pairs: Array<Tile.Tile16>,previous: Tile.Tile8,cursor: RowingCursor) -> Packing.Rowing:
+  RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels} = cursor
+  Packing.Rowing{input,pairs,previous,column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels}
 
-def stored_row(output: Array<Tile.Tile8>,cursor: RowCursor,result: Array<F32> & Tile.Tile8) -> Packing.RowTiles():
-  RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns} = cursor
-  Packing.store_block(output,i,c,kr,kc,row,offset,window,tap_rows,tap_columns,result)
+type RowingEvidence<-input: Array<Tile.Tile8>,-depth: Nat,-state: Packing.Rowing> is Data:
+  RowingEvidence{-pairs: Array<Tile.Tile16>,-previous: Tile.Tile8,cursor: RowingCursor,equation: {state == restore_rowing(input,pairs,previous,cursor) : Packing.Rowing},
+    balanced: Witness.Witness(Tile.Tile16,depth,pairs)}
 
-def store_row(+depth: Nat,-input: Array<F32>,-output: Array<Tile.Tile8>,cursor: RowCursor,-result: Array<F32> & Tile.Tile8,
-  balanced: Witness.Witness(Tile.Tile8,depth,output),sample: TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,result>) ->
-  RowEvidence<input,depth,stored_row(output,cursor,result)>:
-  RowCursor{+i,c,kr,kc,row,offset,window,tap_rows,tap_columns} = cursor
+def kept_rowing(pairs: Array<Tile.Tile16>,previous: Tile.Tile8,cursor: RowingCursor,result: Array<Tile.Tile8> & Tile.Tile8) -> Packing.Rowing:
+  RowingCursor{+column,+write,+row,+in_row,+row_tiles,+first_column,+channel_base,+height,+width,+stride,+groups,+channels} = cursor
+  Packing.row_read(pairs,previous,column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels,result)
+
+def store_rowing(+depth: Nat,-input: Array<Tile.Tile8>,-pairs: Array<Tile.Tile16>,-previous: Tile.Tile8,cursor: RowingCursor,-result: Array<Tile.Tile8> & Tile.Tile8,
+  balanced: Witness.Witness(Tile.Tile16,depth,pairs),sample: TraversalWitness.Sample<Array<Tile.Tile8>,Tile.Tile8,input,result>) ->
+  RowingEvidence<input,depth,kept_rowing(pairs,previous,cursor,result)>:
+  RowingCursor{+column,+write,+row,+in_row,+row_tiles,+first_column,+channel_base,+height,+width,+stride,+groups,+channels} = cursor
   TraversalWitness.Sample{value,equation} = sample
-  %Equal.sym(Array<F32> & Tile.Tile8,result,(input,value),equation) : RowEvidence<input,depth,stored_row(output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns},_)>
-  RowEvidence{Array.set(Tile.Tile8,output,i,value),RowCursor{(i + 1 : U32),c,kr,(kc + 1 : U32),row,offset,window,tap_rows,tap_columns},{==},Witness.write(Tile.Tile8,depth,output,i,value,balanced)}
+  %Equal.sym(Array<Tile.Tile8> & Tile.Tile8,result,(input,value),equation) :
+    RowingEvidence<input,depth,kept_rowing(pairs,previous,RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels},_)>
+  +wrap = U32.is_eq((in_row + 1 : U32),row_tiles)
+  RowingEvidence{Array.set(Tile.Tile16,pairs,write,Tile.Tiles{previous,value}),value,
+    RowingCursor{Bool.pick(U32,wrap,first_column,(column + 8 * stride : U32)),(write + channels : U32),Bool.pick(U32,wrap,(row + 1 : U32),row),Bool.pick(U32,wrap,0,(in_row + 1 : U32)),
+      row_tiles,first_column,channel_base,height,width,stride,groups,channels},
+    {==},Witness.write(Tile.Tile16,depth,pairs,write,Tile.Tiles{previous,value},balanced)}
 
-def column(~block: Packing.Block(),
-  ~sampled: @-input: Array<F32> -> @+row: U32 -> @+column: U32 -> @+channel: U32 -> @+height: U32 -> @+width: U32 -> @+stride: U32 -> @+next_row: U32 -> @+offset: U32 -> @+output_width: U32 ->
-    @+kernel_column: U32 -> @+padding: U32 ->
-    @+evidence: PackingReadWitness.family(input) -> TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>,
-  +depth: Nat,-input: Array<F32>,-state: Packing.RowTiles(),+input_evidence: PackingReadWitness.family(input),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Packing.column_step(~block,state)>:
-  RowEvidence{output,cursor,equation,balanced} = evidence
-  RowCursor{+i,+c,+kr,+kc,+row,+offset,+window,+tap_rows,+tap_columns} = cursor
-  Packing.Stencil{+base,+h,+w,tr,tc,+s,+oy,+ox,+ow,inner} = window
-  %Equal.sym(Packing.RowTiles(),state,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),equation) : RowEvidence<input,depth,Packing.column_step(~block,_)>
-  +iy = (row * s + kr + oy : U32)
-  +ix = (offset * s + kc + ox : U32)
-  +cb = (base + c * h * w : U32)
-  +p = (0 - ox : U32)
-  store_row(depth,input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns},block(input,iy,ix,cb,h,w,s,((row + 1) * s + kr + oy : U32),offset,ow,kc,p),balanced,
-    sampled(input,iy,ix,cb,h,w,s,((row + 1) * s + kr + oy : U32),offset,ow,kc,p,input_evidence))
+def row_step(~lane: Tile.Tile8 -> F32,+depth: Nat,-input: Array<Tile.Tile8>,-state: Packing.Rowing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: RowingEvidence<input,depth,state>) -> RowingEvidence<input,depth,Packing.row_step(~lane,state)>:
+  RowingEvidence{pairs,previous,cursor,equation,balanced} = evidence
+  RowingCursor{+column,+write,+row,+in_row,+row_tiles,+first_column,+channel_base,+height,+width,+stride,+groups,+channels} = cursor
+  %Equal.sym(Packing.Rowing,state,
+    restore_rowing(input,pairs,previous,RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels}),equation) :
+    RowingEvidence<input,depth,Packing.row_step(~lane,_)>
+  store_rowing(depth,input,pairs,previous,RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels},
+    Packing.block(~Tile.Tile8,~lane,input,row,column,channel_base,height,width,stride,0,0,0,0,0,groups),balanced,
+    PackingReadWitness.row_block(~Tile.Tile8,~lane,input,row,column,channel_base,height,width,stride,0,0,0,0,0,groups,input_evidence))
 
-def column_loop(~block: Packing.Block(),
-  ~sampled: @-input: Array<F32> -> @+row: U32 -> @+column: U32 -> @+channel: U32 -> @+height: U32 -> @+width: U32 -> @+stride: U32 -> @+next_row: U32 -> @+offset: U32 -> @+output_width: U32 ->
-    @+kernel_column: U32 -> @+padding: U32 ->
-    @+evidence: PackingReadWitness.family(input) -> TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>,
-  +depth: Nat,count: Nat,-input: Array<F32>,-state: Packing.RowTiles(),+input_evidence: PackingReadWitness.family(input),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Loop.run(~Packing.RowTiles(),~Packing.column_step(~block),count,state)>:
+def row_loop(~lane: Tile.Tile8 -> F32,+depth: Nat,count: Nat,-input: Array<Tile.Tile8>,-state: Packing.Rowing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: RowingEvidence<input,depth,state>) -> RowingEvidence<input,depth,Loop.run(~Packing.Rowing,~Packing.row_step(~lane),count,state)>:
   match count:
     case 0n: evidence
-    case 1n+rest: column_loop(~block,~sampled,depth,rest,input,Packing.column_step(~block,state),input_evidence,column(~block,~sampled,depth,input,state,input_evidence,evidence))
+    case 1n+rest: row_loop(~lane,depth,rest,input,Packing.row_step(~lane,state),input_evidence,row_step(~lane,depth,input,state,input_evidence,evidence))
 
-def after_columns(-depth: Nat,-input: Array<F32>,-state: Packing.RowTiles(),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Packing.next_kernel_row(state)>:
-  RowEvidence{output,cursor,equation,balanced} = evidence
-  RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns} = cursor
-  %Equal.sym(Packing.RowTiles(),state,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),equation) : RowEvidence<input,depth,Packing.next_kernel_row(_)>
-  RowEvidence{output,RowCursor{i,c,(kr + 1 : U32),0,row,offset,window,tap_rows,tap_columns},{==},balanced}
+def first_rowing(pairs: Array<Tile.Tile16>,previous: Tile.Tile8,cursor: RowingCursor,result: Array<Tile.Tile8> & Tile.Tile8) -> Packing.Rowing:
+  RowingCursor{+column,+write,+row,+in_row,+row_tiles,+first_column,+channel_base,+height,+width,+stride,+groups,+channels} = cursor
+  Packing.row_first_read(pairs,previous,column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels,result)
 
-def kernel_row(~block: Packing.Block(),
-  ~sampled: @-input: Array<F32> -> @+row: U32 -> @+column: U32 -> @+channel: U32 -> @+height: U32 -> @+width: U32 -> @+stride: U32 -> @+next_row: U32 -> @+offset: U32 -> @+output_width: U32 ->
-    @+kernel_column: U32 -> @+padding: U32 ->
-    @+evidence: PackingReadWitness.family(input) -> TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>,
-  +depth: Nat,-input: Array<F32>,-state: Packing.RowTiles(),+input_evidence: PackingReadWitness.family(input),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Packing.kernel_row_step(~block,state)>:
-  RowEvidence{output,cursor,equation,balanced} = evidence
-  RowCursor{+i,+c,+kr,+kc,+row,+offset,+window,+tap_rows,+tap_columns} = cursor
-  %Equal.sym(Packing.RowTiles(),state,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),equation) : RowEvidence<input,depth,Packing.kernel_row_step(~block,_)>
-  after_columns(depth,input,Loop.run(~Packing.RowTiles(),~Packing.column_step(~block),tap_columns,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns})),
-    column_loop(~block,~sampled,depth,tap_columns,input,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),input_evidence,
-      RowEvidence{output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns},{==},balanced}))
-
-def kernel_row_loop(~block: Packing.Block(),
-  ~sampled: @-input: Array<F32> -> @+row: U32 -> @+column: U32 -> @+channel: U32 -> @+height: U32 -> @+width: U32 -> @+stride: U32 -> @+next_row: U32 -> @+offset: U32 -> @+output_width: U32 ->
-    @+kernel_column: U32 -> @+padding: U32 ->
-    @+evidence: PackingReadWitness.family(input) -> TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>,
-  +depth: Nat,count: Nat,-input: Array<F32>,-state: Packing.RowTiles(),+input_evidence: PackingReadWitness.family(input),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Loop.run(~Packing.RowTiles(),~Packing.kernel_row_step(~block),count,state)>:
-  match count:
-    case 0n: evidence
-    case 1n+rest: kernel_row_loop(~block,~sampled,depth,rest,input,Packing.kernel_row_step(~block,state),input_evidence,kernel_row(~block,~sampled,depth,input,state,input_evidence,evidence))
-
-def after_kernel_rows(-depth: Nat,-input: Array<F32>,-state: Packing.RowTiles(),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Packing.next_channel(state)>:
-  RowEvidence{output,cursor,equation,balanced} = evidence
-  RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns} = cursor
-  %Equal.sym(Packing.RowTiles(),state,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),equation) : RowEvidence<input,depth,Packing.next_channel(_)>
-  RowEvidence{output,RowCursor{i,(c + 1 : U32),0,0,row,offset,window,tap_rows,tap_columns},{==},balanced}
-
-def channel(~block: Packing.Block(),
-  ~sampled: @-input: Array<F32> -> @+row: U32 -> @+column: U32 -> @+channel: U32 -> @+height: U32 -> @+width: U32 -> @+stride: U32 -> @+next_row: U32 -> @+offset: U32 -> @+output_width: U32 ->
-    @+kernel_column: U32 -> @+padding: U32 ->
-    @+evidence: PackingReadWitness.family(input) -> TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>,
-  +depth: Nat,-input: Array<F32>,-state: Packing.RowTiles(),+input_evidence: PackingReadWitness.family(input),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Packing.channel_step(~block,state)>:
-  RowEvidence{output,cursor,equation,balanced} = evidence
-  RowCursor{+i,+c,+kr,+kc,+row,+offset,+window,+tap_rows,+tap_columns} = cursor
-  %Equal.sym(Packing.RowTiles(),state,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),equation) : RowEvidence<input,depth,Packing.channel_step(~block,_)>
-  after_kernel_rows(depth,input,Loop.run(~Packing.RowTiles(),~Packing.kernel_row_step(~block),tap_rows,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns})),
-    kernel_row_loop(~block,~sampled,depth,tap_rows,input,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),input_evidence,
-      RowEvidence{output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns},{==},balanced}))
-
-def channel_loop(~block: Packing.Block(),
-  ~sampled: @-input: Array<F32> -> @+row: U32 -> @+column: U32 -> @+channel: U32 -> @+height: U32 -> @+width: U32 -> @+stride: U32 -> @+next_row: U32 -> @+offset: U32 -> @+output_width: U32 ->
-    @+kernel_column: U32 -> @+padding: U32 ->
-    @+evidence: PackingReadWitness.family(input) -> TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,block(input,row,column,channel,height,width,stride,next_row,offset,output_width,kernel_column,padding)>,
-  +depth: Nat,count: Nat,-input: Array<F32>,-state: Packing.RowTiles(),+input_evidence: PackingReadWitness.family(input),evidence: RowEvidence<input,depth,state>) ->
-  RowEvidence<input,depth,Loop.run(~Packing.RowTiles(),~Packing.channel_step(~block),count,state)>:
-  match count:
-    case 0n: evidence
-    case 1n+rest: channel_loop(~block,~sampled,depth,rest,input,Packing.channel_step(~block,state),input_evidence,channel(~block,~sampled,depth,input,state,input_evidence,evidence))
-
-type CrossingCursor is Data:
-  CrossingCursor{index: U32,reduction: U32,position: U32,window: Packing.Stencil}
-
-def restore_crossing(input: Array<F32>,output: Array<Tile.Tile8>,cursor: CrossingCursor) -> Packing.Crossings():
-  CrossingCursor{i,q,position,window} = cursor
-  Packing.Crossing{input,output,i,q,position,window}
-
-type CrossingEvidence<-input: Array<F32>,-depth: Nat,-state: Packing.Crossings()> is Data:
-  CrossingEvidence{-output: Array<Tile.Tile8>,cursor: CrossingCursor,equation: {state == restore_crossing(input,output,cursor) : Packing.Crossings()},
-    balanced: Witness.Witness(Tile.Tile8,depth,output)}
-
-def stored_crossing(output: Array<Tile.Tile8>,cursor: CrossingCursor,result: Array<F32> & Tile.Tile8) -> Packing.Crossings():
-  CrossingCursor{i,q,position,window} = cursor
-  Packing.store_crossing(output,i,q,position,window,result)
-
-def store_crossing(+depth: Nat,-input: Array<F32>,-output: Array<Tile.Tile8>,cursor: CrossingCursor,-result: Array<F32> & Tile.Tile8,
-  balanced: Witness.Witness(Tile.Tile8,depth,output),sample: TraversalWitness.Sample<Array<F32>,Tile.Tile8,input,result>) ->
-  CrossingEvidence<input,depth,stored_crossing(output,cursor,result)>:
-  CrossingCursor{+i,q,position,window} = cursor
+def first_read(-depth: Nat,-input: Array<Tile.Tile8>,-pairs: Array<Tile.Tile16>,-previous: Tile.Tile8,cursor: RowingCursor,-result: Array<Tile.Tile8> & Tile.Tile8,
+  balanced: Witness.Witness(Tile.Tile16,depth,pairs),sample: TraversalWitness.Sample<Array<Tile.Tile8>,Tile.Tile8,input,result>) ->
+  RowingEvidence<input,depth,first_rowing(pairs,previous,cursor,result)>:
+  RowingCursor{+column,+write,+row,+in_row,+row_tiles,+first_column,+channel_base,+height,+width,+stride,+groups,+channels} = cursor
   TraversalWitness.Sample{value,equation} = sample
-  %Equal.sym(Array<F32> & Tile.Tile8,result,(input,value),equation) : CrossingEvidence<input,depth,stored_crossing(output,CrossingCursor{i,q,position,window},_)>
-  CrossingEvidence{Array.set(Tile.Tile8,output,i,value),CrossingCursor{(i + 1 : U32),(q + 1 : U32),position,window},{==},Witness.write(Tile.Tile8,depth,output,i,value,balanced)}
+  %Equal.sym(Array<Tile.Tile8> & Tile.Tile8,result,(input,value),equation) :
+    RowingEvidence<input,depth,first_rowing(pairs,previous,RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels},_)>
+  +wrap = U32.is_eq((in_row + 1 : U32),row_tiles)
+  RowingEvidence{pairs,value,
+    RowingCursor{Bool.pick(U32,wrap,first_column,(column + 8 * stride : U32)),write,Bool.pick(U32,wrap,(row + 1 : U32),row),Bool.pick(U32,wrap,0,(in_row + 1 : U32)),
+      row_tiles,first_column,channel_base,height,width,stride,groups,channels},
+    {==},balanced}
 
-def crossing(+depth: Nat,-input: Array<F32>,-state: Packing.Crossings(),+input_evidence: PackingReadWitness.family(input),evidence: CrossingEvidence<input,depth,state>) ->
-  CrossingEvidence<input,depth,Packing.crossing_step(state)>:
-  CrossingEvidence{output,cursor,equation,balanced} = evidence
-  CrossingCursor{+i,+q,+position,+window} = cursor
-  Packing.Stencil{+base,+h,+w,+tr,+tc,+s,+oy,+ox,+ow,inner} = window
-  %Equal.sym(Packing.Crossings(),state,restore_crossing(input,output,CrossingCursor{i,q,position,window}),equation) : CrossingEvidence<input,depth,Packing.crossing_step(_)>
-  +context = PackingSamples.window_pixel_block(position,q,base,h,w,tr,tc,s,oy,ox,ow)
-  -first = PackingSamples.window_pixel(input,position,q,base,h,w,tr,tc,s,oy,ox,ow)
-  store_crossing(depth,input,output,CrossingCursor{i,q,position,window},Tile.read_tail(~Array<F32>,~PackingSamples.WindowPixelBlock,~PackingSamples.read_window_pixel,first,context),balanced,
-    TileWitness.tail(~Array<F32>,~PackingSamples.WindowPixelBlock,~PackingReadWitness.family,~PackingSamples.read_window_pixel,~PackingReadWitness.window_read,input,context,first,input_evidence,
-      PackingReadWitness.window_first(input,position,q,base,h,w,tr,tc,s,oy,ox,ow,input_evidence)))
+def row_first(~lane: Tile.Tile8 -> F32,+depth: Nat,-input: Array<Tile.Tile8>,-state: Packing.Rowing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: RowingEvidence<input,depth,state>) -> RowingEvidence<input,depth,Packing.row_first(~lane,state)>:
+  RowingEvidence{pairs,previous,cursor,equation,balanced} = evidence
+  RowingCursor{+column,+write,+row,+in_row,+row_tiles,+first_column,+channel_base,+height,+width,+stride,+groups,+channels} = cursor
+  %Equal.sym(Packing.Rowing,state,
+    restore_rowing(input,pairs,previous,RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels}),equation) :
+    RowingEvidence<input,depth,Packing.row_first(~lane,_)>
+  first_read(depth,input,pairs,previous,RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels},
+    Packing.block(~Tile.Tile8,~lane,input,row,column,channel_base,height,width,stride,0,0,0,0,0,groups),balanced,
+    PackingReadWitness.row_block(~Tile.Tile8,~lane,input,row,column,channel_base,height,width,stride,0,0,0,0,0,groups,input_evidence))
 
-def crossing_loop(+depth: Nat,count: Nat,-input: Array<F32>,-state: Packing.Crossings(),+input_evidence: PackingReadWitness.family(input),evidence: CrossingEvidence<input,depth,state>) ->
-  CrossingEvidence<input,depth,Loop.run(~Packing.Crossings(),~Packing.crossing_step,count,state)>:
+def row_run(~lane: Tile.Tile8 -> F32,+depth: Nat,count: Nat,-input: Array<Tile.Tile8>,-state: Packing.Rowing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: RowingEvidence<input,depth,state>) -> RowingEvidence<input,depth,Packing.row_run(~lane,count,state)>:
+  row_loop(~lane,depth,count,input,Packing.row_first(~lane,state),input_evidence,row_first(~lane,depth,input,state,input_evidence,evidence))
+
+def row_low(+depth: Nat,low: Bool,first: Bool,count: Nat,-input: Array<Tile.Tile8>,-state: Packing.Rowing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: RowingEvidence<input,depth,state>) -> RowingEvidence<input,depth,Packing.row_low(low,first,count,state)>:
+  match low first:
+    case True{} True{}: row_run(~Tile.lane0,depth,count,input,state,input_evidence,evidence)
+    case True{} False{}: row_run(~Tile.lane1,depth,count,input,state,input_evidence,evidence)
+    case False{} True{}: row_run(~Tile.lane2,depth,count,input,state,input_evidence,evidence)
+    case False{} False{}: row_run(~Tile.lane3,depth,count,input,state,input_evidence,evidence)
+
+def row_high(+depth: Nat,low: Bool,first: Bool,count: Nat,-input: Array<Tile.Tile8>,-state: Packing.Rowing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: RowingEvidence<input,depth,state>) -> RowingEvidence<input,depth,Packing.row_high(low,first,count,state)>:
+  match low first:
+    case True{} True{}: row_run(~Tile.lane4,depth,count,input,state,input_evidence,evidence)
+    case True{} False{}: row_run(~Tile.lane5,depth,count,input,state,input_evidence,evidence)
+    case False{} True{}: row_run(~Tile.lane6,depth,count,input,state,input_evidence,evidence)
+    case False{} False{}: row_run(~Tile.lane7,depth,count,input,state,input_evidence,evidence)
+
+def row_lane(+depth: Nat,half: Bool,low: Bool,first: Bool,count: Nat,-input: Array<Tile.Tile8>,-state: Packing.Rowing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: RowingEvidence<input,depth,state>) -> RowingEvidence<input,depth,Packing.row_lane(half,low,first,count,state)>:
+  match half:
+    case True{}: row_low(depth,low,first,count,input,state,input_evidence,evidence)
+    case False{}: row_high(depth,low,first,count,input,state,input_evidence,evidence)
+
+type TransposingCursor is Data:
+  TransposingCursor{plane: U32,window: Packing.Stencil,planes: Packing.Planes}
+
+def restore_transposing(input: Array<Tile.Tile8>,pairs: Array<Tile.Tile16>,cursor: TransposingCursor) -> Packing.Transposing:
+  TransposingCursor{plane,window,planes} = cursor
+  Packing.Transposing{input,pairs,plane,window,planes}
+
+type TransposingEvidence<-input: Array<Tile.Tile8>,-depth: Nat,-state: Packing.Transposing> is Data:
+  TransposingEvidence{-pairs: Array<Tile.Tile16>,cursor: TransposingCursor,equation: {state == restore_transposing(input,pairs,cursor) : Packing.Transposing},
+    balanced: Witness.Witness(Tile.Tile16,depth,pairs)}
+
+def plane_done(-depth: Nat,+plane: U32,+window: Packing.Stencil,+planes: Packing.Planes,-input: Array<Tile.Tile8>,-state: Packing.Rowing,evidence: RowingEvidence<input,depth,state>) ->
+  TransposingEvidence<input,depth,Packing.plane_done(plane,window,planes,state)>:
+  RowingEvidence{pairs,previous,cursor,equation,balanced} = evidence
+  RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels} = cursor
+  %Equal.sym(Packing.Rowing,state,
+    restore_rowing(input,pairs,previous,RowingCursor{column,write,row,in_row,row_tiles,first_column,channel_base,height,width,stride,groups,channels}),equation) :
+    TransposingEvidence<input,depth,Packing.plane_done(plane,window,planes,_)>
+  TransposingEvidence{pairs,TransposingCursor{(plane + 1 : U32),window,planes},{==},balanced}
+
+def plane_step(+depth: Nat,-input: Array<Tile.Tile8>,-state: Packing.Transposing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: TransposingEvidence<input,depth,state>) -> TransposingEvidence<input,depth,Packing.plane_step(state)>:
+  TransposingEvidence{pairs,cursor,equation,balanced} = evidence
+  TransposingCursor{+plane,+window,+planes} = cursor
+  Packing.Stencil{+base,+height,+width,tap_rows,tap_columns,+stride,+row_origin,+column_origin,output_width,inner,+groups} = window
+  Packing.Planes{+first_output_row,rows,+row_width,+elements} = planes
+  %Equal.sym(Packing.Transposing,state,restore_transposing(input,pairs,TransposingCursor{plane,window,planes}),equation) :
+    TransposingEvidence<input,depth,Packing.plane_step(_)>
+  +channels = Packing.channels_of(window)
+  +channel = (plane % channels : U32)
+  +phase = (plane / channels : U32)
+  +lane = (channel % 8 : U32)
+  +cursor = {RowingCursor{(phase + column_origin : U32),(phase * elements * channels + channel : U32),(first_output_row * stride + row_origin : U32),0,(row_width / 8 : U32),
+    (phase + column_origin : U32),(base + channel / 8 : U32),height,width,stride,groups,channels} : RowingCursor}
+  -start = restore_rowing(input,pairs,Tile.filled(0.0),cursor)
+  plane_done(depth,plane,window,planes,input,
+    Packing.row_lane(U32.is_lt(lane,4),U32.is_lt((lane % 4 : U32),2),U32.is_zero((lane % 2 : U32)),U32.to_nat(elements),start),
+    row_lane(depth,U32.is_lt(lane,4),U32.is_lt((lane % 4 : U32),2),U32.is_zero((lane % 2 : U32)),U32.to_nat(elements),input,start,input_evidence,
+      RowingEvidence{pairs,Tile.filled(0.0),cursor,{==},balanced}))
+
+def plane_run(+depth: Nat,count: Nat,-input: Array<Tile.Tile8>,-state: Packing.Transposing,+input_evidence: PackingReadWitness.family(~Tile.Tile8,input),
+  evidence: TransposingEvidence<input,depth,state>) -> TransposingEvidence<input,depth,Loop.run(~Packing.Transposing,~Packing.plane_step,count,state)>:
   match count:
     case 0n: evidence
-    case 1n+rest: crossing_loop(depth,rest,input,Packing.crossing_step(state),input_evidence,crossing(depth,input,state,input_evidence,evidence))
+    case 1n+rest: plane_run(depth,rest,input,Packing.plane_step(state),input_evidence,plane_step(depth,input,state,input_evidence,evidence))
 
-type TileCursor is Data:
-  TileCursor{index: U32,position: U32,window: Packing.Stencil,channels: Nat,tap_rows: Nat,tap_columns: Nat,inner: Nat}
+def transposed(-depth: Nat,-input: Array<Tile.Tile8>,-state: Packing.Transposing,evidence: TransposingEvidence<input,depth,state>) ->
+  TraversalWitness.ResultEvidence<Array<Tile.Tile8>,Tile.Tile16,input,depth,Packing.transposed(state)>:
+  TransposingEvidence{pairs,cursor,equation,balanced} = evidence
+  TransposingCursor{plane,window,planes} = cursor
+  %Equal.sym(Packing.Transposing,state,restore_transposing(input,pairs,TransposingCursor{plane,window,planes}),equation) :
+    TraversalWitness.ResultEvidence<Array<Tile.Tile8>,Tile.Tile16,input,depth,Packing.transposed(_)>
+  TraversalWitness.ResultEvidence{pairs,{==},balanced}
 
-def restore_tiles(input: Array<F32>,output: Array<Tile.Tile8>,cursor: TileCursor) -> Packing.Tiled():
-  TileCursor{i,position,window,channels,tap_rows,tap_columns,inner} = cursor
-  Packing.Tiles{input,output,i,position,window,channels,tap_rows,tap_columns,inner}
+def transpose(+depth: Nat,+window: Packing.Stencil,+planes: Packing.Planes,-input: Array<Tile.Tile8>,-pairs: Array<Tile.Tile16>,
+  +input_evidence: PackingReadWitness.family(~Tile.Tile8,input),balanced: Witness.Witness(Tile.Tile16,depth,pairs)) ->
+  TraversalWitness.ResultEvidence<Array<Tile.Tile8>,Tile.Tile16,input,depth,Packing.transpose(window,planes,input,pairs)>:
+  Packing.Stencil{base,height,width,tap_rows,tap_columns,+stride,row_origin,column_origin,output_width,inner,groups} = window
+  +count = U32.to_nat((stride * Packing.channels_of(window) : U32))
+  +cursor = {TransposingCursor{0,window,planes} : TransposingCursor}
+  transposed(depth,input,Loop.run(~Packing.Transposing,~Packing.plane_step,count,restore_transposing(input,pairs,cursor)),
+    plane_run(depth,count,input,restore_transposing(input,pairs,cursor),input_evidence,TransposingEvidence{pairs,cursor,{==},balanced}))
 
-type TileEvidence<-input: Array<F32>,-depth: Nat,-state: Packing.Tiled()> is Data:
-  TileEvidence{-output: Array<Tile.Tile8>,cursor: TileCursor,equation: {state == restore_tiles(input,output,cursor) : Packing.Tiled()},balanced: Witness.Witness(Tile.Tile8,depth,output)}
+# ---- The pack ----
 
-def after_row_tile(-depth: Nat,-input: Array<F32>,position: U32,channels: Nat,inner: Nat,-state: Packing.RowTiles(),
-  evidence: RowEvidence<input,depth,state>) -> TileEvidence<input,depth,Packing.after_row_tile(position,channels,inner,state)>:
-  RowEvidence{output,cursor,equation,balanced} = evidence
-  RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns} = cursor
-  %Equal.sym(Packing.RowTiles(),state,restore_row(input,output,RowCursor{i,c,kr,kc,row,offset,window,tap_rows,tap_columns}),equation) :
-    TileEvidence<input,depth,Packing.after_row_tile(position,channels,inner,_)>
-  TileEvidence{output,TileCursor{i,(position + 8 : U32),window,channels,tap_rows,tap_columns,inner},{==},balanced}
+type PassingCursor is Data:
+  PassingCursor{start: U32,read: U32,kernel_row: U32,write: U32,lane: U32,tap_rows: U32,tap_columns: U32,row_step: U32}
 
-def after_crossing(-depth: Nat,-input: Array<F32>,channels: Nat,tap_rows: Nat,tap_columns: Nat,inner: Nat,-state: Packing.Crossings(),evidence: CrossingEvidence<input,depth,state>) ->
-  TileEvidence<input,depth,Packing.after_crossing(channels,tap_rows,tap_columns,inner,state)>:
-  CrossingEvidence{output,cursor,equation,balanced} = evidence
-  CrossingCursor{i,q,position,window} = cursor
-  %Equal.sym(Packing.Crossings(),state,restore_crossing(input,output,CrossingCursor{i,q,position,window}),equation) :
-    TileEvidence<input,depth,Packing.after_crossing(channels,tap_rows,tap_columns,inner,_)>
-  TileEvidence{output,TileCursor{i,(position + 8 : U32),window,channels,tap_rows,tap_columns,inner},{==},balanced}
+def restore_passing(pairs: Array<Tile.Tile16>,tiles: Array<Tile.Tile8>,cursor: PassingCursor) -> Packing.Passing:
+  PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step} = cursor
+  Packing.Passing{pairs,tiles,start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step}
 
-def tile(+depth: Nat,within: Bool,wraps: Bool,-input: Array<F32>,-output: Array<Tile.Tile8>,+i: U32,+position: U32,+window: Packing.Stencil,
-  +channels: Nat,+tap_rows: Nat,+tap_columns: Nat,+inner: Nat,+input_evidence: PackingReadWitness.family(input),balanced: Witness.Witness(Tile.Tile8,depth,output)) ->
-  TileEvidence<input,depth,Packing.tile(within,wraps,input,output,i,position,window,channels,tap_rows,tap_columns,inner)>:
-  match within wraps:
-    case True{} wraps:
-      Packing.Stencil{base,h,w,tr,tc,s,oy,ox,+ow,inner_word} = window
-      +cursor = {RowCursor{i,0,0,0,(position / ow : U32),(position % ow : U32),window,tap_rows,tap_columns} : RowCursor}
-      after_row_tile(depth,input,position,channels,inner,Loop.run(~Packing.RowTiles(),~Packing.channel_step(~Packing.block),channels,restore_row(input,output,cursor)),
-        channel_loop(~Packing.block,~PackingReadWitness.row_block,depth,channels,input,restore_row(input,output,cursor),input_evidence,RowEvidence{output,cursor,{==},balanced}))
-    case False{} True{}:
-      Packing.Stencil{base,h,w,tr,tc,s,oy,ox,+ow,inner_word} = window
-      +cursor = {RowCursor{i,0,0,0,(position / ow : U32),(position % ow : U32),window,tap_rows,tap_columns} : RowCursor}
-      after_row_tile(depth,input,position,channels,inner,Loop.run(~Packing.RowTiles(),~Packing.channel_step(~Packing.wrap_block),channels,restore_row(input,output,cursor)),
-        channel_loop(~Packing.wrap_block,~PackingReadWitness.wrap_block,depth,channels,input,restore_row(input,output,cursor),input_evidence,RowEvidence{output,cursor,{==},balanced}))
-    case False{} False{}:
-      +cursor = {CrossingCursor{i,0,position,window} : CrossingCursor}
-      after_crossing(depth,input,channels,tap_rows,tap_columns,inner,Loop.run(~Packing.Crossings(),~Packing.crossing_step,inner,restore_crossing(input,output,cursor)),
-        crossing_loop(depth,inner,input,restore_crossing(input,output,cursor),input_evidence,CrossingEvidence{output,cursor,{==},balanced}))
+type PassingEvidence<-pairs: Array<Tile.Tile16>,-depth: Nat,-state: Packing.Passing> is Data:
+  PassingEvidence{-tiles: Array<Tile.Tile8>,cursor: PassingCursor,equation: {state == restore_passing(pairs,tiles,cursor) : Packing.Passing},
+    balanced: Witness.Witness(Tile.Tile8,depth,tiles)}
 
-def tile_step(+depth: Nat,-input: Array<F32>,-state: Packing.Tiled(),+input_evidence: PackingReadWitness.family(input),evidence: TileEvidence<input,depth,state>) ->
-  TileEvidence<input,depth,Packing.tile_step(state)>:
-  TileEvidence{output,cursor,equation,balanced} = evidence
-  TileCursor{+i,+position,+window,+channels,+tap_rows,+tap_columns,+inner} = cursor
-  Packing.Stencil{base,h,w,tr,tc,s,oy,ox,+ow,inner_word} = window
-  %Equal.sym(Packing.Tiled(),state,restore_tiles(input,output,TileCursor{i,position,window,channels,tap_rows,tap_columns,inner}),equation) : TileEvidence<input,depth,Packing.tile_step(_)>
-  tile(depth,U32.is_le((position % ow + 8 : U32),ow),U32.is_le((position % ow + 8 : U32),(ow + ow : U32)),input,output,i,position,window,channels,tap_rows,tap_columns,inner,input_evidence,balanced)
+# The cursor of Packing.advanced.
+def advanced(+start: U32,+read: U32,+kernel_row: U32,+write: U32,+lane: U32,+tap_rows: U32,+tap_columns: U32,+row_step: U32) -> PassingCursor:
+  +wrap = U32.is_eq((kernel_row + 1 : U32),tap_rows)
+  PassingCursor{Bool.pick(U32,wrap,(start + 1 : U32),start),Bool.pick(U32,wrap,(start + 1 : U32),(read + row_step : U32)),Bool.pick(U32,wrap,0,(kernel_row + 1 : U32)),
+    Bool.pick(U32,wrap,(write - (tap_rows - 1) * tap_columns + tap_rows * tap_columns : U32),(write + tap_columns : U32)),lane,tap_rows,tap_columns,row_step}
 
-def tile_loop(+depth: Nat,count: Nat,-input: Array<F32>,-state: Packing.Tiled(),+input_evidence: PackingReadWitness.family(input),evidence: TileEvidence<input,depth,state>) ->
-  TileEvidence<input,depth,Loop.run(~Packing.Tiled(),~Packing.tile_step,count,state)>:
+def first_kept(~shift: Tile.Tile16 -> Tile.Tile8,tiles: Array<Tile.Tile8>,cursor: PassingCursor,result: Array<Tile.Tile16> & Tile.Tile16) -> Packing.Passing:
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  Packing.first_stored(~shift,tiles,start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step,result)
+
+def first_store(~shift: Tile.Tile16 -> Tile.Tile8,+depth: Nat,-pairs: Array<Tile.Tile16>,-tiles: Array<Tile.Tile8>,cursor: PassingCursor,-result: Array<Tile.Tile16> & Tile.Tile16,
+  balanced: Witness.Witness(Tile.Tile8,depth,tiles),observed: Witness.Read<Tile.Tile16,pairs,result>) -> PassingEvidence<pairs,depth,first_kept(~shift,tiles,cursor,result)>:
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  Witness.Read{value,equation} = observed
+  %Equal.sym(Array<Tile.Tile16> & Tile.Tile16,result,(pairs,value),equation) :
+    PassingEvidence<pairs,depth,first_kept(~shift,tiles,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step},_)>
+  PassingEvidence{Array.set(Tile.Tile8,tiles,write,shift(value)),advanced(start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step),{==},
+    Witness.write(Tile.Tile8,depth,tiles,write,shift(value),balanced)}
+
+def first_step(~shift: Tile.Tile16 -> Tile.Tile8,+depth: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passing,+pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),
+  evidence: PassingEvidence<pairs,depth,state>) -> PassingEvidence<pairs,depth,Packing.first_step(~shift,state)>:
+  PassingEvidence{tiles,cursor,equation,balanced} = evidence
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  %Equal.sym(Packing.Passing,state,restore_passing(pairs,tiles,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step}),equation) :
+    PassingEvidence<pairs,depth,Packing.first_step(~shift,_)>
+  first_store(~shift,depth,pairs,tiles,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step},Array.get(Tile.Tile16,pairs,read),balanced,
+    Witness.observed(Tile.Tile16,pairs,read,pairs_evidence))
+
+def merge_kept(pairs: Array<Tile.Tile16>,+tile: Tile.Tile8,cursor: PassingCursor,result: Array<Tile.Tile8> & Tile.Tile8) -> Packing.Passing:
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  Packing.merge_stored(pairs,tile,start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step,result)
+
+def merge_store(+depth: Nat,-pairs: Array<Tile.Tile16>,-tile: Tile.Tile8,-tiles: Array<Tile.Tile8>,cursor: PassingCursor,-result: Array<Tile.Tile8> & Tile.Tile8,
+  balanced: Witness.Witness(Tile.Tile8,depth,tiles),observed: Witness.Read<Tile.Tile8,tiles,result>) -> PassingEvidence<pairs,depth,merge_kept(pairs,tile,cursor,result)>:
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  Witness.Read{kept,equation} = observed
+  %Equal.sym(Array<Tile.Tile8> & Tile.Tile8,result,(tiles,kept),equation) :
+    PassingEvidence<pairs,depth,merge_kept(pairs,tile,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step},_)>
+  PassingEvidence{Array.set(Tile.Tile8,tiles,write,Packing.merged(lane,kept,tile)),advanced(start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step),{==},
+    Witness.write(Tile.Tile8,depth,tiles,write,Packing.merged(lane,kept,tile),balanced)}
+
+def merge_read_kept(~shift: Tile.Tile16 -> Tile.Tile8,tiles: Array<Tile.Tile8>,cursor: PassingCursor,result: Array<Tile.Tile16> & Tile.Tile16) -> Packing.Passing:
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  Packing.merge_read(~shift,tiles,start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step,result)
+
+def merge_read(~shift: Tile.Tile16 -> Tile.Tile8,+depth: Nat,-pairs: Array<Tile.Tile16>,-tiles: Array<Tile.Tile8>,cursor: PassingCursor,-result: Array<Tile.Tile16> & Tile.Tile16,
+  +balanced: Witness.Witness(Tile.Tile8,depth,tiles),observed: Witness.Read<Tile.Tile16,pairs,result>) -> PassingEvidence<pairs,depth,merge_read_kept(~shift,tiles,cursor,result)>:
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  Witness.Read{value,equation} = observed
+  %Equal.sym(Array<Tile.Tile16> & Tile.Tile16,result,(pairs,value),equation) :
+    PassingEvidence<pairs,depth,merge_read_kept(~shift,tiles,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step},_)>
+  merge_store(depth,pairs,shift(value),tiles,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step},Array.get(Tile.Tile8,tiles,write),balanced,
+    Witness.read(Tile.Tile8,depth,tiles,write,balanced))
+
+def merge_step(~shift: Tile.Tile16 -> Tile.Tile8,+depth: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passing,+pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),
+  evidence: PassingEvidence<pairs,depth,state>) -> PassingEvidence<pairs,depth,Packing.merge_step(~shift,state)>:
+  PassingEvidence{tiles,cursor,equation,+balanced} = evidence
+  PassingCursor{+start,+read,+kernel_row,+write,+lane,+tap_rows,+tap_columns,+row_step} = cursor
+  %Equal.sym(Packing.Passing,state,restore_passing(pairs,tiles,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step}),equation) :
+    PassingEvidence<pairs,depth,Packing.merge_step(~shift,_)>
+  merge_read(~shift,depth,pairs,tiles,PassingCursor{start,read,kernel_row,write,lane,tap_rows,tap_columns,row_step},Array.get(Tile.Tile16,pairs,read),balanced,
+    Witness.observed(Tile.Tile16,pairs,read,pairs_evidence))
+
+def PassingPreserves(~step: Packing.Passing -> Packing.Passing) -> Type:
+  @+depth: Nat -> @-pairs: Array<Tile.Tile16> -> @-state: Packing.Passing -> @+pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs) ->
+    PassingEvidence<pairs,depth,state> -> PassingEvidence<pairs,depth,step(state)>
+
+def passing_loop(~step: Packing.Passing -> Packing.Passing,~preserves: PassingPreserves(~step),+depth: Nat,count: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passing,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: PassingEvidence<pairs,depth,state>) ->
+  PassingEvidence<pairs,depth,Loop.run(~Packing.Passing,~step,count,state)>:
   match count:
     case 0n: evidence
-    case 1n+rest: tile_loop(depth,rest,input,Packing.tile_step(state),input_evidence,tile_step(depth,input,state,input_evidence,evidence))
+    case 1n+rest: passing_loop(~step,~preserves,depth,rest,pairs,step(state),pairs_evidence,preserves(depth,pairs,state,pairs_evidence,evidence))
 
-def finish(-depth: Nat,-input: Array<F32>,-state: Packing.Tiled(),evidence: TileEvidence<input,depth,state>) ->
-  TraversalWitness.ResultEvidence<Array<F32>,Tile.Tile8,input,depth,Packing.finish(state)>:
-  TileEvidence{output,cursor,equation,balanced} = evidence
-  TileCursor{i,position,window,channels,tap_rows,tap_columns,inner} = cursor
-  %Equal.sym(Packing.Tiled(),state,restore_tiles(input,output,TileCursor{i,position,window,channels,tap_rows,tap_columns,inner}),equation) :
-    TraversalWitness.ResultEvidence<Array<F32>,Tile.Tile8,input,depth,Packing.finish(_)>
-  TraversalWitness.ResultEvidence{output,{==},balanced}
+def pass_run(~shift: Tile.Tile16 -> Tile.Tile8,+depth: Nat,first: Bool,count: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passing,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: PassingEvidence<pairs,depth,state>) ->
+  PassingEvidence<pairs,depth,Packing.pass_run(~shift,first,count,state)>:
+  match first:
+    case True{}: passing_loop(~Packing.first_step(~shift),~first_step(~shift),depth,count,pairs,state,pairs_evidence,evidence)
+    case False{}: passing_loop(~Packing.merge_step(~shift),~merge_step(~shift),depth,count,pairs,state,pairs_evidence,evidence)
 
-def pack_window(+depth: Nat,+window: Packing.Stencil,+count: Nat,+start: U32,-input: Array<F32>,-output: Array<Tile.Tile8>,
-  +input_evidence: PackingReadWitness.family(input),balanced: Witness.Witness(Tile.Tile8,depth,output)) ->
-  TraversalWitness.ResultEvidence<Array<F32>,Tile.Tile8,input,depth,Packing.pack_window(window,count,start,input,output)>:
-  Packing.Stencil{base,h,w,+tr,+tc,s,oy,ox,ow,+inner} = window
-  +cursor = {TileCursor{0,start,window,U32.to_nat((inner / (tr * tc) : U32)),U32.to_nat(tr),U32.to_nat(tc),U32.to_nat(inner)} : TileCursor}
-  finish(depth,input,Loop.run(~Packing.Tiled(),~Packing.tile_step,Nat.div(count,U32.to_nat(inner)),restore_tiles(input,output,cursor)),
-    tile_loop(depth,Nat.div(count,U32.to_nat(inner)),input,restore_tiles(input,output,cursor),input_evidence,TileEvidence{output,cursor,{==},balanced}))
+def pass_low(+depth: Nat,low: Bool,odd: Bool,first: Bool,count: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passing,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: PassingEvidence<pairs,depth,state>) ->
+  PassingEvidence<pairs,depth,Packing.pass_low(low,odd,first,count,state)>:
+  match low odd:
+    case True{} False{}: pass_run(~Packing.shifted0,depth,first,count,pairs,state,pairs_evidence,evidence)
+    case True{} True{}: pass_run(~Packing.shifted1,depth,first,count,pairs,state,pairs_evidence,evidence)
+    case False{} False{}: pass_run(~Packing.shifted2,depth,first,count,pairs,state,pairs_evidence,evidence)
+    case False{} True{}: pass_run(~Packing.shifted3,depth,first,count,pairs,state,pairs_evidence,evidence)
 
-def pack(+depth: Nat,+count: Nat,+start: U32,-input: Array<F32>,-output: Array<Tile.Tile8>,+h: U32,+w: U32,+k: U32,+s: U32,+p: U32,+ow: U32,+inner: U32,
-  +input_evidence: PackingReadWitness.family(input),balanced: Witness.Witness(Tile.Tile8,depth,output)) ->
-  TraversalWitness.ResultEvidence<Array<F32>,Tile.Tile8,input,depth,Packing.pack(count,start,input,output,h,w,k,s,p,ow,inner)>:
-  pack_window(depth,Packing.square(h,w,k,s,p,ow,inner),count,start,input,output,input_evidence,balanced)
+def pass_high(+depth: Nat,low: Bool,odd: Bool,first: Bool,count: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passing,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: PassingEvidence<pairs,depth,state>) ->
+  PassingEvidence<pairs,depth,Packing.pass_high(low,odd,first,count,state)>:
+  match low odd:
+    case True{} False{}: pass_run(~Packing.shifted4,depth,first,count,pairs,state,pairs_evidence,evidence)
+    case True{} True{}: pass_run(~Packing.shifted5,depth,first,count,pairs,state,pairs_evidence,evidence)
+    case False{} False{}: pass_run(~Packing.shifted6,depth,first,count,pairs,state,pairs_evidence,evidence)
+    case False{} True{}: pass_run(~Packing.shifted7,depth,first,count,pairs,state,pairs_evidence,evidence)
+
+def pass_shift(+depth: Nat,half: Bool,low: Bool,odd: Bool,first: Bool,count: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passing,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: PassingEvidence<pairs,depth,state>) ->
+  PassingEvidence<pairs,depth,Packing.pass_shift(half,low,odd,first,count,state)>:
+  match half:
+    case True{}: pass_low(depth,low,odd,first,count,pairs,state,pairs_evidence,evidence)
+    case False{}: pass_high(depth,low,odd,first,count,pairs,state,pairs_evidence,evidence)
+
+type PassesCursor is Data:
+  PassesCursor{pass: U32,lane: U32,base: U32,second_lane: U32,kernel_column: U32,unit: U32,window: Packing.Stencil,planes: Packing.Planes}
+
+def restore_passes(pairs: Array<Tile.Tile16>,tiles: Array<Tile.Tile8>,cursor: PassesCursor) -> Packing.Passes:
+  PassesCursor{pass,lane,base,second_lane,kernel_column,unit,window,planes} = cursor
+  Packing.Passes{Packing.Arrays{pairs,tiles},pass,lane,base,second_lane,kernel_column,unit,window,planes}
+
+type PassesEvidence<-pairs: Array<Tile.Tile16>,-depth: Nat,-state: Packing.Passes> is Data:
+  PassesEvidence{-tiles: Array<Tile.Tile8>,cursor: PassesCursor,equation: {state == restore_passes(pairs,tiles,cursor) : Packing.Passes},
+    balanced: Witness.Witness(Tile.Tile8,depth,tiles)}
+
+def pass_done(-depth: Nat,+pass: U32,+lane: U32,+base: U32,+second_lane: U32,+kernel_column: U32,+unit: U32,+window: Packing.Stencil,+planes: Packing.Planes,
+  -pairs: Array<Tile.Tile16>,-state: Packing.Passing,evidence: PassingEvidence<pairs,depth,state>) ->
+  PassesEvidence<pairs,depth,Packing.Passes{Packing.passed(state),pass,lane,base,second_lane,kernel_column,unit,window,planes}>:
+  PassingEvidence{tiles,cursor,equation,balanced} = evidence
+  PassingCursor{start,read,kernel_row,write,passing_lane,tap_rows,tap_columns,row_step} = cursor
+  %Equal.sym(Packing.Passing,state,restore_passing(pairs,tiles,PassingCursor{start,read,kernel_row,write,passing_lane,tap_rows,tap_columns,row_step}),equation) :
+    PassesEvidence<pairs,depth,Packing.Passes{Packing.passed(_),pass,lane,base,second_lane,kernel_column,unit,window,planes}>
+  PassesEvidence{tiles,PassesCursor{pass,lane,base,second_lane,kernel_column,unit,window,planes},{==},balanced}
+
+def pass_step(+depth: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passes,+pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),
+  evidence: PassesEvidence<pairs,depth,state>) -> PassesEvidence<pairs,depth,Packing.pass_step(state)>:
+  PassesEvidence{tiles,cursor,equation,balanced} = evidence
+  PassesCursor{+pass,+lane,+base,+second_lane,+kernel_column,+unit,+window,+planes} = cursor
+  Packing.Stencil{base_cell,height,width,+tap_rows,+tap_columns,+stride,row_origin,column_origin,+output_width,+inner,groups} = window
+  Packing.Planes{first_output_row,rows,+row_width,+elements} = planes
+  %Equal.sym(Packing.Passes,state,restore_passes(pairs,tiles,PassesCursor{pass,lane,base,second_lane,kernel_column,unit,window,planes}),equation) :
+    PassesEvidence<pairs,depth,Packing.pass_step(_)>
+  +channels = Packing.channels_of(window)
+  +shift = (base % 8 : U32)
+  +read = (((kernel_column % stride) * elements + base / 8) * channels : U32)
+  -start = restore_passing(pairs,tiles,PassingCursor{read,read,0,(unit * inner + kernel_column : U32),lane,tap_rows,tap_columns,(row_width / 8 * channels : U32)})
+  pass_done(depth,(pass + 1 : U32),Bool.pick(U32,U32.is_zero(pass),second_lane,(lane + output_width : U32)),(base + stride * row_width - output_width : U32),second_lane,
+    kernel_column,unit,window,planes,pairs,
+    Packing.pass_shift(U32.is_lt(shift,4),U32.is_lt((shift % 4 : U32),2),U32.is_eq((shift % 2 : U32),1),U32.is_zero(pass),U32.to_nat((channels * tap_rows : U32)),start),
+    pass_shift(depth,U32.is_lt(shift,4),U32.is_lt((shift % 4 : U32),2),U32.is_eq((shift % 2 : U32),1),U32.is_zero(pass),U32.to_nat((channels * tap_rows : U32)),pairs,start,
+      pairs_evidence,PassingEvidence{tiles,PassingCursor{read,read,0,(unit * inner + kernel_column : U32),lane,tap_rows,tap_columns,(row_width / 8 * channels : U32)},{==},balanced}))
+
+def pass_loop(+depth: Nat,count: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passes,+pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),
+  evidence: PassesEvidence<pairs,depth,state>) -> PassesEvidence<pairs,depth,Loop.run(~Packing.Passes,~Packing.pass_step,count,state)>:
+  match count:
+    case 0n: evidence
+    case 1n+rest: pass_loop(depth,rest,pairs,Packing.pass_step(state),pairs_evidence,pass_step(depth,pairs,state,pairs_evidence,evidence))
+
+# The arrays between units: the pairs read and the tiles written.
+type ArraysEvidence<-pairs: Array<Tile.Tile16>,-depth: Nat,-arrays: Packing.Arrays> is Data:
+  ArraysEvidence{-tiles: Array<Tile.Tile8>,equation: {arrays == Packing.Arrays{pairs,tiles} : Packing.Arrays},balanced: Witness.Witness(Tile.Tile8,depth,tiles)}
+
+def passes_done(-depth: Nat,-pairs: Array<Tile.Tile16>,-state: Packing.Passes,evidence: PassesEvidence<pairs,depth,state>) ->
+  ArraysEvidence<pairs,depth,Packing.passes_done(state)>:
+  PassesEvidence{tiles,cursor,equation,balanced} = evidence
+  PassesCursor{pass,lane,base,second_lane,kernel_column,unit,window,planes} = cursor
+  %Equal.sym(Packing.Passes,state,restore_passes(pairs,tiles,PassesCursor{pass,lane,base,second_lane,kernel_column,unit,window,planes}),equation) :
+    ArraysEvidence<pairs,depth,Packing.passes_done(_)>
+  ArraysEvidence{tiles,{==},balanced}
+
+def kernel_column_step(+depth: Nat,+kernel_column: U32,+window: Packing.Stencil,+planes: Packing.Planes,+position: U32,+unit: U32,-pairs: Array<Tile.Tile16>,-arrays: Packing.Arrays,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: ArraysEvidence<pairs,depth,arrays>) ->
+  ArraysEvidence<pairs,depth,Packing.kernel_column_step(kernel_column,window,planes,position,unit,arrays)>:
+  Packing.Stencil{base,height,width,tap_rows,tap_columns,+stride,row_origin,column_origin,+output_width,inner,groups} = window
+  Packing.Planes{+first_output_row,rows,+row_width,elements} = planes
+  ArraysEvidence{tiles,equation,balanced} = evidence
+  %Equal.sym(Packing.Arrays,arrays,Packing.Arrays{pairs,tiles},equation) : ArraysEvidence<pairs,depth,Packing.kernel_column_step(kernel_column,window,planes,position,unit,_)>
+  +column = (position % output_width : U32)
+  +second_lane = (output_width - column : U32)
+  +count = U32.to_nat(Bool.pick(U32,U32.is_le(8,second_lane),1,(1 + (8 - second_lane + output_width - 1) / output_width : U32)))
+  +cursor = {PassesCursor{0,0,((position / output_width - first_output_row) * stride * row_width + column + kernel_column / stride : U32),second_lane,kernel_column,unit,window,
+    planes} : PassesCursor}
+  passes_done(depth,pairs,Loop.run(~Packing.Passes,~Packing.pass_step,count,restore_passes(pairs,tiles,cursor)),
+    pass_loop(depth,count,pairs,restore_passes(pairs,tiles,cursor),pairs_evidence,PassesEvidence{tiles,cursor,{==},balanced}))
+
+def kernel_columns(+depth: Nat,remaining: Nat,+kernel_column: U32,+window: Packing.Stencil,+planes: Packing.Planes,+position: U32,+unit: U32,-pairs: Array<Tile.Tile16>,
+  -arrays: Packing.Arrays,+pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: ArraysEvidence<pairs,depth,arrays>) ->
+  ArraysEvidence<pairs,depth,Packing.kernel_columns(remaining,kernel_column,window,planes,position,unit,arrays)>:
+  match remaining:
+    case 0n: evidence
+    case 1n+rest:
+      kernel_columns(depth,rest,(kernel_column + 1 : U32),window,planes,position,unit,pairs,Packing.kernel_column_step(kernel_column,window,planes,position,unit,arrays),
+        pairs_evidence,kernel_column_step(depth,kernel_column,window,planes,position,unit,pairs,arrays,pairs_evidence,evidence))
+
+def units(+depth: Nat,remaining: Nat,+window: Packing.Stencil,+planes: Packing.Planes,+position: U32,+unit: U32,-pairs: Array<Tile.Tile16>,-arrays: Packing.Arrays,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),evidence: ArraysEvidence<pairs,depth,arrays>) ->
+  ArraysEvidence<pairs,depth,Packing.units(remaining,window,planes,position,unit,arrays)>:
+  match remaining:
+    case 0n: evidence
+    case 1n+rest:
+      Packing.Stencil{base,height,width,tap_rows,+tap_columns,stride,row_origin,column_origin,output_width,inner,groups} = window
+      units(depth,rest,window,planes,(position + 8 : U32),(unit + 1 : U32),pairs,
+        Packing.kernel_columns(U32.to_nat(tap_columns),0,window,planes,position,unit,arrays),pairs_evidence,
+        kernel_columns(depth,U32.to_nat(tap_columns),0,window,planes,position,unit,pairs,arrays,pairs_evidence,evidence))
+
+def packed(-depth: Nat,-pairs: Array<Tile.Tile16>,-arrays: Packing.Arrays,evidence: ArraysEvidence<pairs,depth,arrays>) ->
+  TraversalWitness.ResultEvidence<Array<Tile.Tile16>,Tile.Tile8,pairs,depth,Packing.packed(arrays)>:
+  ArraysEvidence{tiles,equation,balanced} = evidence
+  %Equal.sym(Packing.Arrays,arrays,Packing.Arrays{pairs,tiles},equation) : TraversalWitness.ResultEvidence<Array<Tile.Tile16>,Tile.Tile8,pairs,depth,Packing.packed(_)>
+  TraversalWitness.ResultEvidence{tiles,{==},balanced}
+
+def pack(+depth: Nat,+window: Packing.Stencil,+planes: Packing.Planes,+count: Nat,+start: U32,-pairs: Array<Tile.Tile16>,-tiles: Array<Tile.Tile8>,
+  +pairs_evidence: PackingReadWitness.family(~Tile.Tile16,pairs),balanced: Witness.Witness(Tile.Tile8,depth,tiles)) ->
+  TraversalWitness.ResultEvidence<Array<Tile.Tile16>,Tile.Tile8,pairs,depth,Packing.pack(window,planes,count,start,pairs,tiles)>:
+  Packing.Stencil{base,height,width,tap_rows,tap_columns,stride,row_origin,column_origin,output_width,+inner,groups} = window
+  +unit_count = Nat.div(count,U32.to_nat(inner))
+  packed(depth,pairs,Packing.units(unit_count,window,planes,start,0,Packing.Arrays{pairs,tiles}),
+    units(depth,unit_count,window,planes,start,0,pairs,Packing.Arrays{pairs,tiles},pairs_evidence,ArraysEvidence{tiles,{==},balanced}))

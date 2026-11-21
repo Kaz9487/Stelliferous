@@ -13,9 +13,11 @@ import ./nat_to_u32_bounds.bend as Bounds
 import ./row_major_index.bend as RowMajor
 import ./binary_digit.bend as BinaryDigit
 import ./u32_division.bend as U32Division
-import ./binary_radix.bend as Radix
 import ./boolean_logic.bend as Boolean
 import ./u32_shift.bend as U32Shift
+import ../tensor_view.bend as TensorView
+import ./kernel_partition_bounds.bend as KernelPartitionBounds
+import ./word_multiplication.bend as WordMultiplication
 
 def outside_monotone(+small: Nat,+large: Nat,+limit: Nat,
   ordered: {Nat.is_le(small,large) == True{} : Bool},outside: {Nat.is_le(small,limit) == False{} : Bool}) ->
@@ -73,15 +75,32 @@ def encoded_product(+width: Nat,+bits: Word(width),+right: Nat,+limit: Nat) ->
   Equal.cong(Maybe<&2,Nat>,Maybe<&2,U32>,result => CheckedWord.encoded(result),CheckedWord.multiply_bits(width,bits,right,limit),
     CheckedWord.bounded(Nat.mul(Word.to_nat(width,bits),right),limit),multiply_bits(width,bits,right,limit))
 
+def encoded_zero(+product: Nat,+limit: U32,zero: {product == 0n : Nat}) ->
+  {Some{0} == CheckedWord.encoded(CheckedWord.bounded(product,U32.to_nat(limit))) : Maybe<&2,U32>}:
+  %Equal.sym(Nat,product,0n,zero) : {Some{0} == CheckedWord.encoded(CheckedWord.bounded(_,U32.to_nat(limit))) : Maybe<&2,U32>}
+  %Equal.sym(Bool,Nat.is_le(0n,U32.to_nat(limit)),True{},Order.zero_le(U32.to_nat(limit))) :
+    {Some{0} == CheckedWord.encoded(CheckedWord.bounded_result(_,0n)) : Maybe<&2,U32>}
+  {==}
+
+def bounded_when_refines(left_zero: Bool,right_zero: Bool,+left: U32,+right: U32,+limit: U32,
+  left_exact: {U32.is_zero(left) == left_zero : Bool},right_exact: {U32.is_zero(right) == right_zero : Bool}) ->
+  {CheckedWord.multiply_bounded_when(left_zero,right_zero,left,right,limit) == CheckedWord.encoded(CheckedWord.bounded(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(limit))) : Maybe<&2,U32>}:
+  match left_zero right_zero:
+    case True{} right_zero:
+      encoded_zero(Nat.mul(U32.to_nat(left),U32.to_nat(right)),limit,
+        Equal.cong(U32,Nat,value => Nat.mul(U32.to_nat(value),U32.to_nat(right)),left,0,Arithmetic.word_zero(left,left_exact)))
+    case False{} True{}:
+      encoded_zero(Nat.mul(U32.to_nat(left),U32.to_nat(right)),limit,
+        Equal.trans(Nat,Nat.mul(U32.to_nat(left),U32.to_nat(right)),Nat.mul(U32.to_nat(left),0n),0n,
+          Equal.cong(U32,Nat,value => Nat.mul(U32.to_nat(left),U32.to_nat(value)),right,0,Arithmetic.word_zero(right,right_exact)),
+          RowMajor.multiply_zero_right(U32.to_nat(left))))
+    case False{} False{}:
+      U32{+bits} = left
+      encoded_product(32n,bits,U32.to_nat(right),U32.to_nat(limit))
+
 def multiply_bounded(+left: U32,+right: U32,+limit: U32) ->
   {CheckedWord.multiply_bounded(left,right,limit) == CheckedWord.encoded(CheckedWord.bounded(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(limit))) : Maybe<&2,U32>}:
-  U32{+bits} = left
-  encoded_product(32n,bits,U32.to_nat(right),U32.to_nat(limit))
-
-def present(result: Maybe<&2,U32>) -> Bool:
-  match result:
-    case None{}: False{}
-    case Some{value}: True{}
+  bounded_when_refines(U32.is_zero(left),U32.is_zero(right),left,right,limit,{==},{==})
 
 def value(result: Maybe<&2,U32>) -> U32:
   match result:
@@ -95,7 +114,7 @@ def selected_sound(+valid: Bool,+product: Nat,+limit: U32,+output: U32,
   match valid:
     case False{}:
       Empty.absurd({product == U32.to_nat(output) : Nat},WordEncoding.false_true(
-        Equal.cong(Maybe<&2,U32>,Bool,result => present(result),None{},Some{output},accepted)))
+        Equal.cong(Maybe<&2,U32>,Bool,result => TensorView.has_count(result),None{},Some{output},accepted)))
     case True{}:
       Equal.trans(Nat,product,U32.to_nat(U32.from_nat(product)),U32.to_nat(output),
         Equal.sym(Nat,U32.to_nat(U32.from_nat(product)),product,FullRange.roundtrip(product,limit,guard)),
@@ -131,12 +150,6 @@ def divisor_room(+right: U32,+half: U32,+cap: U32,small: {U32.is_lt(half,right) 
       %Comparison.lt(half,right) : {_ == False{} : Bool}
       small))
 
-def quotient_below(+value: U32,+divisor: Nat,positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) ->
-  {Nat.is_le(Nat.mul(Nat.div(U32.to_nat(value),divisor),divisor),U32.to_nat(value)) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat(value),Nat.add(Nat.mul(Nat.div(U32.to_nat(value),divisor),divisor),Nat.mod(U32.to_nat(value),divisor)),Radix.division_identity(value,divisor,positive)) :
-    {Nat.is_le(Nat.mul(Nat.div(U32.to_nat(value),divisor),divisor),_) == True{} : Bool}
-  Order.le_add(Nat.mul(Nat.div(U32.to_nat(value),divisor),divisor),Nat.mod(U32.to_nat(value),divisor))
-
 # A left operand at most cap divided by the right operand has a product of
 # at most cap.
 def divided_product(+left: U32,+right: U32,+half: U32,+cap: U32,cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
@@ -145,7 +158,7 @@ def divided_product(+left: U32,+right: U32,+half: U32,+cap: U32,cap_ok: {U32.is_
   {Nat.is_le(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(cap)) == True{} : Bool}:
   +positive = Arithmetic.word_nonzero_positive(right,nonzero)
   +quotient = U32Division.divide(cap,right,cap,cap_ok,divisor_room(right,half,cap,small,half_below,doubled),positive)
-  +below = quotient_below(cap,U32.to_nat(right),positive)
+  +below = KernelPartitionBounds.quotient_product(cap,U32.to_nat(right),positive)
   Order.transitive(Nat.mul(U32.to_nat(left),U32.to_nat(right)),Nat.mul(Nat.div(U32.to_nat(cap),U32.to_nat(right)),U32.to_nat(right)),U32.to_nat(cap),
     %quotient : {Nat.is_le(Nat.mul(U32.to_nat(left),U32.to_nat(right)),Nat.mul(_,U32.to_nat(right))) == True{} : Bool}
     RowMajor.mul_le(U32.to_nat(left),U32.to_nat((cap / right : U32)),U32.to_nat(right),Bounds.as_nat_le(left,(cap / right : U32),fits)),
@@ -156,7 +169,7 @@ def small_product(+left: U32,+right: U32,+limit: U32,+cap: U32,cap_ok: {U32.is_l
   +bound: {Nat.is_le(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(cap)) == True{} : Bool}) ->
   {Some{(left * right : U32)} == CheckedWord.encoded(CheckedWord.bounded(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(limit))) : Maybe<&2,U32>}:
   +product = Nat.mul(U32.to_nat(left),U32.to_nat(right))
-  +exact = Arithmetic.multiply(left,right,cap,cap_ok,bound)
+  +exact = WordMultiplication.bounded_multiply(left,right,cap,cap_ok,bound)
   %Equal.sym(Bool,Nat.is_le(product,U32.to_nat(limit)),True{},Order.transitive(product,U32.to_nat(cap),U32.to_nat(limit),bound,Bounds.as_nat_le(cap,limit,cap_limit))) :
     {Some{(left * right : U32)} == CheckedWord.encoded(CheckedWord.bounded_result(_,product)) : Maybe<&2,U32>}
   Equal.cong(U32,Maybe<&2,U32>,word => Some{word},(left * right : U32),U32.from_nat(product),

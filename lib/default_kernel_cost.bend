@@ -1,18 +1,37 @@
-# One clock assumption, 2.5 GHz (0.4 ns per cycle), prices both vector MACs
-# and scalar operations. A 4x8 step issues four 256-bit multiplies and four
-# adds for 32 MACs; with multiplies and adds on separate ports that is
-# conservatively four cycles. Scalar operations counted from source are
-# charged one cycle each: pool maxima and elementwise loops carry dependency
-# chains, so the core's issue width is not assumed.
-# Copy cost rounds the retained 0.090833 ns/byte upper quartile upward.
-# See docs/design.md for instruction sources, assumptions and residuals.
+# The prices of the reference machine, one thread each:
+# scripts/toolchain_rules/planner_prices.py measures a row, a step, a copied
+# byte and a moved cell, and scripts/toolchain_rules/wake_rounds.py checks
+# that two wake rounds cover a measured region (rule H11).
 import Base
 import ./kernel_cost.bend as Cost
 
-def cycle_ns() -> F32:
-  0.4
+# A multiply-add row of eight lanes of the GEMM block.
+def row_ns() -> F32:
+  0.113
+
+# One scalar step of a loop.
+def step_ns() -> F32:
+  0.122
+
+# One byte a block copy writes.
+def byte_ns() -> F32:
+  0.036
+
+# One cell moved through a view.
+def move_ns() -> F32:
+  5.9
+
+# The least predicted work of a leaf of the Array engine.
+def grain_ns() -> F32:
+  250000.0
+
+# One round of waking workers.
+def wake_round_ns() -> F32:
+  20000.0
+
+# Dispatching one more task of a region, about 0.12 us at four threads.
+def dispatch_ns() -> F32:
+  120.0
 
 def configuration() -> Cost.Configuration:
-  # Prior task traces measured 40--180 us per wake round. Two rounds are
-  # charged explicitly: the 250 us leaf grain alone cannot cover both maxima.
-  Cost.Configuration{(4.0 / 32.0 * cycle_ns() : F32),0.100,cycle_ns(),250000.0,180000.0}
+  Cost.Configuration{row_ns(),byte_ns(),step_ns(),move_ns(),grain_ns(),wake_round_ns(),dispatch_ns()}

@@ -28,6 +28,7 @@ import ./matrix_matches_convolution.bend as Matrix
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/nat_order.bend as Order
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def native_count(+problem: ConvSpec.Problem) -> U32:
   (U32.from_nat(Guards.output_channel_count(problem)) * U32.from_nat(ConvSpec.out_height(problem)) * U32.from_nat(ConvSpec.out_width(problem)) : U32)
@@ -68,7 +69,7 @@ def output_contents(+execution: CheckedExecution,+channel: Nat,+row: Nat,+column
   CheckedExecution{+limits,+problem,+inputs,+valid,+supported,allocation} = execution
   ConvSpec.Problem{shape,+input,+weights,+bias} = problem
   ConvSpec.Shape{+channels,+outputs,+height,+width,+kernel,+stride,+padding} = shape
-  Shape.Both{+depth_bound,+room} = allocation
+  KernelGemm.Both{+depth_bound,+room} = allocation
   +channel_inside = channel_inside
   +row_inside = row_inside
   +column_inside = column_inside

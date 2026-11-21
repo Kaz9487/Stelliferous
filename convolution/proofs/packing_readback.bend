@@ -1,6 +1,5 @@
 import ../../lib/proofs/storage_shape.bend as Shape
 # Read the flat tabulation of a packed buffer through its proved flat prefix.
-# packing_contents proves the actual packer stores this tabulation.
 import Base
 import ../../lib/storage_buffer.bend as Storage
 import ../../lib/proofs/natural_addition.bend as Addition
@@ -24,7 +23,8 @@ import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../specification.bend as ConvSpec
 import ../../lib/kernel_tile.bend as Tile
-import ./packing_entry_coordinates.bend as PackingEntryCoordinates
+import ../../lib/tensor_tiled.bend as TensorTiled
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
 
 def lane_values_at(+count: Nat,+index: Nat,+offset: Nat,+start: U32,+input: Tree.Tree<F32>,+height: U32,+width: U32,+kernel: U32,
   +stride: U32,+padding: U32,+output_width: U32,+inner: U32,+lane: Sequence.Index(8n),inside: {Nat.is_lt(index,
@@ -50,7 +50,6 @@ def lane_values_at(+count: Nat,+index: Nat,+offset: Nat,+start: U32,+input: Tree
                 height,width,kernel,stride,padding,output_width,inner,lane)) == ReductionSamples.select(lane,PackingTabulation.entry(U32.from_nat(_),start,input,
                 height,width,kernel,stride,padding,output_width,inner)) : F32}
           lane_values_at(rest,previous,1n+offset,start,input,height,width,kernel,stride,padding,output_width,inner,lane,inside)
-
 
 def readback(+count: Nat,+start: U32,+input: Tree.Tree<F32>,+output: Tree.Tree<Tile.Tile8>,+height: U32,+width: U32,+kernel: U32,
   +stride: U32,+padding: U32,+output_width: U32,+inner: U32,+lane: Sequence.Index(8n),+query: U32,+depth: Nat,
@@ -91,12 +90,9 @@ def vector_lane(+input: Tree.Tree<F32>,+position: U32,+reduction: U32,+height: U
   SequenceLaws.get_tabulated(~F32,~PackingTabulation.PixelContext,~PackingTabulation.sample_pixel,8n,lane,0n,PackingTabulation.PixelContext{input,position,reduction,height,width,kernel,stride,padding,
       output_width})
 
-def zero_vector() -> Tile.Tile8:
-  Tile.filled(0.0)
-
 # The tabulation over a freshly allocated buffer; allocation facts come from the actual allocator.
 def allocated(+count: U32) -> Tree.Tree<Tile.Tile8>:
-  Tree.fresh(Tile.Tile8,Storage.allocation_depth(count),zero_vector())
+  Tree.fresh(Tile.Tile8,Storage.allocation_depth(count),TensorTiled.zero_tile())
 
 law allocated_readback:
   for +limits: Machine.Limits
@@ -120,7 +116,7 @@ law allocated_readback:
 
 def allocated_readback(limits,count,start,input,height,width,kernel,stride,padding,output_width,inner,lane,query,positive,bounded,inside):
   +depth = Storage.allocation_depth(count)
-  +zero = zero_vector()
+  +zero = TensorTiled.zero_tile()
   +output = allocated(count)
   +filled = PackingTabulation.fill(U32.to_nat(count),0,start,input,output,height,width,kernel,stride,padding,output_width,inner)
   ArrayAllocation.with_bounds({ReductionSamples.select(lane,Tree.read(Tile.Tile8,filled,query)) == LaneReads.value(input,lane_position((start + (query / inner) * 8 : U32),lane),
@@ -141,7 +137,7 @@ def lane_offset(lane: Sequence.Index(8n)) -> Nat:
 
 def lane_position_encoded(position: Nat,lane: Sequence.Index(8n)) -> {lane_position(U32.from_nat(position),lane) == U32.from_nat(Nat.add(position,
       lane_offset(lane))) : U32}:
-  PackingEntryCoordinates.indexed_encoded(position,Sequence.index_value(8n,lane))
+  PackingTabulation.indexed_encoded(position,Sequence.index_value(8n,lane))
 
 def logical_position(+start: U32,group: Nat,lane: Sequence.Index(8n)) -> Nat:
   Nat.add(Nat.add(U32.to_nat(start),Nat.mul(group,8n)),lane_offset(lane))
@@ -158,7 +154,7 @@ def position_exact(+start: U32,+group: Nat,+lane: Sequence.Index(8n),+upper: U32
     Order.le_add(product,U32.to_nat(start)),base_bound)
   +group_exact = Bounds.roundtrip(group,upper,upper_ok,Order.transitive(group,product,U32.to_nat(upper),RowMajor.product_covers(group,
         8n,{==}),product_bound))
-  +encoded_product = Arithmetic.multiply(U32.from_nat(group),8,upper,upper_ok,
+  +encoded_product = WordMultiplication.bounded_multiply(U32.from_nat(group),8,upper,upper_ok,
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(group)),group,group_exact) : {Nat.is_le(Nat.mul(_,8n),U32.to_nat(upper)) == True{} : Bool}
     product_bound)
   +product_exact = Equal.trans(Nat,U32.to_nat((U32.from_nat(group) * 8 : U32)),Nat.mul(U32.to_nat(U32.from_nat(group)),8n),product,

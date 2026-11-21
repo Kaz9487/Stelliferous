@@ -9,7 +9,14 @@ import ./word_subtraction.bend as Subtraction
 import ./row_major_index.bend as RowMajor
 import ./natural_addition.bend as Addition
 import ./nat_division_order.bend as DivisionOrder
-import ./tensor_band_plan.bend as TensorBandPlan
+import ./word_multiplication.bend as WordMultiplication
+
+# Rows from first within a capacity are within it.
+def rows_bound(+first: U32,+rows: U32,+capacity: U32,room: {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),U32.to_nat(capacity)) == True{} : Bool}) ->
+  {Nat.is_le(U32.to_nat(rows),U32.to_nat(capacity)) == True{} : Bool}:
+  Order.transitive(U32.to_nat(rows),Nat.add(U32.to_nat(first),U32.to_nat(rows)),U32.to_nat(capacity),
+    %Order.commutative(U32.to_nat(rows),U32.to_nat(first)) : {Nat.is_le(U32.to_nat(rows),_) == True{} : Bool}
+    Order.le_add(U32.to_nat(rows),U32.to_nat(first)),room)
 
 def product_parts(+r: BinaryDivision.Quotient,+a: Nat,+b: Nat,h: {BinaryDivision.total(r,
       b) == a : Nat}) -> {Nat.is_le(Nat.mul(U32Division.quotient(r),b),a) == True{} : Bool}:
@@ -36,7 +43,7 @@ def product_bound(+span: U32) -> {Nat.is_le(Nat.mul(U32.to_nat((span / 16 : U32)
 
 def half_exact(+span: U32,+cap: U32,cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},bound: {Nat.is_le(U32.to_nat(span),
       U32.to_nat(cap)) == True{} : Bool}) -> {U32.to_nat(half(span)) == Nat.mul(U32.to_nat((span / 16 : U32)),8n) : Nat}:
-  Arithmetic.multiply((span / 16 : U32),8,cap,cap_ok,Order.transitive(Nat.mul(U32.to_nat((span / 16 : U32)),8n),U32.to_nat(span),
+  WordMultiplication.bounded_multiply((span / 16 : U32),8,cap,cap_ok,Order.transitive(Nat.mul(U32.to_nat((span / 16 : U32)),8n),U32.to_nat(span),
       U32.to_nat(cap),product_bound(span),bound))
 
 def half_le(+span: U32,+cap: U32,cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},bound: {Nat.is_le(U32.to_nat(span),
@@ -70,7 +77,7 @@ def left_room(+offset: U32,+span: U32,+cap: U32,cap_ok: {U32.is_le(cap,214748364
       U32.to_nat(half(span))),U32.to_nat(cap)) == True{} : Bool}:
   Order.transitive(Nat.add(U32.to_nat(offset),U32.to_nat(half(span))),Nat.add(U32.to_nat(offset),U32.to_nat(span)),U32.to_nat(cap),
     Encoded.sum_bounds(U32.to_nat(offset),U32.to_nat(half(span)),U32.to_nat(offset),U32.to_nat(span),
-      Order.reflexive(U32.to_nat(offset)),half_le(span,cap,cap_ok,TensorBandPlan.rows_bound(offset,span,cap,room))),room)
+      Order.reflexive(U32.to_nat(offset)),half_le(span,cap,cap_ok,rows_bound(offset,span,cap,room))),room)
 
 def offset_exact(+offset: U32,+span: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
   room: {Nat.is_le(Nat.add(U32.to_nat(offset),U32.to_nat(span)),
@@ -86,7 +93,7 @@ def right_room(+offset: U32,+span: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483
   %Equal.sym(Nat,Nat.add(Nat.add(U32.to_nat(offset),U32.to_nat(half(span))),U32.to_nat((span - half(span) : U32))),Nat.add(U32.to_nat(offset),
       Nat.add(U32.to_nat(half(span)),U32.to_nat((span - half(span) : U32)))),Addition.associative(U32.to_nat(offset),U32.to_nat(half(span)),
       U32.to_nat((span - half(span) : U32)))) : {Nat.is_le(_,U32.to_nat(cap)) == True{} : Bool}
-  %Equal.sym(Nat,Nat.add(U32.to_nat(half(span)),U32.to_nat((span - half(span) : U32))),U32.to_nat(span),sum(span,cap,cap_ok,TensorBandPlan.rows_bound(offset,
+  %Equal.sym(Nat,Nat.add(U32.to_nat(half(span)),U32.to_nat((span - half(span) : U32))),U32.to_nat(span),sum(span,cap,cap_ok,rows_bound(offset,
         span,cap,room))) : {Nat.is_le(Nat.add(U32.to_nat(offset),_),U32.to_nat(cap)) == True{} : Bool}
   room
 
@@ -101,7 +108,7 @@ def left_interval_bound(+offset: U32,+span: U32,+cap: U32,+limit: Nat,
   {Nat.is_le(Nat.add(U32.to_nat(offset),U32.to_nat(half(span))),limit) == True{} : Bool}:
   Order.transitive(Nat.add(U32.to_nat(offset),U32.to_nat(half(span))),Nat.add(U32.to_nat(offset),U32.to_nat(span)),limit,
     Encoded.sum_bounds(U32.to_nat(offset),U32.to_nat(half(span)),U32.to_nat(offset),U32.to_nat(span),
-      Order.reflexive(U32.to_nat(offset)),half_le(span,cap,cap_ok,TensorBandPlan.rows_bound(offset,span,cap,room))),range_bound)
+      Order.reflexive(U32.to_nat(offset)),half_le(span,cap,cap_ok,rows_bound(offset,span,cap,room))),range_bound)
 
 def right_interval_bound(+offset: U32,+span: U32,+cap: U32,+limit: Nat,
   +cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
@@ -114,7 +121,7 @@ def right_interval_bound(+offset: U32,+span: U32,+cap: U32,+limit: Nat,
     Nat.add(U32.to_nat(offset),Nat.add(U32.to_nat(half(span)),U32.to_nat((span - half(span) : U32)))),
     Addition.associative(U32.to_nat(offset),U32.to_nat(half(span)),U32.to_nat((span - half(span) : U32)))) : {Nat.is_le(_,limit) == True{} : Bool}
   %Equal.sym(Nat,Nat.add(U32.to_nat(half(span)),U32.to_nat((span - half(span) : U32))),U32.to_nat(span),
-    sum(span,cap,cap_ok,TensorBandPlan.rows_bound(offset,span,cap,room))) : {Nat.is_le(Nat.add(U32.to_nat(offset),_),limit) == True{} : Bool}
+    sum(span,cap,cap_ok,rows_bound(offset,span,cap,room))) : {Nat.is_le(Nat.add(U32.to_nat(offset),_),limit) == True{} : Bool}
   range_bound
 
 def half_alignment(+span: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
@@ -141,6 +148,6 @@ def right_alignment(+offset: U32,+span: U32,+cap: U32,+cap_ok: {U32.is_le(cap,21
     %Equal.sym(Nat,U32.to_nat((offset + half(span) : U32)),Nat.add(U32.to_nat(offset),U32.to_nat(half(span))),offset_exact(offset,span,cap,cap_ok,room)) :
       {_ == Nat.mul(Nat.add(group,half_group),8n) : Nat}
     %Equal.sym(Nat,U32.to_nat(offset),Nat.mul(group,8n),exact) : {Nat.add(_,U32.to_nat(half(span))) == Nat.mul(Nat.add(group,half_group),8n) : Nat}
-    %Equal.sym(Nat,U32.to_nat(half(span)),Nat.mul(half_group,8n),half_exact(span,cap,cap_ok,TensorBandPlan.rows_bound(offset,span,cap,room))) :
+    %Equal.sym(Nat,U32.to_nat(half(span)),Nat.mul(half_group,8n),half_exact(span,cap,cap_ok,rows_bound(offset,span,cap,room))) :
       {Nat.add(Nat.mul(group,8n),_) == Nat.mul(Nat.add(group,half_group),8n) : Nat}
     Equal.sym(Nat,Nat.mul(Nat.add(group,half_group),8n),Nat.add(Nat.mul(group,8n),Nat.mul(half_group,8n)),RowMajor.distrib(group,half_group,8n))}

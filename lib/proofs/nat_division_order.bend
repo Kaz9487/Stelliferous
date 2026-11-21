@@ -70,22 +70,6 @@ def advanced_pair(+value: Nat,+divisor: Nat,+quotient: Nat,+remainder: Nat,insid
     case True{}: observed_pair(1n+value,divisor,advanced(value,divisor,quotient,remainder,True{},exact,small,positive,next),positive)
     case False{}: observed_pair(1n+value,divisor,advanced(value,divisor,quotient,remainder,False{},exact,small,positive,next),positive)
 
-def increment_case(+value: Nat,+divisor: Nat,+quotient: Nat,+remainder: Nat,
-  +exact: {value == Nat.add(Nat.mul(quotient,divisor),remainder) : Nat},+small: {Nat.is_lt(remainder,divisor) == True{} : Bool},
-  +positive: {Nat.is_lt(0n,divisor) == True{} : Bool},which: Order.UpperBound<1n+remainder,divisor>) ->
-  {Nat.divmod(1n+value,divisor) == Bool.pick(Nat & Nat,Nat.is_eq(1n+remainder,divisor),(1n+quotient,0n),(quotient,1n+remainder)) : Nat & Nat}:
-  match which:
-    case Order.Before{+below}:
-      %Equal.sym(Bool,Nat.is_eq(1n+remainder,divisor),False{},Order.less_not_equal(1n+remainder,divisor,below)) :
-        {Nat.divmod(1n+value,divisor) == Bool.pick(Nat & Nat,_,(1n+quotient,0n),(quotient,1n+remainder)) : Nat & Nat}
-      advanced_pair(value,divisor,quotient,remainder,True{},exact,small,positive,below)
-    case Order.At{+same}:
-      %Equal.sym(Bool,Nat.is_eq(1n+remainder,divisor),True{},
-        %same : {Nat.is_eq(1n+remainder,_) == True{} : Bool} Order.equal_reflexive(1n+remainder)) :
-        {Nat.divmod(1n+value,divisor) == Bool.pick(Nat & Nat,_,(1n+quotient,0n),(quotient,1n+remainder)) : Nat & Nat}
-      advanced_pair(value,divisor,quotient,remainder,False{},exact,small,positive,
-        %same : {Nat.is_lt(1n+remainder,_) == False{} : Bool} Order.not_below(1n+remainder,1n+remainder,Order.reflexive(1n+remainder)))
-
 def witness(+value: Nat,+divisor: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) -> Witness<value,divisor>:
   match value:
     case 0n: Witness{0n,0n,{==},positive}
@@ -199,6 +183,13 @@ def le_multiple(+images: Nat,+elements: Nat,positive: {Nat.is_lt(0n,images) == T
   %Equal.sym(Nat,Nat.mul(images,elements),Nat.mul(elements,images),RowMajor.multiply_commutative(images,elements)) : {Nat.is_le(elements,_) == True{} : Bool}
   RowMajor.product_covers(elements,images,positive)
 
+# A quotient is at most its value.
+def quotient_at_most(+value: Nat,+divisor: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool}) -> {Nat.is_le(Nat.div(value,divisor),value) == True{} : Bool}:
+  Order.transitive(Nat.div(value,divisor),Nat.mul(Nat.div(value,divisor),divisor),value,
+    %RowMajor.multiply_commutative(divisor,Nat.div(value,divisor)) : {Nat.is_le(Nat.div(value,divisor),_) == True{} : Bool}
+      le_multiple(divisor,Nat.div(value,divisor),positive),
+    product_below(value,divisor,positive))
+
 def subtract_sum(+a: Nat,+b: Nat) -> {Nat.sub(Nat.add(a,b),b) == a : Nat}:
   match b:
     case 0n:
@@ -207,3 +198,91 @@ def subtract_sum(+a: Nat,+b: Nat) -> {Nat.sub(Nat.add(a,b),b) == a : Nat}:
     case 1n+ +p:
       %Equal.sym(Nat,Nat.add(a,1n+p),1n+Nat.add(a,p),Addition.successor_right(a,p)) : {Nat.sub(_,1n+p) == a : Nat}
       subtract_sum(a,p)
+
+# A value divided by a product of two positive numbers: the quotient of its
+# quotient by the inner one, and the remainder of that quotient times the
+# inner one plus its own remainder.
+def product_divmod(+value: Nat,+outer: Nat,+inner: Nat,+outer_positive: {Nat.is_lt(0n,outer) == True{} : Bool},+inner_positive: {Nat.is_lt(0n,inner) == True{} : Bool}) ->
+  {Nat.divmod(value,Nat.mul(outer,inner)) == (Nat.div(Nat.div(value,inner),outer),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner))) : Nat & Nat}:
+  Division.unique(value,Nat.mul(outer,inner),Nat.div(Nat.div(value,inner),outer),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner)),
+    Equal.trans(Nat,value,Nat.add(Nat.mul(Nat.div(value,inner),inner),Nat.mod(value,inner)),Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),Nat.mul(outer,inner)),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner))),quotient_exact(value,inner,inner_positive),
+    Equal.trans(Nat,Nat.add(Nat.mul(Nat.div(value,inner),inner),Nat.mod(value,inner)),Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),Nat.mod(Nat.div(value,inner),outer)),inner),Nat.mod(value,inner)),Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),Nat.mul(outer,inner)),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner))),Equal.cong(Nat,Nat,number => Nat.add(Nat.mul(number,inner),Nat.mod(value,inner)),Nat.div(value,inner),Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),Nat.mod(Nat.div(value,inner),outer)),quotient_exact(Nat.div(value,inner),outer,outer_positive)),
+    Equal.trans(Nat,Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),Nat.mod(Nat.div(value,inner),outer)),inner),Nat.mod(value,inner)),Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),inner),Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner)),Nat.mod(value,inner)),Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),Nat.mul(outer,inner)),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner))),Equal.cong(Nat,Nat,number => Nat.add(number,Nat.mod(value,inner)),Nat.mul(Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),Nat.mod(Nat.div(value,inner),outer)),inner),Nat.add(Nat.mul(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),inner),Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner)),RowMajor.distrib(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),Nat.mod(Nat.div(value,inner),outer),inner)),
+    Equal.trans(Nat,Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),inner),Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner)),Nat.mod(value,inner)),Nat.add(Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),Nat.mul(outer,inner)),Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner)),Nat.mod(value,inner)),Nat.add(Nat.mul(Nat.div(Nat.div(value,inner),outer),Nat.mul(outer,inner)),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner))),Equal.cong(Nat,Nat,number => Nat.add(Nat.add(number,Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner)),Nat.mod(value,inner)),Nat.mul(Nat.mul(Nat.div(Nat.div(value,inner),outer),outer),inner),Nat.mul(Nat.div(Nat.div(value,inner),outer),Nat.mul(outer,inner)),RowMajor.assoc(Nat.div(Nat.div(value,inner),outer),outer,inner)),
+    Addition.associative(Nat.mul(Nat.div(Nat.div(value,inner),outer),Nat.mul(outer,inner)),Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner)))))),
+    Order.product_positive(outer,inner,outer_positive,inner_positive),
+    RowMajor.radix(Nat.mod(Nat.div(value,inner),outer),outer,Nat.mod(value,inner),inner,remainder_small(Nat.div(value,inner),outer,outer_positive),remainder_small(value,inner,inner_positive)))
+
+def product_quotient(+value: Nat,+outer: Nat,+inner: Nat,+outer_positive: {Nat.is_lt(0n,outer) == True{} : Bool},+inner_positive: {Nat.is_lt(0n,inner) == True{} : Bool}) -> {Nat.div(value,Nat.mul(outer,inner)) == Nat.div(Nat.div(value,inner),outer) : Nat}:
+  %Equal.sym(Nat & Nat,Nat.divmod(value,Nat.mul(outer,inner)),(Nat.div(Nat.div(value,inner),outer),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner))),product_divmod(value,outer,inner,outer_positive,inner_positive)) : {Pair.fst(Nat,Nat,_) == Nat.div(Nat.div(value,inner),outer) : Nat}
+  {==}
+
+def product_remainder(+value: Nat,+outer: Nat,+inner: Nat,+outer_positive: {Nat.is_lt(0n,outer) == True{} : Bool},+inner_positive: {Nat.is_lt(0n,inner) == True{} : Bool}) -> {Nat.mod(value,Nat.mul(outer,inner)) == Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner)) : Nat}:
+  %Equal.sym(Nat & Nat,Nat.divmod(value,Nat.mul(outer,inner)),(Nat.div(Nat.div(value,inner),outer),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner))),product_divmod(value,outer,inner,outer_positive,inner_positive)) : {Pair.snd(Nat,Nat,_) == Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner)) : Nat}
+  {==}
+
+# The remainder by a product, divided by its inner factor: the remainder of
+# the quotient by the inner factor, and the remainder by it.
+def remainder_divmod(+value: Nat,+outer: Nat,+inner: Nat,+outer_positive: {Nat.is_lt(0n,outer) == True{} : Bool},+inner_positive: {Nat.is_lt(0n,inner) == True{} : Bool}) ->
+  {Nat.divmod(Nat.mod(value,Nat.mul(outer,inner)),inner) == (Nat.mod(Nat.div(value,inner),outer),Nat.mod(value,inner)) : Nat & Nat}:
+  %Equal.sym(Nat,Nat.mod(value,Nat.mul(outer,inner)),Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner)),product_remainder(value,outer,inner,outer_positive,inner_positive)) : {Nat.divmod(_,inner) == (Nat.mod(Nat.div(value,inner),outer),Nat.mod(value,inner)) : Nat & Nat}
+  Division.unique(Nat.add(Nat.mul(Nat.mod(Nat.div(value,inner),outer),inner),Nat.mod(value,inner)),inner,Nat.mod(Nat.div(value,inner),outer),Nat.mod(value,inner),{==},inner_positive,remainder_small(value,inner,inner_positive))
+
+def remainder_quotient(+value: Nat,+outer: Nat,+inner: Nat,+outer_positive: {Nat.is_lt(0n,outer) == True{} : Bool},+inner_positive: {Nat.is_lt(0n,inner) == True{} : Bool}) -> {Nat.div(Nat.mod(value,Nat.mul(outer,inner)),inner) == Nat.mod(Nat.div(value,inner),outer) : Nat}:
+  %Equal.sym(Nat & Nat,Nat.divmod(Nat.mod(value,Nat.mul(outer,inner)),inner),(Nat.mod(Nat.div(value,inner),outer),Nat.mod(value,inner)),remainder_divmod(value,outer,inner,outer_positive,inner_positive)) : {Pair.fst(Nat,Nat,_) == Nat.mod(Nat.div(value,inner),outer) : Nat}
+  {==}
+
+def remainder_remainder(+value: Nat,+outer: Nat,+inner: Nat,+outer_positive: {Nat.is_lt(0n,outer) == True{} : Bool},+inner_positive: {Nat.is_lt(0n,inner) == True{} : Bool}) -> {Nat.mod(Nat.mod(value,Nat.mul(outer,inner)),inner) == Nat.mod(value,inner) : Nat}:
+  %Equal.sym(Nat & Nat,Nat.divmod(Nat.mod(value,Nat.mul(outer,inner)),inner),(Nat.mod(Nat.div(value,inner),outer),Nat.mod(value,inner)),remainder_divmod(value,outer,inner,outer_positive,inner_positive)) : {Pair.snd(Nat,Nat,_) == Nat.mod(value,inner) : Nat}
+  {==}
+
+# Element first * width + local of rows rows of width elements from row first
+# on, when it is element block * width + tap with tap < width, is at tap of
+# row block - first of them.
+type RowSplit<-first: Nat,-width: Nat,-local: Nat,-block: Nat,-tap: Nat,-rows: Nat> is Data:
+  RowSplit{row: Nat,at: {local == Nat.add(Nat.mul(row,width),tap) : Nat},block_exact: {block == Nat.add(first,row) : Nat},below: {Nat.is_lt(row,rows) == True{} : Bool}}
+
+def row_split(+first: Nat,+width: Nat,+local: Nat,+block: Nat,+tap: Nat,+rows: Nat,+tap_inside: {Nat.is_lt(tap,width) == True{} : Bool},
+  +inside: {Nat.is_lt(local,Nat.mul(rows,width)) == True{} : Bool},+same: {Nat.add(Nat.mul(first,width),local) == Nat.add(Nat.mul(block,width),tap) : Nat}) ->
+  RowSplit<first,width,local,block,tap,rows>:
+  +positive = Order.le_lt_trans(0n,tap,width,Order.zero_le(tap),tap_inside)
+  +row = Nat.div(local,width)
+  +rest = Nat.mod(local,width)
+  +before = Nat.mul(first,width)
+  +local_exact = quotient_exact(local,width,positive)
+  +joined = Equal.trans(Nat,Nat.add(before,local),Nat.add(before,Nat.add(Nat.mul(row,width),rest)),Nat.add(Nat.mul(Nat.add(first,row),width),rest),
+    Equal.cong(Nat,Nat,value => Nat.add(before,value),local,Nat.add(Nat.mul(row,width),rest),local_exact),
+    Equal.trans(Nat,Nat.add(before,Nat.add(Nat.mul(row,width),rest)),Nat.add(Nat.add(before,Nat.mul(row,width)),rest),Nat.add(Nat.mul(Nat.add(first,row),width),rest),
+      Equal.sym(Nat,Nat.add(Nat.add(before,Nat.mul(row,width)),rest),Nat.add(before,Nat.add(Nat.mul(row,width),rest)),Addition.associative(before,Nat.mul(row,width),rest)),
+      Equal.cong(Nat,Nat,value => Nat.add(value,rest),Nat.add(before,Nat.mul(row,width)),Nat.mul(Nat.add(first,row),width),
+        Equal.sym(Nat,Nat.mul(Nat.add(first,row),width),Nat.add(before,Nat.mul(row,width)),RowMajor.distrib(first,row,width)))))
+  +pairs = Equal.trans(Nat & Nat,(Nat.add(first,row),rest),Nat.divmod(Nat.add(before,local),width),(block,tap),
+    Equal.sym(Nat & Nat,Nat.divmod(Nat.add(before,local),width),(Nat.add(first,row),rest),
+      Division.unique(Nat.add(before,local),width,Nat.add(first,row),rest,joined,positive,remainder_small(local,width,positive))),
+    %Equal.sym(Nat,Nat.add(before,local),Nat.add(Nat.mul(block,width),tap),same) : {Nat.divmod(_,width) == (block,tap) : Nat & Nat}
+    Division.unique(Nat.add(Nat.mul(block,width),tap),width,block,tap,{==},positive,tap_inside))
+  +rest_exact = Equal.cong(Nat & Nat,Nat,pair => Pair.snd(Nat,Nat,pair),(Nat.add(first,row),rest),(block,tap),pairs)
+  RowSplit{row,
+    %rest_exact : {local == Nat.add(Nat.mul(row,width),_) : Nat} local_exact,
+    Equal.sym(Nat,Nat.add(first,row),block,Equal.cong(Nat & Nat,Nat,pair => Pair.fst(Nat,Nat,pair),(Nat.add(first,row),rest),(block,tap),pairs)),
+    quotient_below(local,rows,width,positive,inside)}
+
+# A value below the divisor divides to zero and leaves itself, also when it
+# is shifted by whole rows of the divisor.
+def small_quotient(+value: Nat,+divisor: Nat,+below: {Nat.is_lt(value,divisor) == True{} : Bool}) -> {Nat.div(value,divisor) == 0n : Nat}:
+  Equal.cong(Nat & Nat,Nat,pair => Pair.fst(Nat,Nat,pair),Nat.divmod(value,divisor),(0n,value),Division.small(value,divisor,below))
+
+def small_remainder(+value: Nat,+divisor: Nat,+below: {Nat.is_lt(value,divisor) == True{} : Bool}) -> {Nat.mod(value,divisor) == value : Nat}:
+  Equal.cong(Nat & Nat,Nat,pair => Pair.snd(Nat,Nat,pair),Nat.divmod(value,divisor),(0n,value),Division.small(value,divisor,below))
+
+def shifted_small_quotient(+value: Nat,+divisor: Nat,+rows: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool},+below: {Nat.is_lt(value,divisor) == True{} : Bool}) ->
+  {Nat.div(Nat.add(value,Nat.mul(rows,divisor)),divisor) == rows : Nat}:
+  %Order.commutative(Nat.mul(rows,divisor),value) : {Nat.div(_,divisor) == rows : Nat}
+  Equal.trans(Nat,Nat.div(Nat.add(Nat.mul(rows,divisor),value),divisor),Nat.add(rows,Nat.div(value,divisor)),rows,quotient_shift(value,divisor,rows,positive),
+    %Equal.sym(Nat,Nat.div(value,divisor),0n,small_quotient(value,divisor,below)) : {Nat.add(rows,_) == rows : Nat} Addition.zero_right(rows))
+
+def shifted_small_remainder(+value: Nat,+divisor: Nat,+rows: Nat,+positive: {Nat.is_lt(0n,divisor) == True{} : Bool},+below: {Nat.is_lt(value,divisor) == True{} : Bool}) ->
+  {Nat.mod(Nat.add(value,Nat.mul(rows,divisor)),divisor) == value : Nat}:
+  %Order.commutative(Nat.mul(rows,divisor),value) : {Nat.mod(_,divisor) == value : Nat}
+  Equal.trans(Nat,Nat.mod(Nat.add(Nat.mul(rows,divisor),value),divisor),Nat.mod(value,divisor),value,remainder_shift(value,divisor,rows,positive),
+    small_remainder(value,divisor,below))

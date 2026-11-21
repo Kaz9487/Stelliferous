@@ -9,7 +9,7 @@ import ./input_gradient_phase_domain.bend as Domain
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
-import ./storage_shape.bend as Shape
+import ../kernel_gemm.bend as KernelGemm
 
 type Contains<-required_first: U32,-required_rows: U32,-first: U32,-rows: U32,-height: U32> is Data:
   Full{first: {first == 0 : U32},rows: {rows == height : U32}}
@@ -29,11 +29,11 @@ def cover(+query: Bands.Query,+first: U32,+rows: U32,contains: Contains<Copy.beg
       %Copy.count_matches(query) : Rows.Covers<query,Kernel.copy_start(Bands.geometry(query),Bands.first(query),Bands.rows_word(query)),_>
       Rows.copy_cover(query)
     case Superset{+lower,+upper}:
-      Rows.Covers{row => lo => hi => Shape.Both{
+      Rows.Covers{row => lo => hi => KernelGemm.Both{
         Order.transitive(U32.to_nat(first),U32.to_nat(Copy.begin(query)),U32.to_nat(row),lower,lo),
         Bounds.nat_trans(U32.to_nat(row),Nat.add(U32.to_nat(Copy.begin(query)),U32.to_nat(Copy.row_count(query))),Nat.add(U32.to_nat(first),U32.to_nat(rows)),hi,upper)}}
     case Empty{+none}:
-      Rows.Covers{row => lo => hi => Empty.absurd(Shape.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>,
+      Rows.Covers{row => lo => hi => Empty.absurd(KernelGemm.Both<{Nat.is_le(U32.to_nat(first),U32.to_nat(row)) == True{} : Bool},{Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(first),U32.to_nat(rows))) == True{} : Bool}>,
         WordEncoding.false_true(%Order.not_below(U32.to_nat(Copy.begin(query)),U32.to_nat(row),lo) : {_ == True{} : Bool}
           %Addition.zero_right(U32.to_nat(Copy.begin(query))) : {Nat.is_lt(U32.to_nat(row),_) == True{} : Bool}
           %none : {Nat.is_lt(U32.to_nat(row),Nat.add(U32.to_nat(Copy.begin(query)),U32.to_nat(_))) == True{} : Bool}

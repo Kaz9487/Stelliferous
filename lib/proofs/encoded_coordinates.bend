@@ -43,11 +43,11 @@ def multiply_three(+a: U32,+b: U32,+c: U32,+capacity: U32,+capacity_bound: {U32.
   positive_last: {Nat.is_lt(0n,U32.to_nat(c)) == True{} : Bool},
   +length_bound: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c)),U32.to_nat(capacity)) == True{} : Bool}) ->
   {U32.to_nat((a * b * c : U32)) == Nat.mul(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c)) : Nat}:
-  +prefix_exact = Arithmetic.multiply(a,b,capacity,capacity_bound,
+  +prefix_exact = Multiplication.bounded_multiply(a,b,capacity,capacity_bound,
     Order.transitive(Nat.mul(U32.to_nat(a),U32.to_nat(b)),Nat.mul(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c)),U32.to_nat(capacity),
       RowMajor.product_covers(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c),positive_last),length_bound))
   %prefix_exact : {U32.to_nat((a * b * c : U32)) == Nat.mul(_,U32.to_nat(c)) : Nat}
-  Arithmetic.multiply((a * b : U32),c,capacity,capacity_bound,
+  Multiplication.bounded_multiply((a * b : U32),c,capacity,capacity_bound,
     %Equal.sym(Nat,U32.to_nat((a * b : U32)),Nat.mul(U32.to_nat(a),U32.to_nat(b)),prefix_exact) :
       {Nat.is_le(Nat.mul(_,U32.to_nat(c)),U32.to_nat(capacity)) == True{} : Bool}
     length_bound)
@@ -59,7 +59,7 @@ def product(+a: Nat,+b: Nat,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == Tru
   +eb = Bounds.roundtrip(b,cap,cap_ok,hb)
   %ea : {U32.to_nat((U32.from_nat(a) * U32.from_nat(b) : U32)) == Nat.mul(_,b) : Nat}
   %eb : {U32.to_nat((U32.from_nat(a) * U32.from_nat(b) : U32)) == Nat.mul(U32.to_nat(U32.from_nat(a)),_) : Nat}
-  Arithmetic.multiply(U32.from_nat(a),U32.from_nat(b),cap,cap_ok,
+  Multiplication.bounded_multiply(U32.from_nat(a),U32.from_nat(b),cap,cap_ok,
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(a)),a,ea) : {Nat.is_le(Nat.mul(_,U32.to_nat(U32.from_nat(b))),U32.to_nat(cap)) == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(U32.from_nat(b)),b,eb) : {Nat.is_le(Nat.mul(a,_),U32.to_nat(cap)) == True{} : Bool}
     h)
@@ -200,21 +200,6 @@ def padded_pixel_address(+base: Nat,+row: U32,+column: U32,+kernel_row: U32,+ker
     {(_ + U32.from_nat(x) : U32) == U32.from_nat(Nat.add(Nat.add(base,Nat.mul(y,U32.to_nat(width))),x)) : U32}
   WordArithmetic.native_add(Nat.add(base,Nat.mul(y,U32.to_nat(width))),x)
 
-# A ready positive divisor fits the existing native binary-division theorem.
-def channel_base_encoded(+image: U32,+channels: U32,+channel: U32,+height: U32,+width: U32) ->
-  {((image * channels + channel) * height * width : U32) == U32.from_nat(Nat.mul(Nat.mul(Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(channels)),U32.to_nat(channel)),U32.to_nat(height)),U32.to_nat(width))) : U32}:
-  +prefix = Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(channels)),U32.to_nat(channel))
-  %Arithmetic.native_roundtrip(image) : {((_ * channels + channel) * height * width : U32) == U32.from_nat(Nat.mul(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))) : U32}
-  %Arithmetic.native_roundtrip(channels) : {((U32.from_nat(U32.to_nat(image)) * _ + channel) * height * width : U32) == U32.from_nat(Nat.mul(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))) : U32}
-  %Arithmetic.native_roundtrip(channel) : {((U32.from_nat(U32.to_nat(image)) * U32.from_nat(U32.to_nat(channels)) + _) * height * width : U32) == U32.from_nat(Nat.mul(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))) : U32}
-  %Equal.sym(U32,(U32.from_nat(U32.to_nat(image)) * U32.from_nat(U32.to_nat(channels)) + U32.from_nat(U32.to_nat(channel)) : U32),U32.from_nat(prefix),encoded_madd(U32.to_nat(image),U32.to_nat(channels),U32.to_nat(channel))) :
-    {(_ * height * width : U32) == U32.from_nat(Nat.mul(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))) : U32}
-  %Arithmetic.native_roundtrip(height) : {(U32.from_nat(prefix) * _ * width : U32) == U32.from_nat(Nat.mul(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))) : U32}
-  %Equal.sym(U32,(U32.from_nat(prefix) * U32.from_nat(U32.to_nat(height)) : U32),U32.from_nat(Nat.mul(prefix,U32.to_nat(height))),Multiplication.native_encoded_multiply(prefix,U32.to_nat(height))) :
-    {(_ * width : U32) == U32.from_nat(Nat.mul(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))) : U32}
-  %Arithmetic.native_roundtrip(width) : {(U32.from_nat(Nat.mul(prefix,U32.to_nat(height))) * _ : U32) == U32.from_nat(Nat.mul(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))) : U32}
-  Multiplication.native_encoded_multiply(Nat.mul(prefix,U32.to_nat(height)),U32.to_nat(width))
-
 def scale_encoded(+value: Nat,+scale: U32) ->
   {(U32.from_nat(value) * scale : U32) == U32.from_nat(Nat.mul(value,U32.to_nat(scale))) : U32}:
   %Arithmetic.native_roundtrip(scale) : {(U32.from_nat(value) * _ : U32) == U32.from_nat(Nat.mul(value,U32.to_nat(scale))) : U32}
@@ -225,45 +210,6 @@ def product_three_encoded(+a: U32,+b: U32,+c: U32) ->
   +product = Nat.mul(U32.to_nat(a),U32.to_nat(b))
   Equal.trans(U32,(a * b * c : U32),(U32.from_nat(product) * c : U32),U32.from_nat(Nat.mul(product,U32.to_nat(c))),
     Equal.cong(U32,U32,value => (value * c : U32),(a * b : U32),U32.from_nat(product),Multiplication.native_multiply(a,b)),scale_encoded(product,c))
-
-def product_four_encoded(+a: U32,+b: U32,+c: U32,+d: U32) ->
-  {(a * b * c * d : U32) == U32.from_nat(Nat.mul(Nat.mul(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c)),U32.to_nat(d))) : U32}:
-  +product = Nat.mul(Nat.mul(U32.to_nat(a),U32.to_nat(b)),U32.to_nat(c))
-  Equal.trans(U32,(a * b * c * d : U32),(U32.from_nat(product) * d : U32),U32.from_nat(Nat.mul(product,U32.to_nat(d))),
-    Equal.cong(U32,U32,value => (value * d : U32),(a * b * c : U32),U32.from_nat(product),product_three_encoded(a,b,c)),scale_encoded(product,d))
-
-def nchw_gradient_encoded(+image: U32,+outputs: U32,+row: U32,+height: U32,+width: U32,+first: Nat,+index: Nat) ->
-  {(row * (height * width) + (image * outputs * height * width + U32.from_nat(first)) + U32.from_nat(index) : U32) ==
-    U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(U32.to_nat(image),U32.to_nat(outputs)),U32.to_nat(row)),U32.to_nat(height)),U32.to_nat(width)),Nat.add(first,index))) : U32}:
-  +r = U32.to_nat(row)
-  +h = U32.to_nat(height)
-  +w = U32.to_nat(width)
-  +prefix = Nat.mul(U32.to_nat(image),U32.to_nat(outputs))
-  +image_base = Nat.mul(Nat.mul(prefix,h),w)
-  +row_base = Nat.mul(r,Nat.mul(h,w))
-  %Equal.sym(U32,(height * width : U32),U32.from_nat(Nat.mul(h,w)),Multiplication.native_multiply(height,width)) :
-    {(row * _ + (image * outputs * height * width + U32.from_nat(first)) + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index))) : U32}
-  %Arithmetic.native_roundtrip(row) :
-    {(_ * U32.from_nat(Nat.mul(h,w)) + (image * outputs * height * width + U32.from_nat(first)) + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index))) : U32}
-  %Equal.sym(U32,(U32.from_nat(r) * U32.from_nat(Nat.mul(h,w)) : U32),U32.from_nat(row_base),Multiplication.native_encoded_multiply(r,Nat.mul(h,w))) :
-    {(_ + (image * outputs * height * width + U32.from_nat(first)) + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index))) : U32}
-  %Equal.sym(U32,(image * outputs * height * width : U32),U32.from_nat(image_base),product_four_encoded(image,outputs,height,width)) :
-    {(U32.from_nat(row_base) + (_ + U32.from_nat(first)) + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index))) : U32}
-  %Equal.sym(U32,(U32.from_nat(image_base) + U32.from_nat(first) : U32),U32.from_nat(Nat.add(image_base,first)),WordArithmetic.native_add(image_base,first)) :
-    {(U32.from_nat(row_base) + _ + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index))) : U32}
-  %Equal.sym(U32,(U32.from_nat(row_base) + U32.from_nat(Nat.add(image_base,first)) : U32),U32.from_nat(Nat.add(row_base,Nat.add(image_base,first))),WordArithmetic.native_add(row_base,Nat.add(image_base,first))) :
-    {(_ + U32.from_nat(index) : U32) == U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index))) : U32}
-  %Equal.sym(U32,(U32.from_nat(Nat.add(row_base,Nat.add(image_base,first))) + U32.from_nat(index) : U32),U32.from_nat(Nat.add(Nat.add(row_base,Nat.add(image_base,first)),index)),WordArithmetic.native_add(Nat.add(row_base,Nat.add(image_base,first)),index)) :
-    {_ == U32.from_nat(Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index))) : U32}
-  Equal.cong(Nat,U32,U32.from_nat,Nat.add(Nat.add(row_base,Nat.add(image_base,first)),index),Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index)),
-    %Equal.sym(Nat,Nat.add(Nat.add(row_base,Nat.add(image_base,first)),index),Nat.add(row_base,Nat.add(Nat.add(image_base,first),index)),Addition.associative(row_base,Nat.add(image_base,first),index)) : {_ == Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index)) : Nat}
-    %Equal.sym(Nat,Nat.add(Nat.add(image_base,first),index),Nat.add(image_base,Nat.add(first,index)),Addition.associative(image_base,first,index)) : {Nat.add(row_base,_) == Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index)) : Nat}
-    %Equal.sym(Nat,Nat.add(row_base,Nat.add(image_base,Nat.add(first,index))),Nat.add(Nat.add(row_base,image_base),Nat.add(first,index)),Equal.sym(Nat,Nat.add(Nat.add(row_base,image_base),Nat.add(first,index)),Nat.add(row_base,Nat.add(image_base,Nat.add(first,index))),Addition.associative(row_base,image_base,Nat.add(first,index)))) : {_ == Nat.add(Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.add(first,index)) : Nat}
-    Equal.cong(Nat,Nat,value => Nat.add(value,Nat.add(first,index)),Nat.add(row_base,image_base),Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),
-      %Equal.sym(Nat,row_base,Nat.mul(Nat.mul(r,h),w),Equal.sym(Nat,Nat.mul(Nat.mul(r,h),w),row_base,RowMajor.assoc(r,h,w))) : {Nat.add(_,image_base) == Nat.mul(Nat.mul(Nat.add(prefix,r),h),w) : Nat}
-      %Equal.sym(Nat,Nat.mul(Nat.mul(Nat.add(prefix,r),h),w),Nat.mul(Nat.add(Nat.mul(prefix,h),Nat.mul(r,h)),w),Equal.cong(Nat,Nat,value => Nat.mul(value,w),Nat.mul(Nat.add(prefix,r),h),Nat.add(Nat.mul(prefix,h),Nat.mul(r,h)),RowMajor.distrib(prefix,r,h))) : {Nat.add(Nat.mul(Nat.mul(r,h),w),image_base) == _ : Nat}
-      %Equal.sym(Nat,Nat.mul(Nat.add(Nat.mul(prefix,h),Nat.mul(r,h)),w),Nat.add(image_base,Nat.mul(Nat.mul(r,h),w)),RowMajor.distrib(Nat.mul(prefix,h),Nat.mul(r,h),w)) : {Nat.add(Nat.mul(Nat.mul(r,h),w),image_base) == _ : Nat}
-      Order.commutative(Nat.mul(Nat.mul(r,h),w),image_base)))
 
 def add_in_double(+n: Nat,+small: U32,+large: U32,relation: {U32.to_nat(large) == Nat.double(U32.to_nat(small)) : Nat},bound: {Nat.is_le(n,
       U32.to_nat(small)) == True{} : Bool},seven: {Nat.is_le(7n,U32.to_nat(small)) == True{} : Bool}) -> {Nat.is_le(Nat.add(n,7n),
@@ -303,7 +249,7 @@ def padded_exact(+limits: Machine.Limits,+count: U32,+bound: {Nat.is_le(U32.to_n
   +quotient_exact = {%added : {U32.to_nat(((count + 7) / 8 : U32)) == Nat.div(_,8n) : Nat}
     divided : {U32.to_nat(((count + 7) / 8 : U32)) == quotient : Nat}}
   %quotient_exact : {U32.to_nat(((count + 7) / 8 * 8 : U32)) == Nat.mul(_,8n) : Nat}
-  Arithmetic.multiply(((count + 7) / 8 : U32),8,half,half_ok,
+  Multiplication.bounded_multiply(((count + 7) / 8 : U32),8,half,half_ok,
     %Equal.sym(Nat,U32.to_nat(((count + 7) / 8 : U32)),quotient,quotient_exact) : {Nat.is_le(Nat.mul(_,8n),U32.to_nat(half)) == True{} : Bool}
     Order.transitive(Nat.mul(quotient,8n),Nat.add(U32.to_nat(count),7n),U32.to_nat(half),DivisionOrder.product_below(Nat.add(U32.to_nat(count),7n),8n,{==}),added_room))
 
@@ -320,42 +266,6 @@ def eight_blocks_exact(+limits: Machine.Limits,+count: U32,+bound: {Nat.is_le(U3
   %added : {U32.to_nat(((count + 7) / 8 : U32)) == Nat.div(_,8n) : Nat}
   NativeDivision.divide((count + 7 : U32),8,Machine.half_word(limits),Limits.half_word_fits(limits),Bounds.as_nat_le(16,Machine.half_word(limits),Limits.sixteen_within_half(limits)),{==})
 
-def padded_aligned(+count: U32,+aligned: {U32.is_zero((count % 8 : U32)) == True{} : Bool}) ->
-  {ceiling_eight(U32.to_nat(count)) == U32.to_nat(count) : Nat}:
-  +divided = NativeDivision.divide(count,8,2147483648,{==},{==},{==})
-  +modulo = NativeDivision.modulo(count,8,2147483648,{==},{==},{==})
-  +remainder_zero = Order.equal_of_is_eq(U32.to_nat((count % 8 : U32)),0n,
-    %Comparison.eq((count % 8 : U32),0) : {_ == True{} : Bool} aligned)
-  %Equal.sym(Nat,Nat.div(Nat.add(U32.to_nat(count),7n),8n),Ceiling.ceiling(U32.to_nat(count),8n),Ceiling.shifted_formula(U32.to_nat(count),8n,{==})) : {Nat.mul(_,8n) == U32.to_nat(count) : Nat}
-  %modulo : {Nat.mul(Ceiling.rounded(Nat.div(U32.to_nat(count),8n),_),8n) == U32.to_nat(count) : Nat}
-  %Equal.sym(Nat,U32.to_nat((count % 8 : U32)),0n,remainder_zero) :
-    {Nat.mul(Ceiling.rounded(Nat.div(U32.to_nat(count),8n),_),8n) == U32.to_nat(count) : Nat}
-  %divided : {Nat.mul(_,8n) == U32.to_nat(count) : Nat}
-  Radix.divide_eight_exact_multiple(count,aligned)
-
-def padded_capacity(+limits: Machine.Limits,+count: U32,
-  +bound: {Nat.is_le(U32.to_nat(count),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
-  +aligned: {U32.is_zero((Machine.capacity(limits) % 8 : U32)) == True{} : Bool}) ->
-  {Nat.is_le(U32.to_nat(((count + 7) / 8 * 8 : U32)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
-  %Equal.sym(Nat,U32.to_nat(((count + 7) / 8 * 8 : U32)),ceiling_eight(U32.to_nat(count)),padded_exact(limits,count,bound)) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
-  %padded_aligned(Machine.capacity(limits),aligned) : {Nat.is_le(ceiling_eight(U32.to_nat(count)),_) == True{} : Bool}
-  padded_le(U32.to_nat(count),U32.to_nat(Machine.capacity(limits)),bound)
-
-# The same modular stride transition serves indexed list and row collectors.
-def stride_next(+address: U32,+stride: U32,+index: Nat) ->
-  {(U32.from_nat(Nat.add(U32.to_nat(address),Nat.mul(index,U32.to_nat(stride)))) + stride : U32) ==
-    U32.from_nat(Nat.add(U32.to_nat(address),Nat.mul(1n+index,U32.to_nat(stride)))) : U32}:
-  +base = U32.to_nat(address)
-  +step = U32.to_nat(stride)
-  +done = Nat.mul(index,step)
-  %Arithmetic.native_roundtrip(stride) :
-    {(U32.from_nat(Nat.add(base,done)) + _ : U32) == U32.from_nat(Nat.add(base,Nat.mul(1n+index,step))) : U32}
-  Equal.trans(U32,(U32.from_nat(Nat.add(base,done)) + U32.from_nat(step) : U32),U32.from_nat(Nat.add(Nat.add(base,done),step)),U32.from_nat(Nat.add(base,Nat.mul(1n+index,step))),
-    WordArithmetic.native_add(Nat.add(base,done),step),
-    Equal.cong(Nat,U32,U32.from_nat,Nat.add(Nat.add(base,done),step),Nat.add(base,Nat.mul(1n+index,step)),
-      Equal.trans(Nat,Nat.add(Nat.add(base,done),step),Nat.add(base,Nat.add(done,step)),Nat.add(base,Nat.add(step,done)),
-        Addition.associative(base,done,step),Equal.cong(Nat,Nat,value => Nat.add(base,value),Nat.add(done,step),Nat.add(step,done),Order.commutative(done,step)))))
-
 def native_madd(+left: U32,+right: U32,+offset: U32) ->
   {(left * right + offset : U32) == U32.from_nat(Nat.add(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(offset))) : U32}:
   %Arithmetic.native_roundtrip(left) :
@@ -365,11 +275,3 @@ def native_madd(+left: U32,+right: U32,+offset: U32) ->
   %Arithmetic.native_roundtrip(offset) :
     {(U32.from_nat(U32.to_nat(left)) * U32.from_nat(U32.to_nat(right)) + _ : U32) == U32.from_nat(Nat.add(Nat.mul(U32.to_nat(left),U32.to_nat(right)),U32.to_nat(offset))) : U32}
   encoded_madd(U32.to_nat(left),U32.to_nat(right),U32.to_nat(offset))
-
-def row_offset_encoded(+base: Nat,+row: U32,+width: U32,+column: U32) ->
-  {(U32.from_nat(base) + row * width + column : U32) == U32.from_nat(Nat.add(base,Nat.add(Nat.mul(U32.to_nat(row),U32.to_nat(width)),U32.to_nat(column)))) : U32}:
-  %Equal.sym(U32,(U32.from_nat(base) + row * width + column : U32),(U32.from_nat(base) + (row * width + column : U32) : U32),Arithmetic.add_associative(U32.from_nat(base),(row * width : U32),column)) :
-    {_ == U32.from_nat(Nat.add(base,Nat.add(Nat.mul(U32.to_nat(row),U32.to_nat(width)),U32.to_nat(column)))) : U32}
-  %Equal.sym(U32,(row * width + column : U32),U32.from_nat(Nat.add(Nat.mul(U32.to_nat(row),U32.to_nat(width)),U32.to_nat(column))),native_madd(row,width,column)) :
-    {(U32.from_nat(base) + _ : U32) == U32.from_nat(Nat.add(base,Nat.add(Nat.mul(U32.to_nat(row),U32.to_nat(width)),U32.to_nat(column)))) : U32}
-  WordArithmetic.native_add(base,Nat.add(Nat.mul(U32.to_nat(row),U32.to_nat(width)),U32.to_nat(column)))

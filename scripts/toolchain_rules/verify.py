@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from fork_flags import task_flags
+from fork_flags import constructor_flags, normalized, task_flags
 from lint import lint
 from probes import CHECKER, CODEGEN, TASKS, LINT, EXECUTION, SEGMENTS, CONSTRUCTORS
 
@@ -122,11 +122,10 @@ def check_codegen(name, present, absent, shared, source):
     output = result.stdout + result.stderr
     if result.returncode != 0 or not target.exists():
         return [f'codegen {name}: no C was produced ({output.strip()[:160]})']
-    text = target.read_text(encoding='utf-8', errors='replace')
+    text = normalized(target.read_text(encoding='utf-8', errors='replace'))
     found = [f'codegen {name}: expected {needle!r} in the C' for needle in present if needle not in text]
     found += [f'codegen {name}: did not expect {needle!r} in the C' for needle in absent if needle in text]
-    table = re.search(r'CID_T\[\]\[2\] = \{(.*)\};', text)
-    flags = [int(flag) for flag in re.findall(r'\{\s*\d+\s*,\s*(\d+)\s*\}', table.group(1))] if table else []
+    flags = constructor_flags(text) or []
     actual = 'none' if sum(flags) == 0 else 'all' if sum(flags) == len(flags) else 'some'
     if actual != shared:
         found.append(f'codegen {name}: expected {shared} constructors shared, got {sum(flags)} of {len(flags)}')
@@ -179,7 +178,7 @@ def execution(name, source, modes, exact=False):
                 if build.returncode != 0:
                     failures.append(f'{name}/c: build failed: {build.stderr[:200]}')
                     continue
-                command = [str(binary), '-t', '1']
+                command = [str(binary), '+RTS', '--threads', '1', '-RTS']
             result = subprocess.run(command, cwd=ROOT, capture_output=True,
                                     text=True, timeout=60)
         output = result.stdout + result.stderr

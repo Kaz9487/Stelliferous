@@ -127,18 +127,6 @@ def prefix_positive(+extents: List<&2,U32>,+axis: Nat,positive: {Nat.is_lt(0n,Sh
   RowMajor.left_factor_positive(ShapeLaws.elements(List.take(&2,U32,extents,axis)),ShapeLaws.elements(List.drop(&2,U32,extents,axis)),
     %elements_split(extents,axis) : {Nat.is_lt(0n,_) == True{} : Bool} positive)
 
-def suffix_positive(+extents: List<&2,U32>,+axis: Nat,positive: {Nat.is_lt(0n,ShapeLaws.elements(extents)) == True{} : Bool}) ->
-  {Nat.is_lt(0n,ShapeLaws.elements(List.drop(&2,U32,extents,axis))) == True{} : Bool}:
-  RowMajor.left_factor_positive(ShapeLaws.elements(List.drop(&2,U32,extents,axis)),ShapeLaws.elements(List.take(&2,U32,extents,axis)),
-    %RowMajor.multiply_commutative(ShapeLaws.elements(List.take(&2,U32,extents,axis)),ShapeLaws.elements(List.drop(&2,U32,extents,axis))) : {Nat.is_lt(0n,_) == True{} : Bool}
-    %elements_split(extents,axis) : {Nat.is_lt(0n,_) == True{} : Bool} positive)
-
-def prefix_room(+extents: List<&2,U32>,+axis: Nat,+limit: Nat,+positive: {Nat.is_lt(0n,ShapeLaws.elements(extents)) == True{} : Bool},room: {Nat.is_le(ShapeLaws.elements(extents),limit) == True{} : Bool}) ->
-  {Nat.is_le(ShapeLaws.elements(List.take(&2,U32,extents,axis)),limit) == True{} : Bool}:
-  Order.transitive(ShapeLaws.elements(List.take(&2,U32,extents,axis)),ShapeLaws.elements(extents),limit,
-    %Equal.sym(Nat,ShapeLaws.elements(extents),Nat.mul(ShapeLaws.elements(List.take(&2,U32,extents,axis)),ShapeLaws.elements(List.drop(&2,U32,extents,axis))),elements_split(extents,axis)) : {Nat.is_le(ShapeLaws.elements(List.take(&2,U32,extents,axis)),_) == True{} : Bool}
-    RowMajor.product_covers(ShapeLaws.elements(List.take(&2,U32,extents,axis)),ShapeLaws.elements(List.drop(&2,U32,extents,axis)),suffix_positive(extents,axis,positive)),room)
-
 def suffix_room(+extents: List<&2,U32>,+axis: Nat,+limit: Nat,+positive: {Nat.is_lt(0n,ShapeLaws.elements(extents)) == True{} : Bool},room: {Nat.is_le(ShapeLaws.elements(extents),limit) == True{} : Bool}) ->
   {Nat.is_le(ShapeLaws.elements(List.drop(&2,U32,extents,axis)),limit) == True{} : Bool}:
   Order.transitive(ShapeLaws.elements(List.drop(&2,U32,extents,axis)),ShapeLaws.elements(extents),limit,

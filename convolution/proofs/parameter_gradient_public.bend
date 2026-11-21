@@ -1,1249 +1,1567 @@
-# The weight and bias gradients of storage holding the readers' values are
-# Ready results of the readers' gradient contract, and the calls give their
-# sources back holding the same values.
+# The public weight and bias gradients of tiled tensors of the contract: the
+# results hold the contract of the readers of the input and of the output
+# gradient, and the tensors the calls read come back holding their values.
+
 import Base
 import ../parameter_gradient_specification.bend as Spec
-import ./parameter_gradient_bridge.bend as Bridge
-import ./parameter_gradient_readers.bend as Readers
-import ../../lib/tensor.bend as Tensors
+import ./parameter_gradient_terms.bend as Terms
 import ../../lib/tensor_parameter_gradient.bend as Parameter
 import ../../lib/kernel_parameter_gradient.bend as Kernel
-import ../../lib/kernel_parameter_gradient_buffer.bend as KernelBuffer
-import ../../lib/storage_buffer.bend as Storage
+import ../../lib/kernel_tile.bend as Tile
+import ../../lib/tensor_grid.bend as Grid
+import ../../lib/tensor_tiled.bend as Tiled
+import ../../lib/tensor_tiled_cells.bend as Cells
+import ../../lib/proofs/kernel_bias_gradient.bend as Bias
+import ../../lib/proofs/tensor_parameter_gradient_bias.bend as BiasCells
+import ../../lib/proofs/tensor_tiled_representation.bend as Representation
+import ../../lib/proofs/tensor_tiled_public.bend as TiledPublic
+import ../../lib/proofs/kernel_tile_refinement.bend as TileLaws
 import ../../lib/proofs/storage_buffer_model.bend as Buffer
-import ../../lib/proofs/storage_tree_model.bend as Tree
-import ../../lib/proofs/parameter_gradient_refinement.bend as Model
-import ../../lib/proofs/parameter_gradient_buffer_refinement.bend as BufferModel
-import ../../lib/proofs/tensor_list_values.bend as Listed
-import ../../lib/proofs/list_storage_readback.bend as ListRead
 import ../../lib/proofs/tensor_contract.bend as Contract
-import ../../lib/proofs/tensor_gather_values.bend as GatherValues
-import ../../lib/proofs/tensor_global_shape_count.bend as Global
-import ../../lib/proofs/word_encoding.bend as Words
-import ../../lib/kernel_weight_gradient.bend as WeightKernel
-import ../../lib/kernel_shape.bend as KernelShape
-import ../../lib/proofs/kernel_weight_gradient_refinement.bend as WeightModel
-import ../../lib/proofs/kernel_weight_gradient_group.bend as WeightGroups
-import ../../lib/proofs/kernel_weight_gradient_packing.bend as WeightPacking
-import ../../lib/proofs/storage_shape.bend as Shape
+import ../../lib/proofs/ordered_ranges.bend as Ranges
+import ../../lib/proofs/sequence_membership.bend as Members
+import ../../lib/proofs/u32_full_range.bend as FullRange
 import ../../lib/proofs/nat_order.bend as Order
+import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
+import ../../lib/proofs/natural_addition.bend as Addition
+import ../../lib/kernel_gemm.bend as KernelGemm
+import ../../lib/traversal_grouped.bend as Grouped
+import ../../lib/machine_limits.bend as Machine
+import ../../lib/default_machine_limits.bend as Default
+import ../../lib/proofs/tensor_global_shape_count.bend as Global
+import ../../lib/tensor.bend as Tensors
+import ../../lib/proofs/tensor_whole_values.bend as WholeValues
+import ../../lib/proofs/tensor_shape_refinement.bend as ShapeLaws
+import ../../lib/proofs/tensor_parameter_gradient_cells.bend as ParameterCells
+import ../../lib/proofs/encoded_coordinates.bend as Encoded
+import ../../lib/proofs/nat_ceiling.bend as Ceiling
 import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/boolean_logic.bend as Logic
-import ../../lib/proofs/u32_comparison.bend as Comparison
-import ../../lib/proofs/u32_full_range.bend as FullRange
-import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
-import ../../lib/proofs/tensor_shape_refinement.bend as ShapeLaws
-import ../../lib/proofs/tensor_count_refinement.bend as Count
-import ../../lib/proofs/nat_division_order.bend as DivisionOrder
-import ../../lib/default_machine_limits.bend as Default
-import ../../lib/machine_limits.bend as Machine
-import ../../lib/proofs/tensor_whole_leaf.bend as WholeLeaf
-import ../../lib/proofs/storage_certificate.bend as StorageCertificate
-import ../../lib/proofs/parameter_gradient_certificate.bend as SourceCertificate
-import ../../lib/proofs/storage_refinement.bend as StorageLaws
-import ../../lib/proofs/storage_allocation_refinement.bend as AllocationLaws
-import ../../lib/traversal_grouped.bend as Grouped
-import ../../lib/tensor_band.bend as Bands
-import ../../lib/proofs/grouped_reduction_refinement.bend as GroupedRanges
-import ../../lib/proofs/nat_division.bend as Division
-import ../../lib/proofs/tensor_band_values.bend as BandValues
-import ../../lib/proofs/tensor_band_from_whole.bend as FromWhole
-import ../../lib/proofs/tensor_band_each.bend as BandEach
-import ../../lib/proofs/tensor_band_model.bend as BandModel
-import ../../lib/proofs/tensor_band_gather.bend as BandGather
-import ../../lib/proofs/tensor_band_shape_refinement.bend as BandShape
-import ../../lib/proofs/tensor_band_count.bend as BandCount
-import ../../lib/proofs/tensor_band_inspection.bend as Inspection
-import ../../lib/proofs/machine_limit_bounds.bend as Limits
+import ../../lib/proofs/tensor_storage_count.bend as StorageCount
+import ../../lib/tensor_convolution_gradient.bend as Gradient
+import ../../lib/tensor_move.bend as Move
+import ../../lib/storage_buffer.bend as Storage
+import ../../lib/proofs/tensor_pieces_model.bend as PiecesModel
+import ../../lib/kernel_input_gradient.bend as InputKernel
+import ../../lib/tensor_convolution.bend as Conv
+import ../../lib/proofs/tensor_tiled_relane.bend as Relane
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
-import ../../lib/proofs/word_multiplication.bend as Multiplication
-import ../../lib/proofs/encoded_coordinates.bend as Encoded
-import ../../lib/proofs/kernel_weight_gradient_parts.bend as KParts
+import ../../lib/proofs/machine_limit_bounds.bend as Limits
+import ../../lib/proofs/word_multiplication.bend as WordMultiplication
+import ../../lib/proofs/input_gradient_phase_domain.bend as Domain
+import ../../lib/kernel_weight_gradient.bend as WeightKernel
+import ../../lib/proofs/kernel_weight_gradient_packing.bend as Packing
+import ../../lib/proofs/kernel_weight_gradient_group.bend as Groups
+import ../../lib/proofs/kernel_weight_gradient_routes.bend as Routes
+import ../../lib/proofs/kernel_weight_gradient_images.bend as Images
+import ../../lib/proofs/u32_comparison.bend as Comparison
+import ../../lib/proofs/nat_division_order.bend as DivisionOrder
+import ../../lib/proofs/tensor_tiled_padded_cells.bend as PaddedCells
+import ../../lib/proofs/tensor_padded_pieces.bend as PaddedPieces
+import ../../lib/tensor_tiled_map.bend as TiledMap
+import ../../lib/proofs/tensor_tiled_values.bend as TiledValues
+import ../../lib/proofs/tensor_joined.bend as Joined
+import ./input_gradient_call.bend as Call
 
-def weight_result(result: Tensors.Tensor<F32> & (Tensors.Tensor<F32> & Tensors.Tensor<F32>)) -> Tensors.Tensor<F32>:
-  (gradient,sources) = result
-  gradient
+# ---- The cells of the bias ----
 
-def bias_result(result: Tensors.Tensor<F32> & Tensors.Tensor<F32>) -> Tensors.Tensor<F32>:
-  (gradient,source) = result
-  gradient
+# The bias a block of outputs reads at a lane inside the outputs.
+def lane_case(~DL: Data,~d_value: DL -> U32 -> F32,inside: Bool,+work: Kernel.Work,+index: Nat,+ranges: List<&2,Grouped.Range>,+holder: Representation.Lifted<DL>,
+  +right: F32,
+  same: @inside_true: {inside == True{} : Bool} ->
+    {Bias.element(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),work,index,ranges,holder) == right : F32}) ->
+  {Bias.lane_value(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),inside,work,index,ranges,holder) ==
+    Bool.pick(F32,inside,right,0.0) : F32}:
+  match inside:
+    case True{}: same({==})
+    case False{}: {==}
 
-def returned_sources(result: Tensors.Tensor<F32> & (Tensors.Tensor<F32> & Tensors.Tensor<F32>)) -> Tensors.Tensor<F32> & Tensors.Tensor<F32>:
-  (gradient,sources) = result
-  sources
+# A lane of a block inside the outputs of the bias model over the lifted
+# output gradient is the bias the reader of the bias reads there.
+def bias_value_lane(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+outer_word: U32,+after: U32,+lanes: U32,+groups: U32,
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,+gw: U32,+capacity: U32,
+  +after_exact: {U32.to_nat(after) == Nat.mul(U32.to_nat(rw),U32.to_nat(cw)) : Nat},+lanes_exact: {U32.to_nat(lanes) == U32.to_nat(ow) : Nat},
+  +groups_exact: {U32.to_nat(groups) == Kernel.groups(U32.to_nat(ow)) : Nat},
+  +outer_exact: {U32.to_nat(outer_word) == Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))) : Nat},
+  +total_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))),Kernel.groups(U32.to_nat(ow))),U32.to_nat(capacity)) == True{} : Bool},
+  +outputs_room: {Nat.is_le(U32.to_nat(ow),U32.to_nat(capacity)) == True{} : Bool},
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(cw)) == True{} : Bool},+group_positive: {Nat.is_lt(0n,U32.to_nat(gw)) == True{} : Bool},
+  +block: Nat,+lane: Nat,+small: {Nat.is_le(lane,7n) == True{} : Bool},+below: {Nat.is_lt(lane,8n) == True{} : Bool},
+  +block_inside: {Nat.is_lt(block,U32.to_nat(groups)) == True{} : Bool},
+  +inside_true: {Nat.is_lt(Nat.add(Nat.mul(block,8n),lane),U32.to_nat(ow)) == True{} : Bool}) ->
+  {Bias.element(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),
+      Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw),Nat.add(Nat.mul(block,8n),lane),Bias.work_ranges(Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw)),
+      Representation.Lifted{logical,Cells.Cells{outer_word,after,lanes,groups,Grid.Innermost{}}}) ==
+    Terms.bias_at(~DL,~d_value,Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw},U32.from_nat(Nat.add(Nat.mul(block,8n),lane))) : F32}:
+  +index = Nat.add(Nat.mul(block,8n),lane)
+  +work = Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw)
+  +holder = {Representation.Lifted{logical,Cells.Cells{outer_word,after,lanes,groups,Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +problem = {Spec.Problem{Terms.shape(work),logical,logical} : Spec.Problem<DL>}
+  +sample = Terms.bias_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,U32.to_nat(nw),0n,U32.to_nat(ow),0n,0n,1n,1n,0n,U32.to_nat(rw),U32.to_nat(cw),U32.to_nat(gw),
+    block,lane,small,below,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,block_inside,inside_true,columns_positive,group_positive)
+  +element = {%inside_true :
+      {Bias.lane_value(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),_,work,index,Bias.work_ranges(work),holder) ==
+        Spec.bias(~DL,~Terms.gradient_at(~DL,~d_value),problem,index) : F32}
+    sample :
+    {Bias.element(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),work,index,Bias.work_ranges(work),holder) ==
+      Spec.bias(~DL,~Terms.gradient_at(~DL,~d_value),problem,index) : F32}}
+  +room = Order.transitive(index,U32.to_nat(ow),U32.to_nat(capacity),Bounds.strict_le(index,U32.to_nat(ow),inside_true),outputs_room)
+  Equal.trans(F32,Bias.element(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),work,index,Bias.work_ranges(work),holder),
+    Spec.bias(~DL,~Terms.gradient_at(~DL,~d_value),problem,index),Spec.bias(~DL,~Terms.gradient_at(~DL,~d_value),problem,U32.to_nat(U32.from_nat(index))),element,
+    Equal.cong(Nat,F32,value => Spec.bias(~DL,~Terms.gradient_at(~DL,~d_value),problem,value),index,U32.to_nat(U32.from_nat(index)),
+      Equal.sym(Nat,U32.to_nat(U32.from_nat(index)),index,FullRange.roundtrip(index,capacity,room))))
 
-def returned_source(result: Tensors.Tensor<F32> & Tensors.Tensor<F32>) -> Tensors.Tensor<F32>:
-  (gradient,source) = result
-  source
+# A lane of a block of the bias model is the lane of the cell of the lifted
+# bias reader.
+def bias_cell_lane(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+outer_word: U32,+after: U32,+lanes: U32,+groups: U32,
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,+gw: U32,+capacity: U32,
+  +after_exact: {U32.to_nat(after) == Nat.mul(U32.to_nat(rw),U32.to_nat(cw)) : Nat},+lanes_exact: {U32.to_nat(lanes) == U32.to_nat(ow) : Nat},
+  +groups_exact: {U32.to_nat(groups) == Kernel.groups(U32.to_nat(ow)) : Nat},
+  +outer_exact: {U32.to_nat(outer_word) == Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))) : Nat},
+  +total_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))),Kernel.groups(U32.to_nat(ow))),U32.to_nat(capacity)) == True{} : Bool},
+  +outputs_room: {Nat.is_le(U32.to_nat(ow),U32.to_nat(capacity)) == True{} : Bool},
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(cw)) == True{} : Bool},+group_positive: {Nat.is_lt(0n,U32.to_nat(gw)) == True{} : Bool},
+  +block: Nat,+lane: Nat,+small: {Nat.is_le(lane,7n) == True{} : Bool},+below: {Nat.is_lt(lane,8n) == True{} : Bool},
+  +block_inside: {Nat.is_lt(block,U32.to_nat(groups)) == True{} : Bool}) ->
+  {Bias.block_lane(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),
+      Representation.Lifted{logical,Cells.Cells{outer_word,after,lanes,groups,Grid.Innermost{}}},
+      Kernel.Block{Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw),block,Bias.work_ranges(Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw))},lane) ==
+    Representation.lane(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw},
+      TiledPublic.geometry_of([ow],0n,Grid.Innermost{}),0n,block,lane) : F32}:
+  +index = Nat.add(Nat.mul(block,8n),lane)
+  +work = Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw)
+  +holder = {Representation.Lifted{logical,Cells.Cells{outer_word,after,lanes,groups,Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +read = {Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw} : Terms.BiasRead<DL>}
+  +lhs = Bias.block_lane(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),holder,
+    Kernel.Block{work,block,Bias.work_ranges(work)},lane)
+  %Order.commutative(Nat.mul(block,8n),lane) :
+    {lhs == Bool.pick(F32,Nat.is_lt(_,U32.to_nat(ow)),Terms.bias_at(~DL,~d_value,read,U32.from_nat(Nat.add(Nat.mul(_,1n),0n))),0.0) : F32}
+  %Equal.sym(Nat,Nat.add(Nat.mul(index,1n),0n),index,Equal.trans(Nat,Nat.add(Nat.mul(index,1n),0n),Nat.mul(index,1n),index,Addition.zero_right(Nat.mul(index,1n)),Order.times_one(index))) :
+    {lhs == Bool.pick(F32,Nat.is_lt(index,U32.to_nat(ow)),Terms.bias_at(~DL,~d_value,read,U32.from_nat(_)),0.0) : F32}
+  lane_case(~DL,~d_value,Nat.is_lt(index,U32.to_nat(ow)),work,index,Bias.work_ranges(work),holder,Terms.bias_at(~DL,~d_value,read,U32.from_nat(index)),
+    inside_true => bias_value_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,
+      outputs_room,columns_positive,group_positive,block,lane,small,below,block_inside,inside_true))
 
-# The input and the output gradient come back as tensors of their shapes
-# that hold their readers' values.
-def Returned(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+input_context: Input,+gradient_context: Gradient,
-  +xs: List<&2,U32>,+ds: List<&2,U32>,sources: Tensors.Tensor<F32> & Tensors.Tensor<F32>) -> Data:
-  (input,gradient) = sources
-  Shape.Both<Global.Shaped(~F32,~Input,~input_value,input_context,xs,input),Global.Shaped(~F32,~Gradient,~gradient_value,gradient_context,ds,gradient)>
+# A block of the bias model is the cell of the lifted bias reader.
+def bias_cell(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+outer_word: U32,+after: U32,+lanes: U32,+groups: U32,
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,+gw: U32,+capacity: U32,
+  +after_exact: {U32.to_nat(after) == Nat.mul(U32.to_nat(rw),U32.to_nat(cw)) : Nat},+lanes_exact: {U32.to_nat(lanes) == U32.to_nat(ow) : Nat},
+  +groups_exact: {U32.to_nat(groups) == Kernel.groups(U32.to_nat(ow)) : Nat},
+  +outer_exact: {U32.to_nat(outer_word) == Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))) : Nat},
+  +total_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))),Kernel.groups(U32.to_nat(ow))),U32.to_nat(capacity)) == True{} : Bool},
+  +outputs_room: {Nat.is_le(U32.to_nat(ow),U32.to_nat(capacity)) == True{} : Bool},
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(cw)) == True{} : Bool},+group_positive: {Nat.is_lt(0n,U32.to_nat(gw)) == True{} : Bool},
+  +block: Nat,+block_inside: {Nat.is_lt(block,U32.to_nat(groups)) == True{} : Bool}) ->
+  {Bias.cell_values(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),
+      Representation.Lifted{logical,Cells.Cells{outer_word,after,lanes,groups,Grid.Innermost{}}},
+      Kernel.Block{Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw),block,Bias.work_ranges(Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw))}) ==
+    Representation.cell(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw},
+      TiledPublic.geometry_of([ow],0n,Grid.Innermost{}),0n,block) : Tile.Tile8}:
+  +work = Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw)
+  +holder = {Representation.Lifted{logical,Cells.Cells{outer_word,after,lanes,groups,Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +read = {Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw} : Terms.BiasRead<DL>}
+  TileLaws.tiles_equal(
+    Bias.cell_values(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),holder,
+      Kernel.Block{work,block,Bias.work_ranges(work)}),
+    Representation.cell(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),read,TiledPublic.geometry_of([ow],0n,Grid.Innermost{}),0n,block),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,0n,{==},{==},block_inside),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,1n,{==},{==},block_inside),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,2n,{==},{==},block_inside),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,3n,{==},{==},block_inside),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,4n,{==},{==},block_inside),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,5n,{==},{==},block_inside),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,6n,{==},{==},block_inside),
+    bias_cell_lane(~DL,~d_value,logical,outer_word,after,lanes,groups,nw,ow,rw,cw,gw,capacity,after_exact,lanes_exact,groups_exact,outer_exact,total_room,outputs_room,
+      columns_positive,group_positive,block,7n,{==},{==},block_inside))
 
-# A weight gradient call: the gradient holds the readers' weight gradient,
-# and the sources come back.
-def WeightCall(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+input_context: Input,+gradient_context: Gradient,
-  +xi: Maybe<&2,Parameter.ImageGeometry>,+di: Maybe<&2,Parameter.ImageGeometry>,+k: U32,+s: U32,+p: U32,+g: U32,+xs: List<&2,U32>,+ds: List<&2,U32>,
-  result: Tensors.Tensor<F32> & (Tensors.Tensor<F32> & Tensors.Tensor<F32>)) -> Data:
-  Shape.Both<Global.Contract(~F32,~Readers.WeightRead<Input,Gradient>,~Readers.weight_at(~Input,~input_value,~Gradient,~gradient_value),
-      Readers.WeightRead{input_context,gradient_context,xi,di,k,s,p,g},weight_result(result)),
-    Returned(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,xs,ds,returned_sources(result))>
+# The blocks a bias call writes from position on hold the lifted bias reader.
+def bias_values(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+outer_word: U32,+after: U32,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},+d_cells: List<&2,U32>,+d_lanes: U32,
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,+gw: U32,
+  +d_named: {Parameter.cell_image(d_cells,d_lanes) == Some{Parameter.ImageGeometry{nw,ow,rw,cw}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +lanes_room: {Nat.is_le(U32.to_nat(d_lanes),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +accepted: {Parameter.positive(Parameter.ImageGeometry{nw,ow,rw,cw}) && U32.is_lt(0,gw) == True{} : Bool},
+  +after_exact: {U32.to_nat(after) == Nat.mul(U32.to_nat(rw),U32.to_nat(cw)) : Nat},
+  +outer_exact: {U32.to_nat(outer_word) == Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))) : Nat},
+  +total_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))),Kernel.groups(U32.to_nat(ow))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(cw)) == True{} : Bool},+group_positive: {Nat.is_lt(0n,U32.to_nat(gw)) == True{} : Bool},
+  remaining: Nat,+position: Nat,+room: {Nat.is_le(Nat.add(position,remaining),U32.to_nat(Tiled.groups(ow))) == True{} : Bool}) ->
+  Members.All(Nat,{index => Contract.At(~Tile.Tile8,~Representation.Lifted<Terms.BiasRead<DL>>,~Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value)),
+      Representation.Lifted{Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw},TiledPublic.geometry_of([ow],0n,Grid.Innermost{})},
+      Buffer.content(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+        Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}},
+        BiasCells.BiasCall{limits,default_capacity,d_cells,d_lanes,Parameter.ImageGeometry{nw,ow,rw,cw},d_named,d_counted,lanes_room,gw,accepted})),index) : Nat -> Data},
+    Ranges.range(remaining,position)):
+  match remaining:
+    case 0n: Unit{}
+    case 1n+ +rest:
+      +image = {Parameter.ImageGeometry{nw,ow,rw,cw} : Parameter.ImageGeometry}
+      +call = {BiasCells.BiasCall{limits,default_capacity,d_cells,d_lanes,image,d_named,d_counted,lanes_room,gw,accepted} : BiasCells.BiasCall}
+      +holder = {Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}} : Representation.Lifted<DL>}
+      +read = {Terms.BiasRead{logical,Some{image},gw} : Terms.BiasRead<DL>}
+      +geometry = TiledPublic.geometry_of([ow],0n,Grid.Innermost{})
+      +capacity = Machine.capacity(limits)
+      +groups_exact = Equal.sym(Nat,Kernel.groups(U32.to_nat(ow)),U32.to_nat(Tiled.groups(ow)),BiasCells.groups_exact(call))
+      +inside = Order.room_index(position,rest,U32.to_nat(Tiled.groups(ow)),room)
+      +stored = BiasCells.value_at(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call,position,inside)
+      +cell = bias_cell(~DL,~d_value,logical,outer_word,after,ow,Tiled.groups(ow),nw,ow,rw,cw,gw,capacity,after_exact,{==},groups_exact,outer_exact,total_room,
+        BiasCells.outputs_room(call),columns_positive,group_positive,position,inside)
+      +word = U32.from_nat(position)
+      +exact = FullRange.roundtrip(position,capacity,
+        Order.transitive(position,U32.to_nat(Tiled.groups(ow)),U32.to_nat(capacity),Bounds.strict_le(position,U32.to_nat(Tiled.groups(ow)),inside),BiasCells.groups_room(call)))
+      +decoded = Representation.decoded(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),read,geometry,0n,position,word,exact,{==},inside)
+      KernelGemm.Both{
+        Equal.trans(Tile.Tile8,Buffer.value(~Tile.Tile8,word,Buffer.content(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call))),
+          Representation.cell(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),read,geometry,0n,position),
+          Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),Representation.Lifted{read,geometry},word),
+          Equal.trans(Tile.Tile8,Buffer.value(~Tile.Tile8,word,Buffer.content(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call))),
+            Bias.cell_values(~Representation.Lifted<DL>,~Bias.held_sample(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value)),holder,
+              Kernel.Block{Parameter.bias_work(image,gw),position,Bias.work_ranges(Parameter.bias_work(image,gw))}),
+            Representation.cell(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),read,geometry,0n,position),stored,cell),
+          Equal.sym(Tile.Tile8,Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),Representation.Lifted{read,geometry},word),
+            Representation.cell(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),read,geometry,0n,position),decoded)),
+        bias_values(~DL,~d_value,logical,outer_word,after,limits,default_capacity,d_cells,d_lanes,nw,ow,rw,cw,gw,d_named,d_counted,lanes_room,accepted,after_exact,outer_exact,
+          total_room,columns_positive,group_positive,rest,1n+position,Order.advance_room(position,rest,U32.to_nat(Tiled.groups(ow)),room))}
 
-# A bias gradient call: the gradient holds the reader's bias gradient, and
-# the output gradient comes back.
-def BiasCall(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+gradient_context: Gradient,+di: Maybe<&2,Parameter.ImageGeometry>,+g: U32,+shape: List<&2,U32>,
-  result: Tensors.Tensor<F32> & Tensors.Tensor<F32>) -> Data:
-  Shape.Both<Global.Contract(~F32,~Readers.BiasRead<Gradient>,~Readers.bias_at(~Gradient,~gradient_value),Readers.BiasRead{gradient_context,di,g},bias_result(result)),
-    Global.Shaped(~F32,~Gradient,~gradient_value,gradient_context,shape,returned_source(result))>
+# Positive outputs make at least one group.
+def groups_positive(+limits: Machine.Limits,+outputs: U32,+room: {Nat.is_le(U32.to_nat(outputs),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +positive: {Nat.is_lt(0n,U32.to_nat(outputs)) == True{} : Bool}) -> {Nat.is_lt(0n,U32.to_nat(Tiled.groups(outputs))) == True{} : Bool}:
+  +count = U32.to_nat(outputs)
+  +blocks = Ceiling.ceiling(count,8n)
+  %Equal.sym(Nat,U32.to_nat(Tiled.groups(outputs)),blocks,Encoded.eight_blocks_exact(limits,outputs,room)) : {Nat.is_lt(0n,_) == True{} : Bool}
+  RowMajor.left_factor_positive(blocks,8n,Bounds.nat_trans(0n,count,Nat.mul(blocks,8n),positive,Ceiling.covers(count,8n,{==})))
 
-def bias_count(work: Kernel.Work) -> Nat:
-  Kernel.Work{n,c,o,h,w,k,s,p,rows,columns,g} = work
-  o
+# The cells a bias call writes are a whole tensor of the lifted bias reader.
+def bias_whole(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+outer_word: U32,+after: U32,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},+d_cells: List<&2,U32>,+d_lanes: U32,
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,+gw: U32,
+  +d_named: {Parameter.cell_image(d_cells,d_lanes) == Some{Parameter.ImageGeometry{nw,ow,rw,cw}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +lanes_room: {Nat.is_le(U32.to_nat(d_lanes),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +accepted: {Parameter.positive(Parameter.ImageGeometry{nw,ow,rw,cw}) && U32.is_lt(0,gw) == True{} : Bool},
+  +after_exact: {U32.to_nat(after) == Nat.mul(U32.to_nat(rw),U32.to_nat(cw)) : Nat},
+  +outer_exact: {U32.to_nat(outer_word) == Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))) : Nat},
+  +total_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))),Kernel.groups(U32.to_nat(ow))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(cw)) == True{} : Bool},+group_positive: {Nat.is_lt(0n,U32.to_nat(gw)) == True{} : Bool},+workers: U32) ->
+  Global.Contract(~Tile.Tile8,~Representation.Lifted<Terms.BiasRead<DL>>,~Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value)),
+    Representation.Lifted{Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw},TiledPublic.geometry_of([ow],0n,Grid.Innermost{})},
+    Tensors.whole(~Tile.Tile8,Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+        Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}},
+        BiasCells.BiasCall{limits,default_capacity,d_cells,d_lanes,Parameter.ImageGeometry{nw,ow,rw,cw},d_named,d_counted,lanes_room,gw,accepted})),
+      [Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},workers)):
+  +image = {Parameter.ImageGeometry{nw,ow,rw,cw} : Parameter.ImageGeometry}
+  +call = {BiasCells.BiasCall{limits,default_capacity,d_cells,d_lanes,image,d_named,d_counted,lanes_room,gw,accepted} : BiasCells.BiasCall}
+  +holder = {Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +reader = {Representation.Lifted{Terms.BiasRead{logical,Some{image},gw},TiledPublic.geometry_of([ow],0n,Grid.Innermost{})} : Representation.Lifted<Terms.BiasRead<DL>>}
+  +written = BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)
+  +content = Buffer.content(~Tile.Tile8,written)
+  +count = U32.to_nat(Tiled.groups(ow))
+  +shape = {[Tiled.groups(ow)] : List<&2,U32>}
+  +length = BiasCells.values_length(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)
+  +values = {%Equal.sym(Nat,Buffer.content_length(~Tile.Tile8,content),count,length) :
+      Members.All(Nat,{index => Contract.At(~Tile.Tile8,~Representation.Lifted<Terms.BiasRead<DL>>,~Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value)),reader,
+        content,index) : Nat -> Data},Ranges.range(_,0n))
+    bias_values(~DL,~d_value,logical,outer_word,after,limits,default_capacity,d_cells,d_lanes,nw,ow,rw,cw,gw,d_named,d_counted,lanes_room,accepted,after_exact,outer_exact,
+      total_room,columns_positive,group_positive,count,0n,Order.reflexive(count)) :
+    Contract.Values(~Tile.Tile8,~Representation.Lifted<Terms.BiasRead<DL>>,~Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value)),reader,content)}
+  +formed = {Contract.WellFormed{Equal.trans(Nat,Buffer.content_length(~Tile.Tile8,content),count,ShapeLaws.elements(shape),length,
+      Equal.sym(Nat,Nat.mul(count,1n),count,Order.times_one(count))),BiasCells.values_ready(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)} :
+    Contract.WellFormed<Tile.Tile8,shape,content>}
+  +facts = {%Equal.sym(Buffer.Content<Tile.Tile8>,Buffer.contents(~Tile.Tile8,Buffer.pack(~Tile.Tile8,written)),content,Buffer.packed_contents(~Tile.Tile8,written)) :
+      Contract.Facts(~Tile.Tile8,~Representation.Lifted<Terms.BiasRead<DL>>,~Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value)),reader,shape,_)
+    KernelGemm.Both{formed,values} :
+    Contract.Facts(~Tile.Tile8,~Representation.Lifted<Terms.BiasRead<DL>>,~Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value)),reader,shape,
+      Buffer.contents(~Tile.Tile8,Buffer.pack(~Tile.Tile8,written)))}
+  +positive = ParameterCells.sizes_channels(image,ParameterCells.image_sizes(image,Logic.left(Parameter.positive(image),U32.is_lt(0,gw),accepted)))
+  +nonempty = {%Equal.sym(Nat,Nat.mul(count,1n),count,Order.times_one(count)) : {Nat.is_lt(0n,_) == True{} : Bool}
+    groups_positive(limits,ow,BiasCells.outputs_room(call),positive) : {Nat.is_lt(0n,ShapeLaws.elements(shape)) == True{} : Bool}}
+  WholeValues.whole_contract(~Tile.Tile8,~Representation.Lifted<Terms.BiasRead<DL>>,~Representation.lifted(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value)),reader,limits,shape,
+    Tiled.zero_tile(),workers,written,BiasCells.result_counted(call),BiasCells.result_room(call),nonempty,facts)
 
-def weight_list(+work: Kernel.Work,x: Buffer.Model<F32>,d: Buffer.Model<F32>) -> List<&2,F32>:
-  WeightModel.weight_values(WeightModel.weight(work,x,d))
+# The cells a bias call writes, laid out with the outputs in their lanes,
+# hold the lifted bias reader.
+def bias_contract(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+outer_word: U32,+after: U32,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},+d_cells: List<&2,U32>,+d_lanes: U32,
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,+gw: U32,
+  +d_named: {Parameter.cell_image(d_cells,d_lanes) == Some{Parameter.ImageGeometry{nw,ow,rw,cw}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +lanes_room: {Nat.is_le(U32.to_nat(d_lanes),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +accepted: {Parameter.positive(Parameter.ImageGeometry{nw,ow,rw,cw}) && U32.is_lt(0,gw) == True{} : Bool},
+  +after_exact: {U32.to_nat(after) == Nat.mul(U32.to_nat(rw),U32.to_nat(cw)) : Nat},
+  +outer_exact: {U32.to_nat(outer_word) == Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))) : Nat},
+  +total_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))),Kernel.groups(U32.to_nat(ow))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(cw)) == True{} : Bool},+group_positive: {Nat.is_lt(0n,U32.to_nat(gw)) == True{} : Bool},+workers: U32) ->
+  TiledPublic.Contract(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},gw},[ow],
+    Tiled.Tiled{Tensors.whole(~Tile.Tile8,Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+        Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}},
+        BiasCells.BiasCall{limits,default_capacity,d_cells,d_lanes,Parameter.ImageGeometry{nw,ow,rw,cw},d_named,d_counted,lanes_room,gw,accepted})),
+      [Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},workers),0n,ow,Grid.Innermost{}}):
+  +call = {BiasCells.BiasCall{limits,default_capacity,d_cells,d_lanes,Parameter.ImageGeometry{nw,ow,rw,cw},d_named,d_counted,lanes_room,gw,accepted} : BiasCells.BiasCall}
+  +outputs = U32.to_nat(ow)
+  +room = {%Equal.sym(Nat,Nat.mul(outputs,1n),outputs,Order.times_one(outputs)) : {Nat.is_le(_,U32.to_nat(Machine.capacity(limits))) == True{} : Bool}
+    BiasCells.outputs_room(call) : {Nat.is_le(ShapeLaws.elements([ow]),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+  KernelGemm.Both{
+    bias_whole(~DL,~d_value,logical,outer_word,after,limits,default_capacity,d_cells,d_lanes,nw,ow,rw,cw,gw,d_named,d_counted,lanes_room,accepted,after_exact,outer_exact,
+      total_room,columns_positive,group_positive,workers),
+    TiledPublic.Laid{{==},{==},{==},StorageCount.counted_within(limits,[ow],room,default_capacity),{==}}}
 
-def bias_list(+work: Kernel.Work,d: Buffer.Model<F32>) -> List<&2,F32>:
-  Bridge.bias_list(bias_count(work),0n,work,Buffer.tree(~F32,d))
-
-def bias_values_listed(+work: Kernel.Work,+d: Buffer.Model<F32>) ->
-  {Model.bias_values(work,Buffer.tree(~F32,d)) == bias_list(work,d) : List<&2,F32>}:
-  Kernel.Work{n,c,o,h,w,k,s,p,rows,columns,g} = work
-  Bridge.bias_output(bias_count(work),0n,work,Buffer.tree(~F32,d))
-
-def bias_finished(+shape: List<&2,U32>,+fill: F32,+status: Tensors.Status,+workers: U32,+outputs: U32,result: Storage.Buffer<F32> & Storage.Buffer<F32>) ->
-  {bias_result(Parameter.bias_finished(shape,fill,status,workers,outputs,result)) == Tensors.whole(~F32,BufferModel.written(result),[outputs],0.0,Tensors.Usable{},workers) :
-    Tensors.Tensor<F32>}:
-  (d,values) = result
+# A bias call on the cells of d runs the bias kernel, writes its cells whole
+# and gives the pieces of d back in their grid.
+def bias_run(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+outer_word: U32,+after: U32,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},+d_cells: List<&2,U32>,
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,+gw: U32,
+  +d_named: {Parameter.cell_image(d_cells,ow) == Some{Parameter.ImageGeometry{nw,ow,rw,cw}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +lanes_room: {Nat.is_le(U32.to_nat(ow),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +accepted: {Parameter.positive(Parameter.ImageGeometry{nw,ow,rw,cw}) && U32.is_lt(0,gw) == True{} : Bool},
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,+axis: Nat,
+  +shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+    Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}},d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw})) ->
+  {Gradient.bias_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw},axis,ow,Grid.Innermost{}},gw) ==
+    (Tiled.Tiled{Tensors.whole(~Tile.Tile8,Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+          Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}},
+          BiasCells.BiasCall{limits,default_capacity,d_cells,ow,Parameter.ImageGeometry{nw,ow,rw,cw},d_named,d_counted,lanes_room,gw,accepted})),
+        [Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},dw),0n,ow,Grid.Innermost{}},
+      Tiled.Tiled{Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,
+        Kernel.bias(Parameter.bias_work(Parameter.ImageGeometry{nw,ow,rw,cw},gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))),
+        axis,ow,Grid.Innermost{}}) : Tiled.Tiled & Tiled.Tiled}:
+  +image = {Parameter.ImageGeometry{nw,ow,rw,cw} : Parameter.ImageGeometry}
+  +call = {BiasCells.BiasCall{limits,default_capacity,d_cells,ow,image,d_named,d_counted,lanes_room,gw,accepted} : BiasCells.BiasCall}
+  +holder = {Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}} : Representation.Lifted<DL>}
+  %Equal.sym(Tiled.Tiled & Tensors.Tensor<Tile.Tile8>,Parameter.bias(Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw},ow,gw),
+      Parameter.bias_finished(Parameter.Read{d_cells,df,Tensors.Usable{},dw},dw,ow,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow)))),BiasCells.run_exact(call,PiecesModel.pack(~Tile.Tile8,dm),df,dw)) :
+    {Gradient.bias_result(axis,ow,_) ==
+      (Tiled.Tiled{Tensors.whole(~Tile.Tile8,Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)),[Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},dw),0n,ow,Grid.Innermost{}},
+      Tiled.Tiled{Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))),axis,ow,Grid.Innermost{}}) : Tiled.Tiled & Tiled.Tiled}
+  %Equal.sym(Tiled.Tiled & Tensors.Tensor<Tile.Tile8>,Parameter.bias_finished(Parameter.Read{d_cells,df,Tensors.Usable{},dw},dw,ow,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow)))),
+      (Tiled.Tiled{Tensors.whole(~Tile.Tile8,Pair.snd(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow)))),[Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},dw),0n,ow,Grid.Innermost{}},
+        Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow)))))),
+      BiasCells.finished_exact(Parameter.Read{d_cells,df,Tensors.Usable{},dw},dw,ow,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))) :
+    {Gradient.bias_result(axis,ow,_) ==
+      (Tiled.Tiled{Tensors.whole(~Tile.Tile8,Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)),[Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},dw),0n,ow,Grid.Innermost{}},
+      Tiled.Tiled{Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))),axis,ow,Grid.Innermost{}}) : Tiled.Tiled & Tiled.Tiled}
+  %Equal.sym(Storage.Buffer<Tile.Tile8>,Pair.snd(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow)))),Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)),
+      BiasCells.values_exact(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call,PiecesModel.pack(~Tile.Tile8,dm),df,dw,shaped)) :
+    {Gradient.bias_result(axis,ow,(Tiled.Tiled{Tensors.whole(~Tile.Tile8,_,[Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},dw),0n,ow,Grid.Innermost{}},
+        Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))))) ==
+      (Tiled.Tiled{Tensors.whole(~Tile.Tile8,Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)),[Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},dw),0n,ow,Grid.Innermost{}},
+      Tiled.Tiled{Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,Kernel.bias(Parameter.bias_work(image,gw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))),axis,ow,Grid.Innermost{}}) : Tiled.Tiled & Tiled.Tiled}
   {==}
 
-def weight_shape(xi: Parameter.ImageGeometry,di: Parameter.ImageGeometry,+k: U32) -> List<&2,U32>:
-  Parameter.ImageGeometry{n,c,h,w} = xi
-  Parameter.ImageGeometry{dn,o,rows,columns} = di
-  [o,c,k,k]
+# ---- The bias gradient of a call ----
 
-def bias_shape(di: Parameter.ImageGeometry) -> List<&2,U32>:
-  Parameter.ImageGeometry{n,o,rows,columns} = di
-  [o]
+# The bias gradient and the output gradient a bias call returns hold the bias
+# reader and the reader of the output gradient.
+def BiasHeld(~DL: Data,~d_value: DL -> U32 -> F32,+read: Terms.BiasRead<DL>,+outputs: U32,+logical: DL,+values: List<&2,U32>,result: Tiled.Tiled & Tiled.Tiled) -> Data:
+  (bias,d) = result
+  KernelGemm.Both<TiledPublic.Contract(~Terms.BiasRead<DL>,~Terms.bias_at(~DL,~d_value),read,[outputs],bias),TiledPublic.Contract(~DL,~d_value,logical,values,d)>
 
-# Every output written into fresh storage of count elements: the storage
-# holds the bias list from 0.
-def bias_stored(+work: Kernel.Work,+d: Buffer.Model<F32>,+count: U32) ->
-  {Buffer.contents(~F32,BufferModel.written(KernelBuffer.bias(work,Buffer.pack(~F32,d),Tensors.buffer(~F32,0.0,count)))) ==
-    Buffer.Content{Tree.write_sequence(~F32,bias_list(work,d),0,Tree.fresh(F32,Tensors.depth_for(count),0.0)),U32.to_nat(count)} : Buffer.Content<F32>}:
-  +fresh = Buffer.remodel(~F32,Tensors.buffer(~F32,0.0,count))
-  +allocated = {Buffer.Content{Tree.fresh(F32,Tensors.depth_for(count),0.0),U32.to_nat(count)} : Buffer.Content<F32>}
-  +listed = {Buffer.Content{Tree.write_sequence(~F32,bias_list(work,d),0,Tree.fresh(F32,Tensors.depth_for(count),0.0)),U32.to_nat(count)} : Buffer.Content<F32>}
-  +fresh_content = Equal.trans(Buffer.Content<F32>,Buffer.content(~F32,fresh),Buffer.contents(~F32,Tensors.buffer(~F32,0.0,count)),allocated,
-    Buffer.remodel_content(~F32,Tensors.buffer(~F32,0.0,count)),AllocationLaws.contents(~F32,Tensors.depth_for(count),0.0,U32.to_nat(count)))
-  %Buffer.remodeled(~F32,Tensors.buffer(~F32,0.0,count)) :
-    {Buffer.contents(~F32,BufferModel.written(KernelBuffer.bias(work,Buffer.pack(~F32,d),_))) == listed : Buffer.Content<F32>}
-  Equal.trans(Buffer.Content<F32>,Buffer.contents(~F32,BufferModel.written(KernelBuffer.bias(work,Buffer.pack(~F32,d),Buffer.pack(~F32,fresh)))),
-    Buffer.content(~F32,Model.bias_written(work,Buffer.tree(~F32,d),fresh)),listed,
-    BufferModel.bias(work,d,fresh),
-    Equal.trans(Buffer.Content<F32>,Buffer.content(~F32,Model.bias_written(work,Buffer.tree(~F32,d),fresh)),
-      Buffer.Content{Tree.write_sequence(~F32,Model.bias_values(work,Buffer.tree(~F32,d)),0,Buffer.content_tree(~F32,Buffer.content(~F32,fresh))),
-        Buffer.content_length(~F32,Buffer.content(~F32,fresh))},
-      listed,
-      Model.bias_content(work,Buffer.tree(~F32,d),fresh),
-      %Equal.sym(Buffer.Content<F32>,Buffer.content(~F32,fresh),allocated,fresh_content) :
-        {Buffer.Content{Tree.write_sequence(~F32,Model.bias_values(work,Buffer.tree(~F32,d)),0,Buffer.content_tree(~F32,_)),Buffer.content_length(~F32,_)} == listed :
-          Buffer.Content<F32>}
-      %Equal.sym(List<&2,F32>,Model.bias_values(work,Buffer.tree(~F32,d)),bias_list(work,d),bias_values_listed(work,d)) :
-        {Buffer.Content{Tree.write_sequence(~F32,_,0,Tree.fresh(F32,Tensors.depth_for(count),0.0)),U32.to_nat(count)} == listed : Buffer.Content<F32>}
-      {==}))
+# A bias call on the cells of an output gradient laid out with the outputs in
+# their lanes and the groups innermost.
+def bias_call(~DL: Data,~d_value: DL -> U32 -> F32,+logical: DL,+values: List<&2,U32>,+axis: Nat,+outer_word: U32,+after: U32,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +nw: U32,+ow: U32,+rw: U32,+cw: U32,
+  +geometry_exact: {TiledPublic.geometry_of(values,axis,Grid.Innermost{}) == Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}} : Cells.Cells},
+  +d_named: {Parameter.cell_image(Tiled.cell_shape(values,axis,Grid.Innermost{}),ow) == Some{Parameter.ImageGeometry{nw,ow,rw,cw}} : Maybe<&2,Parameter.ImageGeometry>},
+  +lanes_room: {Nat.is_le(U32.to_nat(ow),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +positive: {Parameter.positive(Parameter.ImageGeometry{nw,ow,rw,cw}) == True{} : Bool},
+  +after_exact: {U32.to_nat(after) == Nat.mul(U32.to_nat(rw),U32.to_nat(cw)) : Nat},
+  +outer_exact: {U32.to_nat(outer_word) == Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))) : Nat},
+  +total_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(nw),Nat.mul(U32.to_nat(rw),U32.to_nat(cw))),Kernel.groups(U32.to_nat(ow))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +columns_positive: {Nat.is_lt(0n,U32.to_nat(cw)) == True{} : Bool},
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_contract: TiledPublic.Contract(~DL,~d_value,logical,values,
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(values,axis,Grid.Innermost{}),df,Tensors.Usable{},dw},axis,ow,Grid.Innermost{}})) ->
+  BiasHeld(~DL,~d_value,Terms.BiasRead{logical,Some{Parameter.ImageGeometry{nw,ow,rw,cw}},Gradient.group_length()},ow,logical,values,
+    Gradient.bias_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(values,axis,Grid.Innermost{}),df,Tensors.Usable{},dw},axis,ow,Grid.Innermost{}},
+      Gradient.group_length())):
+  KernelGemm.Both{+global,TiledPublic.Laid{+inside,+laid_shaped,+restored,+counted,+pinned}} = d_contract
+  +image = {Parameter.ImageGeometry{nw,ow,rw,cw} : Parameter.ImageGeometry}
+  +own = {KernelGemm.Both{global,TiledPublic.Laid{inside,laid_shaped,restored,counted,pinned}} :
+    TiledPublic.Contract(~DL,~d_value,logical,values,
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(values,axis,Grid.Innermost{}),df,Tensors.Usable{},dw},axis,ow,Grid.Innermost{}})}
+  +group = Gradient.group_length()
+  +dcells = Tiled.cell_shape(values,axis,Grid.Innermost{})
+  +holder = {Representation.Lifted{logical,Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +shaped = {%geometry_exact : Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{logical,_},dcells,
+        Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw})
+      TiledPublic.cells_shaped(~DL,~d_value,logical,values,axis,ow,Grid.Innermost{},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},own) :
+    Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,dcells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw})}
+  +d_counted = Global.shaped_counted(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,dcells,
+    Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},shaped)
+  +accepted = {%Equal.sym(Bool,Parameter.positive(image),True{},positive) : {_ && U32.is_lt(0,group) == True{} : Bool}
+      {==} :
+    {Parameter.positive(image) && U32.is_lt(0,group) == True{} : Bool}}
+  +call = {BiasCells.BiasCall{limits,default_capacity,dcells,ow,image,d_named,d_counted,lanes_room,group,accepted} : BiasCells.BiasCall}
+  +back_global = {%Equal.sym(Cells.Cells,TiledPublic.geometry_of(values,axis,Grid.Innermost{}),Cells.Cells{outer_word,after,ow,Tiled.groups(ow),Grid.Innermost{}},geometry_exact) :
+      Global.Contract(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{logical,_},
+        Parameter.back(Parameter.Read{dcells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,
+          Kernel.bias(Parameter.bias_work(image,group),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))))
+      BiasCells.d_back(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call,PiecesModel.pack(~Tile.Tile8,dm),df,dw,shaped) :
+    Global.Contract(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{logical,TiledPublic.geometry_of(values,axis,Grid.Innermost{})},
+      Parameter.back(Parameter.Read{dcells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,
+        Kernel.bias(Parameter.bias_work(image,group),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))))}
+  %Equal.sym(Tiled.Tiled & Tiled.Tiled,
+      Gradient.bias_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,ow,Grid.Innermost{}},group),
+      (Tiled.Tiled{Tensors.whole(~Tile.Tile8,Buffer.pack(~Tile.Tile8,BiasCells.written_of(~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),holder,call)),
+          [Tiled.groups(ow)],Tiled.zero_tile(),Tensors.Usable{},dw),0n,ow,Grid.Innermost{}},
+        Tiled.Tiled{Parameter.back(Parameter.Read{dcells,df,Tensors.Usable{},dw},Pair.fst(Move.Holding<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,
+          Kernel.bias(Parameter.bias_work(image,group),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)),Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),Tiled.groups(ow))))),
+          axis,ow,Grid.Innermost{}}),
+      bias_run(~DL,~d_value,logical,outer_word,after,limits,default_capacity,dcells,nw,ow,rw,cw,group,d_named,d_counted,lanes_room,accepted,dm,df,dw,axis,shaped)) :
+    BiasHeld(~DL,~d_value,Terms.BiasRead{logical,Some{image},group},ow,logical,values,_)
+  KernelGemm.Both{
+    bias_contract(~DL,~d_value,logical,outer_word,after,limits,default_capacity,dcells,ow,nw,ow,rw,cw,group,d_named,d_counted,lanes_room,accepted,after_exact,outer_exact,
+      total_room,columns_positive,{==},dw),
+    KernelGemm.Both{back_global,TiledPublic.Laid{inside,laid_shaped,restored,counted,pinned}}}
 
-# The bias kernel gives back the storage it read: its contents hold the
-# reader's values.
-def bias_kept_source(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+gradient_context: Gradient,+shape: List<&2,U32>,+fill: F32,+workers: U32,+outputs: U32,
-  +tree: Tree.Tree<F32>,+length: Nat,+facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.Content{tree,length}),
-  result: Array<F32> & Storage.Buffer<F32>,certificate: StorageCertificate.Certificate<F32,SourceCertificate.source(~Array<F32>,result)>,
-  same: {SourceCertificate.source(~Array<F32>,result) == Tree.pack(F32,tree) : Array<F32>}) ->
-  Global.Shaped(~F32,~Gradient,~gradient_value,gradient_context,shape,
-    returned_source(Parameter.bias_finished(shape,fill,Tensors.Usable{},workers,outputs,KernelBuffer.bias_kept(length,result,certificate)))):
-  (storage,values) = result
-  +reflected = Equal.trans(Tree.Tree<F32>,Tree.reflect(F32,storage),Tree.reflect(F32,Tree.pack(F32,tree)),tree,
-    Equal.cong(Array<F32>,Tree.Tree<F32>,array => Tree.reflect(F32,array),storage,Tree.pack(F32,tree),same),StorageLaws.reflect_packed(F32,tree))
-  WholeLeaf.stored_shaped(~F32,~Gradient,~gradient_value,gradient_context,Storage.Buffer{storage,length,certificate},shape,fill,workers,
-    Buffer.observe(~F32,Storage.Buffer{storage,length,certificate}),
-    %Equal.sym(Tree.Tree<F32>,Tree.reflect(F32,storage),tree,reflected) : GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.Content{_,length})
-    facts)
+# ---- The bias gradient of the output gradient of a call ----
 
-def bias_returned(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+gradient_context: Gradient,+di: Parameter.ImageGeometry,+g: U32,+d: Buffer.Model<F32>,
-  +shape: List<&2,U32>,+fill: F32,+workers: U32,+count: U32,+facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.content(~F32,d))) ->
-  Global.Shaped(~F32,~Gradient,~gradient_value,gradient_context,shape,
-    returned_source(Parameter.bias_counted(Some{count},di,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers))):
-  Parameter.ImageGeometry{+n,+o,+rows,+columns} = di
-  Buffer.Model{+tree,+length,+certificate} = d
-  +work = Parameter.bias_work(Parameter.ImageGeometry{n,o,rows,columns},g)
-  bias_kept_source(~Gradient,~gradient_value,gradient_context,shape,fill,workers,o,tree,length,facts,
-    Kernel.bias(work,Tree.pack(F32,tree),Tensors.buffer(~F32,0.0,count)),SourceCertificate.bias(work,Tree.pack(F32,tree),Tensors.buffer(~F32,0.0,count),certificate),
-    SourceCertificate.bias_owner(work,Tree.pack(F32,tree),Tensors.buffer(~F32,0.0,count),certificate))
+# The output gradient of a call as an image geometry.
+def gradient_image(+mode: Call.Mode,+geometry: InputKernel.Geometry) -> Parameter.ImageGeometry:
+  InputKernel.Geometry{c,+o,h,w,k,s,p,+gh,+gw} = geometry
+  Parameter.ImageGeometry{Call.images(mode),o,gh,gw}
 
-def weight_sources(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,input: Tree.Tree<F32>,gradient: Tree.Tree<F32>,index: Nat) -> F32:
-  Spec.weight(~Tree.Tree<F32>,~Bridge.at,Bridge.weight_problem(Parameter.work(xi,di,k,s,p,g),Model.Source{input,gradient}),index)
+# The bias reader of a call over the reader of its output gradient.
+def bias_read(~DL: Data,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry) -> Terms.BiasRead<DL>:
+  Terms.BiasRead{d_context,Some{gradient_image(mode,geometry)},Gradient.group_length()}
 
-def bias_sources(+di: Parameter.ImageGeometry,+g: U32,gradient: Tree.Tree<F32>,index: Nat) -> F32:
-  Spec.bias(~Tree.Tree<F32>,~Bridge.at,Bridge.bias_problem(Parameter.bias_work(di,g),gradient),index)
+# A bias gradient call: the bias gradient holds the bias reader and the output
+# gradient comes back holding its reader.
+def TiledBiasCall(~DL: Data,~d_value: DL -> U32 -> F32,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,result: Tiled.Tiled & Tiled.Tiled) -> Data:
+  BiasHeld(~DL,~d_value,bias_read(~DL,d_context,mode,geometry),Call.outputs_word(geometry),d_context,Call.input_shape(mode,geometry),result)
 
-def weight_value(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,x: Buffer.Model<F32>,d: Buffer.Model<F32>,index: Nat) -> F32:
-  weight_sources(xi,di,k,s,p,g,Buffer.tree(~F32,x),Buffer.tree(~F32,d),index)
+# The cells of the output gradient name its image geometry.
+def gradient_named(+mode: Call.Mode,+geometry: InputKernel.Geometry) ->
+  {Parameter.cell_image(Call.gradient_cell_shape(mode,geometry),Call.outputs_word(geometry)) == Some{gradient_image(mode,geometry)} : Maybe<&2,Parameter.ImageGeometry>}:
+  match mode:
+    case Call.Single{}:
+      InputKernel.Geometry{c,+o,h,w,k,s,p,+gh,+gw} = geometry
+      +image = {Parameter.ImageGeometry{1,o,gh,gw} : Parameter.ImageGeometry}
+      %Equal.sym(Bool,U32.is_eq(Tiled.groups(o),Tiled.groups(o)),True{},Arithmetic.equal_reflexive(Tiled.groups(o))) :
+        {Parameter.grouped(_,image) == Some{image} : Maybe<&2,Parameter.ImageGeometry>}
+      {==}
+    case Call.Batched{+batch}:
+      InputKernel.Geometry{c,+o,h,w,k,s,p,+gh,+gw} = geometry
+      +image = {Parameter.ImageGeometry{batch,o,gh,gw} : Parameter.ImageGeometry}
+      %Equal.sym(Bool,U32.is_eq(Tiled.groups(o),Tiled.groups(o)),True{},Arithmetic.equal_reflexive(Tiled.groups(o))) :
+        {Parameter.grouped(_,image) == Some{image} : Maybe<&2,Parameter.ImageGeometry>}
+      {==}
 
-def bias_value(+di: Parameter.ImageGeometry,+g: U32,d: Buffer.Model<F32>,index: Nat) -> F32:
-  bias_sources(di,g,Buffer.tree(~F32,d),index)
+# The output gradient of a call whose image sizes are positive holds values.
+def gradient_nonempty(+mode: Call.Mode,+geometry: InputKernel.Geometry,+positive: {Parameter.positive(gradient_image(mode,geometry)) == True{} : Bool}) ->
+  {Nat.is_lt(0n,ShapeLaws.elements(Call.input_shape(mode,geometry))) == True{} : Bool}:
+  InputKernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+gh,+gw} = geometry
+  +g = {InputKernel.Geometry{c,o,h,w,k,s,p,gh,gw} : InputKernel.Geometry}
+  +image = gradient_image(mode,g)
+  +sizes = ParameterCells.image_sizes(image,positive)
+  +rows = U32.to_nat(gh)
+  +columns = U32.to_nat(gw)
+  %Call.gradient_count(mode,g) : {Nat.is_lt(0n,_) == True{} : Bool}
+  Order.product_positive(U32.to_nat(Call.images(mode)),Nat.mul(U32.to_nat(o),Nat.mul(rows,columns)),ParameterCells.sizes_count(image,sizes),
+    Order.product_positive(U32.to_nat(o),Nat.mul(rows,columns),ParameterCells.sizes_channels(image,sizes),
+      Order.product_positive(rows,columns,ParameterCells.sizes_height(image,sizes),ParameterCells.sizes_width(image,sizes))))
 
-def image_count(image: Parameter.ImageGeometry) -> U32:
-  Parameter.ImageGeometry{n,c,h,w} = image
-  n
+# What the cells of an image operand of a call fit: its lanes, a plane, its
+# images and its groups.
+type ImageRooms<-limits: Machine.Limits,-images: Nat,-channels: U32,-rows: Nat,-columns: Nat> is Data:
+  ImageRooms{lanes_room: {Nat.is_le(U32.to_nat(channels),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    plane_room: {Nat.is_le(Nat.mul(rows,columns),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    outer_room: {Nat.is_le(Nat.mul(images,Nat.mul(rows,columns)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    groups_exact: {U32.to_nat(Tiled.groups(channels)) == Kernel.groups(U32.to_nat(channels)) : Nat},
+    total_room: {Nat.is_le(Nat.mul(Nat.mul(images,Nat.mul(rows,columns)),Kernel.groups(U32.to_nat(channels))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
 
-type WeightPositive<-xi: Parameter.ImageGeometry,-di: Parameter.ImageGeometry,-k: U32,-s: U32,-g: U32> is Data:
-  WeightPositive{input: {Parameter.positive(xi) == True{} : Bool},gradient: {Parameter.positive(di) == True{} : Bool},
-    kernel: {U32.is_lt(0,k) == True{} : Bool},stride: {U32.is_lt(0,s) == True{} : Bool},group: {U32.is_lt(0,g) == True{} : Bool},
-    images: {U32.is_eq(image_count(xi),image_count(di)) == True{} : Bool}}
+# Values and cells of positive images within the capacity give the rooms of
+# the images.
+def image_rooms(+limits: Machine.Limits,+images: Nat,+channels: U32,+rows: Nat,+columns: Nat,
+  +images_positive: {Nat.is_lt(0n,images) == True{} : Bool},+channels_positive: {Nat.is_lt(0n,U32.to_nat(channels)) == True{} : Bool},
+  +rows_positive: {Nat.is_lt(0n,rows) == True{} : Bool},+columns_positive: {Nat.is_lt(0n,columns) == True{} : Bool},
+  +values_room: {Nat.is_le(Nat.mul(images,Nat.mul(U32.to_nat(channels),Nat.mul(rows,columns))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+  +cells_room: {Nat.is_le(Nat.mul(Nat.mul(Nat.mul(images,rows),columns),U32.to_nat(Tiled.groups(channels))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}) ->
+  ImageRooms<limits,images,channels,rows,columns>:
+  +outputs = U32.to_nat(channels)
+  +plane = Nat.mul(rows,columns)
+  +product = Nat.mul(outputs,plane)
+  +cap = U32.to_nat(Machine.capacity(limits))
+  +plane_positive = Order.product_positive(rows,columns,rows_positive,columns_positive)
+  +product_room = Order.transitive(product,Nat.mul(images,product),cap,
+    {%RowMajor.multiply_commutative(product,images) : {Nat.is_le(product,_) == True{} : Bool} RowMajor.product_covers(product,images,images_positive) :
+      {Nat.is_le(product,Nat.mul(images,product)) == True{} : Bool}},values_room)
+  +lanes_room = Order.transitive(outputs,product,cap,RowMajor.product_covers(outputs,plane,plane_positive),product_room)
+  +plane_below = {%RowMajor.multiply_commutative(plane,outputs) : {Nat.is_le(plane,_) == True{} : Bool} RowMajor.product_covers(plane,outputs,channels_positive) :
+    {Nat.is_le(plane,product) == True{} : Bool}}
+  +outer_room = Order.transitive(Nat.mul(images,plane),Nat.mul(images,product),cap,RowMajor.mul_le_left(images,plane,product,plane_below),values_room)
+  +plane_room = Order.transitive(plane,Nat.mul(images,plane),cap,
+    {%RowMajor.multiply_commutative(plane,images) : {Nat.is_le(plane,_) == True{} : Bool} RowMajor.product_covers(plane,images,images_positive) :
+      {Nat.is_le(plane,Nat.mul(images,plane)) == True{} : Bool}},outer_room)
+  +groups = Tiled.groups(channels)
+  +groups_exact = {Equal.sym(Nat,Bias.work_groups(Parameter.bias_work(Parameter.ImageGeometry{1,channels,1,1},Gradient.group_length())),U32.to_nat(groups),
+      BiasCells.groups_from(Parameter.ImageGeometry{1,channels,1,1},Gradient.group_length(),limits,lanes_room)) :
+    {U32.to_nat(groups) == Kernel.groups(outputs) : Nat}}
+  +grouped_room = {%RowMajor.assoc(images,rows,columns) : {Nat.is_le(Nat.mul(_,U32.to_nat(groups)),cap) == True{} : Bool} cells_room :
+    {Nat.is_le(Nat.mul(Nat.mul(images,plane),U32.to_nat(groups)),cap) == True{} : Bool}}
+  ImageRooms{lanes_room,plane_room,outer_room,groups_exact,
+    %groups_exact : {Nat.is_le(Nat.mul(Nat.mul(images,plane),_),cap) == True{} : Bool} grouped_room}
 
-# The conditions of a valid call other than the count of its weight.
-def weight_conditions(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32) -> Bool:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{dn,+o,rows,columns} = di
-  Parameter.positive(xi) && Parameter.positive(di) && U32.is_eq(n,dn) && U32.is_lt(0,k) && U32.is_lt(0,s) && U32.is_lt(0,g) &&
-    Nat.is_le(U32.to_nat(k),Nat.add(U32.to_nat(h),Nat.mul(2n,U32.to_nat(p)))) &&
-    Nat.is_le(U32.to_nat(k),Nat.add(U32.to_nat(w),Nat.mul(2n,U32.to_nat(p)))) &&
-    Nat.is_eq(U32.to_nat(rows),KernelShape.axis_size(U32.to_nat(h),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p))) &&
-    Nat.is_eq(U32.to_nat(columns),KernelShape.axis_size(U32.to_nat(w),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p)))
+def rooms_lanes(+limits: Machine.Limits,-images: Nat,+channels: U32,-rows: Nat,-columns: Nat,+rooms: ImageRooms<limits,images,channels,rows,columns>) ->
+  {Nat.is_le(U32.to_nat(channels),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  ImageRooms{+lanes_room,plane_room,outer_room,groups_exact,total_room} = rooms
+  lanes_room
 
-# A valid call counts its weight.
-def weight_fits(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +valid: {Parameter.valid(xi,di,k,s,p,g) == True{} : Bool}) -> {Parameter.fits(Tensors.count_of(weight_shape(xi,di,k))) == True{} : Bool}:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+rows,+columns} = di
-  Logic.right(weight_conditions(xi,di,k,s,p,g),Parameter.fits(Tensors.count_of([o,c,k,k])),valid)
+def rooms_plane(+limits: Machine.Limits,-images: Nat,-channels: U32,+rows: Nat,+columns: Nat,+rooms: ImageRooms<limits,images,channels,rows,columns>) ->
+  {Nat.is_le(Nat.mul(rows,columns),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  ImageRooms{lanes_room,+plane_room,outer_room,groups_exact,total_room} = rooms
+  plane_room
 
-def weight_positive(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +valid: {Parameter.valid(xi,di,k,s,p,g) == True{} : Bool}) -> WeightPositive<xi,di,k,s,g>:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+rows,+columns} = di
-  +ab = Parameter.positive(xi) && Parameter.positive(di)
-  +abc = ab && U32.is_eq(n,dn)
-  +ak = abc && U32.is_lt(0,k)
-  +as = ak && U32.is_lt(0,s)
-  +ag = as && U32.is_lt(0,g)
-  +height = Nat.is_le(U32.to_nat(k),Nat.add(U32.to_nat(h),Nat.mul(2n,U32.to_nat(p))))
-  +width = Nat.is_le(U32.to_nat(k),Nat.add(U32.to_nat(w),Nat.mul(2n,U32.to_nat(p))))
-  +row = Nat.is_eq(U32.to_nat(rows),KernelShape.axis_size(U32.to_nat(h),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p)))
-  +column = Nat.is_eq(U32.to_nat(columns),KernelShape.axis_size(U32.to_nat(w),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p)))
-  +ah = ag && height
-  +aw = ah && width
-  +ar = aw && row
-  +ac_true = Logic.left(weight_conditions(xi,di,k,s,p,g),Parameter.fits(Tensors.count_of([o,c,k,k])),valid)
-  +ar_true = Logic.left(ar,column,ac_true)
-  +aw_true = Logic.left(aw,row,ar_true)
-  +ah_true = Logic.left(ah,width,aw_true)
-  +ag_true = Logic.left(ag,height,ah_true)
-  +as_true = Logic.left(as,U32.is_lt(0,g),ag_true)
-  +ak_true = Logic.left(ak,U32.is_lt(0,s),as_true)
-  +abc_true = Logic.left(abc,U32.is_lt(0,k),ak_true)
-  +ab_true = Logic.left(ab,U32.is_eq(n,dn),abc_true)
-  WeightPositive{Logic.left(Parameter.positive(xi),Parameter.positive(di),ab_true),Logic.right(Parameter.positive(xi),Parameter.positive(di),ab_true),Logic.right(abc,U32.is_lt(0,k),ak_true),Logic.right(ak,U32.is_lt(0,s),as_true),Logic.right(as,U32.is_lt(0,g),ag_true),
-    Logic.right(ab,U32.is_eq(n,dn),abc_true)}
+def rooms_outer(+limits: Machine.Limits,+images: Nat,-channels: U32,+rows: Nat,+columns: Nat,+rooms: ImageRooms<limits,images,channels,rows,columns>) ->
+  {Nat.is_le(Nat.mul(images,Nat.mul(rows,columns)),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  ImageRooms{lanes_room,plane_room,+outer_room,groups_exact,total_room} = rooms
+  outer_room
 
-def weight_geometry(xi: Parameter.ImageGeometry,di: Parameter.ImageGeometry,+k: U32,s: U32,p: U32) -> WeightKernel.Geometry:
-  Parameter.ImageGeometry{n,+c,h,w} = xi
-  Parameter.ImageGeometry{dn,o,rows,columns} = di
-  WeightKernel.Geometry{c,o,h,w,k,s,p,rows,columns,U32.from_nat(Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))))}
+def rooms_groups(-limits: Machine.Limits,-images: Nat,+channels: U32,-rows: Nat,-columns: Nat,+rooms: ImageRooms<limits,images,channels,rows,columns>) ->
+  {U32.to_nat(Tiled.groups(channels)) == Kernel.groups(U32.to_nat(channels)) : Nat}:
+  ImageRooms{lanes_room,plane_room,outer_room,+groups_exact,total_room} = rooms
+  groups_exact
 
-def weight_tap_count(xi: Parameter.ImageGeometry,+k: U32) -> Nat:
-  Parameter.ImageGeometry{n,c,h,w} = xi
-  Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
+def rooms_total(+limits: Machine.Limits,+images: Nat,+channels: U32,+rows: Nat,+columns: Nat,+rooms: ImageRooms<limits,images,channels,rows,columns>) ->
+  {Nat.is_le(Nat.mul(Nat.mul(images,Nat.mul(rows,columns)),Kernel.groups(U32.to_nat(channels))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  ImageRooms{lanes_room,plane_room,outer_room,groups_exact,+total_room} = rooms
+  total_room
 
-def weight_shape_count(+o: U32,+c: U32,+k: U32) ->
-  {ShapeLaws.elements([o,c,k,k]) == Nat.mul(U32.to_nat(o),Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))) : Nat}:
-  Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(o),Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),value))),Nat.mul(U32.to_nat(k),1n),U32.to_nat(k),Order.times_one(U32.to_nat(k)))
+# The cells of the output gradient of a call, laid out with the outputs in the
+# lanes, give the rooms of its images.
+def gradient_rooms(~DL: Data,~d_value: DL -> U32 -> F32,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +positive: {Parameter.positive(gradient_image(mode,geometry)) == True{} : Bool},
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_contract: TiledPublic.Contract(~DL,~d_value,d_context,Call.input_shape(mode,geometry),
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Call.gradient_cell_shape(mode,geometry),df,Tensors.Usable{},dw},Conv.lane_of(Call.batched(mode)),
+      Grid.lanes_at(Call.input_shape(mode,geometry),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}})) ->
+  ImageRooms<limits,U32.to_nat(Call.images(mode)),Call.outputs_word(geometry),Domain.gradient_height(geometry),Domain.gradient_width(geometry)>:
+  InputKernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+gh,+gw} = geometry
+  KernelGemm.Both{+global,TiledPublic.Laid{+inside,+laid_shaped,+restored,+counted,+pinned}} = d_contract
+  +g = {InputKernel.Geometry{c,o,h,w,k,s,p,gh,gw} : InputKernel.Geometry}
+  +values = Call.input_shape(mode,g)
+  +axis = Conv.lane_of(Call.batched(mode))
+  +dcells = Call.gradient_cell_shape(mode,g)
+  +d_own = {KernelGemm.Both{global,TiledPublic.Laid{inside,laid_shaped,restored,counted,pinned}} :
+    TiledPublic.Contract(~DL,~d_value,d_context,values,
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,Grid.lanes_at(values,axis),Grid.Innermost{}})}
+  +image = gradient_image(mode,g)
+  +sizes = ParameterCells.image_sizes(image,positive)
+  +images = U32.to_nat(Call.images(mode))
+  +rows = U32.to_nat(gh)
+  +columns = U32.to_nat(gw)
+  +cap = U32.to_nat(Machine.capacity(limits))
+  +values_room = {%Equal.sym(Nat,Nat.mul(images,Domain.gradient_size(g)),ShapeLaws.elements(values),Call.gradient_count(mode,g)) : {Nat.is_le(_,cap) == True{} : Bool}
+      StorageCount.counted_room(limits,values,counted,default_capacity) :
+    {Nat.is_le(Nat.mul(images,Nat.mul(U32.to_nat(o),Nat.mul(rows,columns))),cap) == True{} : Bool}}
+  +cells_counted = Global.shaped_counted(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+    Representation.Lifted{d_context,TiledPublic.geometry_of(values,axis,Grid.Innermost{})},dcells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},
+    TiledPublic.cells_shaped(~DL,~d_value,d_context,values,axis,Grid.lanes_at(values,axis),Grid.Innermost{},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},d_own))
+  +cells_room = {%Call.gradient_cells_count(mode,g) : {Nat.is_le(_,cap) == True{} : Bool}
+      StorageCount.counted_room(limits,dcells,cells_counted,default_capacity) :
+    {Nat.is_le(Nat.mul(Nat.mul(Nat.mul(images,rows),columns),U32.to_nat(Tiled.groups(o))),cap) == True{} : Bool}}
+  image_rooms(limits,images,o,rows,columns,ParameterCells.sizes_count(image,sizes),ParameterCells.sizes_channels(image,sizes),ParameterCells.sizes_height(image,sizes),
+    ParameterCells.sizes_width(image,sizes),values_room,cells_room)
 
-type WeightGeometry<-xi: Parameter.ImageGeometry,-di: Parameter.ImageGeometry,-k: U32,-s: U32,-p: U32> is Data:
-  WeightGeometry{domain: WeightGroups.GeometryReady<weight_geometry(xi,di,k,s,p)>,
-    taps_exact: {U32.to_nat(WeightPacking.geometry_taps(weight_geometry(xi,di,k,s,p))) == weight_tap_count(xi,k) : Nat}}
+# The bias gradient of the cells of an output gradient laid out with its
+# outputs in the lanes, as the cells of a model.
+def bias_modeled(~DL: Data,~d_value: DL -> U32 -> F32,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +positive: {Parameter.positive(gradient_image(mode,geometry)) == True{} : Bool},
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_contract: TiledPublic.Contract(~DL,~d_value,d_context,Call.input_shape(mode,geometry),
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Call.gradient_cell_shape(mode,geometry),df,Tensors.Usable{},dw},Conv.lane_of(Call.batched(mode)),
+      Grid.lanes_at(Call.input_shape(mode,geometry),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}})) ->
+  TiledBiasCall(~DL,~d_value,d_context,mode,geometry,
+    Gradient.bias_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Call.gradient_cell_shape(mode,geometry),df,Tensors.Usable{},dw},Conv.lane_of(Call.batched(mode)),
+      Grid.lanes_at(Call.input_shape(mode,geometry),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}},Gradient.group_length())):
+  InputKernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+gh,+gw} = geometry
+  +g = {InputKernel.Geometry{c,o,h,w,k,s,p,gh,gw} : InputKernel.Geometry}
+  +values = Call.input_shape(mode,g)
+  +axis = Conv.lane_of(Call.batched(mode))
+  +dcells = Call.gradient_cell_shape(mode,g)
+  +images = U32.to_nat(Call.images(mode))
+  +rows = U32.to_nat(gh)
+  +columns = U32.to_nat(gw)
+  +image = gradient_image(mode,g)
+  +rooms = gradient_rooms(~DL,~d_value,d_context,mode,g,limits,default_capacity,positive,dm,df,dw,d_contract)
+  +plane_room = rooms_plane(limits,images,o,rows,columns,rooms)
+  +own = {%Call.gradient_lanes(mode,g) :
+      TiledPublic.Contract(~DL,~d_value,d_context,values,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,_,Grid.Innermost{}})
+      d_contract :
+    TiledPublic.Contract(~DL,~d_value,d_context,values,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,o,Grid.Innermost{}})}
+  %Equal.sym(U32,Grid.lanes_at(values,axis),o,Call.gradient_lanes(mode,g)) :
+    TiledBiasCall(~DL,~d_value,d_context,mode,g,
+      Gradient.bias_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,_,Grid.Innermost{}},Gradient.group_length()))
+  bias_call(~DL,~d_value,d_context,values,axis,Call.gradient_outer(mode,g),Call.gradient_after(g),limits,default_capacity,Call.images(mode),o,gh,gw,
+    Call.gradient_geometry(mode,g),gradient_named(mode,g),rooms_lanes(limits,images,o,rows,columns,rooms),positive,Call.gradient_after_word(limits,g,plane_room),
+    Call.gradient_outer_exact(limits,mode,g,plane_room,rooms_outer(limits,images,o,rows,columns,rooms)),rooms_total(limits,images,o,rows,columns,rooms),
+    ParameterCells.sizes_width(image,ParameterCells.image_sizes(image,positive)),dm,df,dw,own)
 
-def weight_geometry_ready_limits(+limits: Machine.Limits,
-  +aligned: {U32.is_eq((Machine.capacity(limits) % 8 : U32),0) == True{} : Bool},+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +positive: WeightPositive<xi,di,k,s,g>,+count: U32,
-  +exact: {ShapeLaws.elements(weight_shape(xi,di,k)) == U32.to_nat(count) : Nat},
-  +bounded: {U32.is_le(count,Machine.capacity(limits)) == True{} : Bool}) -> WeightGeometry<xi,di,k,s,p>:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+rows,+columns} = di
-  WeightPositive{+xp,+dp,+kp,+sp,gp,images} = positive
-  +xc = Logic.left((U32.is_lt(0,n) && U32.is_lt(0,c)) && U32.is_lt(0,h),U32.is_lt(0,w),xp)
-  +nc = Logic.left(U32.is_lt(0,n) && U32.is_lt(0,c),U32.is_lt(0,h),xc)
-  +cp_word = Logic.right(U32.is_lt(0,n),U32.is_lt(0,c),nc)
-  +dr = Logic.left((U32.is_lt(0,dn) && U32.is_lt(0,o)) && U32.is_lt(0,rows),U32.is_lt(0,columns),dp)
-  +no = Logic.left(U32.is_lt(0,dn) && U32.is_lt(0,o),U32.is_lt(0,rows),dr)
-  +op_word = Logic.right(U32.is_lt(0,dn),U32.is_lt(0,o),no)
-  +columns_word = Logic.right((U32.is_lt(0,dn) && U32.is_lt(0,o)) && U32.is_lt(0,rows),U32.is_lt(0,columns),dp)
-  +cp = {%Comparison.lt(0,c) : {_ == True{} : Bool} cp_word : {Nat.is_lt(0n,U32.to_nat(c)) == True{} : Bool}}
-  +op = {%Comparison.lt(0,o) : {_ == True{} : Bool} op_word : {Nat.is_lt(0n,U32.to_nat(o)) == True{} : Bool}}
-  +kernel_positive = {%Comparison.lt(0,k) : {_ == True{} : Bool} kp : {Nat.is_lt(0n,U32.to_nat(k)) == True{} : Bool}}
-  +stride_positive = {%Comparison.lt(0,s) : {_ == True{} : Bool} sp : {Nat.is_lt(0n,U32.to_nat(s)) == True{} : Bool}}
-  +columns_positive = {%Comparison.lt(0,columns) : {_ == True{} : Bool} columns_word : {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool}}
-  +square = Nat.mul(U32.to_nat(k),U32.to_nat(k))
-  +taps = weight_tap_count(xi,k)
-  +total = Nat.mul(U32.to_nat(o),taps)
+# The output gradient arranged with its outputs in the lanes and the groups
+# innermost, as the cells of a model.
+def bias_arranged(~DL: Data,~d_value: DL -> U32 -> F32,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +positive: {Parameter.positive(gradient_image(mode,geometry)) == True{} : Bool},
+  gradient: Tiled.Tiled,+held: Relane.Arranged(~DL,~d_value,d_context,Call.input_shape(mode,geometry),gradient,Conv.lane_of(Call.batched(mode)),Grid.Innermost{})) ->
+  TiledBiasCall(~DL,~d_value,d_context,mode,geometry,Gradient.bias_cells(Tiled.arranged(gradient,Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),Gradient.group_length())):
+  KernelGemm.Both{+form,+arranged} = held
+  +dshape = Call.input_shape(mode,geometry)
+  +axis = Conv.lane_of(Call.batched(mode))
+  %Equal.sym(Tiled.Tiled,Tiled.arranged(gradient,axis,Grid.Innermost{}),
+      Tiled.Tiled{Tiled.cells_of(Tiled.arranged(gradient,axis,Grid.Innermost{})),axis,Grid.lanes_at(dshape,axis),Grid.Innermost{}},form) :
+    TiledBiasCall(~DL,~d_value,d_context,mode,geometry,Gradient.bias_cells(_,Gradient.group_length()))
+  Relane.modeled(~DL,~d_value,(tiled => TiledBiasCall(~DL,~d_value,d_context,mode,geometry,Gradient.bias_cells(tiled,Gradient.group_length()))),
+    d_context,dshape,Tiled.cells_of(Tiled.arranged(gradient,axis,Grid.Innermost{})),axis,Grid.lanes_at(dshape,axis),Grid.Innermost{},arranged,
+    dm => df => dw => d_contract => bias_modeled(~DL,~d_value,d_context,mode,geometry,limits,default_capacity,positive,dm,df,dw,d_contract))
+
+# The output gradient as the cells of a model, moved onto its outputs.
+def bias_packed(~DL: Data,~d_value: DL -> U32 -> F32,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +positive: {Parameter.positive(gradient_image(mode,geometry)) == True{} : Bool},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xs: List<&2,U32>,+xf: Tile.Tile8,+xw: U32,+xa: Nat,+xl: U32,+xp: Grid.Position,
+  +packed: TiledPublic.Contract(~DL,~d_value,d_context,Call.input_shape(mode,geometry),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp})) ->
+  TiledBiasCall(~DL,~d_value,d_context,mode,geometry,Gradient.bias(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp})):
+  KernelGemm.Both{+global,TiledPublic.Laid{+inside,+shaped,+restored,+counted,+pinned}} = packed
+  +dshape = Call.input_shape(mode,geometry)
+  +axis = Conv.lane_of(Call.batched(mode))
+  +own = {KernelGemm.Both{global,TiledPublic.Laid{inside,shaped,restored,counted,pinned}} : TiledPublic.Contract(~DL,~d_value,d_context,dshape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp})}
+  +rank_room = Order.transitive(List.length(&2,U32,dshape),4n,U32.to_nat(Machine.capacity(limits)),Call.gradient_rank(mode,geometry),Call.four_room(limits))
+  %Equal.sym(List<&2,U32>,Tiled.logical_shape(xs,xa,xl,xp),dshape,restored) :
+    TiledBiasCall(~DL,~d_value,d_context,mode,geometry,
+      Gradient.bias_cells(Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},Tiled.lane_axis(List.length(&2,U32,_)),Grid.Innermost{}),Gradient.group_length()))
+  %Equal.sym(Nat,Tiled.lane_axis(List.length(&2,U32,dshape)),axis,Call.shape_axis(mode,geometry)) :
+    TiledBiasCall(~DL,~d_value,d_context,mode,geometry,Gradient.bias_cells(Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},_,Grid.Innermost{}),Gradient.group_length()))
+  bias_arranged(~DL,~d_value,d_context,mode,geometry,limits,default_capacity,positive,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},
+    Relane.arranged_held(~DL,~d_value,d_context,dshape,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},axis,Grid.Innermost{},limits,default_capacity,Call.gradient_axis_inside(mode,geometry),
+      gradient_nonempty(mode,geometry,positive),rank_room,own))
+
+# The public bias gradient: an output gradient of the contract of the shape of
+# a call whose image sizes are positive gives the bias gradient of its reader
+# with the outputs in its lanes, and comes back holding its reader.
+def tiled_bias(~DL: Data,~d_value: DL -> U32 -> F32,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  gradient: Tiled.Tiled,+d_contract: TiledPublic.Contract(~DL,~d_value,d_context,Call.input_shape(mode,geometry),gradient),
+  +positive: {Parameter.positive(gradient_image(mode,geometry)) == True{} : Bool}) ->
+  TiledBiasCall(~DL,~d_value,d_context,mode,geometry,Gradient.bias(gradient)):
+  TiledPublic.by_packed(~DL,~d_value,(tiled => TiledBiasCall(~DL,~d_value,d_context,mode,geometry,Gradient.bias(tiled))),d_context,Call.input_shape(mode,geometry),
+    gradient,d_contract,
+    xm => xs => xf => xw => xa => xl => xp => packed => bias_packed(~DL,~d_value,d_context,mode,geometry,Default.limits(),{==},positive,xm,xs,xf,xw,xa,xl,xp,packed))
+
+# ---- The weight gradient of the cells of x and d ----
+
+# The facts the weight bridge reads about the words of a call.
+type WeightRooms<-limits: Machine.Limits,-n: U32,-c: U32,-h: U32,-w: U32,-o: U32,-rows: U32,-columns: U32,-k: U32,-g: U32> is Data:
+  WeightRooms{x_groups_exact: {U32.to_nat(Tiled.groups(c)) == Kernel.groups(U32.to_nat(c)) : Nat},
+    x_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(h),U32.to_nat(w))),Kernel.groups(U32.to_nat(c))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    blocks_exact: {U32.to_nat(((c + 7) / 8 : U32)) == Ceiling.ceiling(U32.to_nat(c),8n) : Nat},
+    d_groups_exact: {U32.to_nat(Tiled.groups(o)) == Kernel.groups(U32.to_nat(o)) : Nat},
+    d_room: {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))),Kernel.groups(U32.to_nat(o))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool},
+    channels_positive: {Nat.is_lt(0n,U32.to_nat(c)) == True{} : Bool},kernel_positive: {Nat.is_lt(0n,U32.to_nat(k)) == True{} : Bool},
+    columns_positive: {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool},group_positive: {Nat.is_lt(0n,U32.to_nat(g)) == True{} : Bool},
+    outputs_positive: {Nat.is_lt(0n,U32.to_nat(o)) == True{} : Bool},
+    weights_room: {Nat.is_le(Nat.mul(U32.to_nat(o),Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}}
+
+# The taps of a call are positive and fit the capacity, and so do its
+# outputs.
+def rooms_taps_positive(-limits: Machine.Limits,-n: U32,+c: U32,-h: U32,-w: U32,-o: U32,-rows: U32,-columns: U32,+k: U32,-g: U32,
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>) -> {Nat.is_lt(0n,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))) == True{} : Bool}:
+  WeightRooms{x_groups_exact,x_room,blocks_exact,d_groups_exact,d_room,+channels_positive,+kernel_positive,columns_positive,group_positive,outputs_positive,weights_room} = rooms
+  Order.product_positive(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)),channels_positive,Order.product_positive(U32.to_nat(k),U32.to_nat(k),kernel_positive,kernel_positive))
+
+def rooms_taps(+limits: Machine.Limits,-n: U32,+c: U32,-h: U32,-w: U32,+o: U32,-rows: U32,-columns: U32,+k: U32,-g: U32,
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>) ->
+  {Nat.is_le(Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  WeightRooms{x_groups_exact,x_room,blocks_exact,d_groups_exact,d_room,channels_positive,kernel_positive,columns_positive,group_positive,+outputs_positive,+weights_room} = rooms
+  +taps = Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
+  +outputs = U32.to_nat(o)
+  Order.transitive(taps,Nat.mul(outputs,taps),U32.to_nat(Machine.capacity(limits)),
+    {%RowMajor.multiply_commutative(taps,outputs) : {Nat.is_le(taps,_) == True{} : Bool} RowMajor.product_covers(taps,outputs,outputs_positive) :
+      {Nat.is_le(taps,Nat.mul(outputs,taps)) == True{} : Bool}},weights_room)
+
+def rooms_outputs(+limits: Machine.Limits,-n: U32,+c: U32,-h: U32,-w: U32,+o: U32,-rows: U32,-columns: U32,+k: U32,-g: U32,
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>) -> {Nat.is_le(U32.to_nat(o),U32.to_nat(Machine.capacity(limits))) == True{} : Bool}:
+  WeightRooms{x_groups_exact,x_room,blocks_exact,d_groups_exact,d_room,+channels_positive,+kernel_positive,columns_positive,group_positive,outputs_positive,+weights_room} = rooms
+  +taps = Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
+  Order.transitive(U32.to_nat(o),Nat.mul(U32.to_nat(o),taps),U32.to_nat(Machine.capacity(limits)),
+    RowMajor.product_covers(U32.to_nat(o),taps,
+      Order.product_positive(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)),channels_positive,Order.product_positive(U32.to_nat(k),U32.to_nat(k),kernel_positive,kernel_positive))),
+    weights_room)
+
+# A tap and an output below their counts name a tap and an output of the
+# geometry of a call.
+def tap_word_inside(+n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+tap: Nat,+capacity: U32,
+  +taps_room: {Nat.is_le(Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))),U32.to_nat(capacity)) == True{} : Bool},
+  +below: {Nat.is_lt(tap,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))) == True{} : Bool}) ->
+  {U32.is_lt(U32.from_nat(tap),Packing.geometry_taps(ParameterCells.call_geometry(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p))) ==
+    True{} : Bool}:
+  +taps = Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
+  +room = Order.transitive(tap,taps,U32.to_nat(capacity),Bounds.strict_le(tap,taps,below),taps_room)
+  %Equal.sym(Bool,U32.is_lt(U32.from_nat(tap),U32.from_nat(taps)),Nat.is_lt(U32.to_nat(U32.from_nat(tap)),U32.to_nat(U32.from_nat(taps))),
+      Comparison.lt(U32.from_nat(tap),U32.from_nat(taps))) :
+    {_ == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.from_nat(tap)),tap,FullRange.roundtrip(tap,capacity,room)) : {Nat.is_lt(_,U32.to_nat(U32.from_nat(taps))) == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.from_nat(taps)),taps,FullRange.roundtrip(taps,capacity,taps_room)) : {Nat.is_lt(tap,_) == True{} : Bool}
+  below
+
+def output_word_inside(+n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+channel: Nat,+capacity: U32,
+  +outputs_room: {Nat.is_le(U32.to_nat(o),U32.to_nat(capacity)) == True{} : Bool},+below: {Nat.is_lt(channel,U32.to_nat(o)) == True{} : Bool}) ->
+  {U32.is_lt(U32.from_nat(channel),Groups.geometry_outputs(ParameterCells.call_geometry(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p))) ==
+    True{} : Bool}:
+  +room = Order.transitive(channel,U32.to_nat(o),U32.to_nat(capacity),Bounds.strict_le(channel,U32.to_nat(o),below),outputs_room)
+  %Equal.sym(Bool,U32.is_lt(U32.from_nat(channel),o),Nat.is_lt(U32.to_nat(U32.from_nat(channel)),U32.to_nat(o)),Comparison.lt(U32.from_nat(channel),o)) : {_ == True{} : Bool}
+  %Equal.sym(Nat,U32.to_nat(U32.from_nat(channel)),channel,FullRange.roundtrip(channel,capacity,room)) : {Nat.is_lt(_,U32.to_nat(o)) == True{} : Bool}
+  below
+
+# A lane of a cell the weight kernel writes for the lifted x and d, below the
+# outputs, is the weight the weight reader reads at its output and tap.
+def weight_value_lane(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_logical: XL,+x_outer: U32,+x_after: U32,+d_logical: DL,+d_outer: U32,
+  +d_after: U32,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+g: U32,
+  +x_cells: List<&2,U32>,+x_named: {Parameter.cell_image(x_cells,c) == Some{Parameter.ImageGeometry{n,c,h,w}} : Maybe<&2,Parameter.ImageGeometry>},+x_counted: Global.Counted<x_cells>,
+  +d_cells: List<&2,U32>,+d_named: {Parameter.cell_image(d_cells,o) == Some{Parameter.ImageGeometry{n,o,rows,columns}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g,limits) == True{} : Bool},
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>,
+  +x_after_exact: {U32.to_nat(x_after) == Nat.mul(U32.to_nat(h),U32.to_nat(w)) : Nat},
+  +x_outer_exact: {U32.to_nat(x_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(h),U32.to_nat(w))) : Nat},
+  +d_after_exact: {U32.to_nat(d_after) == Nat.mul(U32.to_nat(rows),U32.to_nat(columns)) : Nat},
+  +d_outer_exact: {U32.to_nat(d_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))) : Nat},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}},
+    x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),x_cells,xf,Tensors.Usable{},xw}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}},
+    d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw}),
+  +cell: Nat,+lane: Nat,+below: {Nat.is_lt(lane,8n) == True{} : Bool},
+  +inside: {Nat.is_lt(Nat.add(lane,Nat.mul(Nat.div(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),8n)),U32.to_nat(o)) == True{} : Bool}) ->
+  {TileLaws.select_lane(lane,Buffer.value(~Tile.Tile8,U32.from_nat(cell),Buffer.contents(~Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+      WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),
+        Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))))) ==
+    Terms.weight_at(~XL,~x_value,~DL,~d_value,Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g},
+      U32.from_nat(Nat.add(Nat.mul(Nat.add(lane,Nat.mul(Nat.div(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),8n)),
+        Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),Nat.mod(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))))))) : F32}:
+  WeightRooms{+x_groups_exact,+x_room,+blocks_exact,+d_groups_exact,+d_room,+channels_positive,+kernel_positive,+columns_positive,+group_positive,+outputs_positive,+weights_room} = rooms
+  +xi = {Parameter.ImageGeometry{n,c,h,w} : Parameter.ImageGeometry}
+  +di = {Parameter.ImageGeometry{n,o,rows,columns} : Parameter.ImageGeometry}
+  +call = {ParameterCells.Call{limits,default_capacity,x_cells,c,xi,x_named,x_counted,d_cells,o,di,d_named,d_counted,k,s,p,g,valid} : ParameterCells.Call}
+  +x_holder = {Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}} : Representation.Lifted<XL>}
+  +d_holder = {Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +batch = ParameterCells.batch_of(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),x_holder,d_holder,call)
+  +geometry = ParameterCells.call_geometry(xi,di,k,s,p)
   +capacity = Machine.capacity(limits)
   +cap = U32.to_nat(capacity)
-  +square_positive = Order.product_positive(U32.to_nat(k),U32.to_nat(k),kernel_positive,kernel_positive)
-  +taps_positive = Order.product_positive(U32.to_nat(c),square,cp,square_positive)
-  +total_bound = {%weight_shape_count(o,c,k) : {Nat.is_le(_,cap) == True{} : Bool}
-    %Equal.sym(Nat,ShapeLaws.elements([o,c,k,k]),U32.to_nat(count),exact) : {Nat.is_le(_,cap) == True{} : Bool}
-    %Comparison.le(count,capacity) : {_ == True{} : Bool} bounded : {Nat.is_le(total,cap) == True{} : Bool}}
-  +taps_bound = Order.transitive(taps,total,cap,
-    %RowMajor.multiply_commutative(taps,U32.to_nat(o)) : {Nat.is_le(taps,_) == True{} : Bool} RowMajor.product_covers(taps,U32.to_nat(o),op),total_bound)
-  +square_bound = Order.transitive(square,taps,cap,
-    %RowMajor.multiply_commutative(square,U32.to_nat(c)) : {Nat.is_le(square,_) == True{} : Bool} RowMajor.product_covers(square,U32.to_nat(c),cp),taps_bound)
-  +taps_exact = FullRange.roundtrip(taps,capacity,taps_bound)
-  +native_taps_positive = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(taps)),taps,taps_exact) : {Nat.is_lt(0n,_) == True{} : Bool} taps_positive : {Nat.is_lt(0n,U32.to_nat(U32.from_nat(taps))) == True{} : Bool}}
-  +native_count_bound = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(taps)),taps,taps_exact) : {Nat.is_le(Nat.mul(_,U32.to_nat(o)),cap) == True{} : Bool}
-    %Equal.sym(Nat,Nat.mul(taps,U32.to_nat(o)),total,RowMajor.multiply_commutative(taps,U32.to_nat(o))) : {Nat.is_le(_,cap) == True{} : Bool}
-    total_bound : {Nat.is_le(Nat.mul(U32.to_nat(U32.from_nat(taps)),U32.to_nat(o)),cap) == True{} : Bool}}
-  WeightGeometry{WeightGroups.GeometryReady{limits,columns_positive,kernel_positive,stride_positive,square_bound,native_taps_positive,op,native_count_bound,aligned},taps_exact}
+  +taps = Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
+  +taps_positive = rooms_taps_positive(limits,n,c,h,w,o,rows,columns,k,g,rooms)
+  +taps_room = rooms_taps(limits,n,c,h,w,o,rows,columns,k,g,rooms)
+  +outputs_room = rooms_outputs(limits,n,c,h,w,o,rows,columns,k,g,rooms)
+  +block = Nat.div(cell,taps)
+  +tap_nat = Nat.mod(cell,taps)
+  +channel = Nat.add(lane,Nat.mul(block,8n))
+  +tap_below = DivisionOrder.remainder_small(cell,taps,taps_positive)
+  +tap = U32.from_nat(tap_nat)
+  +output = U32.from_nat(channel)
+  +tap_inside = tap_word_inside(n,c,h,w,o,rows,columns,k,s,p,tap_nat,capacity,taps_room,tap_below)
+  +output_inside = output_word_inside(n,c,h,w,o,rows,columns,k,s,p,channel,capacity,outputs_room,inside)
+  +tap_back = FullRange.roundtrip(tap_nat,capacity,Order.transitive(tap_nat,taps,cap,Bounds.strict_le(tap_nat,taps,tap_below),taps_room))
+  +channel_back = FullRange.roundtrip(channel,capacity,Order.transitive(channel,U32.to_nat(o),cap,Bounds.strict_le(channel,U32.to_nat(o),inside),outputs_room))
+  +taps_back = Groups.taps_exact_of(geometry,ParameterCells.call_domain(xi,di,k,s,p,g,limits,default_capacity,valid))
+  +index = Nat.add(Nat.mul(channel,taps),tap_nat)
+  +index_room = Order.transitive(index,Nat.mul(U32.to_nat(o),taps),cap,
+    Bounds.strict_le(index,Nat.mul(U32.to_nat(o),taps),Representation.index_inside(Grid.Outermost{},taps,U32.to_nat(o),tap_nat,channel,tap_below,inside)),weights_room)
+  +index_back = FullRange.roundtrip(index,capacity,index_room)
+  +levels = Images.lane_levels(Images.batch_images(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),batch),
+    Images.held_images(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+      Images.batch_images(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),batch),0n,batch,tap,output))
+  +contents = Buffer.contents(~Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+    WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))
+  +cells = ParameterCells.weight_cells(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+    x_holder,d_holder,call,U32.max(xw,dw),tap,output,tap_inside,output_inside,PiecesModel.pack(~Tile.Tile8,xm),xf,xw,x_shaped,PiecesModel.pack(~Tile.Tile8,dm),df,dw,d_shaped)
+  +lane_eq = ParameterCells.value_lane(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+    x_holder,d_holder,call,tap,output,
+    WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))),
+    cells,tap_inside,output_inside)
+  +mod_eq = Equal.trans(Nat,Nat.mod(U32.to_nat(output),8n),Nat.mod(channel,8n),lane,Equal.cong(Nat,Nat,value => Nat.mod(value,8n),U32.to_nat(output),channel,channel_back),
+    DivisionOrder.shifted_small_remainder(lane,8n,block,{==},below))
+  +quotient_eq = DivisionOrder.shifted_small_quotient(lane,8n,block,{==},below)
+  +cell_eq = {%Equal.sym(Nat,U32.to_nat(tap),tap_nat,tap_back) : {Nat.add(Nat.mul(Nat.div(U32.to_nat(output),8n),Groups.tap_count(geometry)),_) == cell : Nat}
+      %Equal.sym(Nat,Groups.tap_count(geometry),taps,taps_back) : {Nat.add(Nat.mul(Nat.div(U32.to_nat(output),8n),_),tap_nat) == cell : Nat}
+      %Equal.sym(Nat,U32.to_nat(output),channel,channel_back) : {Nat.add(Nat.mul(Nat.div(_,8n),taps),tap_nat) == cell : Nat}
+      %Equal.sym(Nat,Nat.div(channel,8n),block,quotient_eq) : {Nat.add(Nat.mul(_,taps),tap_nat) == cell : Nat}
+      Equal.sym(Nat,cell,Nat.add(Nat.mul(block,taps),tap_nat),DivisionOrder.quotient_exact(cell,taps,taps_positive)) :
+    {Routes.cell_index(geometry,tap,output) == cell : Nat}}
+  +left = {%cell_eq : {TileLaws.select_lane(lane,Buffer.value(~Tile.Tile8,U32.from_nat(_),contents)) == levels : F32}
+      %mod_eq : {TileLaws.select_lane(_,Buffer.value(~Tile.Tile8,U32.from_nat(Routes.cell_index(geometry,tap,output)),contents)) == levels : F32}
+      lane_eq :
+    {TileLaws.select_lane(lane,Buffer.value(~Tile.Tile8,U32.from_nat(cell),contents)) == levels : F32}}
+  +problem_geometry = {WeightKernel.Geometry{c,o,h,w,k,s,p,rows,columns,U32.from_nat(taps)} : WeightKernel.Geometry}
+  +level_eq = Terms.weight_lane(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,c,Tiled.groups(c),d_logical,d_outer,d_after,o,Tiled.groups(o),c,o,h,w,k,s,p,rows,columns,
+    U32.from_nat(taps),U32.to_nat(n),U32.to_nat(g),tap,output,capacity,x_after_exact,{==},x_groups_exact,x_outer_exact,x_room,blocks_exact,d_after_exact,{==},d_groups_exact,
+    d_outer_exact,d_room,channels_positive,kernel_positive,columns_positive,group_positive,
+    %Equal.sym(Nat,U32.to_nat(tap),tap_nat,tap_back) : {Nat.is_lt(_,taps) == True{} : Bool} tap_below,
+    %Equal.sym(Nat,U32.to_nat(output),channel,channel_back) : {Nat.is_lt(_,U32.to_nat(o)) == True{} : Bool} inside,
+    batch,{==},{==},{==},{==},{==})
+  +right = {%Equal.sym(Nat,U32.to_nat(U32.from_nat(index)),index,index_back) :
+        {levels == Spec.weight(~Terms.Operand<XL,DL>,~Terms.operand_at(~XL,~x_value,~DL,~d_value),
+          Terms.weight_problem(~XL,~DL,x_logical,d_logical,problem_geometry,U32.to_nat(n),U32.to_nat(g)),_) : F32}
+      %tap_back :
+        {levels == Spec.weight(~Terms.Operand<XL,DL>,~Terms.operand_at(~XL,~x_value,~DL,~d_value),
+          Terms.weight_problem(~XL,~DL,x_logical,d_logical,problem_geometry,U32.to_nat(n),U32.to_nat(g)),Nat.add(Nat.mul(channel,taps),_)) : F32}
+      %channel_back :
+        {levels == Spec.weight(~Terms.Operand<XL,DL>,~Terms.operand_at(~XL,~x_value,~DL,~d_value),
+          Terms.weight_problem(~XL,~DL,x_logical,d_logical,problem_geometry,U32.to_nat(n),U32.to_nat(g)),Nat.add(Nat.mul(_,taps),U32.to_nat(tap))) : F32}
+      level_eq :
+    {levels == Terms.weight_at(~XL,~x_value,~DL,~d_value,Terms.WeightRead{x_logical,d_logical,Some{xi},Some{di},k,s,p,g},U32.from_nat(index)) : F32}}
+  Equal.trans(F32,TileLaws.select_lane(lane,Buffer.value(~Tile.Tile8,U32.from_nat(cell),contents)),levels,
+    Terms.weight_at(~XL,~x_value,~DL,~d_value,Terms.WeightRead{x_logical,d_logical,Some{xi},Some{di},k,s,p,g},U32.from_nat(index)),left,right)
 
-def weight_geometry_ready(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +positive: WeightPositive<xi,di,k,s,g>,+count: U32,counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count>) -> WeightGeometry<xi,di,k,s,p>:
-  Count.Count{exact,bounded} = counted
-  weight_geometry_ready_limits(Default.limits(),{==},xi,di,k,s,p,g,positive,count,exact,bounded)
-
-def weight_list_numeric_domain(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+x: Buffer.Model<F32>,+d: Buffer.Model<F32>,+index: Nat,
-  +positive: WeightPositive<xi,di,k,s,g>,+geometry_ready: WeightGeometry<xi,di,k,s,p>,+count: U32,
-  +counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count>,+inside: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool}) ->
-  {ListRead.at(~F32,0.0,index,weight_list(Parameter.work(xi,di,k,s,p,g),x,d)) == weight_value(xi,di,k,s,p,g,x,d,index) : F32}:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{dn,+o,rows,+columns} = di
-  WeightPositive{+xp,dp,kp,sp,+gp,images} = positive
-  WeightGeometry{+domain,+taps_exact} = geometry_ready
-  WeightGroups.GeometryReady{limits,+columns_positive,+kernel_positive,stride_positive,square,+native_taps_positive,outputs_positive,bound,aligned} = domain
-  Count.Count{+exact,bounded} = counted
-  +taps = weight_tap_count(xi,k)
-  +native_taps = WeightPacking.geometry_taps(weight_geometry(xi,di,k,s,p))
-  +taps_positive = {%taps_exact : {Nat.is_lt(0n,_) == True{} : Bool} native_taps_positive : {Nat.is_lt(0n,taps) == True{} : Bool}}
-  +index_inside = {%weight_shape_count(o,c,k) : {Nat.is_lt(index,_) == True{} : Bool}
-    %Equal.sym(Nat,ShapeLaws.elements([o,c,k,k]),U32.to_nat(count),exact) : {Nat.is_lt(index,_) == True{} : Bool}
-    inside : {Nat.is_lt(index,Nat.mul(U32.to_nat(o),taps)) == True{} : Bool}}
-  +tap = Nat.mod(index,taps)
-  +output = Nat.div(index,taps)
-  +tap_inside = DivisionOrder.remainder_small(index,taps,taps_positive)
-  +output_inside = DivisionOrder.quotient_below(index,U32.to_nat(o),taps,taps_positive,index_inside)
-  +tap_word = U32.from_nat(tap)
-  +output_word = U32.from_nat(output)
-  +tap_exact = FullRange.roundtrip(tap,native_taps,
-    %Equal.sym(Nat,U32.to_nat(native_taps),taps,taps_exact) : {Nat.is_le(tap,_) == True{} : Bool}
-    Bounds.strict_le(tap,taps,tap_inside))
-  +output_exact = FullRange.roundtrip(output,o,Bounds.strict_le(output,U32.to_nat(o),output_inside))
-  +native_tap_inside = {%Equal.sym(Bool,U32.is_lt(tap_word,native_taps),Nat.is_lt(U32.to_nat(tap_word),U32.to_nat(native_taps)),Comparison.lt(tap_word,native_taps)) : {_ == True{} : Bool}
-    %Equal.sym(Nat,U32.to_nat(tap_word),tap,tap_exact) : {Nat.is_lt(_,U32.to_nat(native_taps)) == True{} : Bool}
-    %Equal.sym(Nat,U32.to_nat(native_taps),taps,taps_exact) : {Nat.is_lt(tap,_) == True{} : Bool}
-    tap_inside : {U32.is_lt(tap_word,native_taps) == True{} : Bool}}
-  +native_output_inside = {%Equal.sym(Bool,U32.is_lt(output_word,o),Nat.is_lt(U32.to_nat(output_word),U32.to_nat(o)),Comparison.lt(output_word,o)) : {_ == True{} : Bool}
-    %Equal.sym(Nat,U32.to_nat(output_word),output,output_exact) : {Nat.is_lt(_,U32.to_nat(o)) == True{} : Bool}
-    output_inside : {U32.is_lt(output_word,o) == True{} : Bool}}
-  +xc = Logic.left((U32.is_lt(0,n) && U32.is_lt(0,c)) && U32.is_lt(0,h),U32.is_lt(0,w),xp)
-  +nc = Logic.left(U32.is_lt(0,n) && U32.is_lt(0,c),U32.is_lt(0,h),xc)
-  +cp_word = Logic.right(U32.is_lt(0,n),U32.is_lt(0,c),nc)
-  +cp = {%Comparison.lt(0,c) : {_ == True{} : Bool} cp_word : {Nat.is_lt(0n,U32.to_nat(c)) == True{} : Bool}}
-  +size_positive = {%Comparison.lt(0,g) : {_ == True{} : Bool} gp : {Nat.is_lt(0n,U32.to_nat(g)) == True{} : Bool}}
-  +query = {WeightModel.GroupQuery{weight_geometry(xi,di,k,s,p),domain,g,0,x,d,tap_word,output_word,native_tap_inside,native_output_inside} : WeightModel.GroupQuery}
-  +leaf = {Shape.Both{cp,Shape.Both{kernel_positive,Shape.Both{columns_positive,
-    %Equal.sym(Nat,U32.to_nat(tap_word),tap,tap_exact) : {Nat.is_lt(_,taps) == True{} : Bool} tap_inside}}} : Bridge.PackedLeaf(weight_geometry(xi,di,k,s,p),tap_word)}
-  +spec_index = {%Equal.sym(Nat,U32.to_nat(output_word),output,output_exact) : {Nat.add(Nat.mul(_,taps),U32.to_nat(tap_word)) == index : Nat}
-    %Equal.sym(Nat,U32.to_nat(tap_word),tap,tap_exact) : {Nat.add(Nat.mul(output,taps),_) == index : Nat}
-    Equal.sym(Nat,index,Nat.add(Nat.mul(output,taps),tap),DivisionOrder.quotient_exact(index,taps,taps_positive)) : {Bridge.group_spec_element(query) == index : Nat}}
-  +actual_index = Equal.trans(Nat,WeightModel.group_query_element(query),Bridge.group_spec_element(query),index,Bridge.native_weight_element(query,taps_exact),spec_index)
-  +work_equal = WeightModel.native_query_weight(query,n,size_positive,{==})
-  %actual_index : {ListRead.at(~F32,0.0,_,weight_list(Parameter.work(xi,di,k,s,p,g),x,d)) == weight_value(xi,di,k,s,p,g,x,d,index) : F32}
-  %work_equal : {ListRead.at(~F32,0.0,WeightModel.group_query_element(query),WeightModel.weight_values(_)) == weight_value(xi,di,k,s,p,g,x,d,index) : F32}
-  %spec_index : {ListRead.at(~F32,0.0,WeightModel.group_query_element(query),WeightModel.weight_values(WeightModel.query_weight(WeightModel.native_batch_query(query,n,size_positive)))) == Spec.weight(~Tree.Tree<F32>,~Bridge.at,Bridge.group_spec_problem(query,n),_) : F32}
-  Bridge.native_weight_spec(query,n,leaf,size_positive)
-
-# ---- A part of the outputs is a slice of the weight gradient ----
-
-# The two reads of one weight term.
-def gradient_read(gradient: Tree.Tree<F32>,+outputs: Nat,+rows: Nat,+columns: Nat,+image: Nat,+output: Nat,+position: Nat) -> F32:
-  Bridge.at(gradient,Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,outputs),output),rows),columns),position))
-
-def input_read(input: Tree.Tree<F32>,+c: Nat,+h: Nat,+w: Nat,+s: Nat,+pad: Nat,+columns: Nat,+image: Nat,+t: Nat,+r: Nat,+channel: Nat,+position: Nat) -> F32:
-  +y = Nat.add(r,Nat.mul(Nat.div(position,columns),s))
-  +x = Nat.add(t,Nat.mul(Nat.mod(position,columns),s))
-  Spec.sampled(~Tree.Tree<F32>,~Bridge.at,Nat.is_le(pad,y) && Nat.is_lt(y,Nat.add(pad,h)) && Nat.is_le(pad,x) && Nat.is_lt(x,Nat.add(pad,w)),input,
-    Nat.add(Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,c),channel),h),w),Nat.mul(Nat.sub(y,pad),w)),Nat.sub(x,pad)))
-
-def term_read(+n: Nat,+c: Nat,+o: Nat,+h: Nat,+w: Nat,+k: Nat,+s: Nat,+pad: Nat,+rows: Nat,+columns: Nat,+g: Nat,+input: Tree.Tree<F32>,+gradient: Tree.Tree<F32>,
-  +image: Nat,+element: Nat,+position: Nat) ->
-  {Spec.weight_term(~Tree.Tree<F32>,~Bridge.at,Spec.Problem{Spec.Shape{n,c,o,h,w,k,s,pad,rows,columns,g},input,gradient},image,element,position) ==
-    (gradient_read(gradient,o,rows,columns,image,Nat.div(element,Nat.mul(c,Nat.mul(k,k))),position) *
-      input_read(input,c,h,w,s,pad,columns,image,Nat.mod(element,k),Nat.mod(Nat.div(element,k),k),Nat.mod(Nat.div(element,Nat.mul(k,k)),c),position) : F32) : F32}:
+# The logical index of a lane of a cell of the weights, the groups outermost
+# over the taps: the output by the taps and the tap.
+def logical_at(+o: U32,+w_outer: U32,+w_after: U32,+cell: Nat,+taps: Nat,+channel: Nat,
+  +after_exact: {Representation.after_count(Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}}) == taps : Nat},
+  +tap_below: {Nat.is_lt(Nat.mod(cell,taps),taps) == True{} : Bool}) ->
+  {Representation.logical_index(Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}},Nat.mod(cell,taps),channel) == Nat.add(Nat.mul(channel,taps),Nat.mod(cell,taps)) : Nat}:
+  +geometry = {Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}} : Cells.Cells}
+  +tap = Nat.mod(cell,taps)
+  +lanes = U32.to_nat(o)
+  %Equal.sym(Nat,Representation.after_count(geometry),taps,after_exact) :
+    {Nat.add(Nat.mul(Nat.add(Nat.mul(Nat.div(tap,_),lanes),channel),_),Nat.mod(tap,_)) == Nat.add(Nat.mul(channel,taps),tap) : Nat}
+  %Equal.sym(Nat,Nat.div(tap,taps),0n,DivisionOrder.small_quotient(tap,taps,tap_below)) :
+    {Nat.add(Nat.mul(Nat.add(Nat.mul(_,lanes),channel),taps),Nat.mod(tap,taps)) == Nat.add(Nat.mul(channel,taps),tap) : Nat}
+  %Equal.sym(Nat,Nat.mod(tap,taps),tap,DivisionOrder.small_remainder(tap,taps,tap_below)) :
+    {Nat.add(Nat.mul(Nat.add(Nat.mul(0n,lanes),channel),taps),_) == Nat.add(Nat.mul(channel,taps),tap) : Nat}
   {==}
 
-# An element first outputs later reads the same tap of the output first
-# places later.
-def shifted_taps(+first: Nat,+c: Nat,+k: Nat) -> {Nat.mul(first,Nat.mul(c,Nat.mul(k,k))) == Nat.mul(Nat.mul(Nat.mul(first,c),k),k) : Nat}:
-  %RowMajor.assoc(first,c,Nat.mul(k,k)) : {_ == Nat.mul(Nat.mul(Nat.mul(first,c),k),k) : Nat}
-  Equal.sym(Nat,Nat.mul(Nat.mul(Nat.mul(first,c),k),k),Nat.mul(Nat.mul(first,c),Nat.mul(k,k)),RowMajor.assoc(Nat.mul(first,c),k,k))
+# A lane of a cell the weight kernel writes, kept below the outputs, is the
+# lane of the cell of the lifted weight reader.
+def weight_kept(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_logical: XL,+x_outer: U32,+x_after: U32,+d_logical: DL,+d_outer: U32,
+  +d_after: U32,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+g: U32,
+  +x_cells: List<&2,U32>,+x_named: {Parameter.cell_image(x_cells,c) == Some{Parameter.ImageGeometry{n,c,h,w}} : Maybe<&2,Parameter.ImageGeometry>},+x_counted: Global.Counted<x_cells>,
+  +d_cells: List<&2,U32>,+d_named: {Parameter.cell_image(d_cells,o) == Some{Parameter.ImageGeometry{n,o,rows,columns}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g,limits) == True{} : Bool},
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>,
+  +x_after_exact: {U32.to_nat(x_after) == Nat.mul(U32.to_nat(h),U32.to_nat(w)) : Nat},
+  +x_outer_exact: {U32.to_nat(x_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(h),U32.to_nat(w))) : Nat},
+  +d_after_exact: {U32.to_nat(d_after) == Nat.mul(U32.to_nat(rows),U32.to_nat(columns)) : Nat},
+  +d_outer_exact: {U32.to_nat(d_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))) : Nat},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}},
+    x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),x_cells,xf,Tensors.Usable{},xw}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}},
+    d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw}),
+  +cell: Nat,+w_outer: U32,+w_after: U32,
+  +after_exact: {Representation.after_count(Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}}) == Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))) : Nat},
+  +lane: Nat,+below: {Nat.is_lt(lane,8n) == True{} : Bool}) ->
+  {PaddedCells.kept(U32.to_nat(o),Nat.div(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),lane,
+      TileLaws.select_lane(lane,Buffer.value(~Tile.Tile8,U32.from_nat(cell),Buffer.contents(~Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+        WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),
+          Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))))) ==
+    Representation.lane(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value),
+      Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g},
+      Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}},Nat.mod(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),
+      Nat.div(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),lane) : F32}:
+  +taps = Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
+  +block = Nat.div(cell,taps)
+  +tap = Nat.mod(cell,taps)
+  +channel = Nat.add(lane,Nat.mul(block,8n))
+  +read = {Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g} : Terms.WeightRead<XL,DL>}
+  +tile = Buffer.value(~Tile.Tile8,U32.from_nat(cell),Buffer.contents(~Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+    WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),
+      Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))))
+  +tap_below = DivisionOrder.remainder_small(cell,taps,rooms_taps_positive(limits,n,c,h,w,o,rows,columns,k,g,rooms))
+  +logical_eq = logical_at(o,w_outer,w_after,cell,taps,channel,after_exact,tap_below)
+  %Equal.sym(Nat,Representation.logical_index(Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}},tap,channel),Nat.add(Nat.mul(channel,taps),tap),logical_eq) :
+    {PaddedCells.kept(U32.to_nat(o),block,lane,TileLaws.select_lane(lane,tile)) ==
+      Bool.pick(F32,Nat.is_lt(channel,U32.to_nat(o)),Terms.weight_at(~XL,~x_value,~DL,~d_value,read,U32.from_nat(_)),0.0) : F32}
+  PaddedCells.kept_agree(U32.to_nat(o),block,lane,TileLaws.select_lane(lane,tile),Terms.weight_at(~XL,~x_value,~DL,~d_value,read,U32.from_nat(Nat.add(Nat.mul(channel,taps),tap))),
+    Nat.is_lt(channel,U32.to_nat(o)),{==},
+    inside => weight_value_lane(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,cell,lane,below,inside))
 
-def shifted_column(+first: Nat,+c: Nat,+k: Nat,+element: Nat,+kernel_positive: {Nat.is_lt(0n,k) == True{} : Bool}) ->
-  {Nat.mod(Nat.add(Nat.mul(first,Nat.mul(c,Nat.mul(k,k))),element),k) == Nat.mod(element,k) : Nat}:
-  %Equal.sym(Nat,Nat.mul(first,Nat.mul(c,Nat.mul(k,k))),Nat.mul(Nat.mul(Nat.mul(first,c),k),k),shifted_taps(first,c,k)) :
-    {Nat.mod(Nat.add(_,element),k) == Nat.mod(element,k) : Nat}
-  DivisionOrder.remainder_shift(element,k,Nat.mul(Nat.mul(first,c),k),kernel_positive)
+# Every lane of a cell the weight kernel writes, kept below the outputs, is
+# the lane of the cell of the lifted weight reader.
+def weight_valid(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_logical: XL,+x_outer: U32,+x_after: U32,+d_logical: DL,+d_outer: U32,
+  +d_after: U32,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+g: U32,
+  +x_cells: List<&2,U32>,+x_named: {Parameter.cell_image(x_cells,c) == Some{Parameter.ImageGeometry{n,c,h,w}} : Maybe<&2,Parameter.ImageGeometry>},+x_counted: Global.Counted<x_cells>,
+  +d_cells: List<&2,U32>,+d_named: {Parameter.cell_image(d_cells,o) == Some{Parameter.ImageGeometry{n,o,rows,columns}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g,limits) == True{} : Bool},
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>,
+  +x_after_exact: {U32.to_nat(x_after) == Nat.mul(U32.to_nat(h),U32.to_nat(w)) : Nat},
+  +x_outer_exact: {U32.to_nat(x_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(h),U32.to_nat(w))) : Nat},
+  +d_after_exact: {U32.to_nat(d_after) == Nat.mul(U32.to_nat(rows),U32.to_nat(columns)) : Nat},
+  +d_outer_exact: {U32.to_nat(d_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))) : Nat},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}},
+    x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),x_cells,xf,Tensors.Usable{},xw}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}},
+    d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw}),
+  +cell: Nat,+w_outer: U32,+w_after: U32,
+  +after_exact: {Representation.after_count(Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}}) == Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))) : Nat}) ->
+  PaddedCells.Valid<U32.to_nat(o),Nat.div(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),
+    Buffer.value(~Tile.Tile8,U32.from_nat(cell),Buffer.contents(~Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+      WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),
+        Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),
+    Representation.cell(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value),
+      Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g},
+      Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}},Nat.mod(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))),
+      Nat.div(cell,Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))))>:
+  PaddedCells.Valid{
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,0n,{==}),
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,1n,{==}),
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,2n,{==}),
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,3n,{==}),
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,4n,{==}),
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,5n,{==}),
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,6n,{==}),
+    weight_kept(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+      x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+      cell,w_outer,w_after,after_exact,7n,{==})}
 
-def shifted_row(+first: Nat,+c: Nat,+k: Nat,+element: Nat,+kernel_positive: {Nat.is_lt(0n,k) == True{} : Bool}) ->
-  {Nat.mod(Nat.div(Nat.add(Nat.mul(first,Nat.mul(c,Nat.mul(k,k))),element),k),k) == Nat.mod(Nat.div(element,k),k) : Nat}:
-  %Equal.sym(Nat,Nat.mul(first,Nat.mul(c,Nat.mul(k,k))),Nat.mul(Nat.mul(Nat.mul(first,c),k),k),shifted_taps(first,c,k)) :
-    {Nat.mod(Nat.div(Nat.add(_,element),k),k) == Nat.mod(Nat.div(element,k),k) : Nat}
-  %Equal.sym(Nat,Nat.div(Nat.add(Nat.mul(Nat.mul(Nat.mul(first,c),k),k),element),k),Nat.add(Nat.mul(Nat.mul(first,c),k),Nat.div(element,k)),
-      DivisionOrder.quotient_shift(element,k,Nat.mul(Nat.mul(first,c),k),kernel_positive)) :
-    {Nat.mod(_,k) == Nat.mod(Nat.div(element,k),k) : Nat}
-  DivisionOrder.remainder_shift(Nat.div(element,k),k,Nat.mul(first,c),kernel_positive)
+# The weights [o, c, k, k] have their outputs in the lanes and the groups
+# outermost over the taps.
+def weight_geometry(+o: U32,+c: U32,+k: U32) ->
+  {TiledPublic.geometry_of([o,c,k,k],0n,Grid.Outermost{}) == Cells.Cells{(1 * Grid.product([c,k,k]) : U32),Grid.product([c,k,k]),o,Tiled.groups(o),Grid.Outermost{}} : Cells.Cells}:
+  {==}
 
-def shifted_channel(+first: Nat,+c: Nat,+k: Nat,+element: Nat,+square_positive: {Nat.is_lt(0n,Nat.mul(k,k)) == True{} : Bool},
-  +channels_positive: {Nat.is_lt(0n,c) == True{} : Bool}) ->
-  {Nat.mod(Nat.div(Nat.add(Nat.mul(first,Nat.mul(c,Nat.mul(k,k))),element),Nat.mul(k,k)),c) == Nat.mod(Nat.div(element,Nat.mul(k,k)),c) : Nat}:
-  %RowMajor.assoc(first,c,Nat.mul(k,k)) : {Nat.mod(Nat.div(Nat.add(_,element),Nat.mul(k,k)),c) == Nat.mod(Nat.div(element,Nat.mul(k,k)),c) : Nat}
-  %Equal.sym(Nat,Nat.div(Nat.add(Nat.mul(Nat.mul(first,c),Nat.mul(k,k)),element),Nat.mul(k,k)),Nat.add(Nat.mul(first,c),Nat.div(element,Nat.mul(k,k))),
-      DivisionOrder.quotient_shift(element,Nat.mul(k,k),Nat.mul(first,c),square_positive)) :
-    {Nat.mod(_,c) == Nat.mod(Nat.div(element,Nat.mul(k,k)),c) : Nat}
-  DivisionOrder.remainder_shift(Nat.div(element,Nat.mul(k,k)),c,first,channels_positive)
+# A cell of the padded weights the kernel writes is the cell of the lifted
+# weight reader.
+def weight_fixed(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_logical: XL,+x_outer: U32,+x_after: U32,+d_logical: DL,+d_outer: U32,
+  +d_after: U32,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+g: U32,
+  +x_cells: List<&2,U32>,+x_named: {Parameter.cell_image(x_cells,c) == Some{Parameter.ImageGeometry{n,c,h,w}} : Maybe<&2,Parameter.ImageGeometry>},+x_counted: Global.Counted<x_cells>,
+  +d_cells: List<&2,U32>,+d_named: {Parameter.cell_image(d_cells,o) == Some{Parameter.ImageGeometry{n,o,rows,columns}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g,limits) == True{} : Bool},
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>,
+  +x_after_exact: {U32.to_nat(x_after) == Nat.mul(U32.to_nat(h),U32.to_nat(w)) : Nat},
+  +x_outer_exact: {U32.to_nat(x_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(h),U32.to_nat(w))) : Nat},
+  +d_after_exact: {U32.to_nat(d_after) == Nat.mul(U32.to_nat(rows),U32.to_nat(columns)) : Nat},
+  +d_outer_exact: {U32.to_nat(d_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))) : Nat},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}},
+    x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),x_cells,xf,Tensors.Usable{},xw}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}},
+    d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw}),
+  +model: Buffer.Model<Tile.Tile8>,
+  +equation: {Buffer.pack(~Tile.Tile8,model) == Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+    WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),
+      Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))) : Storage.Buffer<Tile.Tile8>},
+  +w_outer: U32,+w_after: U32,
+  +after_exact: {Representation.after_count(Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}}) == Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))) : Nat},
+  +outer_exact: {Representation.least_one(U32.to_nat(w_outer)) == Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))) : Nat},
+  +outer_same: {(c * k * k : U32) == w_outer : U32},
+  +count: U32,+cells_exact: {Nat.mul(U32.to_nat(Grid.groups(o)),U32.to_nat(w_outer)) == U32.to_nat(count) : Nat},
+  +count_half: {Nat.is_le(U32.to_nat(count),U32.to_nat(Machine.half_word(limits))) == True{} : Bool},
+  +word: U32,+inside: {Nat.is_lt(U32.to_nat(word),U32.to_nat(count)) == True{} : Bool}) ->
+  {PaddedPieces.padded_value(~Buffer.Content<Tile.Tile8>,~Contract.stored(~Tile.Tile8),
+      PaddedPieces.Padded{TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}},Buffer.contents(~Tile.Tile8,Buffer.pack(~Tile.Tile8,model))},word) ==
+    Representation.lifted(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value),
+      Representation.Lifted{Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g},
+        Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}}},word) : Tile.Tile8}:
+  +taps = Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)))
+  +number = U32.to_nat(word)
+  +geometry = {Cells.Cells{w_outer,w_after,o,Tiled.groups(o),Grid.Outermost{}} : Cells.Cells}
+  +read = {Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g} : Terms.WeightRead<XL,DL>}
+  +tile = Buffer.value(~Tile.Tile8,U32.from_nat(number),Buffer.contents(~Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))))
+  +target = Representation.lifted(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value),Representation.Lifted{read,geometry},word)
+  +padding = {TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}} : TiledMap.Padding}
+  +valid_cell = weight_valid(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+    x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+    number,w_outer,w_after,after_exact)
+  +valid_word = {%Equal.sym(Nat,Representation.least_one(U32.to_nat(w_outer)),taps,outer_exact) :
+      PaddedCells.Valid<U32.to_nat(o),Nat.div(number,_),tile,
+        Representation.cell(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value),read,geometry,Nat.mod(number,_),Nat.div(number,_))>
+      valid_cell :
+    PaddedCells.Valid<U32.to_nat(o),Representation.cell_group(geometry,number),tile,target>}
+  +valid_index = {%Equal.sym(U32,U32.from_nat(number),word,Arithmetic.native_roundtrip(word)) :
+      PaddedCells.Valid<U32.to_nat(o),Representation.cell_group(geometry,U32.to_nat(_)),tile,target>
+      valid_word :
+    PaddedCells.Valid<U32.to_nat(o),Representation.cell_group(geometry,U32.to_nat(U32.from_nat(number))),tile,target>}
+  +padded = PaddedCells.padded_index(limits,o,(c * k * k : U32),Grid.Outermost{},w_outer,w_after,Grid.Outermost{},U32.to_nat(count),number,tile,target,
+    TiledValues.grouped(limits,o,rooms_outputs(limits,n,c,h,w,o,rows,columns,k,g,rooms)),cells_exact,TiledPublic.Along{outer_same,{==}},count_half,inside,valid_index)
+  %Equal.sym(Storage.Buffer<Tile.Tile8>,Buffer.pack(~Tile.Tile8,model),Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))),equation) :
+    {PaddedPieces.padded_value(~Buffer.Content<Tile.Tile8>,~Contract.stored(~Tile.Tile8),PaddedPieces.Padded{padding,Buffer.contents(~Tile.Tile8,_)},word) == target : Tile.Tile8}
+  padded
 
-# A gradient address as a row-major index of images of output rows.
-def spec_index(+image: Nat,+outputs: Nat,+output: Nat,+rows: Nat,+columns: Nat,+position: Nat) ->
-  {Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,outputs),output),rows),columns),position) == RowMajor.index(image,outputs,Nat.mul(rows,columns),output,position) : Nat}:
-  %Equal.sym(Nat,Nat.mul(Nat.mul(Nat.add(Nat.mul(image,outputs),output),rows),columns),Nat.mul(Nat.add(Nat.mul(image,outputs),output),Nat.mul(rows,columns)),
-      RowMajor.assoc(Nat.add(Nat.mul(image,outputs),output),rows,columns)) :
-    {Nat.add(_,position) == RowMajor.index(image,outputs,Nat.mul(rows,columns),output,position) : Nat}
-  RowMajor.mixed(image,outputs,Nat.mul(rows,columns),output,position)
-
-# The output gradient seen as images of output rows, as the parts copy it.
-def slice_geometry(n: Nat,o: Nat,rows: Nat,columns: Nat) -> Bands.Geometry:
-  Bands.Geometry{1,U32.from_nat(n),U32.from_nat(o),U32.from_nat(Nat.mul(rows,columns))}
-
-# A pixel of the geometry is the gradient address of its image and row.
-def pixel_index(+n: Nat,+o: Nat,+rows: Nat,+columns: Nat,+image: Nat,+row: Nat,+position: Nat,
-  +outputs_exact: {U32.to_nat(U32.from_nat(o)) == o : Nat},+area_exact: {U32.to_nat(U32.from_nat(Nat.mul(rows,columns))) == Nat.mul(rows,columns) : Nat},
-  +row_inside: {Nat.is_lt(row,o) == True{} : Bool},+outputs_positive: {Nat.is_lt(0n,o) == True{} : Bool}) ->
-  {BandValues.pixel(slice_geometry(n,o,rows,columns),image,row,position) == Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,o),row),rows),columns),position) : Nat}:
-  +small = Division.unique(row,o,0n,row,{==},outputs_positive,row_inside)
-  +quotient = Equal.cong(Nat & Nat,Nat,pair => Pair.fst(Nat,Nat,pair),Nat.divmod(row,o),(0n,row),small)
-  +remainder = Equal.cong(Nat & Nat,Nat,pair => Pair.snd(Nat,Nat,pair),Nat.divmod(row,o),(0n,row),small)
-  +images_native = U32.to_nat(U32.from_nat(n))
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(o)),o,outputs_exact) :
-    {RowMajor.index(Nat.add(Nat.mul(Nat.div(row,_),images_native),image),_,U32.to_nat(U32.from_nat(Nat.mul(rows,columns))),Nat.mod(row,_),position) ==
-      Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,o),row),rows),columns),position) : Nat}
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(Nat.mul(rows,columns))),Nat.mul(rows,columns),area_exact) :
-    {RowMajor.index(Nat.add(Nat.mul(Nat.div(row,o),images_native),image),o,_,Nat.mod(row,o),position) ==
-      Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,o),row),rows),columns),position) : Nat}
-  %Equal.sym(Nat,Nat.div(row,o),0n,quotient) :
-    {RowMajor.index(Nat.add(Nat.mul(_,images_native),image),o,Nat.mul(rows,columns),Nat.mod(row,o),position) ==
-      Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,o),row),rows),columns),position) : Nat}
-  %Equal.sym(Nat,Nat.mod(row,o),row,remainder) :
-    {RowMajor.index(image,o,Nat.mul(rows,columns),_,position) == Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,o),row),rows),columns),position) : Nat}
-  Equal.sym(Nat,Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,o),row),rows),columns),position),RowMajor.index(image,o,Nat.mul(rows,columns),row,position),
-    spec_index(image,o,row,rows,columns,position))
-
-# One cell of a part's gradient rows is the cell of the whole gradient its
-# output lies at.
-def slice_cell(+n: Nat,+o: Nat,+rows: Nat,+columns: Nat,+first: U32,+count: U32,+gradient: Tree.Tree<F32>,+band: Tree.Tree<F32>,+length: Nat,
-  +image: Nat,+output: Nat,+position: Nat,
-  +outputs_exact: {U32.to_nat(U32.from_nat(o)) == o : Nat},+area_exact: {U32.to_nat(U32.from_nat(Nat.mul(rows,columns))) == Nat.mul(rows,columns) : Nat},
-  +row_inside: {Nat.is_lt(Nat.add(U32.to_nat(first),output),o) == True{} : Bool},+outputs_positive: {Nat.is_lt(0n,o) == True{} : Bool},
-  cell: BandValues.At(~F32,~Tree.Tree<F32>,~BandValues.stored_value(~F32),gradient,slice_geometry(n,o,rows,columns),first,count,band,length,image,output,position)) ->
-  {gradient_read(band,U32.to_nat(count),rows,columns,image,output,position) == gradient_read(gradient,o,rows,columns,image,Nat.add(U32.to_nat(first),output),position) : F32}:
-  Shape.Both{bound,+read} = cell
-  +part_address = Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,U32.to_nat(count)),output),rows),columns),position)
-  +whole_address = Nat.add(Nat.mul(Nat.mul(Nat.add(Nat.mul(image,o),Nat.add(U32.to_nat(first),output)),rows),columns),position)
-  +part_equal = Equal.trans(Nat,BandValues.position(slice_geometry(n,o,rows,columns),count,image,output,position),
-    RowMajor.index(image,U32.to_nat(count),Nat.mul(rows,columns),output,position),part_address,
-    Equal.cong(Nat,Nat,width => RowMajor.index(image,U32.to_nat(count),width,output,position),U32.to_nat(U32.from_nat(Nat.mul(rows,columns))),Nat.mul(rows,columns),area_exact),
-    Equal.sym(Nat,part_address,RowMajor.index(image,U32.to_nat(count),Nat.mul(rows,columns),output,position),spec_index(image,U32.to_nat(count),output,rows,columns,position)))
-  %part_equal : {Tree.read(F32,band,U32.from_nat(_)) == Tree.read(F32,gradient,U32.from_nat(whole_address)) : F32}
-  %pixel_index(n,o,rows,columns,image,Nat.add(U32.to_nat(first),output),position,outputs_exact,area_exact,row_inside,outputs_positive) :
-    {Tree.read(F32,band,U32.from_nat(BandValues.position(slice_geometry(n,o,rows,columns),count,image,output,position))) == Tree.read(F32,gradient,U32.from_nat(_)) : F32}
-  read
-
-# A part's weight problem beside the whole one: an element of the part is the
-# element of the whole first outputs later.
-type Slice is Data:
-  Slice{n: Nat,c: Nat,o: Nat,h: Nat,w: Nat,k: Nat,s: Nat,pad: Nat,rows: Nat,columns: Nat,g: Nat,first: U32,count: U32,element: Nat,
-    input: Tree.Tree<F32>,gradient: Tree.Tree<F32>,length: Nat,
-    band: BandValues.Values(~F32,~Tree.Tree<F32>,~BandValues.stored_value(~F32),gradient,slice_geometry(n,o,rows,columns),
-      FromWhole.model(~F32,slice_geometry(n,o,rows,columns),0.0,Bands.Rows{first,count},Buffer.Content{gradient,length})),
-    images_exact: {U32.to_nat(U32.from_nat(n)) == n : Nat},outputs_exact: {U32.to_nat(U32.from_nat(o)) == o : Nat},
-    area_exact: {U32.to_nat(U32.from_nat(Nat.mul(rows,columns))) == Nat.mul(rows,columns) : Nat},
-    room: {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(count)),o) == True{} : Bool},
-    element_inside: {Nat.is_lt(element,Nat.mul(U32.to_nat(count),Nat.mul(c,Nat.mul(k,k)))) == True{} : Bool},
-    kernel_positive: {Nat.is_lt(0n,k) == True{} : Bool},channels_positive: {Nat.is_lt(0n,c) == True{} : Bool},
-    columns_positive: {Nat.is_lt(0n,columns) == True{} : Bool},group_positive: {Nat.is_lt(0n,g) == True{} : Bool}}
-
-def slice_band(+n: Nat,+o: Nat,+rows: Nat,+columns: Nat,+first: U32,+count: U32,+gradient: Tree.Tree<F32>,+length: Nat) -> Tree.Tree<F32>:
-  Buffer.content_tree(~F32,FromWhole.band(~F32,slice_geometry(n,o,rows,columns),0.0,Buffer.Content{gradient,length},first,count))
-
-def slice_part(scope: Slice) -> Spec.Problem<Tree.Tree<F32>>:
-  Slice{+n,+c,+o,+h,+w,+k,+s,+pad,+rows,+columns,+g,+first,+count,element,+input,+gradient,+length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  Spec.Problem{Spec.Shape{n,c,U32.to_nat(count),h,w,k,s,pad,rows,columns,g},input,slice_band(n,o,rows,columns,first,count,gradient,length)}
-
-def slice_whole(scope: Slice) -> Spec.Problem<Tree.Tree<F32>>:
-  Slice{+n,+c,+o,+h,+w,+k,+s,+pad,+rows,+columns,+g,first,count,element,+input,+gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  Spec.Problem{Spec.Shape{n,c,o,h,w,k,s,pad,rows,columns,g},input,gradient}
-
-def slice_element(scope: Slice) -> Nat:
-  Slice{n,c,o,h,w,k,s,pad,rows,columns,g,first,count,element,input,gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  element
-
-def slice_shifted(scope: Slice) -> Nat:
-  Slice{n,+c,o,h,w,+k,s,pad,rows,columns,g,+first,count,+element,input,gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  Nat.add(Nat.mul(U32.to_nat(first),Nat.mul(c,Nat.mul(k,k))),element)
-
-def slice_images(scope: Slice) -> Nat:
-  Slice{n,c,o,h,w,k,s,pad,rows,columns,g,first,count,element,input,gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  n
-
-def slice_rows(scope: Slice) -> Nat:
-  Slice{n,c,o,h,w,k,s,pad,rows,columns,g,first,count,element,input,gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  rows
-
-def slice_columns(scope: Slice) -> Nat:
-  Slice{n,c,o,h,w,k,s,pad,rows,columns,g,first,count,element,input,gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  columns
-
-def slice_group(scope: Slice) -> Nat:
-  Slice{n,c,o,h,w,k,s,pad,rows,columns,g,first,count,element,input,gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} = scope
-  g
-
-def slice_term(+scope: Slice,+image: Nat,+position: Nat,+image_inside: {Nat.is_lt(image,slice_images(scope)) == True{} : Bool},
-  +position_inside: {Nat.is_lt(position,Nat.mul(slice_rows(scope),slice_columns(scope))) == True{} : Bool}) ->
-  {Spec.weight_term(~Tree.Tree<F32>,~Bridge.at,slice_part(scope),image,slice_element(scope),position) ==
-    Spec.weight_term(~Tree.Tree<F32>,~Bridge.at,slice_whole(scope),image,slice_shifted(scope),position) : F32}:
-  Slice{+n,+c,+o,+h,+w,+k,+s,+pad,+rows,+columns,+g,+first,+count,+element,+input,+gradient,+length,+band,+images_exact,+outputs_exact,+area_exact,+room,+element_inside,
-    +kernel_positive,+channels_positive,+columns_positive,+group_positive} = scope
-  +square = Nat.mul(k,k)
-  +taps = Nat.mul(c,square)
-  +square_positive = Order.product_positive(k,k,kernel_positive,kernel_positive)
-  +taps_positive = Order.product_positive(c,square,channels_positive,square_positive)
-  +output = Nat.div(element,taps)
-  +start = U32.to_nat(first)
-  +shifted = Nat.add(Nat.mul(start,taps),element)
-  +output_inside = DivisionOrder.quotient_below(element,U32.to_nat(count),taps,taps_positive,element_inside)
-  +row_inside = Bounds.nat_trans(Nat.add(start,output),Nat.add(start,U32.to_nat(count)),o,
-    Order.offset_lt(start,output,U32.to_nat(count),output_inside),room)
-  +outputs_positive = Order.le_lt_trans(0n,Nat.add(start,output),o,Order.zero_le(Nat.add(start,output)),row_inside)
-  +band_tree = slice_band(n,o,rows,columns,first,count,gradient,length)
-  +band_length = U32.to_nat(Bands.local_count(slice_geometry(n,o,rows,columns),count))
-  +reads = slice_cell(n,o,rows,columns,first,count,gradient,band_tree,band_length,image,output,position,outputs_exact,area_exact,row_inside,outputs_positive,
-    BandValues.channels_cell(~F32,~Tree.Tree<F32>,~BandValues.stored_value(~F32),gradient,slice_geometry(n,o,rows,columns),first,count,band_tree,band_length,
-      BandValues.channels(slice_geometry(n,o,rows,columns)),image,output,position,band,
-      %Equal.sym(Nat,U32.to_nat(U32.from_nat(n)),n,images_exact) : {Nat.is_lt(image,_) == True{} : Bool} image_inside,
-      output_inside,
-      %Equal.sym(Nat,U32.to_nat(U32.from_nat(Nat.mul(rows,columns))),Nat.mul(rows,columns),area_exact) : {Nat.is_lt(position,_) == True{} : Bool} position_inside))
-  +sample = input_read(input,c,h,w,s,pad,columns,image,Nat.mod(element,k),Nat.mod(Nat.div(element,k),k),Nat.mod(Nat.div(element,square),c),position)
-  Equal.trans(F32,Spec.weight_term(~Tree.Tree<F32>,~Bridge.at,Spec.Problem{Spec.Shape{n,c,U32.to_nat(count),h,w,k,s,pad,rows,columns,g},input,band_tree},image,element,position),
-    (gradient_read(band_tree,U32.to_nat(count),rows,columns,image,output,position) * sample : F32),
-    Spec.weight_term(~Tree.Tree<F32>,~Bridge.at,Spec.Problem{Spec.Shape{n,c,o,h,w,k,s,pad,rows,columns,g},input,gradient},image,shifted,position),
-    term_read(n,c,U32.to_nat(count),h,w,k,s,pad,rows,columns,g,input,band_tree,image,element,position),
-    Equal.trans(F32,(gradient_read(band_tree,U32.to_nat(count),rows,columns,image,output,position) * sample : F32),
-      (gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) * sample : F32),
-      Spec.weight_term(~Tree.Tree<F32>,~Bridge.at,Spec.Problem{Spec.Shape{n,c,o,h,w,k,s,pad,rows,columns,g},input,gradient},image,shifted,position),
-      Equal.cong(F32,F32,read => (read * sample : F32),gradient_read(band_tree,U32.to_nat(count),rows,columns,image,output,position),
-        gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position),reads),
-      %Equal.sym(F32,Spec.weight_term(~Tree.Tree<F32>,~Bridge.at,Spec.Problem{Spec.Shape{n,c,o,h,w,k,s,pad,rows,columns,g},input,gradient},image,shifted,position),
-          (gradient_read(gradient,o,rows,columns,image,Nat.div(shifted,taps),position) *
-            input_read(input,c,h,w,s,pad,columns,image,Nat.mod(shifted,k),Nat.mod(Nat.div(shifted,k),k),Nat.mod(Nat.div(shifted,square),c),position) : F32),
-          term_read(n,c,o,h,w,k,s,pad,rows,columns,g,input,gradient,image,shifted,position)) :
-        {(gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) * sample : F32) == _ : F32}
-      %Equal.sym(Nat,Nat.div(shifted,taps),Nat.add(start,output),DivisionOrder.quotient_shift(element,taps,start,taps_positive)) :
-        {(gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) * sample : F32) ==
-          (gradient_read(gradient,o,rows,columns,image,_,position) *
-            input_read(input,c,h,w,s,pad,columns,image,Nat.mod(shifted,k),Nat.mod(Nat.div(shifted,k),k),Nat.mod(Nat.div(shifted,square),c),position) : F32) : F32}
-      %Equal.sym(Nat,Nat.mod(shifted,k),Nat.mod(element,k),shifted_column(start,c,k,element,kernel_positive)) :
-        {(gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) * sample : F32) ==
-          (gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) *
-            input_read(input,c,h,w,s,pad,columns,image,_,Nat.mod(Nat.div(shifted,k),k),Nat.mod(Nat.div(shifted,square),c),position) : F32) : F32}
-      %Equal.sym(Nat,Nat.mod(Nat.div(shifted,k),k),Nat.mod(Nat.div(element,k),k),shifted_row(start,c,k,element,kernel_positive)) :
-        {(gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) * sample : F32) ==
-          (gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) *
-            input_read(input,c,h,w,s,pad,columns,image,Nat.mod(element,k),_,Nat.mod(Nat.div(shifted,square),c),position) : F32) : F32}
-      %Equal.sym(Nat,Nat.mod(Nat.div(shifted,square),c),Nat.mod(Nat.div(element,square),c),shifted_channel(start,c,k,element,square_positive,channels_positive)) :
-        {(gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) * sample : F32) ==
-          (gradient_read(gradient,o,rows,columns,image,Nat.add(start,output),position) *
-            input_read(input,c,h,w,s,pad,columns,image,Nat.mod(element,k),Nat.mod(Nat.div(element,k),k),_,position) : F32) : F32}
-      {==}))
-
-# The weight gradient of a part is the slice of the whole one at its outputs.
-def slice_weight(+scope: Slice) ->
-  {Spec.weight(~Tree.Tree<F32>,~Bridge.at,slice_part(scope),slice_element(scope)) == Spec.weight(~Tree.Tree<F32>,~Bridge.at,slice_whole(scope),slice_shifted(scope)) : F32}:
-  Slice{+n,+c,+o,+h,+w,+k,+s,+pad,+rows,+columns,+g,+first,+count,+element,+input,+gradient,+length,+band,+images_exact,+outputs_exact,+area_exact,+room,+element_inside,
-    +kernel_positive,+channels_positive,+columns_positive,+group_positive} = scope
-  +scope = {Slice{n,c,o,h,w,k,s,pad,rows,columns,g,first,count,element,input,gradient,length,band,images_exact,outputs_exact,area_exact,room,element_inside,
-    kernel_positive,channels_positive,columns_positive,group_positive} : Slice}
-  Equal.cong(List<&2,F32>,F32,values => Grouped.tree(values),
-    Spec.image_values(~Tree.Tree<F32>,~Spec.weight_term(~Tree.Tree<F32>,~Bridge.at),n,0n,element,slice_part(scope),Grouped.ranges(rows,columns,g)),
-    Spec.image_values(~Tree.Tree<F32>,~Spec.weight_term(~Tree.Tree<F32>,~Bridge.at),n,0n,slice_shifted(scope),slice_whole(scope),Grouped.ranges(rows,columns,g)),
-    Readers.images_agree(~Tree.Tree<F32>,~Spec.weight_term(~Tree.Tree<F32>,~Bridge.at),~Tree.Tree<F32>,~Spec.weight_term(~Tree.Tree<F32>,~Bridge.at),
-      ~Slice,~slice_part,~slice_whole,~slice_element,~slice_shifted,~slice_images,~slice_rows,~slice_columns,~slice_group,~slice_term,n,0n,scope,Order.reflexive(n),
-      GroupedRanges.ranges_bounded(rows,columns,g,columns_positive,group_positive)))
-
-# ---- The contract of the results ----
-
-# A weight of storage holding the readers' values is the readers' weight
-# gradient there.
-def weight_agreement(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+input_context: Input,+gradient_context: Gradient,
-  +xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +x: Buffer.Model<F32>,+xs: List<&2,U32>,+x_facts: GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,Buffer.content(~F32,x)),+x_cells: Readers.ImageCells(xs,Some{xi}),
-  +d: Buffer.Model<F32>,+ds: List<&2,U32>,+d_facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,Buffer.content(~F32,d)),+d_cells: Readers.ImageCells(ds,Some{di}),
-  +positive: WeightPositive<xi,di,k,s,g>,+count: U32,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count>,+values: List<&2,F32>,
-  +index: Nat,+inside: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool},+numeric: {ListRead.at(~F32,0.0,index,values) == weight_value(xi,di,k,s,p,g,x,d,index) : F32}) ->
-  {ListRead.at(~F32,0.0,index,values) ==
-    Readers.weight_at(~Input,~input_value,~Gradient,~gradient_value)(Readers.WeightRead{input_context,gradient_context,Some{xi},Some{di},k,s,p,g},U32.from_nat(index)) : F32}:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+rows,+columns} = di
-  Buffer.Model{+xt,+xl,+xc} = x
-  Shape.Both{Contract.WellFormed{+x_length,x_ready},+x_values} = x_facts
-  Buffer.Model{+dt,+dl,+dc} = d
-  Shape.Both{Contract.WellFormed{+d_length,d_ready},+d_values} = d_facts
-  WeightPositive{+xp,+dp,+kp,sp,+gp,+images} = positive
-  Count.Count{+exact,+bounded} = counted
-  +xc_true = Logic.left((U32.is_lt(0,n) && U32.is_lt(0,c)) && U32.is_lt(0,h),U32.is_lt(0,w),xp)
-  +nc_true = Logic.left(U32.is_lt(0,n) && U32.is_lt(0,c),U32.is_lt(0,h),xc_true)
-  +cp_word = Logic.right(U32.is_lt(0,n),U32.is_lt(0,c),nc_true)
-  +columns_word = Logic.right((U32.is_lt(0,dn) && U32.is_lt(0,o)) && U32.is_lt(0,rows),U32.is_lt(0,columns),dp)
-  +channels_positive = {%Comparison.lt(0,c) : {_ == True{} : Bool} cp_word : {Nat.is_lt(0n,U32.to_nat(c)) == True{} : Bool}}
-  +columns_positive = {%Comparison.lt(0,columns) : {_ == True{} : Bool} columns_word : {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool}}
-  +kernel_positive = {%Comparison.lt(0,k) : {_ == True{} : Bool} kp : {Nat.is_lt(0n,U32.to_nat(k)) == True{} : Bool}}
-  +group_positive = {%Comparison.lt(0,g) : {_ == True{} : Bool} gp : {Nat.is_lt(0n,U32.to_nat(g)) == True{} : Bool}}
-  +same_images = Order.equal_of_is_eq(U32.to_nat(n),U32.to_nat(dn),%Comparison.eq(n,dn) : {_ == True{} : Bool} images)
-  +x_room = {%Equal.trans(Nat,xl,ShapeLaws.elements(xs),Readers.cells(xi),x_length,x_cells) : {Nat.is_le(_,xl) == True{} : Bool} Order.reflexive(xl) :
-    {Nat.is_le(Readers.cells(xi),xl) == True{} : Bool}}
-  +d_room = {%Equal.sym(Nat,U32.to_nat(n),U32.to_nat(dn),same_images) : {Nat.is_le(Nat.mul(Nat.mul(_,U32.to_nat(o)),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))),dl) == True{} : Bool}
-    %Equal.trans(Nat,dl,ShapeLaws.elements(ds),Readers.cells(di),d_length,d_cells) : {Nat.is_le(_,dl) == True{} : Bool} Order.reflexive(dl) :
-    {Nat.is_le(Nat.mul(Nat.mul(U32.to_nat(n),U32.to_nat(o)),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))),dl) == True{} : Bool}}
-  +element_inside = {%weight_shape_count(o,c,k) : {Nat.is_lt(index,_) == True{} : Bool}
-    %Equal.sym(Nat,ShapeLaws.elements([o,c,k,k]),U32.to_nat(count),exact) : {Nat.is_lt(index,_) == True{} : Bool} inside :
-    {Nat.is_lt(index,Nat.mul(U32.to_nat(o),Nat.mul(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k))))) == True{} : Bool}}
-  +scope = {Readers.WeightScope{U32.to_nat(n),U32.to_nat(c),U32.to_nat(o),U32.to_nat(h),U32.to_nat(w),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p),U32.to_nat(rows),U32.to_nat(columns),U32.to_nat(g),
-    xt,xl,input_context,x_values,x_room,dt,dl,gradient_context,d_values,d_room,index,element_inside,kernel_positive,channels_positive,columns_positive,group_positive} :
-    Readers.WeightScope<Input,input_value,Gradient,gradient_value>}
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(index)),index,FullRange.roundtrip(index,count,Bounds.strict_le(index,U32.to_nat(count),inside))) :
-    {ListRead.at(~F32,0.0,index,values) ==
-      Spec.weight(~Readers.Operand<Input,Gradient>,~Readers.operand_at(~Input,~input_value,~Gradient,~gradient_value),
-        Spec.Problem{Bridge.shape(Parameter.work(xi,di,k,s,p,g)),Readers.InputOperand{input_context},Readers.GradientOperand{gradient_context}},_) : F32}
-  Equal.trans(F32,ListRead.at(~F32,0.0,index,values),
-    weight_value(xi,di,k,s,p,g,Buffer.Model{xt,xl,xc},Buffer.Model{dt,dl,dc},index),
-    Spec.weight(~Readers.Operand<Input,Gradient>,~Readers.operand_at(~Input,~input_value,~Gradient,~gradient_value),Readers.weight_read(~Input,~input_value,~Gradient,~gradient_value,scope),index),
-    numeric,Readers.weight_agrees(~Input,~input_value,~Gradient,~gradient_value,scope))
-
-# ---- The weight gradient of the parts ----
-
-def weight_taps_exact(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,geometry: WeightGeometry<xi,di,k,s,p>) ->
-  {U32.to_nat(WeightPacking.geometry_taps(weight_geometry(xi,di,k,s,p))) == weight_tap_count(xi,k) : Nat}:
-  WeightGeometry{domain,taps_exact} = geometry
-  taps_exact
-
-def positive_images(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+g: U32,positive: WeightPositive<xi,di,k,s,g>) ->
-  {U32.is_eq(image_count(xi),image_count(di)) == True{} : Bool}:
-  WeightPositive{input,gradient,kernel,stride,group,images} = positive
-  images
-
-# The weight gradient holds outputs times taps values.
-def weight_elements(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+positive: WeightPositive<xi,di,k,s,g>,
-  +count: U32,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count>) ->
-  {Nat.mul(U32.to_nat(WeightKernel.outputs(Parameter.work(xi,di,k,s,p,g))),U32.to_nat(WeightKernel.taps(Parameter.work(xi,di,k,s,p,g)))) == ShapeLaws.elements(weight_shape(xi,di,k)) : Nat}:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+oh,+ow} = di
-  +taps_exact = weight_taps_exact(xi,di,k,s,p,weight_geometry_ready(xi,di,k,s,p,g,positive,count,counted))
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(U32.to_nat(o))),U32.to_nat(o),Equal.cong(U32,Nat,word => U32.to_nat(word),U32.from_nat(U32.to_nat(o)),o,Arithmetic.native_roundtrip(o))) :
-    {Nat.mul(_,U32.to_nat(WeightKernel.taps(Parameter.work(xi,di,k,s,p,g)))) == ShapeLaws.elements([o,c,k,k]) : Nat}
-  %Equal.sym(Nat,U32.to_nat(WeightPacking.geometry_taps(weight_geometry(xi,di,k,s,p))),weight_tap_count(xi,k),taps_exact) :
-    {Nat.mul(U32.to_nat(o),_) == ShapeLaws.elements([o,c,k,k]) : Nat}
-  Equal.sym(Nat,ShapeLaws.elements([o,c,k,k]),Nat.mul(U32.to_nat(o),weight_tap_count(xi,k)),weight_shape_count(o,c,k))
-
-# The count of the weight shape is the count the kernel writes.
-def work_count(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+positive: WeightPositive<xi,di,k,s,g>,
-  +count: U32,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count>) ->
-  Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>:
-  Count.Count{+exact,+bounded} = counted
-  +work = Parameter.work(xi,di,k,s,p,g)
-  +outputs = WeightKernel.outputs(work)
-  +taps = WeightKernel.taps(work)
-  +elements = ShapeLaws.elements(weight_shape(xi,di,k))
-  +same = {
-    %Equal.sym(U32,(outputs * taps : U32),U32.from_nat(Nat.mul(U32.to_nat(outputs),U32.to_nat(taps))),Multiplication.native_multiply(outputs,taps)) : {_ == count : U32}
-    %Equal.sym(Nat,Nat.mul(U32.to_nat(outputs),U32.to_nat(taps)),elements,weight_elements(xi,di,k,s,p,g,positive,count,Count.Count{exact,bounded})) : {U32.from_nat(_) == count : U32}
-    %Equal.sym(Nat,elements,U32.to_nat(count),exact) : {U32.from_nat(_) == count : U32}
-    Arithmetic.native_roundtrip(count) : {KParts.count(work) == count : U32}}
-  %Equal.sym(U32,KParts.count(work),count,same) : Count.Count<elements,_>
-  Count.Count{exact,bounded}
-
-def weight_counted(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+positive: WeightPositive<xi,di,k,s,g>,
-  found: Maybe<&2,U32>,+found_equal: {Tensors.count_of(weight_shape(xi,di,k)) == found : Maybe<&2,U32>},fits: {Parameter.fits(found) == True{} : Bool}) ->
-  Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>:
-  match found:
-    case None{}: Empty.absurd(Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>,Words.false_true(fits))
-    case Some{+count}: work_count(xi,di,k,s,p,g,positive,count,Count.count_of(weight_shape(xi,di,k),count,found_equal))
-
-# Every output fits a half of the words.
-def outputs_fit(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+positive: WeightPositive<xi,di,k,s,g>,
-  +counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>) ->
-  {U32.is_le(WeightKernel.outputs(Parameter.work(xi,di,k,s,p,g)),2147483648) == True{} : Bool}:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+oh,+ow} = di
-  WeightPositive{+xp,+dp,+kp,+sp,+gp,+images} = positive
-  Count.Count{+exact,+bounded} = counted
-  +work = Parameter.work(xi,di,k,s,p,g)
-  +outputs = WeightKernel.outputs(work)
-  +taps = WeightKernel.taps(work)
-  +capacity = Machine.capacity(Default.limits())
-  +facts = {WeightPositive{xp,dp,kp,sp,gp,images} : WeightPositive<xi,di,k,s,g>}
-  +taps_exact = weight_taps_exact(xi,di,k,s,p,weight_geometry_ready(xi,di,k,s,p,g,facts,KParts.count(work),Count.Count{exact,bounded}))
-  +channels_word = Logic.right(U32.is_lt(0,n),U32.is_lt(0,c),Logic.left(U32.is_lt(0,n) && U32.is_lt(0,c),U32.is_lt(0,h),Logic.left((U32.is_lt(0,n) && U32.is_lt(0,c)) && U32.is_lt(0,h),U32.is_lt(0,w),xp)))
-  +channels_positive = {%Comparison.lt(0,c) : {_ == True{} : Bool} channels_word : {Nat.is_lt(0n,U32.to_nat(c)) == True{} : Bool}}
-  +kernel_positive = {%Comparison.lt(0,k) : {_ == True{} : Bool} kp : {Nat.is_lt(0n,U32.to_nat(k)) == True{} : Bool}}
-  +taps_positive = {%Equal.sym(Nat,U32.to_nat(WeightPacking.geometry_taps(weight_geometry(xi,di,k,s,p))),weight_tap_count(xi,k),taps_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-    Order.product_positive(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)),channels_positive,Order.product_positive(U32.to_nat(k),U32.to_nat(k),kernel_positive,kernel_positive)) :
-    {Nat.is_lt(0n,U32.to_nat(taps)) == True{} : Bool}}
-  +product = Nat.mul(U32.to_nat(outputs),U32.to_nat(taps))
-  +product_room = {%Equal.sym(Nat,product,U32.to_nat(KParts.count(work)),
-      Equal.trans(Nat,product,ShapeLaws.elements([o,c,k,k]),U32.to_nat(KParts.count(work)),weight_elements(xi,di,k,s,p,g,facts,KParts.count(work),Count.Count{exact,bounded}),exact)) :
-      {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
-    Bounds.as_nat_le(KParts.count(work),capacity,bounded) : {Nat.is_le(product,U32.to_nat(capacity)) == True{} : Bool}}
-  Encoded.native_le_transitive(outputs,capacity,2147483648,
-    %Equal.sym(Bool,U32.is_le(outputs,capacity),Nat.is_le(U32.to_nat(outputs),U32.to_nat(capacity)),Comparison.le(outputs,capacity)) : {_ == True{} : Bool}
-    Order.transitive(U32.to_nat(outputs),product,U32.to_nat(capacity),RowMajor.product_covers(U32.to_nat(outputs),U32.to_nat(taps),taps_positive),product_room),
-    Limits.capacity_fits(Default.limits()))
-
-# The output gradient seen as images of output rows: its cells, and the
-# cells of one row of every image.
-def work_cells(work: Kernel.Work) -> Nat:
-  Kernel.Work{n,c,o,h,w,k,s,p,rows,columns,g} = work
-  Nat.mul(Nat.mul(n,o),Nat.mul(rows,columns))
-
-def work_area(work: Kernel.Work) -> Nat:
-  Kernel.Work{n,c,o,h,w,k,s,p,rows,columns,g} = work
-  Nat.mul(rows,columns)
-
-# The rows of the output gradient fit the machine, and the cells of a row
-# are exact as a word.
-type GradientRoom<-work: Kernel.Work> is Data:
-  GradientRoom{domain: BandGather.Domain<KParts.gradient_geometry(work),Default.limits(),Machine.capacity(Default.limits())>,
-    area_exact: {U32.to_nat(U32.from_nat(work_area(work))) == work_area(work) : Nat}}
-
-def gradient_room(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+capacity: U32,+positive: WeightPositive<xi,di,k,s,g>,
-  +cells_room: {Nat.is_le(work_cells(Parameter.work(xi,di,k,s,p,g)),U32.to_nat(capacity)) == True{} : Bool},
-  +capacity_bounded: {U32.is_le(capacity,Machine.capacity(Default.limits())) == True{} : Bool}) -> GradientRoom<Parameter.work(xi,di,k,s,p,g)>:
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+rows,+columns} = di
-  WeightPositive{+xp,+dp,kp,sp,gp,images} = positive
-  +images_word = Logic.left(U32.is_lt(0,n),U32.is_lt(0,c),Logic.left(U32.is_lt(0,n) && U32.is_lt(0,c),U32.is_lt(0,h),Logic.left((U32.is_lt(0,n) && U32.is_lt(0,c)) && U32.is_lt(0,h),U32.is_lt(0,w),xp)))
-  +rows_first = Logic.left((U32.is_lt(0,dn) && U32.is_lt(0,o)) && U32.is_lt(0,rows),U32.is_lt(0,columns),dp)
-  +outputs_word = Logic.right(U32.is_lt(0,dn),U32.is_lt(0,o),Logic.left(U32.is_lt(0,dn) && U32.is_lt(0,o),U32.is_lt(0,rows),rows_first))
-  +rows_word = Logic.right(U32.is_lt(0,dn) && U32.is_lt(0,o),U32.is_lt(0,rows),rows_first)
-  +columns_word = Logic.right((U32.is_lt(0,dn) && U32.is_lt(0,o)) && U32.is_lt(0,rows),U32.is_lt(0,columns),dp)
-  +images_positive = {%Comparison.lt(0,n) : {_ == True{} : Bool} images_word : {Nat.is_lt(0n,U32.to_nat(n)) == True{} : Bool}}
-  +outputs_positive = {%Comparison.lt(0,o) : {_ == True{} : Bool} outputs_word : {Nat.is_lt(0n,U32.to_nat(o)) == True{} : Bool}}
-  +rows_positive = {%Comparison.lt(0,rows) : {_ == True{} : Bool} rows_word : {Nat.is_lt(0n,U32.to_nat(rows)) == True{} : Bool}}
-  +columns_positive = {%Comparison.lt(0,columns) : {_ == True{} : Bool} columns_word : {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool}}
-  +images = U32.to_nat(n)
-  +outputs = U32.to_nat(o)
-  +area = Nat.mul(U32.to_nat(rows),U32.to_nat(columns))
-  +plane = Nat.mul(images,outputs)
-  +cells = Nat.mul(plane,area)
+# The padded weights the kernel writes are a whole tensor of the lifted
+# weight reader.
+def weight_whole(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_logical: XL,+x_outer: U32,+x_after: U32,+d_logical: DL,+d_outer: U32,
+  +d_after: U32,+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+g: U32,
+  +x_cells: List<&2,U32>,+x_named: {Parameter.cell_image(x_cells,c) == Some{Parameter.ImageGeometry{n,c,h,w}} : Maybe<&2,Parameter.ImageGeometry>},+x_counted: Global.Counted<x_cells>,
+  +d_cells: List<&2,U32>,+d_named: {Parameter.cell_image(d_cells,o) == Some{Parameter.ImageGeometry{n,o,rows,columns}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g,limits) == True{} : Bool},
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>,
+  +x_after_exact: {U32.to_nat(x_after) == Nat.mul(U32.to_nat(h),U32.to_nat(w)) : Nat},
+  +x_outer_exact: {U32.to_nat(x_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(h),U32.to_nat(w))) : Nat},
+  +d_after_exact: {U32.to_nat(d_after) == Nat.mul(U32.to_nat(rows),U32.to_nat(columns)) : Nat},
+  +d_outer_exact: {U32.to_nat(d_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))) : Nat},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}},
+    x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),x_cells,xf,Tensors.Usable{},xw}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_shaped: Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}},
+    d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw}),
+  +observation: Buffer.Observation<Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+    WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),
+      Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))>) ->
+  Global.Contract(~Tile.Tile8,~Representation.Lifted<Terms.WeightRead<XL,DL>>,~Representation.lifted(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value)),
+    Representation.Lifted{Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g},
+      TiledPublic.geometry_of([o,c,k,k],0n,Grid.Outermost{})},
+    Tensors.whole(~Tile.Tile8,TiledMap.padded(TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}},0,Grid.product([Tiled.groups(o),c,k,k]),
+      Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,
+        WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),
+          Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))),
+      [Tiled.groups(o),c,k,k],Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw))):
+  WeightRooms{+x_groups_exact,+x_room,+blocks_exact,+d_groups_exact,+d_room,+channels_positive,+kernel_positive,+columns_positive,+group_positive,+outputs_positive,+weights_room} = rooms
+  Buffer.Observation{+model,+equation} = observation
+  +xi = {Parameter.ImageGeometry{n,c,h,w} : Parameter.ImageGeometry}
+  +di = {Parameter.ImageGeometry{n,o,rows,columns} : Parameter.ImageGeometry}
+  +call = {ParameterCells.Call{limits,default_capacity,x_cells,c,xi,x_named,x_counted,d_cells,o,di,d_named,d_counted,k,s,p,g,valid} : ParameterCells.Call}
+  +x_holder = {Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}} : Representation.Lifted<XL>}
+  +d_holder = {Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +read = {Terms.WeightRead{x_logical,d_logical,Some{xi},Some{di},k,s,p,g} : Terms.WeightRead<XL,DL>}
+  +capacity = Machine.capacity(limits)
   +cap = U32.to_nat(capacity)
-  +area_room = Order.transitive(area,cells,cap,
-    %RowMajor.multiply_commutative(area,plane) : {Nat.is_le(area,_) == True{} : Bool}
-    RowMajor.product_covers(area,plane,Order.product_positive(images,outputs,images_positive,outputs_positive)),cells_room)
-  +area_exact = FullRange.roundtrip(area,capacity,area_room)
-  +cells_exact = FullRange.roundtrip(cells,capacity,cells_room)
-  +images_exact = Equal.cong(U32,Nat,word => U32.to_nat(word),U32.from_nat(images),n,Arithmetic.native_roundtrip(n))
-  +outputs_exact = Equal.cong(U32,Nat,word => U32.to_nat(word),U32.from_nat(outputs),o,Arithmetic.native_roundtrip(o))
-  +geometry = slice_geometry(images,outputs,U32.to_nat(rows),U32.to_nat(columns))
-  +count = U32.from_nat(cells)
-  +elements_equal = {
-    %Equal.sym(Nat,U32.to_nat(U32.from_nat(images)),images,images_exact) :
-      {Nat.mul(1n,Nat.mul(_,Nat.mul(U32.to_nat(U32.from_nat(outputs)),U32.to_nat(U32.from_nat(area))))) == cells : Nat}
-    %Equal.sym(Nat,U32.to_nat(U32.from_nat(outputs)),outputs,outputs_exact) :
-      {Nat.mul(1n,Nat.mul(images,Nat.mul(_,U32.to_nat(U32.from_nat(area))))) == cells : Nat}
-    %Equal.sym(Nat,U32.to_nat(U32.from_nat(area)),area,area_exact) :
-      {Nat.mul(1n,Nat.mul(images,Nat.mul(outputs,_))) == cells : Nat}
-    Equal.trans(Nat,Nat.mul(1n,Nat.mul(images,Nat.mul(outputs,area))),Nat.mul(images,Nat.mul(outputs,area)),cells,
-      Equal.trans(Nat,Nat.mul(1n,Nat.mul(images,Nat.mul(outputs,area))),Nat.mul(Nat.mul(images,Nat.mul(outputs,area)),1n),Nat.mul(images,Nat.mul(outputs,area)),
-        RowMajor.multiply_commutative(1n,Nat.mul(images,Nat.mul(outputs,area))),Order.times_one(Nat.mul(images,Nat.mul(outputs,area)))),
-      Equal.sym(Nat,cells,Nat.mul(images,Nat.mul(outputs,area)),RowMajor.assoc(images,outputs,area))) :
-    {BandGather.elements(geometry) == cells : Nat}}
-  +counted = {Count.Count{
-      Equal.trans(Nat,ShapeLaws.elements(BandCount.extents(geometry)),BandGather.elements(geometry),U32.to_nat(count),BandCount.domain_elements(geometry),
-        Equal.trans(Nat,BandGather.elements(geometry),cells,U32.to_nat(count),elements_equal,Equal.sym(Nat,U32.to_nat(count),cells,cells_exact))),
-      Encoded.native_le_transitive(count,capacity,Machine.capacity(Default.limits()),
-        %Equal.sym(Bool,U32.is_le(count,capacity),Nat.is_le(U32.to_nat(count),cap),Comparison.le(count,capacity)) : {_ == True{} : Bool}
-        %Equal.sym(Nat,U32.to_nat(count),cells,cells_exact) : {Nat.is_le(_,cap) == True{} : Bool} cells_room,
-        capacity_bounded)} :
-    Count.Count<ShapeLaws.elements(BandCount.extents(geometry)),count>}
-  GradientRoom{
-    BandCount.evidence(geometry,count,
-      %Equal.sym(Nat,U32.to_nat(U32.from_nat(images)),images,images_exact) : {Nat.is_lt(0n,_) == True{} : Bool} images_positive,
-      %Equal.sym(Nat,U32.to_nat(U32.from_nat(outputs)),outputs,outputs_exact) : {Nat.is_lt(0n,_) == True{} : Bool} outputs_positive,
-      %Equal.sym(Nat,U32.to_nat(U32.from_nat(area)),area,area_exact) : {Nat.is_lt(0n,_) == True{} : Bool}
-        Order.product_positive(U32.to_nat(rows),U32.to_nat(columns),rows_positive,columns_positive),
-      counted),
-    area_exact}
+  +cn = U32.to_nat(c)
+  +kn = U32.to_nat(k)
+  +taps = Nat.mul(cn,Nat.mul(kn,kn))
+  +taps_positive = rooms_taps_positive(limits,n,c,h,w,o,rows,columns,k,g,rooms)
+  +taps_room = rooms_taps(limits,n,c,h,w,o,rows,columns,k,g,rooms)
+  +outputs_room = rooms_outputs(limits,n,c,h,w,o,rows,columns,k,g,rooms)
+  +after = Grid.product([c,k,k])
+  +w_outer = (1 * after : U32)
+  +geometry = {Cells.Cells{w_outer,after,o,Tiled.groups(o),Grid.Outermost{}} : Cells.Cells}
+  +shape = {[Tiled.groups(o),c,k,k] : List<&2,U32>}
+  +count = Grid.product(shape)
+  +padding = {TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}} : TiledMap.Padding}
+  +elements_room = {%Equal.sym(Nat,Nat.mul(kn,1n),kn,Order.times_one(kn)) : {Nat.is_le(Nat.mul(cn,Nat.mul(kn,_)),cap) == True{} : Bool} taps_room :
+    {Nat.is_le(ShapeLaws.elements([c,k,k]),cap) == True{} : Bool}}
+  +after_elements = TiledPublic.product_exact(capacity,Limits.capacity_fits(limits),[c,k,k],elements_room)
+  +after_taps = Equal.trans(Nat,U32.to_nat(after),ShapeLaws.elements([c,k,k]),taps,after_elements,
+    Equal.cong(Nat,Nat,value => Nat.mul(cn,Nat.mul(kn,value)),Nat.mul(kn,1n),kn,Order.times_one(kn)))
+  +outer_elements = {%Equal.sym(U32,(1 * after : U32),after,TiledPublic.one_times(after)) : {U32.to_nat(_) == ShapeLaws.elements([c,k,k]) : Nat} after_elements :
+    {U32.to_nat(w_outer) == ShapeLaws.elements([c,k,k]) : Nat}}
+  +outer_taps = {%Equal.sym(U32,(1 * after : U32),after,TiledPublic.one_times(after)) : {U32.to_nat(_) == taps : Nat} after_taps : {U32.to_nat(w_outer) == taps : Nat}}
+  +after_exact = Equal.trans(Nat,Representation.least_one(U32.to_nat(after)),Representation.least_one(taps),taps,
+    Equal.cong(Nat,Nat,value => Representation.least_one(value),U32.to_nat(after),taps,after_taps),Representation.least_positive(taps,taps_positive))
+  +outer_exact = Equal.trans(Nat,Representation.least_one(U32.to_nat(w_outer)),Representation.least_one(taps),taps,
+    Equal.cong(Nat,Nat,value => Representation.least_one(value),U32.to_nat(w_outer),taps,outer_taps),Representation.least_positive(taps,taps_positive))
+  +outer_same = Arithmetic.to_nat_injective((c * k * k : U32),w_outer,
+    Equal.trans(Nat,U32.to_nat((c * k * k : U32)),taps,U32.to_nat(w_outer),ParameterCells.taps_word(c,k,capacity,kernel_positive,taps_room),Equal.sym(Nat,U32.to_nat(w_outer),taps,outer_taps)))
+  +cells_exact = Equal.trans(Nat,Nat.mul(U32.to_nat(Grid.groups(o)),U32.to_nat(w_outer)),ShapeLaws.elements(shape),U32.to_nat(count),
+    Equal.cong(Nat,Nat,value => Nat.mul(U32.to_nat(Grid.groups(o)),value),U32.to_nat(w_outer),ShapeLaws.elements([c,k,k]),outer_elements),ParameterCells.result_product(call))
+  +count_room = {%ParameterCells.result_product(call) : {Nat.is_le(_,cap) == True{} : Bool} ParameterCells.result_room(call) : {Nat.is_le(U32.to_nat(count),cap) == True{} : Bool}}
+  +count_half = Order.transitive(U32.to_nat(count),cap,U32.to_nat(Machine.half_word(limits)),count_room,
+    Bounds.as_nat_le(capacity,Machine.half_word(limits),Limits.capacity_within_half(limits)))
+  +bound_room = {%ParameterCells.result_product(call) : {Nat.is_le(ShapeLaws.elements(shape),_) == True{} : Bool} Order.reflexive(ShapeLaws.elements(shape)) :
+    {Nat.is_le(ShapeLaws.elements(shape),U32.to_nat(count)) == True{} : Bool}}
+  +tap_zero = tap_word_inside(n,c,h,w,o,rows,columns,k,s,p,0n,capacity,taps_room,taps_positive)
+  +output_zero = output_word_inside(n,c,h,w,o,rows,columns,k,s,p,0n,capacity,outputs_room,outputs_positive)
+  +cells = ParameterCells.weight_cells(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+    x_holder,d_holder,call,U32.max(xw,dw),U32.from_nat(0n),U32.from_nat(0n),tap_zero,output_zero,PiecesModel.pack(~Tile.Tile8,xm),xf,xw,x_shaped,PiecesModel.pack(~Tile.Tile8,dm),df,dw,d_shaped)
+  +length = {%Equal.sym(Storage.Buffer<Tile.Tile8>,Buffer.pack(~Tile.Tile8,model),Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))),equation) :
+      {Buffer.content_length(~Tile.Tile8,Buffer.contents(~Tile.Tile8,_)) == U32.to_nat(count) : Nat}
+      ParameterCells.values_count(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+        x_holder,d_holder,call,U32.from_nat(0n),U32.from_nat(0n),
+        WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))),
+        cells) :
+    {Buffer.content_length(~Tile.Tile8,Buffer.contents(~Tile.Tile8,Buffer.pack(~Tile.Tile8,model))) == U32.to_nat(count) : Nat}}
+  +ready = {%Equal.sym(Storage.Buffer<Tile.Tile8>,Buffer.pack(~Tile.Tile8,model),Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))),equation) : Buffer.ContentReady<Tile.Tile8,Buffer.contents(~Tile.Tile8,_)>
+      ParameterCells.values_ready(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+        x_holder,d_holder,call,U32.from_nat(0n),U32.from_nat(0n),
+        WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))),
+        cells) :
+    Buffer.ContentReady<Tile.Tile8,Buffer.contents(~Tile.Tile8,Buffer.pack(~Tile.Tile8,model))>}
+  +content = Buffer.contents(~Tile.Tile8,Buffer.pack(~Tile.Tile8,model))
+  +before = {PaddedPieces.Padded{padding,content} : PaddedPieces.Padded<Buffer.Content<Tile.Tile8>>}
+  +after_reader = {Representation.Lifted{read,geometry} : Representation.Lifted<Terms.WeightRead<XL,DL>>}
+  +whole = PaddedPieces.padded_whole(~Buffer.Content<Tile.Tile8>,~Contract.stored(~Tile.Tile8),content,limits,padding,shape,Tiled.zero_tile(),U32.max(xw,dw),count,model,
+    ParameterCells.result_counted(call),ParameterCells.result_product(call),ParameterCells.result_room(call),ParameterCells.result_nonempty(call),ParameterCells.result_fits(call),
+    Joined.stored_holds(~Tile.Tile8,count,content,length,ready))
+  +relabeled = Global.relabeled_below(~Tile.Tile8,~PaddedPieces.Padded<Buffer.Content<Tile.Tile8>>,~Representation.Lifted<Terms.WeightRead<XL,DL>>,
+    ~PaddedPieces.padded_value(~Buffer.Content<Tile.Tile8>,~Contract.stored(~Tile.Tile8)),~Representation.lifted(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value)),
+    ~(left => right => Global.Fixed(~PaddedPieces.Padded<Buffer.Content<Tile.Tile8>>,~Representation.Lifted<Terms.WeightRead<XL,DL>>,before,after_reader,left,right)),~U32.to_nat(count),
+    ~(left => right => related => index => inside => Global.fixed_below(~Tile.Tile8,~PaddedPieces.Padded<Buffer.Content<Tile.Tile8>>,~Representation.Lifted<Terms.WeightRead<XL,DL>>,
+      ~PaddedPieces.padded_value(~Buffer.Content<Tile.Tile8>,~Contract.stored(~Tile.Tile8)),~Representation.lifted(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value)),
+      ~U32.to_nat(count),before,after_reader,
+      word => below => weight_fixed(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+        x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+        model,equation,w_outer,after,after_exact,outer_exact,outer_same,count,cells_exact,count_half,word,below),
+      left,right,related,index,inside)),
+    before,after_reader,KernelGemm.Both{{==},{==}},shape,
+    Tensors.whole(~Tile.Tile8,TiledMap.padded(padding,0,count,Buffer.pack(~Tile.Tile8,model)),shape,Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)),
+    Global.usable(~Tile.Tile8,Tensors.whole(~Tile.Tile8,TiledMap.padded(padding,0,count,Buffer.pack(~Tile.Tile8,model)),shape,Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)),{==}),
+    whole,bound_room,capacity,count_room)
+  %Equal.sym(Cells.Cells,TiledPublic.geometry_of([o,c,k,k],0n,Grid.Outermost{}),geometry,weight_geometry(o,c,k)) :
+    Global.Contract(~Tile.Tile8,~Representation.Lifted<Terms.WeightRead<XL,DL>>,~Representation.lifted(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value)),
+      Representation.Lifted{read,_},Tensors.whole(~Tile.Tile8,TiledMap.padded(padding,0,count,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))),shape,Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)))
+  %equation :
+    Global.Contract(~Tile.Tile8,~Representation.Lifted<Terms.WeightRead<XL,DL>>,~Representation.lifted(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value)),
+      after_reader,Tensors.whole(~Tile.Tile8,TiledMap.padded(padding,0,count,_),shape,Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)))
+  relabeled
 
-# The owner of the output gradient holds its cells.
-def gradient_room_of(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+positive: WeightPositive<xi,di,k,s,g>,
-  +gradient: Buffer.Model<F32>,ready: Buffer.Sized<F32,gradient>,
-  +cells_length: {Nat.is_le(work_cells(Parameter.work(xi,di,k,s,p,g)),Buffer.length(~F32,gradient)) == True{} : Bool}) -> GradientRoom<Parameter.work(xi,di,k,s,p,g)>:
-  Buffer.Sized{+depth_ok,+room} = ready
-  gradient_room(xi,di,k,s,p,g,Tree.capacity(F32,Buffer.tree(~F32,gradient)),positive,
-    Order.transitive(work_cells(Parameter.work(xi,di,k,s,p,g)),Buffer.length(~F32,gradient),U32.to_nat(Tree.capacity(F32,Buffer.tree(~F32,gradient))),cells_length,room),
-    Buffer.capacity_allocatable(~F32,gradient,depth_ok))
+# A weight call on the cells of x and d runs the weight kernel, pads its cells
+# whole with the groups outermost and gives x and d back in their grids.
+def weight_run(+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+g: U32,
+  +x_cells: List<&2,U32>,+x_named: {Parameter.cell_image(x_cells,c) == Some{Parameter.ImageGeometry{n,c,h,w}} : Maybe<&2,Parameter.ImageGeometry>},+x_counted: Global.Counted<x_cells>,
+  +d_cells: List<&2,U32>,+d_named: {Parameter.cell_image(d_cells,o) == Some{Parameter.ImageGeometry{n,o,rows,columns}} : Maybe<&2,Parameter.ImageGeometry>},+d_counted: Global.Counted<d_cells>,
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g,limits) == True{} : Bool},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,+x_axis: Nat,+dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,+d_axis: Nat) ->
+  {Gradient.weight_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),x_cells,xf,Tensors.Usable{},xw},x_axis,c,Grid.Innermost{}},
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw},d_axis,o,Grid.Innermost{}},k,s,p,g) ==
+    (Tiled.Tiled{Tensors.whole(~Tile.Tile8,TiledMap.padded(TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}},0,Grid.product([Tiled.groups(o),c,k,k]),
+        Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),
+          U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))),
+        [Tiled.groups(o),c,k,k],Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)),0n,o,Grid.Outermost{}},
+      (Tiled.Tiled{Parameter.back(Parameter.Read{x_cells,xf,Tensors.Usable{},xw},Pair.fst(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+          Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),
+            U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),x_axis,c,Grid.Innermost{}},
+        Tiled.Tiled{Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.snd(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+          Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),
+            U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),d_axis,o,Grid.Innermost{}})) :
+    Tiled.Tiled & (Tiled.Tiled & Tiled.Tiled)}:
+  +xi = {Parameter.ImageGeometry{n,c,h,w} : Parameter.ImageGeometry}
+  +di = {Parameter.ImageGeometry{n,o,rows,columns} : Parameter.ImageGeometry}
+  +call = {ParameterCells.Call{limits,default_capacity,x_cells,c,xi,x_named,x_counted,d_cells,o,di,d_named,d_counted,k,s,p,g,valid} : ParameterCells.Call}
+  %Equal.sym(Tiled.Tiled & (Tensors.Tensor<Tile.Tile8> & Tensors.Tensor<Tile.Tile8>),
+      Parameter.weight(Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),x_cells,xf,Tensors.Usable{},xw},c,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),d_cells,df,Tensors.Usable{},dw},o,k,s,p,g),
+      Parameter.weight_finished(Parameter.Read{x_cells,xf,Tensors.Usable{},xw},Parameter.Read{d_cells,df,Tensors.Usable{},dw},U32.max(xw,dw),o,(c * k * k : U32),[Tiled.groups(o),c,k,k],
+        WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))),
+      ParameterCells.run_exact(call,PiecesModel.pack(~Tile.Tile8,xm),xf,xw,PiecesModel.pack(~Tile.Tile8,dm),df,dw)) :
+    {Gradient.weight_result(x_axis,c,d_axis,o,_) == (Tiled.Tiled{Tensors.whole(~Tile.Tile8,TiledMap.padded(TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}},0,Grid.product([Tiled.groups(o),c,k,k]),
+        Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+          U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))),
+        [Tiled.groups(o),c,k,k],Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)),0n,o,Grid.Outermost{}},
+      (Tiled.Tiled{Parameter.back(Parameter.Read{x_cells,xf,Tensors.Usable{},xw},Pair.fst(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+          Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+            U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),x_axis,c,Grid.Innermost{}},
+        Tiled.Tiled{Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.snd(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+          Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+            U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),d_axis,o,Grid.Innermost{}})) : Tiled.Tiled & (Tiled.Tiled & Tiled.Tiled)}
+  %Equal.sym(Tiled.Tiled & (Tensors.Tensor<Tile.Tile8> & Tensors.Tensor<Tile.Tile8>),
+      Parameter.weight_finished(Parameter.Read{x_cells,xf,Tensors.Usable{},xw},Parameter.Read{d_cells,df,Tensors.Usable{},dw},U32.max(xw,dw),o,(c * k * k : U32),[Tiled.groups(o),c,k,k],
+        WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))),
+      (Tiled.Tiled{Tensors.whole(~Tile.Tile8,TiledMap.padded(TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}},0,Grid.product([Tiled.groups(o),c,k,k]),
+          Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+            U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))),
+          [Tiled.groups(o),c,k,k],Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)),0n,o,Grid.Outermost{}},
+        (Parameter.back(Parameter.Read{x_cells,xf,Tensors.Usable{},xw},Pair.fst(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+            Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+              U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),
+          Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.snd(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+            Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+              U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))))),
+      ParameterCells.finished_exact(Parameter.Read{x_cells,xf,Tensors.Usable{},xw},Parameter.Read{d_cells,df,Tensors.Usable{},dw},U32.max(xw,dw),o,(c * k * k : U32),[Tiled.groups(o),c,k,k],
+        WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))) :
+    {Gradient.weight_result(x_axis,c,d_axis,o,_) == (Tiled.Tiled{Tensors.whole(~Tile.Tile8,TiledMap.padded(TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}},0,Grid.product([Tiled.groups(o),c,k,k]),
+        Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+          U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))),
+        [Tiled.groups(o),c,k,k],Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)),0n,o,Grid.Outermost{}},
+      (Tiled.Tiled{Parameter.back(Parameter.Read{x_cells,xf,Tensors.Usable{},xw},Pair.fst(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+          Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+            U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),x_axis,c,Grid.Innermost{}},
+        Tiled.Tiled{Parameter.back(Parameter.Read{d_cells,df,Tensors.Usable{},dw},Pair.snd(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,
+          Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(xi,di,k,s,p,g),
+            U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),d_axis,o,Grid.Innermost{}})) : Tiled.Tiled & (Tiled.Tiled & Tiled.Tiled)}
+  {==}
 
-# A call whose outputs the parts compute: what every part reads.
-type WeightParts is Data:
-  WeightParts{xi: Parameter.ImageGeometry,di: Parameter.ImageGeometry,k: U32,s: U32,p: U32,g: U32,x: Buffer.Model<F32>,d: Buffer.Model<F32>,
-    positive: WeightPositive<xi,di,k,s,g>,
-    counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>,
-    room: GradientRoom<Parameter.work(xi,di,k,s,p,g)>}
+# ---- The weight gradient of a call ----
 
-def parts_work(+scope: WeightParts) -> Kernel.Work:
-  WeightParts{xi,di,k,s,p,g,x,d,positive,counted,room} = scope
-  Parameter.work(xi,di,k,s,p,g)
+# The weight gradient, x and d a weight call returns hold the weight reader
+# and the readers of x and d.
+def WeightHeld(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+read: Terms.WeightRead<XL,DL>,+weights: List<&2,U32>,+x_logical: XL,
+  +x_values: List<&2,U32>,+d_logical: DL,+d_values: List<&2,U32>,result: Tiled.Tiled & (Tiled.Tiled & Tiled.Tiled)) -> Data:
+  (weight,cells) = result
+  (x,d) = cells
+  KernelGemm.Both<TiledPublic.Contract(~Terms.WeightRead<XL,DL>,~Terms.weight_at(~XL,~x_value,~DL,~d_value),read,weights,weight),
+    KernelGemm.Both<TiledPublic.Contract(~XL,~x_value,x_logical,x_values,x),TiledPublic.Contract(~DL,~d_value,d_logical,d_values,d)>>
 
-def parts_fill(+scope: WeightParts) -> F32:
-  0.0
+# A weight call on the cells of x and d laid out with their channels in the
+# lanes and the groups innermost.
+def weight_call(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_logical: XL,+x_values: List<&2,U32>,+x_axis: Nat,+x_outer: U32,+x_after: U32,
+  +d_logical: DL,+d_values: List<&2,U32>,+d_axis: Nat,+d_outer: U32,+d_after: U32,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,+g: U32,
+  +x_geometry_exact: {TiledPublic.geometry_of(x_values,x_axis,Grid.Innermost{}) == Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}} : Cells.Cells},
+  +x_named: {Parameter.cell_image(Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),c) == Some{Parameter.ImageGeometry{n,c,h,w}} : Maybe<&2,Parameter.ImageGeometry>},
+  +d_geometry_exact: {TiledPublic.geometry_of(d_values,d_axis,Grid.Innermost{}) == Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}} : Cells.Cells},
+  +d_named: {Parameter.cell_image(Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),o) == Some{Parameter.ImageGeometry{n,o,rows,columns}} : Maybe<&2,Parameter.ImageGeometry>},
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g,limits) == True{} : Bool},
+  +rooms: WeightRooms<limits,n,c,h,w,o,rows,columns,k,g>,
+  +x_after_exact: {U32.to_nat(x_after) == Nat.mul(U32.to_nat(h),U32.to_nat(w)) : Nat},
+  +x_outer_exact: {U32.to_nat(x_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(h),U32.to_nat(w))) : Nat},
+  +d_after_exact: {U32.to_nat(d_after) == Nat.mul(U32.to_nat(rows),U32.to_nat(columns)) : Nat},
+  +d_outer_exact: {U32.to_nat(d_outer) == Nat.mul(U32.to_nat(n),Nat.mul(U32.to_nat(rows),U32.to_nat(columns))) : Nat},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_contract: TiledPublic.Contract(~XL,~x_value,x_logical,x_values,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},x_axis,c,Grid.Innermost{}}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_contract: TiledPublic.Contract(~DL,~d_value,d_logical,d_values,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},d_axis,o,Grid.Innermost{}})) ->
+  WeightHeld(~XL,~x_value,~DL,~d_value,Terms.WeightRead{x_logical,d_logical,Some{Parameter.ImageGeometry{n,c,h,w}},Some{Parameter.ImageGeometry{n,o,rows,columns}},k,s,p,g},[o,c,k,k],
+    x_logical,x_values,d_logical,d_values,Gradient.weight_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},x_axis,c,Grid.Innermost{}},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},d_axis,o,Grid.Innermost{}},k,s,p,g)):
+  WeightRooms{+x_groups_exact,+x_room,+blocks_exact,+d_groups_exact,+d_room,+channels_positive,+kernel_positive,+columns_positive,+group_positive,+outputs_positive,+weights_room} = rooms
+  KernelGemm.Both{+x_global,TiledPublic.Laid{+x_inside,+x_laid_shaped,+x_restored,+x_values_counted,+x_pinned}} = x_contract
+  KernelGemm.Both{+d_global,TiledPublic.Laid{+d_inside,+d_laid_shaped,+d_restored,+d_values_counted,+d_pinned}} = d_contract
+  +x_cells = Tiled.cell_shape(x_values,x_axis,Grid.Innermost{})
+  +d_cells = Tiled.cell_shape(d_values,d_axis,Grid.Innermost{})
+  +x_own = {KernelGemm.Both{x_global,TiledPublic.Laid{x_inside,x_laid_shaped,x_restored,x_values_counted,x_pinned}} :
+    TiledPublic.Contract(~XL,~x_value,x_logical,x_values,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},x_axis,c,Grid.Innermost{}})}
+  +d_own = {KernelGemm.Both{d_global,TiledPublic.Laid{d_inside,d_laid_shaped,d_restored,d_values_counted,d_pinned}} :
+    TiledPublic.Contract(~DL,~d_value,d_logical,d_values,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},d_axis,o,Grid.Innermost{}})}
+  +x_holder = {Representation.Lifted{x_logical,Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}}} : Representation.Lifted<XL>}
+  +d_holder = {Representation.Lifted{d_logical,Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}}} : Representation.Lifted<DL>}
+  +x_shaped = {%x_geometry_exact :
+      Global.Shaped(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),Representation.Lifted{x_logical,_},x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw})
+      TiledPublic.cells_shaped(~XL,~x_value,x_logical,x_values,x_axis,c,Grid.Innermost{},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},x_own) :
+    Global.Shaped(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),x_holder,x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw})}
+  +d_shaped = {%d_geometry_exact :
+      Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{d_logical,_},d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw})
+      TiledPublic.cells_shaped(~DL,~d_value,d_logical,d_values,d_axis,o,Grid.Innermost{},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},d_own) :
+    Global.Shaped(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),d_holder,d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw})}
+  +x_counted = Global.shaped_counted(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),x_holder,x_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},x_shaped)
+  +d_counted = Global.shaped_counted(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),d_holder,d_cells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},d_shaped)
+  +xi = {Parameter.ImageGeometry{n,c,h,w} : Parameter.ImageGeometry}
+  +di = {Parameter.ImageGeometry{n,o,rows,columns} : Parameter.ImageGeometry}
+  +call = {ParameterCells.Call{limits,default_capacity,x_cells,c,xi,x_named,x_counted,d_cells,o,di,d_named,d_counted,k,s,p,g,valid} : ParameterCells.Call}
+  +capacity = Machine.capacity(limits)
+  +tap_zero = tap_word_inside(n,c,h,w,o,rows,columns,k,s,p,0n,capacity,rooms_taps(limits,n,c,h,w,o,rows,columns,k,g,rooms),
+    rooms_taps_positive(limits,n,c,h,w,o,rows,columns,k,g,rooms))
+  +output_zero = output_word_inside(n,c,h,w,o,rows,columns,k,s,p,0n,capacity,rooms_outputs(limits,n,c,h,w,o,rows,columns,k,g,rooms),outputs_positive)
+  +cells = ParameterCells.weight_cells(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+    x_holder,d_holder,call,U32.max(xw,dw),U32.from_nat(0n),U32.from_nat(0n),tap_zero,output_zero,PiecesModel.pack(~Tile.Tile8,xm),xf,xw,x_shaped,PiecesModel.pack(~Tile.Tile8,dm),df,dw,d_shaped)
+  +x_back = {%Equal.sym(Cells.Cells,TiledPublic.geometry_of(x_values,x_axis,Grid.Innermost{}),Cells.Cells{x_outer,x_after,c,Tiled.groups(c),Grid.Innermost{}},x_geometry_exact) :
+      Global.Contract(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),Representation.Lifted{x_logical,_},Parameter.back(Parameter.Read{Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},Pair.fst(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))))
+      ParameterCells.x_back(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+        x_holder,d_holder,call,U32.from_nat(0n),U32.from_nat(0n),WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))),cells,xf,xw) :
+    Global.Contract(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),
+      Representation.Lifted{x_logical,TiledPublic.geometry_of(x_values,x_axis,Grid.Innermost{})},Parameter.back(Parameter.Read{Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},Pair.fst(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))))}
+  +d_back = {%Equal.sym(Cells.Cells,TiledPublic.geometry_of(d_values,d_axis,Grid.Innermost{}),Cells.Cells{d_outer,d_after,o,Tiled.groups(o),Grid.Innermost{}},d_geometry_exact) :
+      Global.Contract(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),Representation.Lifted{d_logical,_},Parameter.back(Parameter.Read{Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},Pair.snd(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))))
+      ParameterCells.d_back(~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+        x_holder,d_holder,call,U32.from_nat(0n),U32.from_nat(0n),WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))),cells,df,dw) :
+    Global.Contract(~Tile.Tile8,~Representation.Lifted<DL>,~Representation.lifted(~DL,~d_value),
+      Representation.Lifted{d_logical,TiledPublic.geometry_of(d_values,d_axis,Grid.Innermost{})},Parameter.back(Parameter.Read{Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},Pair.snd(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))))}
+  %Equal.sym(Tiled.Tiled & (Tiled.Tiled & Tiled.Tiled),Gradient.weight_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},x_axis,c,Grid.Innermost{}},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},d_axis,o,Grid.Innermost{}},k,s,p,g),(Tiled.Tiled{Tensors.whole(~Tile.Tile8,TiledMap.padded(TiledMap.Padding{o,Tiled.groups(o),(c * k * k : U32),Grid.Outermost{}},0,Grid.product([Tiled.groups(o),c,k,k]),Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm))))),[Tiled.groups(o),c,k,k],Tiled.zero_tile(),Tensors.Usable{},U32.max(xw,dw)),0n,o,Grid.Outermost{}},(Tiled.Tiled{Parameter.back(Parameter.Read{Tiled.cell_shape(x_values,x_axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},Pair.fst(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),x_axis,c,Grid.Innermost{}},Tiled.Tiled{Parameter.back(Parameter.Read{Tiled.cell_shape(d_values,d_axis,Grid.Innermost{}),df,Tensors.Usable{},dw},Pair.snd(Move.Holding<Tile.Tile8>,Move.Holding<Tile.Tile8>,Pair.fst(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),d_axis,o,Grid.Innermost{}})),
+      weight_run(limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,xm,xf,xw,x_axis,dm,df,dw,d_axis)) :
+    WeightHeld(~XL,~x_value,~DL,~d_value,Terms.WeightRead{x_logical,d_logical,Some{xi},Some{di},k,s,p,g},[o,c,k,k],x_logical,x_values,d_logical,d_values,_)
+  KernelGemm.Both{
+    KernelGemm.Both{
+      weight_whole(~XL,~x_value,~DL,~d_value,x_logical,x_outer,x_after,d_logical,d_outer,d_after,limits,default_capacity,n,c,h,w,o,rows,columns,k,s,p,g,
+        x_cells,x_named,x_counted,d_cells,d_named,d_counted,valid,rooms,x_after_exact,x_outer_exact,d_after_exact,d_outer_exact,xm,xf,xw,x_shaped,dm,df,dw,d_shaped,
+        Buffer.observe(~Tile.Tile8,Pair.snd(WeightKernel.Held(),Storage.Buffer<Tile.Tile8>,WeightKernel.weight_parts(Parameter.work(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,g),U32.max(xw,dw),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,xm)),Move.held(~Tile.Tile8,PiecesModel.pack(~Tile.Tile8,dm)))))),
+      TiledPublic.Laid{{==},{==},{==},ParameterCells.valid_weights(xi,di,k,s,p,g,limits,valid),{==}}},
+    KernelGemm.Both{KernelGemm.Both{x_back,TiledPublic.Laid{x_inside,x_laid_shaped,x_restored,x_values_counted,x_pinned}},
+      KernelGemm.Both{d_back,TiledPublic.Laid{d_inside,d_laid_shaped,d_restored,d_values_counted,d_pinned}}}}
 
-def parts_limit(+scope: WeightParts) -> Nat:
-  U32.to_nat(WeightKernel.outputs(parts_work(scope)))
+# The input of a call as an image geometry.
+def input_image(+mode: Call.Mode,+geometry: InputKernel.Geometry) -> Parameter.ImageGeometry:
+  InputKernel.Geometry{+c,o,+h,+w,k,s,p,gh,gw} = geometry
+  Parameter.ImageGeometry{Call.images(mode),c,h,w}
 
-def parts_view(+scope: WeightParts) -> BandEach.BuiltScope<Kernel.Work,KParts.OwnersSeen>:
-  WeightParts{xi,di,k,s,p,g,x,d,positive,counted,room} = scope
-  BandEach.BuiltScope{Parameter.work(xi,di,k,s,p,g),KParts.OwnersSeen{Buffer.content(~F32,x),Buffer.content(~F32,d)}}
+# The cells of the input name its image geometry.
+def input_named(+mode: Call.Mode,+geometry: InputKernel.Geometry) ->
+  {Parameter.cell_image(Tiled.cell_shape(Gradient.input_shape(Call.arguments(mode,geometry)),Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),Domain.channel_word(geometry)) ==
+    Some{input_image(mode,geometry)} : Maybe<&2,Parameter.ImageGeometry>}:
+  match mode:
+    case Call.Single{}:
+      InputKernel.Geometry{+c,o,+h,+w,k,s,p,gh,gw} = geometry
+      +image = {Parameter.ImageGeometry{1,c,h,w} : Parameter.ImageGeometry}
+      %Equal.sym(Bool,U32.is_eq(Tiled.groups(c),Tiled.groups(c)),True{},Arithmetic.equal_reflexive(Tiled.groups(c))) :
+        {Parameter.grouped(_,image) == Some{image} : Maybe<&2,Parameter.ImageGeometry>}
+      {==}
+    case Call.Batched{+batch}:
+      InputKernel.Geometry{+c,o,+h,+w,k,s,p,gh,gw} = geometry
+      +image = {Parameter.ImageGeometry{batch,c,h,w} : Parameter.ImageGeometry}
+      %Equal.sym(Bool,U32.is_eq(Tiled.groups(c),Tiled.groups(c)),True{},Arithmetic.equal_reflexive(Tiled.groups(c))) :
+        {Parameter.grouped(_,image) == Some{image} : Maybe<&2,Parameter.ImageGeometry>}
+      {==}
 
-def parts_before(+scope: WeightParts) -> KParts.OwnersSeen:
-  WeightParts{xi,di,k,s,p,g,x,d,positive,counted,room} = scope
-  KParts.OwnersSeen{Buffer.content(~F32,x),Buffer.content(~F32,d)}
+# The input of a call whose image sizes are positive holds values.
+def input_nonempty(+mode: Call.Mode,+geometry: InputKernel.Geometry,+positive: {Parameter.positive(input_image(mode,geometry)) == True{} : Bool}) ->
+  {Nat.is_lt(0n,ShapeLaws.elements(Gradient.input_shape(Call.arguments(mode,geometry)))) == True{} : Bool}:
+  InputKernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+gh,+gw} = geometry
+  +g = {InputKernel.Geometry{c,o,h,w,k,s,p,gh,gw} : InputKernel.Geometry}
+  +image = input_image(mode,g)
+  +sizes = ParameterCells.image_sizes(image,positive)
+  +heights = U32.to_nat(h)
+  +widths = U32.to_nat(w)
+  %Call.image_count(mode,g) : {Nat.is_lt(0n,_) == True{} : Bool}
+  Order.product_positive(U32.to_nat(Call.images(mode)),Nat.mul(U32.to_nat(c),Nat.mul(heights,widths)),ParameterCells.sizes_count(image,sizes),
+    Order.product_positive(U32.to_nat(c),Nat.mul(heights,widths),ParameterCells.sizes_channels(image,sizes),
+      Order.product_positive(heights,widths,ParameterCells.sizes_height(image,sizes),ParameterCells.sizes_width(image,sizes))))
 
-def parts_value(+scope: WeightParts,+index: Nat) -> F32:
-  WeightParts{+xi,+di,+k,+s,+p,+g,x,d,positive,counted,room} = scope
-  weight_value(xi,di,k,s,p,g,x,d,index)
+# The cells of the input of a call, laid out with the channels in the lanes,
+# give the rooms of its images.
+def input_rooms(~XL: Data,~x_value: XL -> U32 -> F32,+x_context: XL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +positive: {Parameter.positive(input_image(mode,geometry)) == True{} : Bool},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_contract: TiledPublic.Contract(~XL,~x_value,x_context,Gradient.input_shape(Call.arguments(mode,geometry)),
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(Gradient.input_shape(Call.arguments(mode,geometry)),Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),
+      xf,Tensors.Usable{},xw},Conv.lane_of(Call.batched(mode)),Grid.lanes_at(Gradient.input_shape(Call.arguments(mode,geometry)),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}})) ->
+  ImageRooms<limits,U32.to_nat(Call.images(mode)),Domain.channel_word(geometry),Domain.height(geometry),Domain.width(geometry)>:
+  InputKernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+gh,+gw} = geometry
+  KernelGemm.Both{+global,TiledPublic.Laid{+inside,+laid_shaped,+restored,+counted,+pinned}} = x_contract
+  +g = {InputKernel.Geometry{c,o,h,w,k,s,p,gh,gw} : InputKernel.Geometry}
+  +values = Gradient.input_shape(Call.arguments(mode,g))
+  +axis = Conv.lane_of(Call.batched(mode))
+  +xcells = Tiled.cell_shape(values,axis,Grid.Innermost{})
+  +x_own = {KernelGemm.Both{global,TiledPublic.Laid{inside,laid_shaped,restored,counted,pinned}} :
+    TiledPublic.Contract(~XL,~x_value,x_context,values,
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xcells,xf,Tensors.Usable{},xw},axis,Grid.lanes_at(values,axis),Grid.Innermost{}})}
+  +image = input_image(mode,g)
+  +sizes = ParameterCells.image_sizes(image,positive)
+  +images = U32.to_nat(Call.images(mode))
+  +heights = U32.to_nat(h)
+  +widths = U32.to_nat(w)
+  +cap = U32.to_nat(Machine.capacity(limits))
+  +groups = Tiled.groups(c)
+  +values_room = {%Equal.sym(Nat,Nat.mul(images,Domain.image_size(g)),ShapeLaws.elements(values),Call.image_count(mode,g)) : {Nat.is_le(_,cap) == True{} : Bool}
+      StorageCount.counted_room(limits,values,counted,default_capacity) :
+    {Nat.is_le(Nat.mul(images,Nat.mul(U32.to_nat(c),Nat.mul(heights,widths))),cap) == True{} : Bool}}
+  +cells_counted = Global.shaped_counted(~Tile.Tile8,~Representation.Lifted<XL>,~Representation.lifted(~XL,~x_value),
+    Representation.Lifted{x_context,TiledPublic.geometry_of(values,axis,Grid.Innermost{})},xcells,Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xcells,xf,Tensors.Usable{},xw},
+    TiledPublic.cells_shaped(~XL,~x_value,x_context,values,axis,Grid.lanes_at(values,axis),Grid.Innermost{},Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xcells,xf,Tensors.Usable{},xw},x_own))
+  +cells_room = {%Equal.sym(Nat,Nat.mul(Nat.mul(Nat.mul(images,heights),widths),U32.to_nat(groups)),Nat.mul(Nat.mul(images,heights),Nat.mul(widths,U32.to_nat(groups))),
+        RowMajor.assoc(Nat.mul(images,heights),widths,U32.to_nat(groups))) :
+      {Nat.is_le(_,cap) == True{} : Bool}
+      %Call.image_cells_count(mode,g) : {Nat.is_le(_,cap) == True{} : Bool}
+      %Call.image_cell_shape(mode,g) : {Nat.is_le(ShapeLaws.elements(_),cap) == True{} : Bool}
+      StorageCount.counted_room(limits,xcells,cells_counted,default_capacity) :
+    {Nat.is_le(Nat.mul(Nat.mul(Nat.mul(images,heights),widths),U32.to_nat(groups)),cap) == True{} : Bool}}
+  image_rooms(limits,images,c,heights,widths,ParameterCells.sizes_count(image,sizes),ParameterCells.sizes_channels(image,sizes),ParameterCells.sizes_height(image,sizes),
+    ParameterCells.sizes_width(image,sizes),values_room,cells_room)
 
-# A part reads the weight gradient of its outputs: the outputs first
-# onwards of the whole call.
-def parts_read(+scope: WeightParts,+part: KParts.OwnersModel,+first: U32,+rows: U32,
-  +fact: BandModel.viewed(~KParts.OwnersModel,~BandEach.BuiltScope<Kernel.Work,KParts.OwnersSeen>,
-    ~BandEach.built_piece(~KParts.OwnersModel,~KParts.OwnersSeen,~KParts.OwnersSeen,~Kernel.Work,~KParts.seen_model,~KParts.piece),~WeightParts,~parts_view,scope,part,first,rows),
-  +room: {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),parts_limit(scope)) == True{} : Bool},
-  +local: Nat,+inside: {Nat.is_lt(local,Nat.mul(U32.to_nat(rows),KParts.work_width(parts_work(scope)))) == True{} : Bool}) ->
-  {ListRead.at(~F32,parts_fill(scope),local,KParts.owner_list(parts_work(scope),part,first,rows)) ==
-    parts_value(scope,Nat.add(Nat.mul(U32.to_nat(first),KParts.work_width(parts_work(scope))),local)) : F32}:
-  WeightParts{+xi,+di,+k,+s,+p,+g,+x,+d,+positive,+counted,+gradient_room} = scope
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+oh,+ow} = di
-  Buffer.Model{+xt,+xl,+xc} = x
-  Buffer.Model{+dt,+dl,+dc} = d
-  WeightPositive{+xp,+dp,+kp,+sp,+gp,+images} = positive
-  Count.Count{+exact,+bounded} = counted
-  GradientRoom{+domain,+area_exact} = gradient_room
-  KParts.OwnersModel{+input,+gradient} = part
-  +part_di = {Parameter.ImageGeometry{dn,rows,oh,ow} : Parameter.ImageGeometry}
-  +work = Parameter.work(xi,di,k,s,p,g)
-  +part_work = Parameter.work(xi,part_di,k,s,p,g)
-  +taps = weight_tap_count(xi,k)
-  +width = U32.to_nat(WeightKernel.taps(work))
-  +capacity = Machine.capacity(Default.limits())
-  +taps_exact = weight_taps_exact(xi,di,k,s,p,weight_geometry_ready(xi,di,k,s,p,g,WeightPositive{xp,dp,kp,sp,gp,images},KParts.count(work),Count.Count{exact,bounded}))
-  +kernel_positive = {%Comparison.lt(0,k) : {_ == True{} : Bool} kp : {Nat.is_lt(0n,U32.to_nat(k)) == True{} : Bool}}
-  +channels_word = Logic.right(U32.is_lt(0,n),U32.is_lt(0,c),Logic.left(U32.is_lt(0,n) && U32.is_lt(0,c),U32.is_lt(0,h),Logic.left((U32.is_lt(0,n) && U32.is_lt(0,c)) && U32.is_lt(0,h),U32.is_lt(0,w),xp)))
-  +channels_positive = {%Comparison.lt(0,c) : {_ == True{} : Bool} channels_word : {Nat.is_lt(0n,U32.to_nat(c)) == True{} : Bool}}
-  +columns_word = Logic.right((U32.is_lt(0,dn) && U32.is_lt(0,o)) && U32.is_lt(0,oh),U32.is_lt(0,ow),dp)
-  +columns_positive = {%Comparison.lt(0,ow) : {_ == True{} : Bool} columns_word : {Nat.is_lt(0n,U32.to_nat(ow)) == True{} : Bool}}
-  +group_positive = {%Comparison.lt(0,g) : {_ == True{} : Bool} gp : {Nat.is_lt(0n,U32.to_nat(g)) == True{} : Bool}}
-  +outputs_word = Logic.right(U32.is_lt(0,dn),U32.is_lt(0,o),Logic.left(U32.is_lt(0,dn) && U32.is_lt(0,o),U32.is_lt(0,oh),Logic.left((U32.is_lt(0,dn) && U32.is_lt(0,o)) && U32.is_lt(0,oh),U32.is_lt(0,ow),dp)))
-  +outputs_positive = {%Comparison.lt(0,o) : {_ == True{} : Bool} outputs_word : {Nat.is_lt(0n,U32.to_nat(o)) == True{} : Bool}}
-  +taps_positive = Order.product_positive(U32.to_nat(c),Nat.mul(U32.to_nat(k),U32.to_nat(k)),channels_positive,Order.product_positive(U32.to_nat(k),U32.to_nat(k),kernel_positive,kernel_positive))
-  +rows_positive = RowMajor.left_factor_positive(U32.to_nat(rows),width,Order.positive_bound(local,Nat.mul(U32.to_nat(rows),width),inside))
-  +rows_word = {%Equal.sym(Bool,U32.is_lt(0,rows),Nat.is_lt(0n,U32.to_nat(rows)),Comparison.lt(0,rows)) : {_ == True{} : Bool} rows_positive : {U32.is_lt(0,rows) == True{} : Bool}}
-  +part_gradient = {%Equal.sym(Bool,U32.is_lt(0,rows),True{},rows_word) : {((U32.is_lt(0,dn) && _) && U32.is_lt(0,oh)) && U32.is_lt(0,ow) == True{} : Bool}
-    %outputs_word : {((U32.is_lt(0,dn) && _) && U32.is_lt(0,oh)) && U32.is_lt(0,ow) == True{} : Bool} dp : {Parameter.positive(part_di) == True{} : Bool}}
-  +part_positive = {WeightPositive{xp,part_gradient,kp,sp,gp,images} : WeightPositive<xi,part_di,k,s,g>}
-  +images_exact = Equal.cong(U32,Nat,word => U32.to_nat(word),U32.from_nat(U32.to_nat(n)),n,Arithmetic.native_roundtrip(n))
-  +outputs_exact = Equal.cong(U32,Nat,word => U32.to_nat(word),U32.from_nat(U32.to_nat(o)),o,Arithmetic.native_roundtrip(o))
-  +outputs_room = {%outputs_exact : {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),_) == True{} : Bool} room :
-    {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),U32.to_nat(o)) == True{} : Bool}}
-  +rows_room = Order.drop_left_le(U32.to_nat(first),U32.to_nat(rows),U32.to_nat(o),outputs_room)
-  +whole_exact = Equal.trans(Nat,Nat.mul(U32.to_nat(o),taps),ShapeLaws.elements([o,c,k,k]),U32.to_nat(KParts.count(work)),
-    Equal.sym(Nat,ShapeLaws.elements([o,c,k,k]),Nat.mul(U32.to_nat(o),taps),weight_shape_count(o,c,k)),exact)
-  +whole_room = {%Equal.sym(Nat,Nat.mul(U32.to_nat(o),taps),U32.to_nat(KParts.count(work)),whole_exact) : {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
-    Bounds.as_nat_le(KParts.count(work),capacity,bounded) : {Nat.is_le(Nat.mul(U32.to_nat(o),taps),U32.to_nat(capacity)) == True{} : Bool}}
-  +part_value = Nat.mul(U32.to_nat(rows),taps)
-  +part_room = Order.transitive(part_value,Nat.mul(U32.to_nat(o),taps),U32.to_nat(capacity),RowMajor.mul_le(U32.to_nat(rows),U32.to_nat(o),taps,rows_room),whole_room)
-  +part_exact = FullRange.roundtrip(part_value,capacity,part_room)
-  +part_count = U32.from_nat(part_value)
-  +part_counted = {Count.Count{
-      Equal.trans(Nat,ShapeLaws.elements([rows,c,k,k]),part_value,U32.to_nat(part_count),weight_shape_count(rows,c,k),Equal.sym(Nat,U32.to_nat(part_count),part_value,part_exact)),
-      %Equal.sym(Bool,U32.is_le(part_count,capacity),Nat.is_le(U32.to_nat(part_count),U32.to_nat(capacity)),Comparison.le(part_count,capacity)) : {_ == True{} : Bool}
-      %Equal.sym(Nat,U32.to_nat(part_count),part_value,part_exact) : {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool} part_room} :
-    Count.Count<ShapeLaws.elements(weight_shape(xi,part_di,k)),part_count>}
-  +element_inside = {%taps_exact : {Nat.is_lt(local,Nat.mul(U32.to_nat(rows),_)) == True{} : Bool} inside : {Nat.is_lt(local,part_value) == True{} : Bool}}
-  +part_inside = {%Equal.sym(Nat,U32.to_nat(part_count),part_value,part_exact) : {Nat.is_lt(local,_) == True{} : Bool} element_inside :
-    {Nat.is_lt(local,U32.to_nat(part_count)) == True{} : Bool}}
-  +numeric = weight_list_numeric_domain(xi,part_di,k,s,p,g,input,gradient,local,part_positive,
-    weight_geometry_ready(xi,part_di,k,s,p,g,part_positive,part_count,part_counted),part_count,part_counted,part_inside)
-  +listed = {%Arithmetic.native_roundtrip(rows) :
-      {WeightModel.weight_values(WeightModel.weight(part_work,input,gradient)) ==
-        WeightModel.transpose(U32.to_nat(_),0,_,U32.to_nat(WeightKernel.taps(part_work)),WeightGroups.group_output(WeightModel.values(part_work,input,gradient))) : List<&2,F32>}
-    WeightModel.weight_list(part_work,input,gradient) : {weight_list(part_work,input,gradient) == KParts.owner_list(work,KParts.OwnersModel{input,gradient},first,rows) : List<&2,F32>}}
-  +geometry = slice_geometry(U32.to_nat(n),U32.to_nat(o),U32.to_nat(oh),U32.to_nat(ow))
-  +band = FromWhole.band(~F32,geometry,0.0,Buffer.Content{dt,dl},first,rows)
-  +seen_input = Equal.cong(KParts.OwnersSeen,Buffer.Content<F32>,seen => Pair.fst(Buffer.Content<F32>,Buffer.Content<F32>,KParts.seen_pair(seen)),
-    KParts.seen_model(KParts.OwnersModel{input,gradient}),KParts.OwnersSeen{Buffer.Content{xt,xl},band},fact)
-  +seen_gradient = Equal.cong(KParts.OwnersSeen,Buffer.Content<F32>,seen => Pair.snd(Buffer.Content<F32>,Buffer.Content<F32>,KParts.seen_pair(seen)),
-    KParts.seen_model(KParts.OwnersModel{input,gradient}),KParts.OwnersSeen{Buffer.Content{xt,xl},band},fact)
-  +input_tree = Equal.trans(Tree.Tree<F32>,Buffer.tree(~F32,input),Buffer.content_tree(~F32,Buffer.content(~F32,input)),xt,
-    Equal.sym(Tree.Tree<F32>,Buffer.content_tree(~F32,Buffer.content(~F32,input)),Buffer.tree(~F32,input),Buffer.content_tree_of(~F32,input)),
-    Equal.cong(Buffer.Content<F32>,Tree.Tree<F32>,content => Buffer.content_tree(~F32,content),Buffer.content(~F32,input),Buffer.Content{xt,xl},seen_input))
-  +gradient_tree = Equal.trans(Tree.Tree<F32>,Buffer.tree(~F32,gradient),Buffer.content_tree(~F32,Buffer.content(~F32,gradient)),Buffer.content_tree(~F32,band),
-    Equal.sym(Tree.Tree<F32>,Buffer.content_tree(~F32,Buffer.content(~F32,gradient)),Buffer.tree(~F32,gradient),Buffer.content_tree_of(~F32,gradient)),
-    Equal.cong(Buffer.Content<F32>,Tree.Tree<F32>,content => Buffer.content_tree(~F32,content),Buffer.content(~F32,gradient),band,seen_gradient))
-  +height = U32.from_nat(U32.to_nat(o))
-  +height_positive = {%Equal.sym(Nat,U32.to_nat(height),U32.to_nat(o),outputs_exact) : {Nat.is_lt(0n,_) == True{} : Bool} outputs_positive :
-    {Nat.is_lt(0n,U32.to_nat(height)) == True{} : Bool}}
-  +height_room = {%Equal.sym(Nat,U32.to_nat(height),U32.to_nat(o),outputs_exact) : {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}
-    Order.transitive(U32.to_nat(o),Nat.mul(U32.to_nat(o),taps),U32.to_nat(capacity),RowMajor.product_covers(U32.to_nat(o),taps,taps_positive),whole_room) :
-    {Nat.is_le(U32.to_nat(height),U32.to_nat(capacity)) == True{} : Bool}}
-  +offset_room = Order.transitive(Nat.add(Nat.mod(U32.to_nat(first),U32.to_nat(height)),U32.to_nat(rows)),Nat.add(U32.to_nat(first),U32.to_nat(rows)),U32.to_nat(height),
-    Order.add_le(Nat.mod(U32.to_nat(first),U32.to_nat(height)),U32.to_nat(first),U32.to_nat(rows),DivisionOrder.remainder_le(U32.to_nat(first),U32.to_nat(height),height_positive)),
-    room)
-  +span = {BandShape.RowSpan{
-      Inspection.local_guard(height,first,rows,Machine.half_word(Default.limits()),Limits.half_word_fits(Default.limits()),height_positive,
-        Limits.double_bound(Default.limits(),U32.to_nat(height),height_room),offset_room),
-      %Equal.sym(Nat,Nat.mul(1n,U32.to_nat(height)),U32.to_nat(height),
-          Equal.trans(Nat,Nat.mul(1n,U32.to_nat(height)),Nat.mul(U32.to_nat(height),1n),U32.to_nat(height),
-            RowMajor.multiply_commutative(1n,U32.to_nat(height)),Order.times_one(U32.to_nat(height)))) :
-        {Nat.is_le(Nat.add(U32.to_nat(first),U32.to_nat(rows)),_) == True{} : Bool}
-      room} :
-    BandShape.RowSpan<1,height,first,rows>}
-  +band_values = FromWhole.semantics_leaf(~F32,geometry,0.0,first,rows,dt,dl,capacity,Machine.half_word(Default.limits()),
-    FromWhole.planned_band(FromWhole.Owner{geometry,Default.limits(),capacity,domain},first,rows,span))
-  +slice = {Slice{U32.to_nat(n),U32.to_nat(c),U32.to_nat(o),U32.to_nat(h),U32.to_nat(w),U32.to_nat(k),U32.to_nat(s),U32.to_nat(p),U32.to_nat(oh),U32.to_nat(ow),U32.to_nat(g),
-    first,rows,local,xt,dt,dl,band_values,images_exact,outputs_exact,area_exact,outputs_room,element_inside,kernel_positive,channels_positive,columns_positive,group_positive} : Slice}
-  %listed :
-    {ListRead.at(~F32,0.0,local,_) == weight_value(xi,di,k,s,p,g,Buffer.Model{xt,xl,xc},Buffer.Model{dt,dl,dc},Nat.add(Nat.mul(U32.to_nat(first),width),local)) : F32}
-  %Equal.sym(Nat,U32.to_nat(WeightPacking.geometry_taps(weight_geometry(xi,di,k,s,p))),taps,taps_exact) :
-    {ListRead.at(~F32,0.0,local,weight_list(part_work,input,gradient)) ==
-      weight_value(xi,di,k,s,p,g,Buffer.Model{xt,xl,xc},Buffer.Model{dt,dl,dc},Nat.add(Nat.mul(U32.to_nat(first),_),local)) : F32}
-  Equal.trans(F32,ListRead.at(~F32,0.0,local,weight_list(part_work,input,gradient)),weight_value(xi,part_di,k,s,p,g,input,gradient,local),
-    weight_value(xi,di,k,s,p,g,Buffer.Model{xt,xl,xc},Buffer.Model{dt,dl,dc},Nat.add(Nat.mul(U32.to_nat(first),taps),local)),
-    numeric,
-    %Equal.sym(Tree.Tree<F32>,Buffer.tree(~F32,input),xt,input_tree) :
-      {Spec.weight(~Tree.Tree<F32>,~Bridge.at,Bridge.weight_problem(part_work,Model.Source{_,Buffer.tree(~F32,gradient)}),local) ==
-        weight_value(xi,di,k,s,p,g,Buffer.Model{xt,xl,xc},Buffer.Model{dt,dl,dc},Nat.add(Nat.mul(U32.to_nat(first),taps),local)) : F32}
-    %Equal.sym(Tree.Tree<F32>,Buffer.tree(~F32,gradient),Buffer.content_tree(~F32,band),gradient_tree) :
-      {Spec.weight(~Tree.Tree<F32>,~Bridge.at,Bridge.weight_problem(part_work,Model.Source{xt,_}),local) ==
-        weight_value(xi,di,k,s,p,g,Buffer.Model{xt,xl,xc},Buffer.Model{dt,dl,dc},Nat.add(Nat.mul(U32.to_nat(first),taps),local)) : F32}
-    slice_weight(slice))
+# The rooms of the input and of the output gradient of a valid call give the
+# facts the weight bridge reads.
+def weight_rooms_of(+limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +n: U32,+c: U32,+h: U32,+w: U32,+o: U32,+rows: U32,+columns: U32,+k: U32,+s: U32,+p: U32,
+  +x_rooms: ImageRooms<limits,U32.to_nat(n),c,U32.to_nat(h),U32.to_nat(w)>,+d_rooms: ImageRooms<limits,U32.to_nat(n),o,U32.to_nat(rows),U32.to_nat(columns)>,
+  +valid: {Parameter.valid_with(Parameter.ImageGeometry{n,c,h,w},Parameter.ImageGeometry{n,o,rows,columns},k,s,p,Gradient.group_length(),limits) == True{} : Bool}) ->
+  WeightRooms<limits,n,c,h,w,o,rows,columns,k,Gradient.group_length()>:
+  +xi = {Parameter.ImageGeometry{n,c,h,w} : Parameter.ImageGeometry}
+  +di = {Parameter.ImageGeometry{n,o,rows,columns} : Parameter.ImageGeometry}
+  +group = Gradient.group_length()
+  +capacity = Machine.capacity(limits)
+  +cap = U32.to_nat(capacity)
+  +images = U32.to_nat(n)
+  +positive = ParameterCells.valid_positive(xi,di,k,s,p,group,limits,valid)
+  +x_sizes = ParameterCells.image_sizes(xi,ParameterCells.positive_input(xi,di,k,s,group,capacity,positive))
+  +d_sizes = ParameterCells.image_sizes(di,ParameterCells.positive_gradient(xi,di,k,s,group,capacity,positive))
+  +domain = ParameterCells.call_domain(xi,di,k,s,p,group,limits,default_capacity,valid)
+  +on = U32.to_nat(o)
+  +cn = U32.to_nat(c)
+  +kn = U32.to_nat(k)
+  +weights = {%Order.times_one(kn) : {Nat.is_le(Nat.mul(on,Nat.mul(cn,Nat.mul(kn,_))),cap) == True{} : Bool}
+      StorageCount.counted_room(limits,[o,c,k,k],ParameterCells.valid_weights(xi,di,k,s,p,group,limits,valid),default_capacity) :
+    {Nat.is_le(Nat.mul(on,Nat.mul(cn,Nat.mul(kn,kn))),cap) == True{} : Bool}}
+  WeightRooms{rooms_groups(limits,images,c,U32.to_nat(h),U32.to_nat(w),x_rooms),rooms_total(limits,images,c,U32.to_nat(h),U32.to_nat(w),x_rooms),
+    Encoded.eight_blocks_exact(limits,c,rooms_lanes(limits,images,c,U32.to_nat(h),U32.to_nat(w),x_rooms)),
+    rooms_groups(limits,images,o,U32.to_nat(rows),U32.to_nat(columns),d_rooms),rooms_total(limits,images,o,U32.to_nat(rows),U32.to_nat(columns),d_rooms),
+    ParameterCells.sizes_channels(xi,x_sizes),Groups.kernel_positive(ParameterCells.call_geometry(xi,di,k,s,p),domain),ParameterCells.sizes_width(di,d_sizes),
+    ParameterCells.positive_group(xi,di,k,s,group,capacity,positive),ParameterCells.sizes_channels(di,d_sizes),weights}
 
-# The parts list the weight gradient of the whole call.
-def parts_agree(+scope: WeightParts,+depth: Nat,+owners: BandModel.Shaped<KParts.OwnersModel>,
-  +seen: {BandModel.shaped_map(~KParts.OwnersModel,~KParts.OwnersSeen,~KParts.seen_model,owners) ==
-    BandModel.shaped_build(~KParts.OwnersSeen,~KParts.OwnersSeen,~KParts.piece(parts_work(scope)),parts_before(scope),
-      KParts.plan(depth,parts_work(scope))) : BandModel.Shaped<KParts.OwnersSeen>},
-  +capacity_ok: {U32.is_le(WeightKernel.outputs(parts_work(scope)),2147483648) == True{} : Bool},
-  +index: Nat,+inside: {Nat.is_lt(index,Nat.mul(U32.to_nat(WeightKernel.outputs(parts_work(scope))),KParts.work_width(parts_work(scope)))) == True{} : Bool}) ->
-  {ListRead.at(~F32,0.0,index,KParts.parts_list(parts_work(scope),owners)) == parts_value(scope,index) : F32}:
-  WeightParts{+xi,+di,+k,+s,+p,+g,+x,+d,+positive,+counted,+room} = scope
-  +scope = {WeightParts{xi,di,k,s,p,g,x,d,positive,counted,room} : WeightParts}
-  +work = Parameter.work(xi,di,k,s,p,g)
-  +before = {KParts.OwnersSeen{Buffer.content(~F32,x),Buffer.content(~F32,d)} : KParts.OwnersSeen}
-  BandEach.shaped_list_at(~KParts.OwnersModel,~F32,~Kernel.Work,~KParts.owner_list,~KParts.work_width,~KParts.owner_length,
-    ~WeightParts,~parts_work,~parts_fill,~parts_limit,
-    ~BandModel.viewed(~KParts.OwnersModel,~BandEach.BuiltScope<Kernel.Work,KParts.OwnersSeen>,
-      ~BandEach.built_piece(~KParts.OwnersModel,~KParts.OwnersSeen,~KParts.OwnersSeen,~Kernel.Work,~KParts.seen_model,~KParts.piece),~WeightParts,~parts_view),
-    ~parts_value,~parts_read,
-    scope,owners,0n,U32.to_nat(WeightKernel.outputs(work)),
-    KParts.owners_coverage(depth,work,owners,capacity_ok,KParts.owners_plan(depth,work,before,owners,seen)),
-    BandModel.shaped_all_view(~KParts.OwnersModel,~BandEach.BuiltScope<Kernel.Work,KParts.OwnersSeen>,
-      ~BandEach.built_piece(~KParts.OwnersModel,~KParts.OwnersSeen,~KParts.OwnersSeen,~Kernel.Work,~KParts.seen_model,~KParts.piece),~WeightParts,~parts_view,scope,owners,
-      BandEach.shaped_built_all(~KParts.OwnersModel,~KParts.OwnersSeen,~KParts.OwnersSeen,~Kernel.Work,~KParts.seen_model,~KParts.piece,work,before,owners,KParts.plan(depth,work),seen)),
-    Order.reflexive(U32.to_nat(WeightKernel.outputs(work))),index,inside)
+# The weight reader of a call over the readers of its input and its output
+# gradient.
+def weight_read(~XL: Data,~DL: Data,+x_context: XL,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry) -> Terms.WeightRead<XL,DL>:
+  Terms.WeightRead{x_context,d_context,Some{input_image(mode,geometry)},Some{gradient_image(mode,geometry)},Domain.kernel_word(geometry),Call.stride(geometry),
+    Call.padding(geometry),Gradient.group_length()}
 
-# An index of the weight count lies in the outputs times the taps.
-def work_inside(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+positive: WeightPositive<xi,di,k,s,g>,
-  +count: U32,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count>,+index: Nat,+inside: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool}) ->
-  {Nat.is_lt(index,Nat.mul(U32.to_nat(WeightKernel.outputs(Parameter.work(xi,di,k,s,p,g))),U32.to_nat(WeightKernel.taps(Parameter.work(xi,di,k,s,p,g))))) == True{} : Bool}:
-  %Equal.sym(Nat,Nat.mul(U32.to_nat(WeightKernel.outputs(Parameter.work(xi,di,k,s,p,g))),U32.to_nat(WeightKernel.taps(Parameter.work(xi,di,k,s,p,g)))),ShapeLaws.elements(weight_shape(xi,di,k)),
-      weight_elements(xi,di,k,s,p,g,positive,count,counted)) :
-    {Nat.is_lt(index,_) == True{} : Bool}
-  %Equal.sym(Nat,ShapeLaws.elements(weight_shape(xi,di,k)),U32.to_nat(count),Count.count_exact(ShapeLaws.elements(weight_shape(xi,di,k)),count,counted)) :
-    {Nat.is_lt(index,_) == True{} : Bool}
-  inside
+# A weight gradient call: the weight gradient holds the weight reader, and the
+# input and the output gradient come back holding their readers.
+def TiledWeightCall(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_context: XL,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  result: Tiled.Tiled & (Tiled.Tiled & Tiled.Tiled)) -> Data:
+  WeightHeld(~XL,~x_value,~DL,~d_value,weight_read(~XL,~DL,x_context,d_context,mode,geometry),Call.weight_shape(geometry),x_context,Gradient.input_shape(Call.arguments(mode,geometry)),
+    d_context,Call.input_shape(mode,geometry),result)
 
-# The serial kernel lists the weight gradient of the call.
-def serial_numeric(+xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,+x: Buffer.Model<F32>,+d: Buffer.Model<F32>,
-  +positive: WeightPositive<xi,di,k,s,g>,+count: U32,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count>,
-  +index: Nat,+inside: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool}) ->
-  {ListRead.at(~F32,0.0,index,KParts.serial_list(Parameter.work(xi,di,k,s,p,g),x,d)) == weight_value(xi,di,k,s,p,g,x,d,index) : F32}:
-  %WeightModel.weight_list(Parameter.work(xi,di,k,s,p,g),x,d) : {ListRead.at(~F32,0.0,index,_) == weight_value(xi,di,k,s,p,g,x,d,index) : F32}
-  weight_list_numeric_domain(xi,di,k,s,p,g,x,d,index,positive,weight_geometry_ready(xi,di,k,s,p,g,positive,count,counted),count,counted,inside)
+# The weight gradient of the cells of an input and an output gradient laid
+# out with their channels in the lanes, as the cells of models.
+def weight_modeled(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_context: XL,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +valid: {Parameter.valid_with(input_image(mode,geometry),gradient_image(mode,geometry),Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry),
+    Gradient.group_length(),limits) == True{} : Bool},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xf: Tile.Tile8,+xw: U32,
+  +x_contract: TiledPublic.Contract(~XL,~x_value,x_context,Gradient.input_shape(Call.arguments(mode,geometry)),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(Gradient.input_shape(Call.arguments(mode,geometry)),Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),xf,Tensors.Usable{},xw},Conv.lane_of(Call.batched(mode)),Grid.lanes_at(Gradient.input_shape(Call.arguments(mode,geometry)),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+df: Tile.Tile8,+dw: U32,
+  +d_contract: TiledPublic.Contract(~DL,~d_value,d_context,Call.input_shape(mode,geometry),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(Call.input_shape(mode,geometry),Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),df,Tensors.Usable{},dw},Conv.lane_of(Call.batched(mode)),Grid.lanes_at(Call.input_shape(mode,geometry),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}})) ->
+  TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,
+    Gradient.weight_cells(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(Gradient.input_shape(Call.arguments(mode,geometry)),Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),xf,Tensors.Usable{},xw},Conv.lane_of(Call.batched(mode)),Grid.lanes_at(Gradient.input_shape(Call.arguments(mode,geometry)),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),Tiled.cell_shape(Call.input_shape(mode,geometry),Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),df,Tensors.Usable{},dw},Conv.lane_of(Call.batched(mode)),Grid.lanes_at(Call.input_shape(mode,geometry),Conv.lane_of(Call.batched(mode))),Grid.Innermost{}},Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry),Gradient.group_length())):
+  InputKernel.Geometry{+c,+o,+h,+w,+k,+s,+p,+gh,+gw} = geometry
+  +g = {InputKernel.Geometry{c,o,h,w,k,s,p,gh,gw} : InputKernel.Geometry}
+  +xv = Gradient.input_shape(Call.arguments(mode,g))
+  +dv = Call.input_shape(mode,g)
+  +axis = Conv.lane_of(Call.batched(mode))
+  +xcells = Tiled.cell_shape(xv,axis,Grid.Innermost{})
+  +dcells = Tiled.cell_shape(dv,axis,Grid.Innermost{})
+  +n = Call.images(mode)
+  +images = U32.to_nat(n)
+  +group = Gradient.group_length()
+  +xi = input_image(mode,g)
+  +di = gradient_image(mode,g)
+  +capacity = Machine.capacity(limits)
+  +positive = ParameterCells.valid_positive(xi,di,k,s,p,group,limits,valid)
+  +x_rooms = input_rooms(~XL,~x_value,x_context,mode,g,limits,default_capacity,ParameterCells.positive_input(xi,di,k,s,group,capacity,positive),xm,xf,xw,x_contract)
+  +d_rooms = gradient_rooms(~DL,~d_value,d_context,mode,g,limits,default_capacity,ParameterCells.positive_gradient(xi,di,k,s,group,capacity,positive),dm,df,dw,d_contract)
+  +heights = U32.to_nat(h)
+  +widths = U32.to_nat(w)
+  +rows = U32.to_nat(gh)
+  +columns = U32.to_nat(gw)
+  +x_plane = rooms_plane(limits,images,c,heights,widths,x_rooms)
+  +d_plane = rooms_plane(limits,images,o,rows,columns,d_rooms)
+  +x_own = {%Call.image_lanes(mode,g) :
+      TiledPublic.Contract(~XL,~x_value,x_context,xv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xcells,xf,Tensors.Usable{},xw},axis,_,Grid.Innermost{}})
+      x_contract :
+    TiledPublic.Contract(~XL,~x_value,x_context,xv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xcells,xf,Tensors.Usable{},xw},axis,c,Grid.Innermost{}})}
+  +d_own = {%Call.gradient_lanes(mode,g) :
+      TiledPublic.Contract(~DL,~d_value,d_context,dv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,_,Grid.Innermost{}})
+      d_contract :
+    TiledPublic.Contract(~DL,~d_value,d_context,dv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,o,Grid.Innermost{}})}
+  %Equal.sym(U32,Grid.lanes_at(xv,axis),c,Call.image_lanes(mode,g)) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,g,Gradient.weight_cells(
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xcells,xf,Tensors.Usable{},xw},axis,_,Grid.Innermost{}},
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,Grid.lanes_at(dv,axis),Grid.Innermost{}},k,s,p,group))
+  %Equal.sym(U32,Grid.lanes_at(dv,axis),o,Call.gradient_lanes(mode,g)) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,g,Gradient.weight_cells(
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xcells,xf,Tensors.Usable{},xw},axis,c,Grid.Innermost{}},
+      Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),dcells,df,Tensors.Usable{},dw},axis,_,Grid.Innermost{}},k,s,p,group))
+  weight_call(~XL,~x_value,~DL,~d_value,x_context,xv,axis,Call.image_outer(mode,g),Call.image_after(g),d_context,dv,axis,Call.gradient_outer(mode,g),Call.gradient_after(g),
+    limits,default_capacity,n,c,h,w,o,gh,gw,k,s,p,group,Call.image_cells_geometry(mode,g),input_named(mode,g),Call.gradient_geometry(mode,g),gradient_named(mode,g),valid,
+    weight_rooms_of(limits,default_capacity,n,c,h,w,o,gh,gw,k,s,p,x_rooms,d_rooms,valid),
+    Call.image_after_word(limits,g,x_plane),Call.image_outer_exact(limits,mode,g,x_plane,rooms_outer(limits,images,c,heights,widths,x_rooms)),
+    Call.gradient_after_word(limits,g,d_plane),Call.gradient_outer_exact(limits,mode,g,d_plane,rooms_outer(limits,images,o,rows,columns,d_rooms)),
+    xm,xf,xw,x_own,dm,df,dw,d_own)
 
-# Storage holding a list of the weight gradient, and the sources given back
-# holding what they held, make a weight call.
-def weight_stored(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+input_context: Input,+gradient_context: Gradient,
-  +xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +x: Buffer.Model<F32>,+xs: List<&2,U32>,+xf: F32,+xw: U32,+x_facts: GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,Buffer.content(~F32,x)),+x_cells: Readers.ImageCells(xs,Some{xi}),
-  +d: Buffer.Model<F32>,+ds: List<&2,U32>,+df: F32,+dw: U32,+d_facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,Buffer.content(~F32,d)),+d_cells: Readers.ImageCells(ds,Some{di}),
-  +positive: WeightPositive<xi,di,k,s,g>,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>,
-  result: (Storage.Buffer<F32> & Storage.Buffer<F32>) & Storage.Buffer<F32>,+values: List<&2,F32>,
-  +contents: {KParts.returned(result) ==
-    ((Buffer.content(~F32,x),Buffer.content(~F32,d)),
-      Buffer.Content{Tree.write_sequence(~F32,values,0,KParts.fresh(Parameter.work(xi,di,k,s,p,g))),U32.to_nat(KParts.count(Parameter.work(xi,di,k,s,p,g)))}) :
-    (Buffer.Content<F32> & Buffer.Content<F32>) & Buffer.Content<F32>},
-  +length: {List.length(&2,F32,values) ==
-    Nat.mul(U32.to_nat(WeightKernel.outputs(Parameter.work(xi,di,k,s,p,g))),U32.to_nat(WeightKernel.taps(Parameter.work(xi,di,k,s,p,g)))) : Nat},
-  numeric: @+count: U32 -> @+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),count> -> @+index: Nat -> @+inside: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool} ->
-    {ListRead.at(~F32,0.0,index,values) == weight_value(xi,di,k,s,p,g,x,d,index) : F32}) ->
-  WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,Some{xi},Some{di},k,s,p,g,xs,ds,
-    Parameter.weight_finished(xs,xf,Tensors.Usable{},xw,ds,df,Tensors.Usable{},dw,weight_shape(xi,di,k),result)):
-  ((input,gradient),weight) = result
-  +work = Parameter.work(xi,di,k,s,p,g)
-  +count = KParts.count(work)
-  +shape = weight_shape(xi,di,k)
-  +weight_content = {Buffer.Content{Tree.write_sequence(~F32,values,0,KParts.fresh(work)),U32.to_nat(count)} : Buffer.Content<F32>}
-  +context = {Readers.WeightRead{input_context,gradient_context,Some{xi},Some{di},k,s,p,g} : Readers.WeightRead<Input,Gradient>}
-  +sources = Equal.cong((Buffer.Content<F32> & Buffer.Content<F32>) & Buffer.Content<F32>,Buffer.Content<F32> & Buffer.Content<F32>,
-    pair => Pair.fst(Buffer.Content<F32> & Buffer.Content<F32>,Buffer.Content<F32>,pair),
-    KParts.returned(((input,gradient),weight)),((Buffer.content(~F32,x),Buffer.content(~F32,d)),weight_content),contents)
-  +input_kept = Equal.cong(Buffer.Content<F32> & Buffer.Content<F32>,Buffer.Content<F32>,pair => Pair.fst(Buffer.Content<F32>,Buffer.Content<F32>,pair),
-    (Buffer.contents(~F32,input),Buffer.contents(~F32,gradient)),(Buffer.content(~F32,x),Buffer.content(~F32,d)),sources)
-  +gradient_kept = Equal.cong(Buffer.Content<F32> & Buffer.Content<F32>,Buffer.Content<F32>,pair => Pair.snd(Buffer.Content<F32>,Buffer.Content<F32>,pair),
-    (Buffer.contents(~F32,input),Buffer.contents(~F32,gradient)),(Buffer.content(~F32,x),Buffer.content(~F32,d)),sources)
-  +weight_kept = Equal.cong((Buffer.Content<F32> & Buffer.Content<F32>) & Buffer.Content<F32>,Buffer.Content<F32>,
-    pair => Pair.snd(Buffer.Content<F32> & Buffer.Content<F32>,Buffer.Content<F32>,pair),
-    KParts.returned(((input,gradient),weight)),((Buffer.content(~F32,x),Buffer.content(~F32,d)),weight_content),contents)
-  +length_exact = Equal.trans(Nat,List.length(&2,F32,values),
-    Nat.mul(U32.to_nat(WeightKernel.outputs(work)),U32.to_nat(WeightKernel.taps(work))),U32.to_nat(count),length,
-    Equal.trans(Nat,Nat.mul(U32.to_nat(WeightKernel.outputs(work)),U32.to_nat(WeightKernel.taps(work))),ShapeLaws.elements(shape),U32.to_nat(count),
-      weight_elements(xi,di,k,s,p,g,positive,count,counted),Count.count_exact(ShapeLaws.elements(shape),count,counted)))
-  Shape.Both{
-    Listed.stored_listed(~F32,~Readers.WeightRead<Input,Gradient>,~Readers.weight_at(~Input,~input_value,~Gradient,~gradient_value),context,weight,shape,values,0.0,count,U32.max(xw,dw),
-      Buffer.observe(~F32,weight),weight_kept,counted,length_exact,
-      listed_count => listed_counted => index => inside =>
-        weight_agreement(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,xi,di,k,s,p,g,x,xs,x_facts,x_cells,d,ds,d_facts,d_cells,positive,
-          listed_count,listed_counted,values,index,inside,numeric(listed_count,listed_counted,index,inside))),
-    Shape.Both{
-      WholeLeaf.stored_shaped(~F32,~Input,~input_value,input_context,input,xs,xf,xw,Buffer.observe(~F32,input),
-        %Equal.sym(Buffer.Content<F32>,Buffer.contents(~F32,input),Buffer.content(~F32,x),input_kept) : GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,_) x_facts),
-      WholeLeaf.stored_shaped(~F32,~Gradient,~gradient_value,gradient_context,gradient,ds,df,dw,Buffer.observe(~F32,gradient),
-        %Equal.sym(Buffer.Content<F32>,Buffer.contents(~F32,gradient),Buffer.content(~F32,d),gradient_kept) : GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,_) d_facts)}}
+# The input and the output gradient arranged with their channels in the lanes
+# and the groups innermost, as the cells of models.
+def weight_arranged(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_context: XL,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +valid: {Parameter.valid_with(input_image(mode,geometry),gradient_image(mode,geometry),Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry),
+    Gradient.group_length(),limits) == True{} : Bool},
+  x: Tiled.Tiled,+x_held: Relane.Arranged(~XL,~x_value,x_context,Gradient.input_shape(Call.arguments(mode,geometry)),x,Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),
+  d: Tiled.Tiled,+d_held: Relane.Arranged(~DL,~d_value,d_context,Call.input_shape(mode,geometry),d,Conv.lane_of(Call.batched(mode)),Grid.Innermost{})) ->
+  TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,
+    Gradient.weight_cells(Tiled.arranged(x,Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),Tiled.arranged(d,Conv.lane_of(Call.batched(mode)),Grid.Innermost{}),
+      Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry),Gradient.group_length())):
+  KernelGemm.Both{+x_form,+x_arranged} = x_held
+  KernelGemm.Both{+d_form,+d_arranged} = d_held
+  +xv = Gradient.input_shape(Call.arguments(mode,geometry))
+  +dv = Call.input_shape(mode,geometry)
+  +axis = Conv.lane_of(Call.batched(mode))
+  +k = Domain.kernel_word(geometry)
+  +s = Call.stride(geometry)
+  +p = Call.padding(geometry)
+  +group = Gradient.group_length()
+  %Equal.sym(Tiled.Tiled,Tiled.arranged(x,axis,Grid.Innermost{}),
+      Tiled.Tiled{Tiled.cells_of(Tiled.arranged(x,axis,Grid.Innermost{})),axis,Grid.lanes_at(xv,axis),Grid.Innermost{}},x_form) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(_,Tiled.arranged(d,axis,Grid.Innermost{}),k,s,p,group))
+  %Equal.sym(Tiled.Tiled,Tiled.arranged(d,axis,Grid.Innermost{}),
+      Tiled.Tiled{Tiled.cells_of(Tiled.arranged(d,axis,Grid.Innermost{})),axis,Grid.lanes_at(dv,axis),Grid.Innermost{}},d_form) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(
+      Tiled.Tiled{Tiled.cells_of(Tiled.arranged(x,axis,Grid.Innermost{})),axis,Grid.lanes_at(xv,axis),Grid.Innermost{}},_,k,s,p,group))
+  Relane.modeled(~XL,~x_value,(tiled => TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(tiled,
+      Tiled.Tiled{Tiled.cells_of(Tiled.arranged(d,axis,Grid.Innermost{})),axis,Grid.lanes_at(dv,axis),Grid.Innermost{}},k,s,p,group))),
+    x_context,xv,Tiled.cells_of(Tiled.arranged(x,axis,Grid.Innermost{})),axis,Grid.lanes_at(xv,axis),Grid.Innermost{},x_arranged,
+    xm => xf => xw => x_contract => Relane.modeled(~DL,~d_value,(tiled => TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(
+        Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),Tiled.cell_shape(xv,axis,Grid.Innermost{}),xf,Tensors.Usable{},xw},axis,Grid.lanes_at(xv,axis),Grid.Innermost{}},
+        tiled,k,s,p,group))),
+      d_context,dv,Tiled.cells_of(Tiled.arranged(d,axis,Grid.Innermost{})),axis,Grid.lanes_at(dv,axis),Grid.Innermost{},d_arranged,
+      dm => df => dw => d_contract => weight_modeled(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,limits,default_capacity,valid,xm,xf,xw,x_contract,dm,df,dw,d_contract)))
 
-# The parts of the outputs make a weight call.
-def weight_parts_stored(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+depth: Nat,+input_context: Input,+gradient_context: Gradient,
-  +xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +x: Buffer.Model<F32>,+xs: List<&2,U32>,+xf: F32,+xw: U32,+x_facts: GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,Buffer.content(~F32,x)),+x_cells: Readers.ImageCells(xs,Some{xi}),
-  +d: Buffer.Model<F32>,+ds: List<&2,U32>,+df: F32,+dw: U32,+d_facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,Buffer.content(~F32,d)),+d_cells: Readers.ImageCells(ds,Some{di}),
-  +positive: WeightPositive<xi,di,k,s,g>,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>,
-  +room: GradientRoom<Parameter.work(xi,di,k,s,p,g)>,+capacity_ok: {U32.is_le(WeightKernel.outputs(Parameter.work(xi,di,k,s,p,g)),2147483648) == True{} : Bool},
-  parts: KParts.Parts<Parameter.work(xi,di,k,s,p,g),KParts.plan(depth,Parameter.work(xi,di,k,s,p,g)),KParts.OwnersSeen{Buffer.content(~F32,x),Buffer.content(~F32,d)},
-    WeightKernel.parts(depth,Parameter.work(xi,di,k,s,p,g),Buffer.pack(~F32,x),Buffer.pack(~F32,d))>) ->
-  WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,Some{xi},Some{di},k,s,p,g,xs,ds,
-    Parameter.weight_finished(xs,xf,Tensors.Usable{},xw,ds,df,Tensors.Usable{},dw,weight_shape(xi,di,k),WeightKernel.parts(depth,Parameter.work(xi,di,k,s,p,g),Buffer.pack(~F32,x),Buffer.pack(~F32,d)))):
-  KParts.Parts{+owners,+seen,+contents} = parts
-  +work = Parameter.work(xi,di,k,s,p,g)
-  +scope = {WeightParts{xi,di,k,s,p,g,x,d,positive,counted,room} : WeightParts}
-  weight_stored(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,xi,di,k,s,p,g,x,xs,xf,xw,x_facts,x_cells,d,ds,df,dw,d_facts,d_cells,positive,counted,
-    WeightKernel.parts(depth,work,Buffer.pack(~F32,x),Buffer.pack(~F32,d)),KParts.parts_list(work,owners),contents,
-    KParts.parts_length(depth,work,owners,capacity_ok,KParts.owners_plan(depth,work,KParts.OwnersSeen{Buffer.content(~F32,x),Buffer.content(~F32,d)},owners,seen)),
-    listed_count => listed_counted => index => inside =>
-      parts_agree(scope,depth,owners,seen,capacity_ok,index,work_inside(xi,di,k,s,p,g,positive,listed_count,listed_counted,index,inside)))
+# The input and the output gradient as the cells of models, moved onto their
+# channels.
+def weight_packed(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_context: XL,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +limits: Machine.Limits,+default_capacity: {Machine.capacity(limits) == Machine.capacity(Default.limits()) : U32},
+  +valid: {Parameter.valid_with(input_image(mode,geometry),gradient_image(mode,geometry),Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry),
+    Gradient.group_length(),limits) == True{} : Bool},
+  +xm: PiecesModel.Model<Tile.Tile8>,+xs: List<&2,U32>,+xf: Tile.Tile8,+xw: U32,+xa: Nat,+xl: U32,+xp: Grid.Position,
+  +x_packed: TiledPublic.Contract(~XL,~x_value,x_context,Gradient.input_shape(Call.arguments(mode,geometry)),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp}),
+  +dm: PiecesModel.Model<Tile.Tile8>,+ds: List<&2,U32>,+df: Tile.Tile8,+dw: U32,+da: Nat,+dl: U32,+dp: Grid.Position,
+  +d_packed: TiledPublic.Contract(~DL,~d_value,d_context,Call.input_shape(mode,geometry),Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp})) ->
+  TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,
+    Gradient.weight(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp},Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry))):
+  KernelGemm.Both{+x_global,TiledPublic.Laid{+x_inside,+x_shaped,+x_restored,+x_counted,+x_pinned}} = x_packed
+  KernelGemm.Both{+d_global,TiledPublic.Laid{+d_inside,+d_shaped,+d_restored,+d_counted,+d_pinned}} = d_packed
+  +xv = Gradient.input_shape(Call.arguments(mode,geometry))
+  +dv = Call.input_shape(mode,geometry)
+  +axis = Conv.lane_of(Call.batched(mode))
+  +k = Domain.kernel_word(geometry)
+  +s = Call.stride(geometry)
+  +p = Call.padding(geometry)
+  +group = Gradient.group_length()
+  +positive = ParameterCells.valid_positive(input_image(mode,geometry),gradient_image(mode,geometry),k,s,p,group,limits,valid)
+  +capacity = Machine.capacity(limits)
+  +x_own = {KernelGemm.Both{x_global,TiledPublic.Laid{x_inside,x_shaped,x_restored,x_counted,x_pinned}} : TiledPublic.Contract(~XL,~x_value,x_context,xv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp})}
+  +d_own = {KernelGemm.Both{d_global,TiledPublic.Laid{d_inside,d_shaped,d_restored,d_counted,d_pinned}} : TiledPublic.Contract(~DL,~d_value,d_context,dv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp})}
+  +x_rank = Order.transitive(List.length(&2,U32,xv),4n,U32.to_nat(capacity),Call.image_rank(mode,geometry),Call.four_room(limits))
+  +d_rank = Order.transitive(List.length(&2,U32,dv),4n,U32.to_nat(capacity),Call.gradient_rank(mode,geometry),Call.four_room(limits))
+  %Equal.sym(List<&2,U32>,Tiled.logical_shape(xs,xa,xl,xp),xv,x_restored) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},Tiled.lane_axis(List.length(&2,U32,_)),Grid.Innermost{}),
+      Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp},Tiled.lane_axis(List.length(&2,U32,Tiled.logical_shape(ds,da,dl,dp))),Grid.Innermost{}),k,s,p,group))
+  %Equal.sym(Nat,Tiled.lane_axis(List.length(&2,U32,xv)),axis,Call.image_shape_axis(mode,geometry)) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},_,Grid.Innermost{}),
+      Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp},Tiled.lane_axis(List.length(&2,U32,Tiled.logical_shape(ds,da,dl,dp))),Grid.Innermost{}),k,s,p,group))
+  %Equal.sym(List<&2,U32>,Tiled.logical_shape(ds,da,dl,dp),dv,d_restored) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},axis,Grid.Innermost{}),
+      Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp},Tiled.lane_axis(List.length(&2,U32,_)),Grid.Innermost{}),k,s,p,group))
+  %Equal.sym(Nat,Tiled.lane_axis(List.length(&2,U32,dv)),axis,Call.shape_axis(mode,geometry)) :
+    TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Gradient.weight_cells(Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},axis,Grid.Innermost{}),
+      Tiled.arranged(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp},_,Grid.Innermost{}),k,s,p,group))
+  weight_arranged(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,limits,default_capacity,valid,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},
+    Relane.arranged_held(~XL,~x_value,x_context,xv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},axis,Grid.Innermost{},limits,default_capacity,Call.image_axis_inside(mode,geometry),
+      input_nonempty(mode,geometry,ParameterCells.positive_input(input_image(mode,geometry),gradient_image(mode,geometry),k,s,group,capacity,positive)),x_rank,x_own),
+    Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp},
+    Relane.arranged_held(~DL,~d_value,d_context,dv,Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,dm),ds,df,Tensors.Usable{},dw},da,dl,dp},axis,Grid.Innermost{},limits,default_capacity,Call.gradient_axis_inside(mode,geometry),
+      gradient_nonempty(mode,geometry,ParameterCells.positive_gradient(input_image(mode,geometry),gradient_image(mode,geometry),k,s,group,capacity,positive)),d_rank,d_own))
 
-# One part, or the parts of the outputs, as the call chose.
-def weight_routed(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,depth: Nat,+input_context: Input,+gradient_context: Gradient,
-  +xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +x: Buffer.Model<F32>,+xs: List<&2,U32>,+xf: F32,+xw: U32,+x_facts: GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,Buffer.content(~F32,x)),+x_cells: Readers.ImageCells(xs,Some{xi}),
-  +d: Buffer.Model<F32>,+ds: List<&2,U32>,+df: F32,+dw: U32,+d_facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,Buffer.content(~F32,d)),+d_cells: Readers.ImageCells(ds,Some{di}),
-  +positive: WeightPositive<xi,di,k,s,g>,+counted: Count.Count<ShapeLaws.elements(weight_shape(xi,di,k)),KParts.count(Parameter.work(xi,di,k,s,p,g))>,
-  +room: GradientRoom<Parameter.work(xi,di,k,s,p,g)>,+capacity_ok: {U32.is_le(WeightKernel.outputs(Parameter.work(xi,di,k,s,p,g)),2147483648) == True{} : Bool}) ->
-  WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,Some{xi},Some{di},k,s,p,g,xs,ds,
-    Parameter.weight_finished(xs,xf,Tensors.Usable{},xw,ds,df,Tensors.Usable{},dw,weight_shape(xi,di,k),WeightKernel.routed(depth,Parameter.work(xi,di,k,s,p,g),Buffer.pack(~F32,x),Buffer.pack(~F32,d)))):
-  match depth:
-    case 0n:
-      +work = Parameter.work(xi,di,k,s,p,g)
-      weight_stored(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,xi,di,k,s,p,g,x,xs,xf,xw,x_facts,x_cells,d,ds,df,dw,d_facts,d_cells,positive,counted,
-        WeightKernel.weight(work,Buffer.pack(~F32,x),Buffer.pack(~F32,d)),KParts.serial_list(work,x,d),KParts.serial(work,x,d),
-        WeightModel.transpose_length(U32.to_nat(WeightKernel.outputs(work)),0,WeightKernel.outputs(work),U32.to_nat(WeightKernel.taps(work)),
-          WeightGroups.group_output(WeightModel.values(work,x,d))),
-        listed_count => listed_counted => index => inside => serial_numeric(xi,di,k,s,p,g,x,d,positive,listed_count,listed_counted,index,inside))
-    case 1n+ +rest:
-      weight_parts_stored(~Input,~input_value,~Gradient,~gradient_value,1n+rest,input_context,gradient_context,xi,di,k,s,p,g,x,xs,xf,xw,x_facts,x_cells,d,ds,df,dw,d_facts,d_cells,
-        positive,counted,room,capacity_ok,KParts.parts(1n+rest,Parameter.work(xi,di,k,s,p,g),x,d,capacity_ok))
+# The public weight gradient: an input and an output gradient of the contract
+# of the shapes of a valid call give the weight gradient of their readers with
+# the outputs in its lanes and the groups outermost, and come back holding
+# their readers.
+def tiled_weight(~XL: Data,~x_value: XL -> U32 -> F32,~DL: Data,~d_value: DL -> U32 -> F32,+x_context: XL,+d_context: DL,+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  x: Tiled.Tiled,+x_contract: TiledPublic.Contract(~XL,~x_value,x_context,Gradient.input_shape(Call.arguments(mode,geometry)),x),
+  d: Tiled.Tiled,+d_contract: TiledPublic.Contract(~DL,~d_value,d_context,Call.input_shape(mode,geometry),d),
+  +valid: {Parameter.valid(input_image(mode,geometry),gradient_image(mode,geometry),Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry),
+    Gradient.group_length()) == True{} : Bool}) ->
+  TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,
+    Gradient.weight(x,d,Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry))):
+  TiledPublic.by_packed(~XL,~x_value,(tiled => TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,
+      Gradient.weight(tiled,d,Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry)))),
+    x_context,Gradient.input_shape(Call.arguments(mode,geometry)),x,x_contract,
+    xm => xs => xf => xw => xa => xl => xp => x_packed => TiledPublic.by_packed(~DL,~d_value,(tiled => TiledWeightCall(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,
+        Gradient.weight(Tiled.Tiled{Tensors.Tensor{PiecesModel.pack(~Tile.Tile8,xm),xs,xf,Tensors.Usable{},xw},xa,xl,xp},tiled,Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry)))),
+      d_context,Call.input_shape(mode,geometry),d,d_contract,
+      dm => ds => df => dw => da => dl => dp => d_packed => weight_packed(~XL,~x_value,~DL,~d_value,x_context,d_context,mode,geometry,Default.limits(),{==},valid,
+        xm,xs,xf,xw,xa,xl,xp,x_packed,dm,ds,df,dw,da,dl,dp,d_packed)))
 
-# An accepted weight call: the gradient of the readers' values, and the
-# sources back.
-def weight_called(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+input_context: Input,+gradient_context: Gradient,
-  +xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +x: Buffer.Model<F32>,+xs: List<&2,U32>,+xf: F32,+xw: U32,+x_facts: GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,Buffer.content(~F32,x)),+x_cells: Readers.ImageCells(xs,Some{xi}),
-  +d: Buffer.Model<F32>,+ds: List<&2,U32>,+df: F32,+dw: U32,+d_facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,Buffer.content(~F32,d)),+d_cells: Readers.ImageCells(ds,Some{di}),
-  +valid: {Parameter.valid(xi,di,k,s,p,g) == True{} : Bool}) ->
-  WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,Some{xi},Some{di},k,s,p,g,xs,ds,
-    Parameter.weight_selected(True{},xi,di,k,s,p,g,Buffer.pack(~F32,x),xs,xf,Tensors.Usable{},xw,Buffer.pack(~F32,d),ds,df,Tensors.Usable{},dw)):
-  Parameter.ImageGeometry{+n,+c,+h,+w} = xi
-  Parameter.ImageGeometry{+dn,+o,+oh,+ow} = di
-  Buffer.Model{+dt,+dl,+dc} = d
-  Shape.Both{Contract.WellFormed{+d_length,+d_ready},+d_values} = d_facts
-  +work = Parameter.work(xi,di,k,s,p,g)
-  +gradient = {Buffer.Model{dt,dl,dc} : Buffer.Model<F32>}
-  +positive = weight_positive(xi,di,k,s,p,g,valid)
-  +counted = weight_counted(xi,di,k,s,p,g,positive,Tensors.count_of(weight_shape(xi,di,k)),{==},weight_fits(xi,di,k,s,p,g,valid))
-  +same_images = Order.equal_of_is_eq(U32.to_nat(n),U32.to_nat(dn),%Comparison.eq(n,dn) : {_ == True{} : Bool} positive_images(xi,di,k,s,g,positive))
-  +cells_length = {%Equal.sym(Nat,U32.to_nat(n),U32.to_nat(dn),same_images) : {Nat.mul(Nat.mul(_,U32.to_nat(o)),Nat.mul(U32.to_nat(oh),U32.to_nat(ow))) == dl : Nat}
-    Equal.sym(Nat,dl,Readers.cells(di),Equal.trans(Nat,dl,ShapeLaws.elements(ds),Readers.cells(di),d_length,d_cells)) : {work_cells(work) == dl : Nat}}
-  +room = gradient_room_of(xi,di,k,s,p,g,positive,gradient,Buffer.ready_content(~F32,gradient,d_ready),
-    %cells_length : {Nat.is_le(work_cells(work),_) == True{} : Bool} Order.reflexive(work_cells(work)))
-  weight_routed(~Input,~input_value,~Gradient,~gradient_value,WeightKernel.depth(work,U32.max(xw,dw)),input_context,gradient_context,xi,di,k,s,p,g,x,xs,xf,xw,x_facts,x_cells,
-    gradient,ds,df,dw,Shape.Both{Contract.WellFormed{d_length,d_ready},d_values},d_cells,positive,counted,room,outputs_fit(xi,di,k,s,p,g,positive,counted))
-
-def weight_valid(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,accepted_shape: Bool,+input_context: Input,+gradient_context: Gradient,
-  +xi: Parameter.ImageGeometry,+di: Parameter.ImageGeometry,+k: U32,+s: U32,+p: U32,+g: U32,
-  +x: Buffer.Model<F32>,+xs: List<&2,U32>,+xf: F32,+xw: U32,+x_facts: GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,Buffer.content(~F32,x)),+x_cells: Readers.ImageCells(xs,Some{xi}),
-  +d: Buffer.Model<F32>,+ds: List<&2,U32>,+df: F32,+dw: U32,+d_facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,Buffer.content(~F32,d)),+d_cells: Readers.ImageCells(ds,Some{di}),
-  +valid: {Parameter.valid(xi,di,k,s,p,g) == accepted_shape : Bool},
-  accepted: {Contract.tensor_ready(~F32,weight_result(Parameter.weight_selected(accepted_shape,xi,di,k,s,p,g,Buffer.pack(~F32,x),xs,xf,Tensors.Usable{},xw,Buffer.pack(~F32,d),ds,df,Tensors.Usable{},dw))) == True{} : Bool}) ->
-  WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,Some{xi},Some{di},k,s,p,g,xs,ds,
-    Parameter.weight_selected(accepted_shape,xi,di,k,s,p,g,Buffer.pack(~F32,x),xs,xf,Tensors.Usable{},xw,Buffer.pack(~F32,d),ds,df,Tensors.Usable{},dw)):
-  match accepted_shape:
-    case False{}:
-      Empty.absurd(WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,Some{xi},Some{di},k,s,p,g,xs,ds,
-        Parameter.weight_selected(False{},xi,di,k,s,p,g,Buffer.pack(~F32,x),xs,xf,Tensors.Usable{},xw,Buffer.pack(~F32,d),ds,df,Tensors.Usable{},dw)),Words.false_true(accepted))
-    case True{}:
-      weight_called(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,xi,di,k,s,p,g,x,xs,xf,xw,x_facts,x_cells,d,ds,df,dw,d_facts,d_cells,valid)
-
-# The weight gradient of storage holding the readers' values, in any shapes.
-def weight_shaped(~Input: Data,~input_value: Input -> U32 -> F32,~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,xi: Maybe<&2,Parameter.ImageGeometry>,di: Maybe<&2,Parameter.ImageGeometry>,+input_context: Input,+gradient_context: Gradient,
-  +k: U32,+s: U32,+p: U32,+g: U32,
-  +x: Buffer.Model<F32>,+xs: List<&2,U32>,+xf: F32,+xw: U32,+x_facts: GatherValues.Facts(~F32,~Input,~input_value,input_context,xs,Buffer.content(~F32,x)),+x_cells: Readers.ImageCells(xs,xi),
-  +d: Buffer.Model<F32>,+ds: List<&2,U32>,+df: F32,+dw: U32,+d_facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,ds,Buffer.content(~F32,d)),+d_cells: Readers.ImageCells(ds,di),
-  accepted: {Contract.tensor_ready(~F32,weight_result(Parameter.weight_shaped(xi,di,Tensors.Usable{},Tensors.Usable{},k,s,p,g,Buffer.pack(~F32,x),xs,xf,xw,Buffer.pack(~F32,d),ds,df,dw))) == True{} : Bool}) ->
-  WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,xi,di,k,s,p,g,xs,ds,
-    Parameter.weight_shaped(xi,di,Tensors.Usable{},Tensors.Usable{},k,s,p,g,Buffer.pack(~F32,x),xs,xf,xw,Buffer.pack(~F32,d),ds,df,dw)):
-  match xi di:
-    case Some{+xi} Some{+di}:
-      weight_valid(~Input,~input_value,~Gradient,~gradient_value,Parameter.valid(xi,di,k,s,p,g),input_context,gradient_context,xi,di,k,s,p,g,x,xs,xf,xw,x_facts,x_cells,d,ds,df,dw,d_facts,d_cells,{==},accepted)
-    case Some{xi} None{}:
-      Empty.absurd(WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,Some{xi},None{},k,s,p,g,xs,ds,
-        Parameter.weight_shaped(Some{xi},None{},Tensors.Usable{},Tensors.Usable{},k,s,p,g,Buffer.pack(~F32,x),xs,xf,xw,Buffer.pack(~F32,d),ds,df,dw)),Words.false_true(accepted))
-    case None{} Some{di}:
-      Empty.absurd(WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,None{},Some{di},k,s,p,g,xs,ds,
-        Parameter.weight_shaped(None{},Some{di},Tensors.Usable{},Tensors.Usable{},k,s,p,g,Buffer.pack(~F32,x),xs,xf,xw,Buffer.pack(~F32,d),ds,df,dw)),Words.false_true(accepted))
-    case None{} None{}:
-      Empty.absurd(WeightCall(~Input,~input_value,~Gradient,~gradient_value,input_context,gradient_context,None{},None{},k,s,p,g,xs,ds,
-        Parameter.weight_shaped(None{},None{},Tensors.Usable{},Tensors.Usable{},k,s,p,g,Buffer.pack(~F32,x),xs,xf,xw,Buffer.pack(~F32,d),ds,df,dw)),Words.false_true(accepted))
-
-# An output of the bias gradient of storage holding the reader's values is
-# the reader's bias gradient there.
-def bias_agreement(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+gradient_context: Gradient,+di: Parameter.ImageGeometry,+g: U32,
-  +d: Buffer.Model<F32>,+shape: List<&2,U32>,+facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.content(~F32,d)),
-  +cells: Readers.ImageCells(shape,Some{di}),+positive: {Parameter.positive(di) == True{} : Bool},+group: {U32.is_lt(0,g) == True{} : Bool},
-  +count: U32,+counted: Count.Count<ShapeLaws.elements(bias_shape(di)),count>,+index: Nat,+inside: {Nat.is_lt(index,U32.to_nat(count)) == True{} : Bool}) ->
-  {ListRead.at(~F32,0.0,index,bias_list(Parameter.bias_work(di,g),d)) == Readers.bias_at(~Gradient,~gradient_value)(Readers.BiasRead{gradient_context,Some{di},g},U32.from_nat(index)) : F32}:
-  Parameter.ImageGeometry{+n,+o,+rows,+columns} = di
-  Buffer.Model{+dt,+dl,+dc} = d
-  Shape.Both{Contract.WellFormed{+length,ready},+values} = facts
-  Count.Count{+exact,bounded} = counted
-  +columns_word = Logic.right((U32.is_lt(0,n) && U32.is_lt(0,o)) && U32.is_lt(0,rows),U32.is_lt(0,columns),positive)
-  +columns_positive = {%Comparison.lt(0,columns) : {_ == True{} : Bool} columns_word : {Nat.is_lt(0n,U32.to_nat(columns)) == True{} : Bool}}
-  +group_positive = {%Comparison.lt(0,g) : {_ == True{} : Bool} group : {Nat.is_lt(0n,U32.to_nat(g)) == True{} : Bool}}
-  +room = {%Equal.trans(Nat,dl,ShapeLaws.elements(shape),Readers.cells(di),length,cells) : {Nat.is_le(_,dl) == True{} : Bool} Order.reflexive(dl) :
-    {Nat.is_le(Readers.cells(di),dl) == True{} : Bool}}
-  +element_inside = {%Order.times_one(U32.to_nat(o)) : {Nat.is_lt(index,_) == True{} : Bool}
-    %Equal.sym(Nat,ShapeLaws.elements([o]),U32.to_nat(count),exact) : {Nat.is_lt(index,_) == True{} : Bool} inside :
-    {Nat.is_lt(index,U32.to_nat(o)) == True{} : Bool}}
-  +scope = {Readers.BiasScope{U32.to_nat(n),U32.to_nat(o),U32.to_nat(rows),U32.to_nat(columns),U32.to_nat(g),dt,dl,gradient_context,values,room,index,element_inside,columns_positive,group_positive} :
-    Readers.BiasScope<Gradient,gradient_value>}
-  %Equal.sym(Nat,U32.to_nat(U32.from_nat(index)),index,FullRange.roundtrip(index,count,Bounds.strict_le(index,U32.to_nat(count),inside))) :
-    {ListRead.at(~F32,0.0,index,bias_list(Parameter.bias_work(di,g),Buffer.Model{dt,dl,dc})) ==
-      Spec.bias(~Gradient,~Readers.gradient_at(~Gradient,~gradient_value),Spec.Problem{Bridge.shape(Parameter.bias_work(di,g)),gradient_context,gradient_context},_) : F32}
-  Equal.trans(F32,ListRead.at(~F32,0.0,index,bias_list(Parameter.bias_work(di,g),Buffer.Model{dt,dl,dc})),
-    bias_value(di,g,Buffer.Model{dt,dl,dc},index),
-    Spec.bias(~Gradient,~Readers.gradient_at(~Gradient,~gradient_value),Readers.bias_read(~Gradient,~gradient_value,scope),index),
-    Bridge.enumerate_at(~Spec.Problem<Tree.Tree<F32>>,~Spec.bias(~Tree.Tree<F32>,~Bridge.at),U32.to_nat(o),index,0n,
-      Bridge.bias_problem(Parameter.bias_work(di,g),dt),element_inside),
-    Readers.bias_agrees(~Gradient,~gradient_value,scope))
-
-def bias_accepted(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,+gradient_context: Gradient,+di: Parameter.ImageGeometry,+g: U32,+d: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,+facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.content(~F32,d)),
-  +cells: Readers.ImageCells(shape,Some{di}),+positive: {Parameter.positive(di) == True{} : Bool},+group: {U32.is_lt(0,g) == True{} : Bool},
-  +count: U32,+counts: {Tensors.count_of(bias_shape(di)) == Some{count} : Maybe<&2,U32>}) ->
-  Global.Contract(~F32,~Readers.BiasRead<Gradient>,~Readers.bias_at(~Gradient,~gradient_value),Readers.BiasRead{gradient_context,Some{di},g},
-    bias_result(Parameter.bias_counted(Some{count},di,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers))):
-  Parameter.ImageGeometry{+n,+o,+rows,+columns} = di
-  +image = {Parameter.ImageGeometry{n,o,rows,columns} : Parameter.ImageGeometry}
-  +work = Parameter.bias_work(image,g)
-  +values = bias_list(work,d)
-  +context = {Readers.BiasRead{gradient_context,Some{image},g} : Readers.BiasRead<Gradient>}
-  +counted = Count.count_of([o],count,counts)
-  +length_exact = Equal.trans(Nat,List.length(&2,F32,values),U32.to_nat(o),U32.to_nat(count),
-    Bridge.enumerate_length(~Spec.Problem<Tree.Tree<F32>>,~Spec.bias(~Tree.Tree<F32>,~Bridge.at),U32.to_nat(o),0n,Bridge.bias_problem(work,Buffer.tree(~F32,d))),
-    Equal.trans(Nat,U32.to_nat(o),ShapeLaws.elements([o]),U32.to_nat(count),Equal.sym(Nat,ShapeLaws.elements([o]),U32.to_nat(o),Order.times_one(U32.to_nat(o))),
-      Count.count_exact(ShapeLaws.elements([o]),count,counted)))
-  %Equal.sym(Tensors.Tensor<F32>,
-      bias_result(Parameter.bias_finished(shape,fill,Tensors.Usable{},workers,o,KernelBuffer.bias(work,Buffer.pack(~F32,d),Tensors.buffer(~F32,0.0,count)))),
-      Tensors.whole(~F32,BufferModel.written(KernelBuffer.bias(work,Buffer.pack(~F32,d),Tensors.buffer(~F32,0.0,count))),[o],0.0,Tensors.Usable{},workers),
-      bias_finished(shape,fill,Tensors.Usable{},workers,o,KernelBuffer.bias(work,Buffer.pack(~F32,d),Tensors.buffer(~F32,0.0,count)))) :
-    Global.Contract(~F32,~Readers.BiasRead<Gradient>,~Readers.bias_at(~Gradient,~gradient_value),context,_)
-  Listed.stored_listed(~F32,~Readers.BiasRead<Gradient>,~Readers.bias_at(~Gradient,~gradient_value),context,
-    BufferModel.written(KernelBuffer.bias(work,Buffer.pack(~F32,d),Tensors.buffer(~F32,0.0,count))),[o],values,0.0,count,workers,
-    Buffer.observe(~F32,BufferModel.written(KernelBuffer.bias(work,Buffer.pack(~F32,d),Tensors.buffer(~F32,0.0,count)))),
-    bias_stored(work,d,count),counted,length_exact,
-    listed_count => listed_counted => index => inside =>
-      bias_agreement(~Gradient,~gradient_value,gradient_context,image,g,d,shape,facts,cells,positive,group,listed_count,listed_counted,index,inside))
-
-# The outputs fit a count of [o]: the result and the returned output gradient.
-def bias_counted(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,count: Maybe<&2,U32>,+gradient_context: Gradient,+di: Parameter.ImageGeometry,+g: U32,+d: Buffer.Model<F32>,
-  +shape: List<&2,U32>,+fill: F32,+workers: U32,+facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.content(~F32,d)),
-  +cells: Readers.ImageCells(shape,Some{di}),+positive: {Parameter.positive(di) == True{} : Bool},+group: {U32.is_lt(0,g) == True{} : Bool},
-  +counts: {Tensors.count_of(bias_shape(di)) == count : Maybe<&2,U32>},
-  accepted: {Contract.tensor_ready(~F32,bias_result(Parameter.bias_counted(count,di,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers))) == True{} : Bool}) ->
-  BiasCall(~Gradient,~gradient_value,gradient_context,Some{di},g,shape,Parameter.bias_counted(count,di,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers)):
-  match count:
-    case Some{+count}:
-      Shape.Both{
-        bias_accepted(~Gradient,~gradient_value,gradient_context,di,g,d,shape,fill,workers,facts,cells,positive,group,count,counts),
-        bias_returned(~Gradient,~gradient_value,gradient_context,di,g,d,shape,fill,workers,count,facts)}
-    case None{}:
-      Parameter.ImageGeometry{+n,+o,+rows,+columns} = di
-      Empty.absurd(BiasCall(~Gradient,~gradient_value,gradient_context,Some{Parameter.ImageGeometry{n,o,rows,columns}},g,shape,
-        Parameter.bias_counted(None{},Parameter.ImageGeometry{n,o,rows,columns},g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers)),Words.false_true(accepted))
-
-def bias_valid(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,accepted_shape: Bool,+gradient_context: Gradient,+di: Parameter.ImageGeometry,+g: U32,+d: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,+facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.content(~F32,d)),
-  +cells: Readers.ImageCells(shape,Some{di}),+gate: {Parameter.positive(di) && U32.is_lt(0,g) == accepted_shape : Bool},
-  accepted: {Contract.tensor_ready(~F32,bias_result(Parameter.bias_selected(accepted_shape,di,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers))) == True{} : Bool}) ->
-  BiasCall(~Gradient,~gradient_value,gradient_context,Some{di},g,shape,Parameter.bias_selected(accepted_shape,di,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers)):
-  match accepted_shape:
-    case False{}:
-      Empty.absurd(BiasCall(~Gradient,~gradient_value,gradient_context,Some{di},g,shape,Parameter.bias_selected(False{},di,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers)),
-        Words.false_true(accepted))
-    case True{}:
-      Parameter.ImageGeometry{+n,+o,+rows,+columns} = di
-      bias_counted(~Gradient,~gradient_value,Tensors.count_of([o]),gradient_context,Parameter.ImageGeometry{n,o,rows,columns},g,d,shape,fill,workers,facts,cells,
-        Logic.left(Parameter.positive(Parameter.ImageGeometry{n,o,rows,columns}),U32.is_lt(0,g),gate),
-        Logic.right(Parameter.positive(Parameter.ImageGeometry{n,o,rows,columns}),U32.is_lt(0,g),gate),{==},accepted)
-
-# The bias gradient of storage holding the reader's values, in any shape.
-def bias_shaped(~Gradient: Data,~gradient_value: Gradient -> U32 -> F32,image: Maybe<&2,Parameter.ImageGeometry>,+gradient_context: Gradient,+g: U32,+d: Buffer.Model<F32>,+shape: List<&2,U32>,+fill: F32,+workers: U32,+facts: GatherValues.Facts(~F32,~Gradient,~gradient_value,gradient_context,shape,Buffer.content(~F32,d)),+cells: Readers.ImageCells(shape,image),
-  accepted: {Contract.tensor_ready(~F32,bias_result(Parameter.bias_shaped(image,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers))) == True{} : Bool}) ->
-  BiasCall(~Gradient,~gradient_value,gradient_context,image,g,shape,Parameter.bias_shaped(image,g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers)):
-  match image:
-    case Some{+di}:
-      bias_valid(~Gradient,~gradient_value,Parameter.positive(di) && U32.is_lt(0,g),gradient_context,di,g,d,shape,fill,workers,facts,cells,{==},accepted)
-    case None{}:
-      Empty.absurd(BiasCall(~Gradient,~gradient_value,gradient_context,None{},g,shape,Parameter.bias_shaped(None{},g,Buffer.pack(~F32,d),shape,fill,Tensors.Usable{},workers)),
-        Words.false_true(accepted))
+# The output gradient of a valid call has positive image sizes.
+def gradient_positive(+mode: Call.Mode,+geometry: InputKernel.Geometry,
+  +valid: {Parameter.valid(input_image(mode,geometry),gradient_image(mode,geometry),Domain.kernel_word(geometry),Call.stride(geometry),Call.padding(geometry),
+    Gradient.group_length()) == True{} : Bool}) -> {Parameter.positive(gradient_image(mode,geometry)) == True{} : Bool}:
+  +k = Domain.kernel_word(geometry)
+  +s = Call.stride(geometry)
+  +group = Gradient.group_length()
+  ParameterCells.positive_gradient(input_image(mode,geometry),gradient_image(mode,geometry),k,s,group,Machine.capacity(Default.limits()),
+    ParameterCells.valid_positive(input_image(mode,geometry),gradient_image(mode,geometry),k,s,Call.padding(geometry),group,Default.limits(),valid))

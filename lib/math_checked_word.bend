@@ -1,6 +1,5 @@
-# Exact overflow-checked multiplication for metadata. Each Horner step starts
-# below word_max and forms at most 3*word_max, safely below the native Nat cap.
-# The loop has exactly 32 bit steps and never touches tensor payloads.
+# Exact overflow-checked multiplication for metadata. Zero factors return zero.
+# Other bounded products use 32 Horner steps, each below the native Nat cap.
 import Base
 import ./machine_limits.bend as Machine
 
@@ -27,9 +26,16 @@ def encoded(result: Maybe<&2,Nat>) -> Maybe<&2,U32>:
     case None{}: None{}
     case Some{value}: Some{U32.from_nat(value)}
 
-def multiply_bounded(left: U32,right: U32,limit: U32) -> Maybe<&2,U32>:
-  U32{bits} = left
-  encoded(multiply_bits(32n,bits,U32.to_nat(right),U32.to_nat(limit)))
+def multiply_bounded_when(left_zero: Bool,right_zero: Bool,left: U32,right: U32,limit: U32) -> Maybe<&2,U32>:
+  match left_zero right_zero:
+    case True{} right_zero: Some{0}
+    case False{} True{}: Some{0}
+    case False{} False{}:
+      U32{bits} = left
+      encoded(multiply_bits(32n,bits,U32.to_nat(right),U32.to_nat(limit)))
+
+def multiply_bounded(+left: U32,+right: U32,limit: U32) -> Maybe<&2,U32>:
+  multiply_bounded_when(U32.is_zero(left),U32.is_zero(right),left,right,limit)
 
 # A left operand at most 2^31 divided by a right operand of at most 2^30
 # gives a product of at most 2^31, which the native product holds. Other

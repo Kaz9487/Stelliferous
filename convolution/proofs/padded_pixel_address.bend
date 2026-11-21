@@ -1,4 +1,3 @@
-import ../../lib/proofs/storage_shape.bend as Shape
 import Base
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
 import ./packed_pixel_address.bend as PackedPixelAddress
@@ -7,6 +6,7 @@ import ../../lib/proofs/row_major_index.bend as RowMajor
 import ../../lib/proofs/padded_interval.bend as PaddedInterval
 import ../specification.bend as ConvSpec
 import ../../lib/kernel_spatial_packing.bend as Packing
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def axis(+p: U32,+pad: U32,+extent: U32) -> Bool:
   Nat.is_le(U32.to_nat(pad),U32.to_nat(p)) && Nat.is_lt(U32.to_nat(p),Nat.add(U32.to_nat(pad),U32.to_nat(extent)))
@@ -22,10 +22,10 @@ def value(+xs: List<&2,F32>,+input_channel_index: U32,+h: U32,+w: U32,+padded_ro
 
 def index_equal(+input_channel_index: U32,+h: U32,+w: U32,+padded_row: U32,+padded_column: U32,+pad: U32,+cap: U32,+cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool},
   row_bound: {Nat.is_le(Nat.add(U32.to_nat(h),U32.to_nat(pad)),U32.to_nat(cap)) == True{} : Bool},col_bound: {Nat.is_le(Nat.add(U32.to_nat(w),
-        U32.to_nat(pad)),U32.to_nat(cap)) == True{} : Bool},pair: Shape.Both<{U32.is_lt((padded_row - pad : U32),h) == True{} : Bool},
+        U32.to_nat(pad)),U32.to_nat(cap)) == True{} : Bool},pair: KernelGemm.Both<{U32.is_lt((padded_row - pad : U32),h) == True{} : Bool},
   {U32.is_lt((padded_column - pad : U32),w) == True{} : Bool}>) -> {PackedPixelAddress.index(input_channel_index,h,w,(padded_row - pad : U32),(padded_column - pad : U32)) == index(input_channel_index,h,w,padded_row,
     padded_column,pad) : Nat}:
-  Shape.Both{row,col} = pair
+  KernelGemm.Both{row,col} = pair
   %PaddedInterval.offset(padded_row,pad,h,cap,cap_ok,row_bound,row) : {PackedPixelAddress.index(input_channel_index,h,w,(padded_row - pad : U32),
       (padded_column - pad : U32)) == RowMajor.index(U32.to_nat(input_channel_index),U32.to_nat(h),U32.to_nat(w),_,Nat.sub(U32.to_nat(padded_column),U32.to_nat(pad))) : Nat}
   %PaddedInterval.offset(padded_column,pad,w,cap,cap_ok,col_bound,col) : {PackedPixelAddress.index(input_channel_index,h,w,(padded_row - pad : U32),
@@ -83,9 +83,9 @@ law native_pixel:
   for +cap_ok: {U32.is_le(cap,2147483648) == True{} : Bool}
   for +row_bound: {Nat.is_le(Nat.add(U32.to_nat(h),U32.to_nat(pad)),U32.to_nat(cap)) == True{} : Bool}
   for +col_bound: {Nat.is_le(Nat.add(U32.to_nat(w),U32.to_nat(pad)),U32.to_nat(cap)) == True{} : Bool}
-  {Packing.pixel(StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),(padded_row - pad : U32),(padded_column - pad : U32),(input_channel_index * h * w : U32),h,w) == (StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),value(xs,input_channel_index,h,w,padded_row,padded_column,
+  {Packing.pixel(~F32,~Packing.identity,StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),(padded_row - pad : U32),(padded_column - pad : U32),(input_channel_index * h * w : U32),h,w,1) == (StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),value(xs,input_channel_index,h,w,padded_row,padded_column,
         pad)) : Array<F32> & F32}
 def native_pixel(xs,evidence,input_channel_index,input_channel_count,h,w,padded_row,padded_column,pad,proof,shape,channel,positive_width,cap,cap_ok,row_bound,col_bound):
-  %translated(xs,input_channel_index,h,w,padded_row,padded_column,pad,cap,cap_ok,row_bound,col_bound) : {Packing.pixel(StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),(padded_row - pad : U32),(padded_column - pad : U32),
-      (input_channel_index * h * w : U32),h,w) == (StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),_) : Array<F32> & F32}
+  %translated(xs,input_channel_index,h,w,padded_row,padded_column,pad,cap,cap_ok,row_bound,col_bound) : {Packing.pixel(~F32,~Packing.identity,StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),(padded_row - pad : U32),(padded_column - pad : U32),
+      (input_channel_index * h * w : U32),h,w,1) == (StorageLaws.sequence_owner(F32,ConvSpec.length(xs),xs,evidence),_) : Array<F32> & F32}
   PackedPixelAddress.native_pixel(xs,evidence,input_channel_index,input_channel_count,h,w,(padded_row - pad : U32),(padded_column - pad : U32),proof,shape,channel,positive_width)

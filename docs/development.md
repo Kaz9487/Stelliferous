@@ -17,9 +17,12 @@ Run from the repository root, after [getting started](getting_started.md). On Wi
 | `python run.py model --case bus_640 --threads 4` | YOLOv5n: generate, compile, run, compare with PyTorch |
 | `python run.py checkpoint` | The official `.pt` checkpoint loaded in Bend, every tensor compared bit for bit with `torch.load` |
 | `python run.py benchmark` | Convolution operator timings |
-| `python run.py training --threads 4` | Time of one epoch of a ResNet-20-shaped network, 390 steps of batch 128, in Stelliferous and PyTorch |
+| `python run.py vit --threads 4` | ViT-B/16: compile, run, compare with PyTorch |
+| `python run.py training` | ResNet-20 on CIFAR-10: two short epochs on 1, 2, 4 and 8 threads and after a resume, compared bit for bit, and the first loss with PyTorch to 1e-5 |
+| `python run.py training --threads 4 --epochs 160` | The full ResNet-20 training in Stelliferous and PyTorch |
 | `python run.py backends` | YOLOv5n forward time on NumPy, Stelliferous and PyTorch |
 | `python run.py summary` | Lists which recorded results passed, without rerunning them |
+| `python run.py dependencies` | Where each Bend declaration and file is used: unused imports, unreached declarations, copies, and the `why`, `users`, `deps` and `size` queries |
 
 Check one Bend file, after scanning it for spellings the checker rejects:
 
@@ -33,6 +36,21 @@ After changing the pinned Bend version:
 ```sh
 python -B scripts/toolchain_rules/verify.py
 ```
+
+Find dead code and unneeded imports:
+
+```sh
+python run.py dependencies                   # summary, out/results/dependencies/dependencies.json
+python run.py dependencies unused lib/       # the review lists for files under lib/
+python run.py dependencies why tensor_select.selected_leaf   # a shortest chain from a root
+python run.py dependencies users lib/tensor_select.select    # what refers to it
+python run.py dependencies users --all lib/tensor_select.select   # also indirectly, with the distance
+python run.py dependencies deps lib/tensor_layout.bend       # what a file imports, unused ones marked
+python run.py dependencies size tensor_tiled_edge_pad.pad_edge tensor_tiled_concat.concat   # what each reaches, and alone
+python run.py dependencies duplicates lib/proofs/            # copied declarations and statements proved again
+```
+
+It reads every `.bend` file in the source folders with the upstream parser. A declaration refers to what its type and body name, in every branch. The roots are the public API, the program entries, what the Bend programs written by the Python checks name, and the theorems in [dependency_roots.json](../scripts/dependency_roots.json). `program` means a program root reaches it, `proof` only a proof root, `unreached` no root. A proof declaration that nothing refers to is a result. The list gives how many declarations each one alone keeps. An import is unused when the file names nothing in it and it writes no law body. Two declarations are copies when their statements and bodies have the same shape and name the same declarations, counting copies as one. Bound variable names do not matter. `size` counts declarations, files and source lines. The published package is read from `lib/`. The lists are candidates: confirm with the checks before deleting, and leave frozen files unchanged.
 
 The [toolchain rules](toolchain_rules.md) explain each finding. [CI](../.github/workflows/ci.yml) runs `layout`, `proofs` and `api`.
 

@@ -1,13 +1,31 @@
 # Fold a sequence of conditions and recover any member by one induction.
 import Base
-import ./storage_shape.bend as Shape
 import ./word_encoding.bend as WordEncoding
+import ../kernel_gemm.bend as KernelGemm
 
 # Evidence is required only for an enabled branch.
 def When(enabled: Bool,Property: Data) -> Data:
   match enabled:
     case False{}: Unit
     case True{}: Property
+
+# Evidence of a property is evidence for either branch.
+def when_held(-Property: Data,enabled: Bool,+held: Property) -> When(enabled,Property):
+  match enabled:
+    case False{}: Unit{}
+    case True{}: held
+
+# Evidence that follows from the branch being enabled.
+def when_enabled(-Property: Data,enabled: Bool,held: {enabled == True{} : Bool} -> Property) -> When(enabled,Property):
+  match enabled:
+    case False{}: Unit{}
+    case True{}: held({==})
+
+# The evidence of a branch known to be enabled.
+def required(-Property: Data,enabled: Bool,when: When(enabled,Property),truth: {enabled == True{} : Bool}) -> Property:
+  match enabled:
+    case False{}: Empty.absurd(Property,WordEncoding.false_true(truth))
+    case True{}: when
 
 def choose_matching(-Element: Data,+first: Bool,+rest: Bool,+actual: Element,+wanted: Element,+old: Element,
   correct: When(first,{actual == wanted : Element})) ->
@@ -38,13 +56,13 @@ def all(conditions: List<&2,Bool>) -> Bool:
 def Holds(conditions: List<&2,Bool>) -> Data:
   match conditions:
     case Nil{}: Unit
-    case last <> prefix: Shape.Both<{last == True{} : Bool},Holds(prefix)>
+    case last <> prefix: KernelGemm.Both<{last == True{} : Bool},Holds(prefix)>
 
 def all_hold(+conditions: List<&2,Bool>,+holds: Holds(conditions)) -> {all(conditions) == True{} : Bool}:
   match conditions:
     case Nil{}: {==}
     case +last <> +prefix:
-      Shape.Both{+here,+rest} = holds
+      KernelGemm.Both{+here,+rest} = holds
       %Equal.sym(Bool,all(prefix),True{},all_hold(prefix,rest)) : {Bool.and(_,last) == True{} : Bool}
       here
 
@@ -113,12 +131,18 @@ def and_true(+a: Bool,+b: Bool,ha: {a == True{} : Bool},hb: {b == True{} : Bool}
   %Equal.sym(Bool,a,True{},ha) : {_ && b == True{} : Bool}
   hb
 
+# The parts of a true conjunction.
+def and_true_left(+first: Bool,+second: Bool,both: {first && second == True{} : Bool}) -> {first == True{} : Bool}:
+  match first:
+    case True{}: {==}
+    case False{}: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(both))
+
+def and_true_right(+first: Bool,+second: Bool,both: {first && second == True{} : Bool}) -> {second == True{} : Bool}:
+  match first:
+    case True{}: both
+    case False{}: Empty.absurd({second == True{} : Bool},WordEncoding.false_true(both))
+
 def not_true(value: Bool,evidence: {Bool.not(value) == True{} : Bool}) -> {value == False{} : Bool}:
   match value:
     case False{}: {==}
     case True{}: Empty.absurd({True{} == False{} : Bool},WordEncoding.false_true(evidence))
-
-def and_false_right(+left: Bool) -> {left && False{} == False{} : Bool}:
-  match left:
-    case True{}: {==}
-    case False{}: {==}

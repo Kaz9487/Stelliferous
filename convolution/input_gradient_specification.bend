@@ -9,11 +9,6 @@ import ./specification.bend as ConvSpec
 type Problem is Data:
   Problem{shape: ConvSpec.Shape,gradient: List<&2,F32>,weights: List<&2,F32>}
 
-def channels(p: Problem) -> Nat:
-  Problem{shape,gradient,weights} = p
-  ConvSpec.Shape{ci,co,height,width,kernel,stride,pad} = shape
-  ci
-
 def outputs(p: Problem) -> Nat:
   Problem{shape,gradient,weights} = p
   ConvSpec.Shape{ci,co,height,width,kernel,stride,pad} = shape

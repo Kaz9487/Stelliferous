@@ -115,7 +115,7 @@ def keep(n: Nat) -> Nat:
 def use(+x: Nat) -> {keep(x) == keep(x) : Nat}:
   same(~keep, x)
 '''),
-    'non_decreasing': ('a decreasing self-call', '''
+    'non_decreasing': ('a call smaller than', '''
 def spin(n: Nat) -> Nat:
   spin(n)
 '''),
@@ -134,7 +134,7 @@ def loop(n: Nat) -> U32:
     case 0n: 0
     case 1n+p: then(5, value => loop(p))
 '''),
-    'lambda_self_call_bad': ('a decreasing self-call', '''
+    'lambda_self_call_bad': ('a call smaller than', '''
 def then(+result: U32, next: U32 -> U32) -> U32:
   next(result)
 
@@ -226,6 +226,33 @@ CHECKER['template_function_uncalled_checked'] = ('observed : 0n', '''
 def wrong(~f: Nat -> Nat, +n: Nat) -> {f(n) == 0n : Nat}:
   {==}
 ''')
+CHECKER['template_variable_bad'] = ('a template applied to closed ~ arguments', '''
+def same(~n: U32) -> {n == n : U32}:
+  {==}
+
+def use(+k: U32) -> {k == k : U32}:
+  same(~k)
+''')
+# The body of a template may pass its variables as ~ arguments, but the
+# instance a closed call creates checks that call again and rejects it.
+TEMPLATE_BODY = '''
+type Two<-A: Data,-B: Data> is Data:
+  Two{a: A,b: B}
+
+def left(MARKA: Data,MARKB: Data,+two: Two<A,B>) -> A:
+  Two{a,b} = two
+  a
+
+def inner(~Unused: Data,+k: U32,+two: Two<{k == k : U32},{k == k : U32}>) -> {k == k : U32}:
+  left(ARGA{k == k : U32},ARGB{k == k : U32},two)
+
+def outer(+k: U32,+two: Two<{k == k : U32},{k == k : U32}>) -> {k == k : U32}:
+  inner(~U32,k,two)
+'''
+CHECKER['template_instance_variable_bad'] = ('a template applied to closed ~ arguments',
+  TEMPLATE_BODY.replace('MARKA', '~A').replace('MARKB', '~B').replace('ARGA', '~').replace('ARGB', '~'))
+CHECKER['erased_type_arguments_ok'] = ('pass',
+  TEMPLATE_BODY.replace('MARKA', '-A').replace('MARKB', '-B').replace('ARGA', '').replace('ARGB', ''))
 CHECKER['accessor_through_ok'] = ('pass', ACCESSORS.replace('DERIVED', 'through'))
 CHECKER['accessor_matched_bad'] = ('observed : {matched(box) == 0n : Nat}', ACCESSORS.replace('DERIVED', 'matched'))
 
@@ -317,6 +344,28 @@ def run(n: Nat) -> U32:
   total(build(n, []), 0)
 ''' + MAIN),
     'share_list': ([], [], 'some', '''
+def total(xs: List<&2,U32>, acc: U32) -> U32:
+  match xs:
+    case Nil{}: acc
+    case Con{head,tail}: total(tail, (acc + head : U32))
+
+def build(n: Nat, acc: List<&2,U32>) -> List<&2,U32>:
+  match n:
+    case 0n: acc
+    case 1n+p: build(p, 7 <> acc)
+
+def build_from(xs: List<&2,U32>, acc: List<&2,U32>) -> List<&2,U32>:
+  match xs:
+    case Nil{}: acc
+    case Con{head,tail}: build_from(tail, head <> acc)
+
+def both(+xs: List<&2,U32>) -> U32:
+  (total(xs, 0) + total(build_from(xs, []), 1) : U32)
+
+def run(n: Nat) -> U32:
+  both(build(n, []))
+''' + MAIN),
+    'borrow_walks': ([], [], 'none', '''
 def total(xs: List<&2,U32>, acc: U32) -> U32:
   match xs:
     case Nil{}: acc
@@ -420,6 +469,35 @@ def apply(~operation: U32 -> U32, value: U32) -> U32:
 
 def run(n: Nat) -> U32:
   apply(~increment, U32.from_nat(n))
+''' + MAIN),
+    'erased_record_boxed': (['spin_Bool_pick(', 'term_ctr(CID_PT'], [], 'none', '''
+type Pt is Data:
+  Pt{x: U32, y: U32}
+
+def total(point: Pt) -> U32:
+  Pt{x, y} = point
+  (x + y : U32)
+
+def run(n: Nat) -> U32:
+  +k = U32.from_nat(n)
+  total(Bool.pick(Pt, U32.is_lt(k, 7), Pt{k, 1}, Pt{1, k}))
+''' + MAIN),
+    'template_record_words': (['INLINE Term spin_', 'if (_flag_0 == 0)'], ['spin_Bool_pick(', 'term_ctr(CID_PT'], 'none', '''
+type Pt is Data:
+  Pt{x: U32, y: U32}
+
+def chosen(~A: Type, flag: Bool, yes: A, no: A) -> A:
+  match flag:
+    case False{}: no
+    case True{}: yes
+
+def total(point: Pt) -> U32:
+  Pt{x, y} = point
+  (x + y : U32)
+
+def run(n: Nat) -> U32:
+  +k = U32.from_nat(n)
+  total(chosen(~Pt, U32.is_lt(k, 7), Pt{k, 1}, Pt{1, k}))
 ''' + MAIN),
     'call_closure': (['define FID_RUN ', 'term_clo(FID_RUN_C'], [], 'none', '''
 def increment(value: U32) -> U32:
@@ -563,7 +641,7 @@ def take(~n: Nat) -> Nat:
 def f(n: Nat) -> Nat:
   take(~n)
 '''),
-    'forward_live_rejected': ('a filled definition', '''
+    'forward_live_rejected': ('a def whose body is implemented before the def is used', '''
 def first() -> Nat:
   later()
 def later() -> Nat:
@@ -715,11 +793,16 @@ def run(+n: Nat) -> U32:
 
 # These spelling diagnostics are compared with the official-checker probes.
 LINT = {
+    'match_order_bad': {'A1'},
+    'match_order_ok': set(),
     'match_after_let': {'A2'},
     'match_computed': {'A3'},
     'list_pattern_postfix': {'A7'},
     'tilde_not_leading': {'C1'},
     'tilde_on_plain_call': {'C2'},
+    'non_decreasing': {'C4'},
+    'forward_live_rejected': {'C5'},
+    'non_tail_recursion_ok': set(),
     'constructor_inference_bad': {'D4'},
     'to_nat_symbolic_bound': {'E1'},
     'usage_branches': set(),
@@ -767,7 +850,7 @@ def use() -> Nat:
   x y = {1n : Nat} Nat.add(x,1n)
   Nat.add(x,y)
 '''),
-    'match_missing_arm': ('cases for False', '''
+    'match_missing_arm': ("this match doesn't cover False", '''
 def use(b: Bool) -> Nat:
   match b:
     case True{}: 1n
@@ -871,8 +954,8 @@ def run(n: Nat) -> U32:
 
 # Check emitted native/segment bodies, excluding runtime helper definitions.
 SEGMENTS = {
-    'own_single': {'spin_0': (['ctr_take(', 'spare_free(', 'term_sink('], ['term_peek('])},
-    'borrow_repeated': {'spin_0': (['term_peek('], ['ctr_take(', 'spare_free(', 'term_sink('])},
+    'own_single': {'spin_scan': (['ctr_take(', 'spare_free(', 'term_sink('], ['term_peek('])},
+    'borrow_repeated': {'spin_scan': (['term_peek('], ['ctr_take(', 'spare_free(', 'term_sink('])},
 }
 CONSTRUCTORS = {
     'share_existential': {'CID_HIDE': 1, 'CID_WCON': 1, 'CID_TRUE': 1,

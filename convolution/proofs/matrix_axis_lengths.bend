@@ -22,22 +22,6 @@ def cat_length(A,a,b):
       %cat_length(A,tail,b) : {1n+length(A,OrderedMatrix.cat(A,tail,b)) == 1n+_ : Nat}
       {==}
 
-def kcols(+n: Nat,+kernel_column_index: Nat,+kernel_row_index: Nat,+input_channel_index: Nat) -> {length(MatrixSpec.Reduction,MatrixSpec.kcols(n,kernel_column_index,kernel_row_index,input_channel_index)) == n : Nat}:
-  match n:
-    case 0n:
-      {==}
-    case 1n+ +rest:
-      %kcols(rest,1n+kernel_column_index,kernel_row_index,input_channel_index) : {1n+length(MatrixSpec.Reduction,MatrixSpec.kcols(rest,1n+kernel_column_index,kernel_row_index,input_channel_index)) == 1n+_ : Nat}
-      {==}
-def krows(+n: Nat,+kernel_row_index: Nat,+input_channel_index: Nat,+k: Nat) -> {length(MatrixSpec.Reduction,MatrixSpec.krows(n,kernel_row_index,input_channel_index,k)) == Nat.mul(n,k) : Nat}:
-  match n:
-    case 0n:
-      {==}
-    case 1n+ +rest:
-      %kcols(k,0n,kernel_row_index,input_channel_index) : {length(MatrixSpec.Reduction,MatrixSpec.krows(1n+rest,kernel_row_index,input_channel_index,k)) == Nat.add(_,Nat.mul(rest,k)) : Nat}
-      %krows(rest,1n+kernel_row_index,input_channel_index,k) : {length(MatrixSpec.Reduction,MatrixSpec.krows(1n+rest,kernel_row_index,input_channel_index,k)) == Nat.add(length(MatrixSpec.Reduction,
-            MatrixSpec.kcols(k,0n,kernel_row_index,input_channel_index)),_) : Nat}
-      cat_length(MatrixSpec.Reduction,MatrixSpec.kcols(k,0n,kernel_row_index,input_channel_index),MatrixSpec.krows(rest,1n+kernel_row_index,input_channel_index,k))
 def columns(+n: Nat,+output_column_index: Nat,+output_row_index: Nat) -> {length(MatrixSpec.Pixel,MatrixSpec.columns(n,output_column_index,output_row_index)) == n : Nat}:
   match n:
     case 0n:

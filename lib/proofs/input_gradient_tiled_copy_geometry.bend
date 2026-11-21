@@ -18,8 +18,8 @@ import ./u32_comparison.bend as Comparison
 import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./word_subtraction.bend as Subtraction
 import ./padded_interval.bend as Padded
-import ./storage_shape.bend as Shape
 import ./word_encoding.bend as WordEncoding
+import ../kernel_gemm.bend as KernelGemm
 
 def clipped_origin(+coordinate: U32,+kernel: U32) -> U32:
   Bool.pick(U32,U32.is_lt(kernel,coordinate),(coordinate - kernel : U32),0)
@@ -100,7 +100,7 @@ def copied_row_bounds_from(+query: Bands.Query,+coordinate: U32,
   +upper: {U32.is_lt(coordinate,Kernel.band_high(Bands.geometry(query),Bands.first(query),Bands.last(query))) == True{} : Bool},
   +row_inside: {U32.is_lt((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),Domain.gradient_rows(Bands.geometry(query))) == True{} : Bool},
   +kernel_before: {Nat.is_le(Domain.kernel(Bands.geometry(query)),U32.to_nat(coordinate)) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),U32.to_nat(stop(query))) == True{} : Bool}>:
   Bands.Query{Extents.Axis{+call,size,size_room,e},+first,+last,ordered,room} = query
   Domain.Call{+g,b,l,facts} = call
@@ -112,7 +112,7 @@ def copied_row_bounds_from(+query: Bands.Query,+coordinate: U32,
   +kernel_high = Order.le_lt_trans(U32.to_nat(k),U32.to_nat(coordinate),U32.to_nat(high),kernel_before,Bounds.as_nat_lt(coordinate,high,upper))
   +high_exact = FullRange.subtract(high,k,high,Bounds.strict_le(U32.to_nat(k),U32.to_nat(high),kernel_high),Order.sub_le(U32.to_nat(high),U32.to_nat(k)))
   +kernel_word_before = {%Equal.sym(Bool,U32.is_le(k,coordinate),Nat.is_le(U32.to_nat(k),U32.to_nat(coordinate)),Comparison.le(k,coordinate)) : {_ == True{} : Bool} kernel_before : {U32.is_le(k,coordinate) == True{} : Bool}}
-  Shape.Both{
+  KernelGemm.Both{
     %Equal.sym(Nat,U32.to_nat(begin(query)),Nat.sub(U32.to_nat(low),U32.to_nat(k)),begin_exact(query)) : {Nat.is_le(_,U32.to_nat(row)) == True{} : Bool}
     %Equal.sym(Nat,U32.to_nat(row),Nat.sub(U32.to_nat(coordinate),U32.to_nat(k)),exact) : {Nat.is_le(Nat.sub(U32.to_nat(low),U32.to_nat(k)),_) == True{} : Bool} Division.subtract_le(U32.to_nat(low),U32.to_nat(coordinate),U32.to_nat(k),Bounds.as_nat_le(low,coordinate,lower)),
     %Equal.sym(Nat,U32.to_nat(stop(query)),Nat.min(Nat.sub(U32.to_nat(high),U32.to_nat(k)),U32.to_nat(gh)),stop_exact(query)) : {Nat.is_lt(U32.to_nat(row),_) == True{} : Bool}
@@ -122,20 +122,20 @@ def copied_row_lower_finish(+query: Bands.Query,+coordinate: U32,
   +lower: {U32.is_le(Kernel.band_low(Bands.geometry(query),Bands.first(query),Bands.last(query)),coordinate) == True{} : Bool},
   +upper: {U32.is_lt(coordinate,Kernel.band_high(Bands.geometry(query),Bands.first(query),Bands.last(query))) == True{} : Bool},
   +row_inside: {U32.is_lt((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),Domain.gradient_rows(Bands.geometry(query))) == True{} : Bool},
-  bounds: Shape.Both<{Nat.is_le(U32.to_nat(Domain.kernel_word(Bands.geometry(query))),U32.to_nat(coordinate)) == True{} : Bool},
+  bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(Domain.kernel_word(Bands.geometry(query))),U32.to_nat(coordinate)) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(coordinate),Nat.add(U32.to_nat(Domain.kernel_word(Bands.geometry(query))),U32.to_nat(Domain.gradient_rows(Bands.geometry(query))))) == True{} : Bool}>) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),U32.to_nat(stop(query))) == True{} : Bool}>:
   Bands.Query{Extents.Axis{+call,size,size_room,e},first,last,ordered,room} = query
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  Shape.Both{+kernel_before,hi} = bounds
+  KernelGemm.Both{+kernel_before,hi} = bounds
   copied_row_bounds_from(query,coordinate,lower,upper,row_inside,kernel_before)
 def copied_row_bounds(+query: Bands.Query,+coordinate: U32,
   +lower: {U32.is_le(Kernel.band_low(Bands.geometry(query),Bands.first(query),Bands.last(query)),coordinate) == True{} : Bool},
   +upper: {U32.is_lt(coordinate,Kernel.band_high(Bands.geometry(query),Bands.first(query),Bands.last(query))) == True{} : Bool},
   +row_inside: {U32.is_lt((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),Domain.gradient_rows(Bands.geometry(query))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),U32.to_nat(stop(query))) == True{} : Bool}>:
   Bands.Query{Extents.Axis{+call,size,size_room,e},first,last,ordered,room} = query
   Domain.Call{+g,b,l,facts} = call
@@ -147,24 +147,24 @@ def copied_row_bounds(+query: Bands.Query,+coordinate: U32,
     query_gradient_kernel_room(query),row_inside))
 
 def copied_interval_from(+query: Bands.Query,+coordinate: U32,
-  bounds: Shape.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),U32.to_nat(stop(query))) == True{} : Bool}>) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),Nat.add(U32.to_nat(begin(query)),U32.to_nat(row_count(query)))) == True{} : Bool}>:
-  Shape.Both{+lo,+hi} = bounds
+  KernelGemm.Both{+lo,+hi} = bounds
   +row = (coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)
   +start = U32.to_nat(begin(query))
   +finish = U32.to_nat(stop(query))
   +ordered = Bounds.strict_le(start,finish,Order.le_lt_trans(start,U32.to_nat(row),finish,lo,hi))
   +restored = Order.restore_shift(start,finish,ordered)
-  Shape.Both{lo,
+  KernelGemm.Both{lo,
     %Equal.sym(Nat,U32.to_nat(row_count(query)),Nat.sub(finish,start),count_exact(query)) : {Nat.is_lt(U32.to_nat(row),Nat.add(start,_)) == True{} : Bool}
     %Equal.sym(Nat,Nat.add(start,Nat.sub(finish,start)),finish,restored) : {Nat.is_lt(U32.to_nat(row),_) == True{} : Bool} hi}
 def copied_interval(+query: Bands.Query,+coordinate: U32,
   +lower: {U32.is_le(Kernel.band_low(Bands.geometry(query),Bands.first(query),Bands.last(query)),coordinate) == True{} : Bool},
   +upper: {U32.is_lt(coordinate,Kernel.band_high(Bands.geometry(query),Bands.first(query),Bands.last(query))) == True{} : Bool},
   +row_inside: {U32.is_lt((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32),Domain.gradient_rows(Bands.geometry(query))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(begin(query)),U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat((coordinate - Domain.kernel_word(Bands.geometry(query)) : U32)),Nat.add(U32.to_nat(begin(query)),U32.to_nat(row_count(query)))) == True{} : Bool}>:
   copied_interval_from(query,coordinate,copied_row_bounds(query,coordinate,lower,upper,row_inside))
 

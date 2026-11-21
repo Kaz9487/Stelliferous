@@ -3,7 +3,6 @@ import Base
 import ../traversal_array.bend as Traversal
 import ./indexed_output_readback.bend as Readback
 import ./u32_extrema.bend as Extrema
-import ./u32_comparison.bend as Comparison
 import ./nat_order.bend as Order
 import ./nat_extrema.bend as NaturalExtrema
 import ./nat_to_u32_bounds.bend as Bounds
@@ -61,18 +60,13 @@ def at_target(~upper: Bool,~Context: Data,~used: Context -> U32 -> Bool,~sample:
     bound(upper,wanted(~Context,~sample,query),Bool.pick(U32,_,selected(upper,value,wanted(~Context,~sample,query)),value))
   included(upper,value,wanted(~Context,~sample,query))
 
-def transitive(+left: U32,+middle: U32,+right: U32,lm: {U32.is_le(left,middle) == True{} : Bool},mr: {U32.is_le(middle,right) == True{} : Bool}) ->
-  {U32.is_le(left,right) == True{} : Bool}:
-  %Equal.sym(Bool,U32.is_le(left,right),Nat.is_le(U32.to_nat(left),U32.to_nat(right)),Comparison.le(left,right)) : {_ == True{} : Bool}
-  Order.transitive(U32.to_nat(left),U32.to_nat(middle),U32.to_nat(right),Bounds.as_nat_le(left,middle,lm),Bounds.as_nat_le(middle,right,mr))
-
 def kept_selected(upper: Bool,used: Bool,+wanted: U32,+value: U32,+sample: U32,evidence: bound(upper,wanted,value)) ->
   bound(upper,wanted,Bool.pick(U32,used,selected(upper,value,sample),value)):
   match upper used:
     case False{} False{}: evidence
     case True{} False{}: evidence
-    case False{} True{}: transitive(U32.min(value,sample),value,wanted,Extrema.minimum_left(value,sample),evidence)
-    case True{} True{}: transitive(wanted,value,U32.max(value,sample),evidence,Extrema.maximum_left(value,sample))
+    case False{} True{}: Order.word_le(U32.min(value,sample),value,wanted,Extrema.minimum_left(value,sample),evidence)
+    case True{} True{}: Order.word_le(wanted,value,U32.max(value,sample),evidence,Extrema.maximum_left(value,sample))
 
 def post_step(~upper: Bool,~Context: Data,~used: Context -> U32 -> Bool,~sample: Context -> U32 -> U32,
   +query: Query<Context>,+index: Nat,+value: U32,inside: {Nat.is_lt(index,count(~Context,query)) == True{} : Bool},evidence: property(~upper,~Context,~sample,query,value)) ->

@@ -1,28 +1,37 @@
 # The input gradient of a convolution by phases: output positions congruent
 # modulo the stride read the same taps. Every row of every output channel of
 # the output gradient is cut into eight-lane tiles once for each column shift
-# the phases read, zero outside; a phase entry is then a tile index, and a job
-# stores at the final strided addresses.
+# the phases read, zero outside; a phase entry is then a tile, and a job is a
+# GEMM block that stores its tiles at the final strided positions of its
+# piece. The cells of both gradients are those of a tensor: the groups of a
+# position side by side, position after position. Every task copies the rows
+# of the output gradient its pieces read and computes its pieces from them.
 import Base
 import ./storage_buffer.bend as Storage
-import ./storage_allocation.bend as Allocation
 import ./kernel_tile.bend as Tile
-import ./kernel_rows.bend as Rows
-import ./kernel_strided_store.bend as Stores
-import ./proofs/kernel_strided_store_certificate.bend as StoreCertificate
-import ./kernel_gemm_buffer.bend as Gemm
-import ./kernel_spatial_packing.bend as Spatial
-import ./kernel_window.bend as Window
+import ./kernel_gemm.bend as Gemm
+import ./kernel_gemm_buffer.bend as GemmBuffer
+import ./proofs/kernel_gemm_certificate.bend as GemmCertificate
+import ./storage_copy.bend as StorageCopy
+import ./storage_clone.bend as StorageClone
+import ./kernel_input_gradient_fill.bend as Fill
+import ./proofs/storage_certificate.bend as Certificate
+import ./proofs/traversal_certificate.bend as TraversalCertificate
+import ./proofs/kernel_input_gradient_fill_certificate.bend as FillCertificate
+import ./tensor_view.bend as Views
 import ./kernel_pipeline.bend as Pipeline
-import ./traversal_loop.bend as Iteration
 import ./traversal_array.bend as Traversal
 import ./traversal_partition.bend as Partition
-import ./tensor_band.bend as Bands
 import ./tensor.bend as Tensors
+import ./tensor_tiled.bend as Tiled
+import ./tensor_tiled_map.bend as TiledMap
+import ./tensor_grid.bend as Grid
+import ./tensor_pieces.bend as Pieces
+import ./tensor_tasks.bend as Tasks
+import ./tensor_halo.bend as Halo
+import ./tensor_move.bend as Move
 import ./kernel_cost.bend as Cost
 import ./default_kernel_cost.bend as DefaultCost
-import ./kernel_planning.bend as KernelPlanning
-import ./kernel_band_planning.bend as BandPlanning
 
 type Geometry is Data:
   Geometry{channels: U32,outputs: U32,height: U32,width: U32,kernel: U32,stride: U32,padding: U32,rows: U32,columns: U32}
@@ -48,23 +57,6 @@ def phase_axes(geometry: Geometry,a: Axis,b: Axis) -> Phase:
 def phase(+geometry: Geometry,+y: U32,+x: U32) -> Phase:
   Geometry{c,o,+h,+w,+k,+s,+p,gh,gw} = geometry
   phase_axes(geometry,axis(y,h,k,s,p),axis(x,w,k,s,p))
-
-# Tap coordinates and source strides for mapped weight reorder.
-type WeightWindow is Data:
-  WeightWindow{kernel: U32,stride: U32,y_tap: U32,y_rows: U32,x_tap: U32,x_columns: U32,tap_area: U32,output_step: U32}
-
-def weight_window(context: Phase) -> WeightWindow:
-  Phase{Geometry{c,o,h,w,+k,s,p,gh,gw},Axis{yf,yc,yt,+yr,ys},Axis{xf,xc,xt,+xr,xs},inner} = context
-  WeightWindow{k,s,yt,yr,xt,xr,(yr * xr : U32),(c * k * k : U32)}
-
-def weight_window_offset(window: WeightWindow,index: U32) -> U32:
-  WeightWindow{+kernel,+stride,y_tap,y_rows,x_tap,+x_columns,tap_area,output_step} = window
-  +index = index
-  +row = (index / x_columns : U32)
-  (index / tap_area * output_step + (y_tap - row % y_rows * stride) * kernel + x_tap - index % x_columns * stride : U32)
-
-def weight_offset(context: Phase,index: U32) -> U32:
-  weight_window_offset(weight_window(context),index)
 
 def window_jobs(geometry: Geometry) -> Nat:
   Geometry{c,o,+h,+w,k,+s,p,gh,gw} = geometry
@@ -144,172 +136,100 @@ def tiling(geometry: Geometry) -> Tiling:
   chunked(((band_fold(Band{w,k,s,p,0,w,2},0) + 7) / 8 : U32),(band_fold(Band{w,k,s,p,0,columns,1},0) - column_low : U32),
     o,column_low,k,s,gh,gw,Pipeline.block_tiles())
 
-type Fill is Type:
-  Fill{input: Array<F32>,tiles: Array<Tile.Tile8>,index: U32,row: U32,column: U32,first: U32,base: U32,plane: U32,height: U32,width: U32,shifts: Nat}
-
-def filled(tiles: Array<Tile.Tile8>,+index: U32,row: U32,+column: U32,first: U32,base: U32,plane: U32,height: U32,width: U32,shifts: Nat,read: Array<F32> & Tile.Tile8) -> Fill:
-  (input,tile) = read
-  Fill{input,Array.set(Tile.Tile8,tiles,index,tile),(index + 1 : U32),row,(column + 1 : U32),first,base,plane,height,width,shifts}
-
-def fill_shift(state: Fill) -> Fill:
-  Fill{input,tiles,index,+row,+column,first,+base,plane,+height,+width,shifts} = state
-  filled(tiles,index,row,column,first,base,plane,height,width,shifts,Spatial.block(input,row,column,base,height,width,1,0,0,0,0,0))
-
-def next_channel(state: Fill) -> Fill:
-  Fill{input,tiles,index,row,column,+first,+base,+plane,height,width,shifts} = state
-  Fill{input,tiles,index,row,first,first,(base + plane : U32),plane,height,width,shifts}
-
-def fill_channel(state: Fill) -> Fill:
-  Fill{input,tiles,index,row,column,first,base,plane,height,width,+shifts} = state
-  next_channel(Iteration.run(~Fill,~fill_shift,shifts,Fill{input,tiles,index,row,column,first,base,plane,height,width,shifts}))
-
-def fill_finished(state: Fill) -> Array<F32> & Array<Tile.Tile8>:
-  Fill{input,tiles,index,row,column,first,base,plane,height,width,shifts} = state
-  (input,tiles)
-
-# Rows [first, first + rows) of every output channel of one image.
+# Rows [first, first + rows) of the output gradient of one image, from cell
+# base of data on.
 type Source is Type:
-  Source{data: Array<F32>,base: U32,plane: U32,first: U32,rows: U32}
+  Source{data: Storage.Buffer<Tile.Tile8>,base: U32,first: U32,rows: U32}
 
-# Tile rows from tile row low and groups [group, group + span) of the tiling,
-# read from a source.
-type Filling is Data:
-  Filling{context: Tiling,low: U32,base: U32,plane: U32,first: U32,rows: U32,group: U32,span: U32}
+def fill_buffers(source_length: Nat,length: Nat,result: Array<Tile.Tile8> & Array<Tile.Tile8>,
+  certificates: TraversalCertificate.Certificates<Array<Tile.Tile8>,Tile.Tile8,Certificate.family(~Tile.Tile8),result>) -> Storage.Buffer<Tile.Tile8> & Storage.Buffer<Tile.Tile8>:
+  (source,tiles) = result
+  TraversalCertificate.Certificates{source_certificate,certificate} = certificates
+  (Storage.Buffer{source,source_length,source_certificate},Storage.Buffer{tiles,length,certificate})
 
-# One tile row and group: every output channel, every shift.
-def fill_group(index: U32,context: Filling,owners: Array<F32> & Array<Tile.Tile8>) -> Array<F32> & Array<Tile.Tile8>:
-  Filling{Tiling{groups,+shifts,+outputs,+column_low,+kernel,height,+width,+chunk_groups,chunk_rows},+low,+base,+plane,+first,+source_rows,+group,+span} = context
-  (input,tiles) = owners
-  +index = index
-  +column = ((index % span + group) * 8 + column_low - kernel : U32)
-  fill_finished(Iteration.run(~Fill,~fill_channel,U32.to_nat(outputs),
-    Fill{input,tiles,((index / span * chunk_groups + index % span) * (outputs * shifts + 1) : U32),(index / span + low - kernel - first : U32),column,column,
-      base,plane,source_rows,width,U32.to_nat(shifts)}))
+# The tiles of a chunk and the source they are read from, both certified.
+def filled_tiles(+call: Fill.Call,owners: Storage.Buffer<Tile.Tile8> & Storage.Buffer<Tile.Tile8>) -> Storage.Buffer<Tile.Tile8> & Storage.Buffer<Tile.Tile8>:
+  (source,tiles) = owners
+  Storage.Buffer{source,source_length,source_certificate} = source
+  Storage.Buffer{tiles,length,certificate} = tiles
+  fill_buffers(source_length,length,Fill.run(call,source,tiles),FillCertificate.certificates(call,source,tiles,source_certificate,certificate))
 
 type Jobs is Type:
-  Jobs{tiles: Array<Tile.Tile8>,weights: Array<Tile.Tile8>,offsets: Array<U32>,output: Storage.Buffer<F32>}
+  Jobs{tiles: Storage.Buffer<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>}
 
-type Context is Data:
-  Context{source: U32,weight_base: U32}
+# The gradient tile of phase entry (output o, tap row a, tap column b) is the
+# first tile + a * row_step + o * shifts + b: a grid of tap_columns by
+# tap_rows entries for each output. The weights are consecutive.
+def Cursor() -> Data:
+  Gemm.Both<U32,Gemm.Entries>
 
-type Loop is Type:
-  Loop{tiles: Array<Tile.Tile8>,weights: Array<Tile.Tile8>,offsets: Array<U32>,index: U32,context: Context,accumulators: Rows.Rows<Tile.Tile8>}
+def entries(cursor: Cursor()) -> Gemm.Step<Cursor()>:
+  Gemm.both(~U32,~Gemm.Entries,~Gemm.direct,~Gemm.entry,cursor)
 
-def with_tile(weights: Array<Tile.Tile8>,offsets: Array<U32>,+index: U32,context: Context,
-  accumulators: Rows.Rows<Tile.Tile8>,samples: Rows.Rows<F32>,read: Array<Tile.Tile8> & Tile.Tile8) -> Loop:
-  (tiles,tile) = read
-  Loop{tiles,weights,offsets,(index + 1 : U32),context,Rows.map(~Tile.Tile8,~Tile.Tile8,~F32,~Tile.update,accumulators,tile,samples)}
-
-def with_offset(tiles: Array<Tile.Tile8>,weights: Array<Tile.Tile8>,+index: U32,context: Context,+source: U32,
-  accumulators: Rows.Rows<Tile.Tile8>,samples: Rows.Rows<F32>,read: Array<U32> & U32) -> Loop:
-  (offsets,offset) = read
-  with_tile(weights,offsets,index,context,accumulators,samples,Array.get(Tile.Tile8,tiles,(source + offset : U32)))
-
-def with_weights(~upper: Bool,tiles: Array<Tile.Tile8>,offsets: Array<U32>,+index: U32,context: Context,+source: U32,
-  accumulators: Rows.Rows<Tile.Tile8>,read: Array<Tile.Tile8> & Tile.Tile8) -> Loop:
-  (weights,tile) = read
-  with_offset(tiles,weights,index,context,source,accumulators,Rows.half(upper,tile),Array.get(U32,offsets,index))
-
-# One ordered step: the weight tile, the tile of the entry through the table,
-# then the products of four rows at eight outputs.
-def step(~upper: Bool,state: Loop) -> Loop:
-  Loop{tiles,weights,offsets,+index,context,accumulators} = state
-  Context{+source,+weight_base} = context
-  with_weights(~upper,tiles,offsets,index,Context{source,weight_base},source,accumulators,
-    Array.get(Tile.Tile8,weights,(weight_base + index : U32)))
-
-def execute(upper: Bool,count: Nat,state: Loop) -> Loop:
-  match upper:
-    case False{}: Iteration.run(~Loop,~step(~False{}),count,state)
-    case True{}: Iteration.run(~Loop,~step(~True{}),count,state)
-
-# Raw stores within a job, one certificate update after them.
-def stored(state: Loop,+store: Stores.Store,output: Storage.Buffer<F32>) -> Jobs:
-  Loop{tiles,weights,offsets,index,context,+accumulators} = state
-  Storage.Buffer{storage,length,certificate} = output
-  Jobs{tiles,weights,offsets,Storage.Buffer{Stores.block(store,accumulators,storage),length,StoreCertificate.certificate(store,accumulators,storage,certificate)}}
-
-# One job is four input channels at eight consecutive outputs of one phase
-# row. The loop index runs over the phase table from offset_base; weight_base
-# is the phase weights less offset_base.
+# One job is eight consecutive outputs of one phase row, its rows a stride
+# apart, at the eight input channels of one group, its lanes: the cell of
+# group g at local position p is at p * cells + g. Its steps run over the
+# phase entries, the weights from weight_base.
 type Plan is Data:
   Plan{units: U32,groups: U32,inner: U32,source_base: U32,row_step: U32,group_step: U32,
-    target_base: U32,target_row: U32,step: U32,plane: U32,channels: U32,columns: U32,weight_base: U32,offset_base: U32}
+    target_base: U32,target_row: U32,step: U32,cells: U32,channels: U32,columns: U32,weight_base: U32,
+    tap_columns: U32,tap_rows: U32,row_jump: U32,output_jump: U32}
 
-def job(index: U32,plan: Plan,state: Jobs) -> Jobs:
-  Plan{+units,+groups,+inner,+source_base,+row_step,+group_step,+target_base,+target_row,+step,+plane,+channels,+columns,+weight_base,+offset_base} = plan
-  Jobs{tiles,weights,offsets,output} = state
+def job(plan: Plan,index: U32) -> Gemm.Job<Cursor()>:
+  Plan{+units,+groups,+inner,+source_base,+row_step,+group_step,+target_base,+target_row,+step,+cells,+channels,+columns,+weight_base,
+    +tap_columns,+tap_rows,+row_jump,+output_jump} = plan
   +index = index
   +unit = (index % units : U32)
   +group = (index / units % groups : U32)
   +line = (index / units / groups : U32)
-  stored(execute(U32.is_eq((unit % 2 : U32),1),U32.to_nat(inner),
-    Loop{tiles,weights,offsets,offset_base,Context{(source_base + line * row_step + group * group_step : U32),(weight_base + unit / 2 * inner : U32)},
-      Rows.filled(~Tile.Tile8,Tile.filled(0.0))}),
-    Stores.Store{(target_base + unit * 4 * plane + line * target_row + group * 8 * step : U32),step,plane,U32.min(4,(channels - unit * 4 : U32)),U32.min(8,(columns - group * 8 : U32))},output)
+  +row = (unit * 8 : U32)
+  Gemm.Job{row,U32.to_nat(inner),
+    Gemm.Both{(weight_base + unit * inner : U32),Gemm.Entries{(source_base + line * row_step + group * group_step : U32),0,0,tap_columns,tap_rows,row_jump,output_jump}},
+    Gemm.Store{(target_base + unit + (line * target_row + group * 8 * step) * cells : U32),(step * cells : U32),1,U32.min(8,(columns - group * 8 : U32)),U32.min(8,(channels - row : U32))}}
 
-# The tile of entry (output o, tap row a, tap column b) of a phase, relative to
-# the tile of the job row and group, at position base + entry of the table.
-type Table is Data:
-  Table{tap_rows: U32,tap_columns: U32,row_step: U32,shifts: U32,first_shift: U32,base: U32}
+def jobs_kept(kept: GemmBuffer.Kept<Tile.Tile8>) -> Jobs:
+  GemmBuffer.Kept{tiles,weights,bias,output} = kept
+  Jobs{tiles,weights,output}
 
-def offset(index: U32,context: Table,offsets: Array<U32>) -> Array<U32>:
-  Table{+tap_rows,+tap_columns,+row_step,+shifts,+first_shift,+base} = context
-  +index = index
-  Array.set(U32,offsets,(base + index : U32),(index / tap_columns % tap_rows * row_step + index / (tap_rows * tap_columns) * shifts + index % tap_columns + first_shift : U32))
+# Each cell is its ordered fold, the gradient times the weight, then + 0.0.
+# The gradient tiles are the rows, the weights the lanes.
+def jobs(+count: Nat,+plan: Plan,state: Jobs) -> Jobs:
+  Jobs{tiles,weights,output} = state
+  jobs_kept(GemmBuffer.run(~Plan,~Cursor(),~Tile.Tile8,~job,~entries,~Gemm.row_times,~Gemm.write_tiles(~Gemm.unbiased,~Gemm.plus),
+    ~GemmCertificate.write_tiles(~Gemm.unbiased,~GemmCertificate.unbiased_read,~Gemm.plus),count,plan,
+    tiles,weights,Tensors.buffer(~F32,0.0,1),output))
 
-type TileCopy is Type:
-  TileCopy{source: Array<Tile.Tile8>,target: Array<Tile.Tile8>,from: U32,to: U32}
-
-def tile_copied(target: Array<Tile.Tile8>,+from: U32,+to: U32,read: Array<Tile.Tile8> & Tile.Tile8) -> TileCopy:
-  (source,tile) = read
-  TileCopy{source,Array.set(Tile.Tile8,target,to,tile),(from + 1 : U32),(to + 1 : U32)}
-
-def tile_step(state: TileCopy) -> TileCopy:
-  TileCopy{source,target,+from,+to} = state
-  tile_copied(target,from,to,Array.get(Tile.Tile8,source,from))
-
-def tile_target(state: TileCopy) -> Array<Tile.Tile8>:
-  TileCopy{source,target,from,to} = state
-  target
-
-# Every phase weights and table, side by side in phase order.
+# Every phase weights, side by side in phase order.
 type Packed is Type:
-  Packed{source: Storage.Buffer<F32>,weights: Array<Tile.Tile8>,offsets: Array<U32>,weight_base: U32,offset_base: U32}
+  Packed{source: Storage.Buffer<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>,weight_base: U32}
 
-def packed_copied(+context: Phase,+layout: Tiling,source: Storage.Buffer<F32>,offsets: Array<U32>,+weight_base: U32,+offset_base: U32,+count: U32,weights: Array<Tile.Tile8>) -> Packed:
-  Phase{Geometry{c,o,h,w,+k,s,p,gh,gw},Axis{yf,yc,yt,+yr,ys},Axis{xf,xc,xt,+xr,+xs},+inner} = context
-  Tiling{groups,+shifts,+outputs,+column_low,kernel,height,width,+chunk_groups,chunk_rows} = layout
-  Packed{source,weights,Traversal.indexed_fold(~Array<U32>,~Table,~offset,U32.to_nat(inner),0,
-    Table{yr,xr,(chunk_groups * (outputs * shifts + 1) : U32),shifts,(xs + k - column_low : U32),offset_base},offsets),(weight_base + count : U32),(offset_base + inner : U32)}
+def packed_copied(+weight_base: U32,+count: U32,copies: Storage.Buffer<Tile.Tile8> & Storage.Buffer<Tile.Tile8>) -> Packed:
+  (source,weights) = copies
+  Packed{source,weights,(weight_base + count : U32)}
 
-def packed_phase(+context: Phase,+layout: Tiling,weights: Array<Tile.Tile8>,offsets: Array<U32>,+weight_base: U32,+offset_base: U32,read: Storage.Buffer<F32> & Storage.Buffer<Tile.Tile8>) -> Packed:
+# Cells [C/8,O,K,K], the groups outermost, in phase order [C/8,O,tap row,tap column].
+def weight_view(context: Phase) -> Views.View:
+  Phase{Geometry{c,+o,h,w,+k,+s,p,gh,gw},Axis{yf,yc,+yt,+yr,ys},Axis{xf,xc,+xt,+xr,xs},inner} = context
+  Views.View{[Views.Axis{Tiled.groups(c),(o * k * k : U32)},Views.Axis{o,(k * k : U32)},
+    Views.Axis{yr,(0 - s * k : U32)},Views.Axis{xr,(0 - s : U32)}],(yt * k + xt : U32)}
+
+def packed_phase(+context: Phase,+weight_base: U32,source: Storage.Buffer<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>) -> Packed:
   Phase{Geometry{+c,o,h,w,k,s,p,gh,gw},y,x,+inner} = context
-  (source,phase_weights) = read
-  Storage.Buffer{phase_tiles,phase_length,phase_certificate} = phase_weights
-  +count = ((c + 7) / 8 * inner : U32)
-  packed_copied(context,layout,source,offsets,weight_base,offset_base,count,
-    tile_target(Iteration.run(~TileCopy,~tile_step,U32.to_nat(count),TileCopy{phase_tiles,weights,0,weight_base})))
+  +count = (Tiled.groups(c) * inner : U32)
+  # the view built for each use: a View used twice shares every View
+  packed_copied(weight_base,count,StorageCopy.view(~Tile.Tile8,Views.is_contiguous(weight_view(context)),count,weight_view(context),weight_base,source,weights))
 
-def pack_selected(empty: Bool,+context: Phase,+layout: Tiling,state: Packed) -> Packed:
+def pack_selected(empty: Bool,+context: Phase,state: Packed) -> Packed:
   match empty:
     case True{}: state
     case False{}:
       Phase{Geometry{+c,o,h,w,+k,s,p,gh,gw},y,x,+inner} = context
-      Packed{source,weights,offsets,weight_base,offset_base} = state
-      packed_phase(context,layout,weights,offsets,weight_base,offset_base,
-        Gemm.reorder_mapped(~WeightWindow,~weight_window_offset,c,inner,(k * k : U32),weight_window(context),source))
+      Packed{source,weights,weight_base} = state
+      packed_phase(context,weight_base,source,weights)
 
-type PackContext is Data:
-  PackContext{geometry: Geometry,layout: Tiling}
-
-def pack_phase(index: U32,context: PackContext,state: Packed) -> Packed:
-  PackContext{+geometry,+layout} = context
+def pack_phase(index: U32,geometry: Geometry,state: Packed) -> Packed:
   +selected = phase_of(geometry,index)
-  pack_selected(U32.is_eq(phase_inner(selected),0),selected,layout,state)
-
-def inner_total(index: U32,geometry: Geometry,total: U32) -> U32:
-  (total + phase_inner(phase_of(geometry,index)) : U32)
+  pack_selected(U32.is_eq(phase_inner(selected),0),selected,state)
 
 def weight_total(index: U32,geometry: Geometry,total: U32) -> U32:
   Geometry{+c,o,h,w,k,s,p,gh,gw} = geometry
@@ -333,76 +253,81 @@ type Task is Data:
   Task{geometry: Geometry,layout: Tiling}
 
 type Leaf is Type:
-  Leaf{tiles: Array<Tile.Tile8>,weights: Array<Tile.Tile8>,offsets: Array<U32>,output: Storage.Buffer<F32>,weight_base: U32,offset_base: U32}
+  Leaf{tiles: Storage.Buffer<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>,weight_base: U32}
 
-# Output rows [first, first + count) go to target + channel * plane +
-# (row - first) * width + column.
+# Output rows [first, first + count) go to the cells from target on: the
+# cell of group g at row and column is target + ((row - first) * width +
+# column) * groups + g.
 type LeafContext is Data:
-  LeafContext{task: Task,first: U32,count: U32,target: U32,plane: U32}
+  LeafContext{task: Task,first: U32,count: U32,target: U32}
 
 # Output rows [row, row + rows) and groups [group, group + chunk_groups) of a
 # leaf, over a chunk of the tiling that starts at tile row low.
 type Chunk is Data:
   Chunk{leaf: LeafContext,row: U32,rows: U32,low: U32,group: U32}
 
-def leaf_jobs(+context: Phase,+chunk: Chunk,+weight_base: U32,+offset_base: U32,state: Jobs) -> Jobs:
-  Phase{Geometry{+c,o,+h,+w,+k,+s,p,gh,gw},Axis{+yf,+yc,yt,yr,+ys},Axis{+xf,+xc,xt,xr,xs},+inner} = context
-  Chunk{LeafContext{Task{geometry,+layout},+first,count,+target,+plane},+row,+rows,+low,+group} = chunk
-  Tiling{groups,+shifts,+outputs,column_low,kernel,height,width,+chunk_groups,chunk_rows} = layout
+# A tile row of the chunk is one gradient row, so a phase line and a tap row
+# both move by row_step; the first entry reads shift xs + k - column_low.
+def leaf_jobs(+context: Phase,+chunk: Chunk,+weight_base: U32,state: Jobs) -> Jobs:
+  Phase{Geometry{+c,o,+h,+w,+k,+s,p,gh,gw},Axis{+yf,+yc,yt,+yr,+ys},Axis{+xf,+xc,xt,+xr,+xs},+inner} = context
+  Chunk{LeafContext{Task{geometry,+layout},+first,count,+target},+row,+rows,+low,+group} = chunk
+  Tiling{groups,+shifts,+outputs,+column_low,kernel,height,width,+chunk_groups,chunk_rows} = layout
   +start = Bool.pick(U32,U32.is_lt(yf,row),((row - yf + s - 1) / s : U32),0)
   +end = U32.min(yc,Bool.pick(U32,U32.is_lt(yf,(row + rows : U32)),((row + rows - yf + s - 1) / s : U32),0))
-  +units = ((c + 3) / 4 : U32)
+  +units = ((c + 7) / 8 : U32)
   +phase_groups = ((xc + 7) / 8 : U32)
   +span = Bool.pick(U32,U32.is_lt(group,phase_groups),U32.min(chunk_groups,(phase_groups - group : U32)),0)
   +group_step = (outputs * shifts + 1 : U32)
-  Traversal.indexed_fold(~Jobs,~Plan,~job,U32.to_nat(Bool.pick(U32,U32.is_lt(start,end),((end - start) * span * units : U32),0)),0,
-    Plan{units,span,inner,((start + ys + k - low) * chunk_groups * group_step : U32),(chunk_groups * group_step : U32),group_step,
-      (target + (yf + start * s - first) * w + xf + group * 8 * s : U32),(s * w : U32),s,plane,c,(xc - group * 8 : U32),(weight_base - offset_base : U32),offset_base},state)
+  +row_step = (chunk_groups * group_step : U32)
+  jobs(U32.to_nat(Bool.pick(U32,U32.is_lt(start,end),((end - start) * span * units : U32),0)),
+    Plan{units,span,inner,((start + ys + k - low) * row_step + xs + k - column_low : U32),row_step,group_step,
+      (target + ((yf + start * s - first) * w + xf + group * 8 * s) * units : U32),(s * w : U32),s,units,c,(xc - group * 8 : U32),weight_base,
+      xr,yr,(row_step - (xr - 1) : U32),(shifts - (yr - 1) * row_step - (xr - 1) : U32)},state)
 
-def leaf_finished(+weight_base: U32,+offset_base: U32,state: Jobs) -> Leaf:
-  Jobs{tiles,weights,offsets,output} = state
-  Leaf{tiles,weights,offsets,output,weight_base,offset_base}
+def leaf_finished(+weight_base: U32,state: Jobs) -> Leaf:
+  Jobs{tiles,weights,output} = state
+  Leaf{tiles,weights,output,weight_base}
 
 def leaf_selected(empty: Bool,+context: Phase,+chunk: Chunk,state: Leaf) -> Leaf:
   match empty:
     case True{}: state
     case False{}:
       Phase{Geometry{+c,o,h,w,k,s,p,gh,gw},y,x,+inner} = context
-      Leaf{tiles,weights,offsets,output,+weight_base,+offset_base} = state
-      leaf_finished((weight_base + (c + 7) / 8 * inner : U32),(offset_base + inner : U32),
-        leaf_jobs(context,chunk,weight_base,offset_base,Jobs{tiles,weights,offsets,output}))
+      Leaf{tiles,weights,output,+weight_base} = state
+      leaf_finished((weight_base + (c + 7) / 8 * inner : U32),leaf_jobs(context,chunk,weight_base,Jobs{tiles,weights,output}))
 
 def leaf_phase(index: U32,chunk: Chunk,state: Leaf) -> Leaf:
-  Chunk{LeafContext{Task{+geometry,layout},first,count,target,plane},row,rows,low,group} = chunk
+  Chunk{LeafContext{Task{+geometry,layout},first,count,target},row,rows,low,group} = chunk
   +selected = phase_of(geometry,index)
   leaf_selected(U32.is_eq(phase_inner(selected),0),selected,chunk,state)
 
-# The gradient a leaf read and the output it wrote.
+# The gradient a leaf read, the weights and the output it wrote.
 type Part is Type:
-  Part{gradient: Array<F32>,output: Storage.Buffer<F32>}
+  Part{gradient: Storage.Buffer<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>}
 
-# A leaf runs its chunks in turn with the source, the weights and the table.
+# A leaf runs its chunks in turn with the source and the weights.
 type Sweep is Type:
-  Sweep{source: Source,weights: Array<Tile.Tile8>,offsets: Array<U32>,output: Storage.Buffer<F32>}
+  Sweep{source: Source,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>}
 
-def chunk_leaf(+base: U32,+plane: U32,+first: U32,+rows: U32,data: Array<F32>,state: Leaf) -> Sweep:
-  Leaf{tiles,weights,offsets,output,weight_base,offset_base} = state
-  Sweep{Source{data,base,plane,first,rows},weights,offsets,output}
+def chunk_leaf(+base: U32,+first: U32,+rows: U32,data: Storage.Buffer<Tile.Tile8>,state: Leaf) -> Sweep:
+  Leaf{tiles,weights,output,weight_base} = state
+  Sweep{Source{data,base,first,rows},weights,output}
 
-def chunk_finished(+base: U32,+plane: U32,+first: U32,+rows: U32,pair: Array<F32> & Leaf) -> Sweep:
+def chunk_finished(+base: U32,+first: U32,+rows: U32,pair: Storage.Buffer<Tile.Tile8> & Leaf) -> Sweep:
   (data,state) = pair
-  chunk_leaf(base,plane,first,rows,data,state)
+  chunk_leaf(base,first,rows,data,state)
 
-def chunk_run(+chunk: Chunk,weights: Array<Tile.Tile8>,offsets: Array<U32>,output: Storage.Buffer<F32>,owners: Array<F32> & Array<Tile.Tile8>) -> Array<F32> & Leaf:
-  Chunk{LeafContext{Task{+geometry,layout},first,count,target,plane},row,rows,low,group} = chunk
+def chunk_run(+chunk: Chunk,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>,owners: Storage.Buffer<Tile.Tile8> & Storage.Buffer<Tile.Tile8>) -> Storage.Buffer<Tile.Tile8> & Leaf:
+  Chunk{LeafContext{Task{+geometry,layout},first,count,target},row,rows,low,group} = chunk
   (data,tiles) = owners
-  (data,Traversal.indexed_fold(~Leaf,~Chunk,~leaf_phase,window_jobs(geometry),0,chunk,Leaf{tiles,weights,offsets,output,0,0}))
+  (data,Traversal.indexed_fold(~Leaf,~Chunk,~leaf_phase,window_jobs(geometry),0,chunk,Leaf{tiles,weights,output,0}))
 
 # Chunk index: row chunk outer, group chunk inner.
 def chunk_step(index: U32,context: LeafContext,state: Sweep) -> Sweep:
-  LeafContext{Task{+geometry,+layout},+first,+count,target,plane} = context
-  Tiling{+groups,+shifts,+outputs,column_low,kernel,height,width,+chunk_groups,+chunk_rows} = layout
-  Sweep{Source{data,+base,+source_plane,+source_first,+source_rows},weights,offsets,output} = state
+  LeafContext{Task{+geometry,+layout},+first,+count,target} = context
+  Geometry{c,+o,h,w,k,s,p,gh,gw} = geometry
+  Tiling{+groups,+shifts,+outputs,+column_low,+kernel,height,+width,+chunk_groups,+chunk_rows} = layout
+  Sweep{Source{data,+base,+source_first,+source_rows},weights,output} = state
   +index = index
   +group_chunks = ((groups + chunk_groups - 1) / chunk_groups : U32)
   +row = (first + index / group_chunks * chunk_rows : U32)
@@ -411,40 +336,21 @@ def chunk_step(index: U32,context: LeafContext,state: Sweep) -> Sweep:
   +span = U32.min(chunk_groups,(groups - group : U32))
   +low = band_low(geometry,row,(row + rows : U32))
   +tile_rows = band_rows(geometry,row,rows)
-  chunk_finished(base,source_plane,source_first,source_rows,
-    chunk_run(Chunk{context,row,rows,low,group},weights,offsets,output,
-      Traversal.indexed_fold(~(Array<F32> & Array<Tile.Tile8>),~Filling,~fill_group,U32.to_nat((tile_rows * span : U32)),0,
-        Filling{layout,low,base,source_plane,source_first,source_rows,group,span},
-        (data,Allocation.array(~Tile.Tile8,Tensors.depth_for((tile_rows * chunk_groups * (outputs * shifts + 1) + 1 : U32)),Tile.filled(0.0))))))
+  chunk_finished(base,source_first,source_rows,
+    chunk_run(Chunk{context,row,rows,low,group},weights,output,
+      filled_tiles(Fill.Call{U32.to_nat((tile_rows * span : U32)),Fill.Filling{shifts,outputs,column_low,kernel,width,chunk_groups,low,base,Tiled.groups(o),source_first,source_rows,group,span}},
+        (data,Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),(tile_rows * chunk_groups * (outputs * shifts + 1) + 1 : U32))))))
 
 def swept(state: Sweep) -> Part:
-  Sweep{Source{data,base,plane,first,rows},weights,offsets,output} = state
-  Part{data,output}
+  Sweep{Source{data,base,first,rows},weights,output} = state
+  Part{data,weights,output}
 
 # Output rows [first, first + count) from a source holding the gradient rows they read.
-def leaf_band(+context: LeafContext,source: Source,weights: Array<Tile.Tile8>,offsets: Array<U32>,output: Storage.Buffer<F32>) -> Part:
-  LeafContext{Task{geometry,+layout},first,+count,target,plane} = context
+def leaf_band(+context: LeafContext,source: Source,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>) -> Part:
+  LeafContext{Task{+geometry,+layout},first,+count,target} = context
   Tiling{+groups,shifts,outputs,column_low,kernel,height,width,+chunk_groups,+chunk_rows} = layout
   swept(Traversal.indexed_fold(~Sweep,~LeafContext,~chunk_step,
-    U32.to_nat(((count + chunk_rows - 1) / chunk_rows * ((groups + chunk_groups - 1) / chunk_groups) : U32)),0,context,Sweep{source,weights,offsets,output}))
-
-# What one part owns: the gradient rows it reads, the weights and the table.
-type Owners is Type:
-  Owners{source: Source,weights: Array<Tile.Tile8>,offsets: Array<U32>}
-
-# A leaf writes output rows [first, first + count), stored [C][count][W].
-def leaf(task: Task,first: U32,count: U32,owners: Owners) -> Partition.Tree<&1,Part,Unit>:
-  Task{+geometry,+layout} = task
-  Geometry{+c,o,h,+w,k,s,p,gh,gw} = geometry
-  Owners{source,weights,offsets} = owners
-  +first = first
-  +count = count
-  Partition.Leaf{leaf_band(LeafContext{Task{geometry,layout},first,count,0,(count * w : U32)},
-    source,weights,offsets,Tensors.buffer(~F32,(0.0 + 0.0 : F32),(c * count * w : U32))),first,count,Unit{}}
-
-def copied_pair(+start: U32,+count: U32,+width: U32,+base: U32,+plane: U32,+first: U32,+rows: U32,owners: Array<F32> & Array<F32>) -> Source & Source:
-  (data,copy) = owners
-  (Source{copy,0,(count * width : U32),start,count},Source{data,base,plane,first,rows})
+    U32.to_nat(((count + chunk_rows - 1) / chunk_rows * ((groups + chunk_groups - 1) / chunk_groups) : U32)),0,context,Sweep{source,weights,output}))
 
 # The gradient rows [start, start + count) that output rows [first, first + rows) read.
 def copy_start(+geometry: Geometry,+first: U32,+rows: U32) -> U32:
@@ -452,231 +358,252 @@ def copy_start(+geometry: Geometry,+first: U32,+rows: U32) -> U32:
   +low = band_low(geometry,first,(first + rows : U32))
   Bool.pick(U32,U32.is_lt(k,low),(low - k : U32),0)
 
-def copy_count(+geometry: Geometry,+first: U32,+rows: U32) -> U32:
+def copy_stop(+geometry: Geometry,+first: U32,+rows: U32) -> U32:
   Geometry{c,o,h,w,+k,s,p,+gh,gw} = geometry
-  +start = copy_start(geometry,first,rows)
   +high = band_high(geometry,first,(first + rows : U32))
-  +stop = Bool.pick(U32,U32.is_lt(k,high),U32.min((high - k : U32),gh),0)
+  Bool.pick(U32,U32.is_lt(k,high),U32.min((high - k : U32),gh),0)
+
+def copy_count(+geometry: Geometry,+first: U32,+rows: U32) -> U32:
+  +start = copy_start(geometry,first,rows)
+  +stop = copy_stop(geometry,first,rows)
   Bool.pick(U32,U32.is_lt(start,stop),(stop - start : U32),0)
 
-# The left child, output rows [row, row + half), copies the gradient rows it
-# reads; the right child keeps the source of its parent.
-def split(task: Task,row: U32,half: U32,source: Source) -> Source & Source:
+# ---- Tasks over the pieces of the input gradient ----
+
+def row_cells(+geometry: Geometry) -> U32:
+  Geometry{+c,o,h,+w,k,s,p,gh,gw} = geometry
+  (w * Tiled.groups(c) : U32)
+
+def gradient_row_cells(+geometry: Geometry) -> U32:
+  Geometry{c,+o,h,w,k,s,p,gh,+gw} = geometry
+  (gw * Tiled.groups(o) : U32)
+
+def image_height(+geometry: Geometry) -> U32:
+  Geometry{c,o,+h,w,k,s,p,gh,gw} = geometry
+  U32.max(h,1)
+
+def gradient_height(+geometry: Geometry) -> U32:
+  Geometry{c,o,h,w,k,s,p,+gh,gw} = geometry
+  gh
+
+# A task between images: the gradient pieces it holds, the spare its bands
+# are assembled in, the weights and the output.
+type Rows is Type:
+  Rows{gradient: Move.Holding<Tile.Tile8>,spare: Move.Spare<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>}
+
+def rows_back(returned: Move.Holding<Tile.Tile8> & Move.Spare<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>) -> Rows:
+  (gradient,spare) = returned
+  Rows{gradient,spare,weights,output}
+
+def image_returned(lent: Move.Lent<Tile.Tile8>,part: Part) -> Rows:
+  Part{gradient,weights,output} = part
+  rows_back(Move.returned(~Tile.Tile8,lent,gradient),weights,output)
+
+def image_banded(+task: Task,+first: U32,+count: U32,+target: U32,banded: Move.Band<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>,output: Storage.Buffer<Tile.Tile8>) -> Rows:
   Task{+geometry,layout} = task
-  Geometry{c,+o,h,w,k,s,p,gh,+gw} = geometry
-  Source{data,+base,+plane,+first,+rows} = source
-  +row = row
-  +half = half
-  +start = copy_start(geometry,row,half)
-  +count = copy_count(geometry,row,half)
-  copied_pair(start,count,gw,base,plane,first,rows,
-    Window.copy_planes(U32.to_nat(o),0,(count * gw : U32),plane,(base + (start - first) * gw : U32),(count * gw : U32),
-      (data,Allocation.array(~F32,Tensors.depth_for((o * count * gw + 1 : U32)),0.0))))
+  Move.Band{lent,data,+base} = banded
+  image_returned(lent,leaf_band(LeafContext{task,first,count,target},Source{data,base,copy_start(geometry,first,count),copy_count(geometry,first,count)},weights,output))
 
-def divided(sources: Source & Source,weights: Array<Tile.Tile8> & Array<Tile.Tile8>,offsets: Array<U32> & Array<U32>) -> Bands.Division<Owners>:
-  (left_source,right_source) = sources
-  (left_weights,right_weights) = weights
-  (left_offsets,right_offsets) = offsets
-  Bands.Divided{Owners{left_source,left_weights,left_offsets},Owners{right_source,right_weights,right_offsets}}
+# Rows [first, first + count) of one image, written from cell target of the
+# output, from the gradient rows they read, lent from the pieces that hold
+# them.
+def image_rows(+task: Task,+image: U32,+first: U32,+count: U32,+target: U32,rows: Rows) -> Rows:
+  Task{+geometry,layout} = task
+  Rows{gradient,spare,weights,output} = rows
+  +size = gradient_row_cells(geometry)
+  image_banded(task,first,count,target,
+    Move.band(~Tile.Tile8,gradient,((image * gradient_height(geometry) + copy_start(geometry,first,count)) * size : U32),(copy_count(geometry,first,count) * size : U32),Tile.filled(0.0),spare),
+    weights,output)
 
-# The left half reads the rows of its plan; each half owns the weights and the table.
-def divide(task: Task,left: Bands.Plan,right: Bands.Plan,owners: Owners) -> Bands.Division<Owners>:
-  Owners{source,weights,offsets} = owners
-  +row = Bands.first(left)
-  divided(split(task,row,(Bands.first(right) - row : U32),source),Array.clone(Tile.Tile8,weights),Array.clone(U32,offsets))
+# Rows [row, end) of the batch, image by image, from cell target on.
+def batch_rows(fuel: Nat,+task: Task,+row: U32,+end: U32,+target: U32,rows: Rows) -> Rows:
+  match fuel:
+    case 0n: rows
+    case 1n+rest:
+      Task{+geometry,layout} = task
+      +height = image_height(geometry)
+      +image = (row / height : U32)
+      +count = (U32.min(end,((image + 1) * height : U32)) - row : U32)
+      batch_rows(rest,task,(row + count : U32),end,(target + count * row_cells(geometry) : U32),image_rows(task,image,(row % height : U32),count,target,rows))
 
-# A split always divides the owners; kept whole, they would compute the whole
-# plan as one part.
-def whole(task: Task,layout: Bands.Plan,owners: Owners) -> Partition.Tree<&1,Part,Unit>:
-  +layout = layout
-  leaf(task,Bands.first(layout),(Bands.last(layout) - Bands.first(layout) : U32),owners)
+def images_between(+geometry: Geometry,+row: U32,+end: U32) -> Nat:
+  +height = image_height(geometry)
+  U32.to_nat(Bool.pick(U32,U32.is_lt(row,end),((end - 1) / height - row / height + 1 : U32),0))
 
-# A leaf output [C][count][W] is the band of its rows of the output, counted
-# over the batch from start. Its gradient replaces the one carried so far, so
-# the gradient of the last leaf, the original, comes back.
-def placed(start: U32,first: U32,count: U32,part: Part,gradient: Array<F32>) -> Bands.Bands(~F32) & Array<F32>:
-  Part{data,local} = part
-  (Partition.Leaf{local,(start + first : U32),count,Unit{}},data)
+# The rows of the batch that hold the cells [first, first + count).
+def first_row(+geometry: Geometry,+first: U32) -> U32:
+  (first / U32.max(row_cells(geometry),1) : U32)
 
-# The split depth, priced with the shared cost configuration. A leaf builds
-# the tiling of the gradient rows it reads, runs its jobs and stores its
-# rows. A split copies the left band and clones the weights and the table.
-# A split image is one parallel region with two wake rounds, so the batch
-# does not change the choice.
-type Pricing is Data:
-  Pricing{geometry: Geometry,layout: Tiling,lanes: F32,clone: F32,config: Cost.Configuration}
+def end_row(+geometry: Geometry,+first: U32,+count: U32) -> U32:
+  +size = U32.max(row_cells(geometry),1)
+  ((first + count + size - 1) / size : U32)
 
-type Movement is Data:
-  Movement{work: F32,span: F32,leaves: U32}
+def Operands() -> Type:
+  Move.Holding<Tile.Tile8> & Storage.Buffer<Tile.Tile8>
 
-type Choice is Data:
-  Choice{depth: U32,time: F32}
+def rows_whole(rows: Rows) -> Storage.Buffer<Tile.Tile8> & Operands():
+  Rows{gradient,spare,weights,output} = rows
+  (output,(gradient,weights))
 
-# Lanes are computed in eight-wide groups of each phase row.
-def phase_lanes(context: Phase,total: F32) -> F32:
-  Phase{g,Axis{yf,+yc,yt,yr,ys},Axis{xf,+xc,xt,xr,xs},+inner} = context
-  (total + U32.to_f32(yc) * U32.to_f32(((xc + 7) / 8 * 8 : U32)) * U32.to_f32(inner) : F32)
+def rows_cut(+offset: U32,+count: U32,rows: Rows) -> Storage.Buffer<Tile.Tile8> & Operands():
+  Rows{gradient,spare,weights,output} = rows
+  (Pair.snd(Storage.Buffer<Tile.Tile8>,Storage.Buffer<Tile.Tile8>,
+    StorageCopy.view(~Tile.Tile8,True{},count,Views.View{[Views.Axis{count,1}],offset},0,output,Tensors.buffer(~Tile.Tile8,Tiled.zero_tile(),count))),(gradient,weights))
 
-def phase_cost(index: U32,geometry: Geometry,total: F32) -> F32:
-  phase_lanes(phase_of(geometry,index),total)
+def piece_kept(whole: Bool,+offset: U32,+count: U32,rows: Rows) -> Storage.Buffer<Tile.Tile8> & Operands():
+  match whole:
+    case True{}: rows_whole(rows)
+    case False{}: rows_cut(offset,count,rows)
 
-def leaf_ns(+context: Pricing,+first: U32,+count: U32) -> F32:
-  Pricing{+geometry,+layout,+lanes,clone,+config} = context
-  Geometry{+c,o,+h,+w,k,s,p,gh,gw} = geometry
-  Tiling{+groups,+shifts,+outputs,column_low,kernel,height,width,+chunk_groups,+chunk_rows} = layout
-  Cost.Configuration{+mac,+byte_ns,operation_ns,grain,wake} = config
-  # Each row chunk fills the tile rows its output rows read, halo included.
-  +rows = band_rows(geometry,first,U32.min(count,chunk_rows))
-  +row_chunks = ((count + chunk_rows - 1) / chunk_rows : U32)
-  +chunk = (rows * chunk_groups * (outputs * shifts + 1) : U32)
-  +chunks = U32.to_f32((row_chunks * ((groups + chunk_groups - 1) / chunk_groups) : U32))
-  ((U32.to_f32(row_chunks) * U32.to_f32(rows) * U32.to_f32(groups) * U32.to_f32((outputs * shifts + 1 : U32)) * 32.0 +
-    chunks * KernelPlanning.payload_float(Nat.mul(32n,KernelPlanning.capacity(chunk)))) * byte_ns +
-    U32.to_f32(((c + 3) / 4 * 4 : U32)) * lanes * U32.to_f32(count) / U32.to_f32(U32.max(h,1)) * mac +
-    U32.to_f32((c * count * w : U32)) * 4.0 * byte_ns : F32)
+# The cells of a piece with +0 in the lanes past the channels.
+def piece_padded(+geometry: Geometry,+first: U32,+count: U32,pair: Storage.Buffer<Tile.Tile8> & Operands()) -> Storage.Buffer<Tile.Tile8> & Operands():
+  Geometry{+c,o,h,w,k,s,p,gh,gw} = geometry
+  (output,operands) = pair
+  (TiledMap.padded(TiledMap.Padding{c,Tiled.groups(c),0,Grid.Innermost{}},first,count,output),operands)
 
-def fork_ns(+context: Pricing,+first: U32,+rows: U32) -> F32:
-  Pricing{+geometry,layout,lanes,+clone,+config} = context
-  Geometry{c,+o,h,w,k,s,p,gh,+gw} = geometry
-  Cost.Configuration{mac,+byte_ns,operation_ns,grain,wake} = config
-  (BandPlanning.transfer((o * copy_count(geometry,first,rows) * gw : U32),byte_ns) + clone : F32)
+# The cells [first, first + count) of the input gradient: the rows that hold
+# them, computed whole, and the cells cut from them when the piece holds part
+# of a row.
+def piece_cells(+task: Task,+first: U32,+count: U32,operands: Operands()) -> Storage.Buffer<Tile.Tile8> & Operands():
+  Task{+geometry,layout} = task
+  (window,weights) = operands
+  +row = first_row(geometry,first)
+  +end = end_row(geometry,first,count)
+  +size = row_cells(geometry)
+  piece_padded(geometry,first,count,piece_kept(U32.is_zero((first % U32.max(size,1) : U32)) && U32.is_zero((count % U32.max(size,1) : U32)),(first - row * size : U32),count,
+    batch_rows(images_between(geometry,row,end),task,row,end,0,
+      Rows{window,Move.spare(~Tile.Tile8,Tile.filled(0.0)),weights,Tensors.buffer(~Tile.Tile8,Tile.filled((0.0 + 0.0 : F32)),((end - row) * size : U32))})))
 
-def merged(+fork: F32,left: Movement,right: Movement) -> Movement:
-  Movement{left_work,+left_span,left_leaves} = left
-  Movement{right_work,+right_span,right_leaves} = right
-  Movement{(fork + left_work + right_work : F32),(fork + F32.max(left_span,right_span) : F32),(left_leaves + right_leaves : U32)}
+# The output gradient cells that the cells [first, first + count) read: from
+# the first row the first image reads to the last row the last image reads.
+# Rows of an image that read no gradient row start at the end of its rows
+# and stop at its first row.
+def reach(+task: Task,+first: U32,+count: U32) -> Tasks.Span:
+  Task{+geometry,layout} = task
+  +height = image_height(geometry)
+  +row = first_row(geometry,first)
+  +end = end_row(geometry,first,count)
+  +last = (end - 1 : U32)
+  +head = (U32.min(end,((row / height + 1) * height : U32)) - row : U32)
+  +tail_first = Bool.pick(U32,U32.is_eq((row / height : U32),(last / height : U32)),(row % height : U32),0)
+  +tail = (last % height + 1 - tail_first : U32)
+  +gradient_rows = gradient_height(geometry)
+  +size = gradient_row_cells(geometry)
+  +low = ((row / height * gradient_rows + U32.min(copy_start(geometry,(row % height : U32),head),gradient_rows)) * size : U32)
+  +high = ((last / height * gradient_rows + copy_stop(geometry,tail_first,tail)) * size : U32)
+  Tasks.Span{low,(U32.max(high,low) - low : U32)}
 
-def leaf_movement(context: Pricing,first: U32,count: U32) -> Movement:
-  +time = leaf_ns(context,first,count)
-  Movement{time,time,1}
+# What every task reads: the work and the grid of the input gradient.
+type Work is Data:
+  Work{task: Task,grid: Grid.Grid}
 
-def fork_movement(context: Pricing,left: Bands.Plan,right: Bands.Plan,first: Movement,second: Movement) -> Movement:
-  +row = Bands.first(left)
-  merged(fork_ns(context,row,(Bands.first(right) - row : U32)),first,second)
+# The pieces from piece on, remaining more after it. Each piece waits on the
+# left for the pieces after it, so the task calls no closure.
+def task_tree(remaining: Nat,+task: Task,+grid: Grid.Grid,+piece: U32,ready: Pieces.Walking<Storage.Buffer<Tile.Tile8>,Operands()>) ->
+  Pieces.Walked<Storage.Buffer<Tile.Tile8>,Operands()>:
+  match remaining:
+    case 0n:
+      Pieces.Walking{lefts,operands} = ready
+      +first = Grid.start(grid,piece)
+      +count = Grid.span(grid,piece)
+      Pieces.piece_walked(~Tile.Tile8,~Operands(),lefts,first,count,piece_cells(task,first,count,operands))
+    case 1n+rest:
+      Pieces.Walking{lefts,operands} = ready
+      +first = Grid.start(grid,piece)
+      +count = Grid.span(grid,piece)
+      Pieces.joined(~Storage.Buffer<Tile.Tile8>,~Operands(),task_tree(rest,task,grid,(piece + 1 : U32),
+        Pieces.pushed(~Storage.Buffer<Tile.Tile8>,~Operands(),Pieces.piece_walked(~Tile.Tile8,~Operands(),lefts,first,count,piece_cells(task,first,count,operands)))))
 
-# The plan the partition runs: the rows of one image halved depth times.
-def image_rows(depth: Nat,+context: Pricing) -> Bands.Plan:
-  Pricing{+geometry,layout,lanes,clone,config} = context
-  Geometry{c,o,+h,w,k,s,p,gh,gw} = geometry
-  Bands.row_plan(depth,U32.is_lt(1,h),0,h)
+def task_finished(+first: U32,+count: U32,walked: Pieces.Walked<Storage.Buffer<Tile.Tile8>,Operands()>) -> Partition.Tree<&1,Pieces.Pieces(~Tile.Tile8),Unit> & Storage.Buffer<Tile.Tile8>:
+  Pieces.Walked{pieces,lefts,operands} = walked
+  (window,weights) = operands
+  (Partition.Leaf{pieces,first,count,Unit{}},weights)
 
-def movement(depth: Nat,+context: Pricing) -> Movement:
-  Bands.plan_fold(~Movement,~Pricing,~leaf_movement,~fork_movement,image_rows(depth,context),context)
+# A task: its pieces from the gradient pieces it holds and its copy of the
+# weights.
+def task_leaf(work: Work,first: U32,count: U32,window: Move.Holding<Tile.Tile8>,weights: Storage.Buffer<Tile.Tile8>) ->
+  Partition.Tree<&1,Pieces.Pieces(~Tile.Tile8),Unit> & Storage.Buffer<Tile.Tile8>:
+  Work{+task,+grid} = work
+  +first = first
+  +count = count
+  +piece = Grid.piece_of(grid,first)
+  task_finished(first,count,
+    task_tree(Grid.later_pieces(grid,first,count),task,grid,piece,Pieces.Walking{Pieces.NoLefts{},(window,weights)}))
 
-def estimate(+depth: U32,+workers: U32,+wake: F32,cost: Movement) -> F32:
-  Movement{+work,+span,+leaves} = cost
-  Bool.pick(F32,U32.is_zero(depth),work,(Cost.region_ns(workers,leaves,span) + 2.0 * wake : F32))
+def reach_of(+task: Task,+first: U32,+count: U32) -> Tasks.Span:
+  reach(task,first,count)
 
-def movement_work(cost: Movement) -> F32:
-  Movement{work,span,leaves} = cost
-  work
+# Each task owns its copy of the packed weights.
+def share(weights: Storage.Buffer<Tile.Tile8>) -> Storage.Buffer<Tile.Tile8> & Storage.Buffer<Tile.Tile8>:
+  StorageClone.clone(~Tile.Tile8,weights)
 
-def chosen(allowed: Bool,+depth: U32,+time: F32,best: Choice) -> Choice:
-  Choice{old_depth,+old_time} = best
-  Bool.pick(Choice,allowed && F32.is_lt(time,old_time),Choice{depth,time},Choice{old_depth,old_time})
+def windowed_tasks(+work: Work,+gradient_grid: Grid.Grid,decision: Tasks.Decision,gradient: Pieces.Pieces(~Tile.Tile8),weights: Storage.Buffer<Tile.Tile8>) -> Pieces.Pieces(~Tile.Tile8):
+  Work{+task,+grid} = work
+  Tasks.Decision{+parallel,+tasks} = decision
+  Tensors.placed(~Tile.Tile8,Pieces.ranges_of_grid(grid),Tile.filled(0.0),
+    Pieces.grouped_with(~Move.Holding<Tile.Tile8>,~Pieces.Pieces(~Tile.Tile8),~Storage.Buffer<Tile.Tile8>,~Work,~share,~task_leaf,tasks,parallel,Work{task,grid},
+      Halo.windows(~Tile.Tile8,~Task,~reach_of,task,gradient_grid,Tile.filled(0.0),tasks,gradient),weights))
 
-def candidate(+depth: U32,+workers: U32,+context: Pricing,best: Choice) -> Choice:
-  Pricing{geometry,layout,lanes,clone,+config} = context
-  Cost.Configuration{mac,byte_ns,operation_ns,+grain,+wake} = config
-  +cost = movement(U32.to_nat(depth),context)
-  chosen(U32.is_zero(depth) || F32.is_le(grain,movement_work(cost)),depth,
-    estimate(depth,workers,wake,cost),best)
+def windowed_when(empty: Bool,+task: Task,+grid: Grid.Grid,+gradient_grid: Grid.Grid,decision: Tasks.Decision,gradient: Pieces.Pieces(~Tile.Tile8),weights: Storage.Buffer<Tile.Tile8>) ->
+  Pieces.Pieces(~Tile.Tile8):
+  match empty:
+    case True{}: Tensors.filled_grid(~Tile.Tile8,grid,Tile.filled(0.0))
+    case False{}: windowed_tasks(Work{task,grid},gradient_grid,decision,gradient,weights)
 
-# As the other planners: up to five leaves for each worker, at most one leaf a
-# row, one worker never splits.
-def depths(remaining: Nat,allowed: Bool,+depth: U32,+tasks: U32,+ceiling: U32,+workers: U32,+context: Pricing,best: Choice) -> Choice:
-  match remaining allowed:
-    case 0n allowed: best
-    case 1n+rest False{}: best
-    case 1n+rest True{}:
-      Pricing{+geometry,layout,lanes,clone,config} = context
-      Geometry{c,o,+h,w,k,s,p,gh,gw} = geometry
-      +next = (tasks * 2 : U32)
-      depths(rest,U32.is_le(next,ceiling) && U32.is_le(next,h),(depth + 1 : U32),next,ceiling,workers,context,candidate(depth,workers,context,best))
-
-# One worker, no split: the work of the whole image.
-def baseline(+context: Pricing) -> Choice:
-  Choice{0,movement_work(movement(0n,context))}
-
-def chosen_depth(best: Choice) -> Nat:
-  Choice{depth,time} = best
-  U32.to_nat(depth)
-
-def byte_cost(config: Cost.Configuration) -> F32:
-  Cost.Configuration{mac,byte_ns,operation_ns,grain,wake} = config
-  byte_ns
-
-def select(+geometry: Geometry,+layout: Tiling,+workers: U32,+weight_tiles: U32,+entries: U32) -> Nat:
-  Geometry{c,o,+h,w,k,s,p,gh,gw} = geometry
-  +config = DefaultCost.configuration()
-  +workers = U32.max(1,workers)
-  +context = {Pricing{geometry,layout,Traversal.indexed_fold(~F32,~Geometry,~phase_cost,window_jobs(geometry),0,geometry,0.0),
-    (KernelPlanning.payload_float(Nat.add(Nat.mul(32n,KernelPlanning.capacity(weight_tiles)),Nat.mul(4n,KernelPlanning.capacity(entries)))) * byte_cost(config) : F32),config} : Pricing}
-  chosen_depth(depths(32n,U32.is_lt(1,workers) && U32.is_le(2,h),1,2,(workers * 5 : U32),workers,context,baseline(context)))
-
-type Images is Data:
-  Images{geometry: Geometry,layout: Tiling,depth: Nat}
-
-type ImageState is Type:
-  ImageState{gradient: Array<F32>,weights: Array<Tile.Tile8>,offsets: Array<U32>}
-
-def image_bands(weights: Array<Tile.Tile8>,offsets: Array<U32>,result: Bands.Bands(~F32) & Array<F32>) -> ImageState & Bands.Bands(~F32):
-  (bands,gradient) = result
-  (ImageState{gradient,weights,offsets},bands)
-
-def image_offsets(+first: U32,+context: Images,gradient: Array<F32>,weights: Array<Tile.Tile8>,kept_weights: Array<Tile.Tile8>,pair: Array<U32> & Array<U32>) -> ImageState & Bands.Bands(~F32):
-  Images{+geometry,+layout,+depth} = context
-  Geometry{+c,+o,+h,+w,k,s,p,+gh,+gw} = geometry
-  (offsets,kept_offsets) = pair
-  image_bands(kept_weights,kept_offsets,Bands.walk(~Part,~Storage.Buffer<F32>,~Array<F32>,~U32,~placed,first,
-    Bands.each_part(~Owners,~Part,~Unit,~Task,~Unit,~Bands.always,~divide,~leaf,~whole,Bands.row_plan(depth,U32.is_lt(1,h),0,h),True{},Unit{},Task{geometry,layout},
-      Owners{Source{gradient,(first / h * o * gh * gw : U32),(gh * gw : U32),0,gh},weights,offsets}),
-    Array.new(F32,0n,0.0)))
-
-def image_weights(+first: U32,+context: Images,gradient: Array<F32>,offsets: Array<U32>,pair: Array<Tile.Tile8> & Array<Tile.Tile8>) -> ImageState & Bands.Bands(~F32):
-  (weights,kept_weights) = pair
-  image_offsets(first,context,gradient,weights,kept_weights,Array.clone(U32,offsets))
-
-# The image whose rows start at first runs its plan, a single leaf when the
-# depth is 0. Its leaves are its bands of the output.
-def image(context: Images,first: U32,rows: U32,state: ImageState) -> ImageState & Bands.Bands(~F32):
-  Images{+geometry,+layout,+depth} = context
-  ImageState{gradient,weights,offsets} = state
-  image_weights(first,Images{geometry,layout,depth},gradient,offsets,Array.clone(Tile.Tile8,weights))
+# An empty input gradient has no task.
+def windowed(+work: Work,+gradient_grid: Grid.Grid,decision: Tasks.Decision,gradient: Pieces.Pieces(~Tile.Tile8),weights: Storage.Buffer<Tile.Tile8>) -> Pieces.Pieces(~Tile.Tile8):
+  Work{+task,+grid} = work
+  windowed_when(U32.is_zero(Grid.count_of(grid)),task,grid,gradient_grid,decision,gradient,weights)
 
 type Outcome is Type:
-  Outcome{weights: Storage.Buffer<F32>,output: Bands.Bands(~F32)}
+  Outcome{weights: Storage.Buffer<Tile.Tile8>,output: Pieces.Pieces(~Tile.Tile8)}
 
-def finished(source: Storage.Buffer<F32>,result: ImageState & Bands.Bands(~F32)) -> Outcome:
-  (state,bands) = result
-  Outcome{source,bands}
+# One cell of the input gradient: a multiply-add row of its eight channels for
+# every output channel of every tap of its phase, its store, and its share of
+# the packed gradient tiles over its groups.
+def cell_inner(+geometry: Geometry) -> F32:
+  Geometry{c,+o,h,w,+k,+s,p,gh,gw} = geometry
+  +taps = taps(k,s)
+  U32.to_f32((o * taps * taps : U32))
 
-# The images in order, each one band of rows of the batch.
-def packed(+geometry: Geometry,+layout: Tiling,+batch: Nat,+depth: Nat,gradient: Array<F32>,state: Packed) -> Outcome:
-  Geometry{c,o,+h,w,k,s,p,gh,gw} = geometry
-  Packed{source,weights,offsets,weight_base,offset_base} = state
-  finished(source,Bands.build(~Storage.Buffer<F32>,~ImageState,~Images,~image,Bands.image_plan(batch,0,0n,h),Images{geometry,layout,depth},ImageState{gradient,weights,offsets}))
+def packed_share(+geometry: Geometry) -> F32:
+  Geometry{+c,o,h,w,k,s,p,gh,gw} = geometry
+  (cell_inner(geometry) / 8.0 / U32.to_f32(Tiled.groups(c)) : F32)
 
-def tiled(+geometry: Geometry,batch: Nat,+workers: U32,gradient: Array<F32>,weights: Storage.Buffer<F32>) -> Outcome:
-  +layout = tiling(geometry)
+def cell_rows(+geometry: Geometry) -> F32:
+  (cell_inner(geometry) + 1.0 + packed_share(geometry) * Pipeline.packed_tile_rows() : F32)
+
+def cell_steps(+geometry: Geometry) -> F32:
+  (4.0 + packed_share(geometry) * Pipeline.packed_tile_steps() : F32)
+
+# What a task beyond the first adds: its own weights, and a halo of the
+# gradient rows that two tasks of one image both read.
+def extra_of(+geometry: Geometry,+whole: U32,+weight_tiles: U32) -> Tasks.Extra:
+  Geometry{c,o,h,w,+k,+s,p,gh,gw} = geometry
+  +halo = Bool.pick(U32,U32.is_lt(1,whole) || U32.is_le(taps(k,s),1),0,((taps(k,s) - 1) * gradient_row_cells(geometry) : U32))
+  Tasks.Extra{(U32.to_f32(weight_tiles) * 32.0 : F32),(U32.to_f32(halo) * Cost.copy_ns(64.0,DefaultCost.configuration()) : F32),0.0}
+
+def packed_run(+geometry: Geometry,+grid: Grid.Grid,+gradient_grid: Grid.Grid,+whole: U32,+workers: U32,gradient: Pieces.Pieces(~Tile.Tile8),packed: Packed) -> Outcome:
+  Packed{source,weights,+weight_base} = packed
+  Outcome{source,windowed(Work{Task{geometry,tiling(geometry)},grid},gradient_grid,
+    Tasks.decide_whole(grid,workers,whole,cell_rows(geometry),cell_steps(geometry),extra_of(geometry,whole,weight_base)),gradient,weights)}
+
+def tiled(+geometry: Geometry,+grid: Grid.Grid,+gradient_grid: Grid.Grid,+whole: U32,+workers: U32,gradient: Pieces.Pieces(~Tile.Tile8),weights: Storage.Buffer<Tile.Tile8>) -> Outcome:
   +phases = window_jobs(geometry)
   +weight_tiles = Traversal.indexed_fold(~U32,~Geometry,~weight_total,phases,0,geometry,0)
-  +entries = Traversal.indexed_fold(~U32,~Geometry,~inner_total,phases,0,geometry,0)
-  packed(geometry,layout,batch,select(geometry,layout,workers,weight_tiles,entries),gradient,
-    Traversal.indexed_fold(~Packed,~PackContext,~pack_phase,phases,0,PackContext{geometry,layout},
-      Packed{weights,Allocation.array(~Tile.Tile8,Tensors.depth_for((weight_tiles + 1 : U32)),Tile.filled(0.0)),
-        Allocation.array(~U32,Tensors.depth_for((entries + 1 : U32)),0),0,0}))
+  packed_run(geometry,grid,gradient_grid,whole,workers,gradient,
+    Traversal.indexed_fold(~Packed,~Geometry,~pack_phase,phases,0,geometry,
+      Packed{weights,Tensors.buffer(~Tile.Tile8,Tile.filled(0.0),(weight_tiles + 1 : U32)),0}))
 
-def run_selected(empty: Bool,+geometry: Geometry,batch: Nat,+workers: U32,gradient: Storage.Buffer<F32>,weights: Storage.Buffer<F32>) -> Outcome:
+def run_selected(empty: Bool,+geometry: Geometry,+cells: List<&2,U32>,+gradient_grid: Grid.Grid,+whole: U32,+workers: U32,gradient: Pieces.Pieces(~Tile.Tile8),
+  weights: Storage.Buffer<Tile.Tile8>) -> Outcome:
   match empty:
-    case True{}: Outcome{weights,Partition.Leaf{Tensors.buffer(~F32,0.0,0),0,0,Unit{}}}
-    case False{}:
-      Storage.Buffer{data,length,certificate} = gradient
-      tiled(geometry,batch,workers,data,weights)
+    case True{}: Outcome{weights,Tensors.filled(~Tile.Tile8,cells,Tiled.zero_tile())}
+    case False{}: tiled(geometry,Tensors.grid_of(cells),gradient_grid,whole,workers,gradient,weights)
 
-# d [N][O][Ho][Wo] and weights [O][C][k][k] give the input gradient
-# [N][C][H][W] as bands of rows of the batch; count is N * C * H * W.
-def run(+geometry: Geometry,count: Nat,+workers: U32,gradient: Storage.Buffer<F32>,weights: Storage.Buffer<F32>) -> Outcome:
-  Geometry{+c,o,+h,+w,k,s,p,gh,gw} = geometry
-  +batch = Nat.div(count,U32.to_nat((c * h * w : U32)))
-  run_selected(Nat.is_eq(batch,0n),geometry,batch,workers,gradient,weights)
+# The output gradient cells [N][Ho][Wo][O / 8] on gradient_grid and the
+# weight cells [C / 8][O][k][k] give the input gradient cells of the cell
+# shape cells, [N][H][W][C / 8]. A task holds the cells of whole images in
+# runs of whole.
+def run(+geometry: Geometry,+cells: List<&2,U32>,+gradient_grid: Grid.Grid,+whole: U32,+workers: U32,gradient: Pieces.Pieces(~Tile.Tile8),weights: Storage.Buffer<Tile.Tile8>) -> Outcome:
+  run_selected(U32.is_zero(Grid.product(cells)),geometry,cells,gradient_grid,whole,workers,gradient,weights)

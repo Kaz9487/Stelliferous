@@ -15,14 +15,13 @@ import ./storage_readback.bend as StorageReadback
 import ./traversal_map_readback.bend as MapReadback
 import ./traversal_visit_refinement.bend as Visit
 import ./tensor_access_refinement.bend as AccessLaws
-import ./tensor_band_combine_leaf.bend as BandCombineLeaf
+import ./tensor_pieces_combine_leaf.bend as CombineLeaf
 import ../tensor_access.bend as Access
 import ./storage_buffer_model.bend as Buffer
 import ./tensor_copy_values.bend as CopyValues
 import ./tensor_cursor_refinement.bend as CursorLaws
 import ./tensor_visit_refinement.bend as TensorVisit
 import ./tensor_shape_refinement.bend as ShapeLaws
-import ./traversal_array_refinement.bend as ArrayLaws
 import ./nat_order.bend as Order
 import ./nat_division.bend as Division
 import ./nat_interval.bend as Interval
@@ -34,7 +33,7 @@ import ./word_encoding.bend as WordEncoding
 # Ordered in-place update whose right value is read through a cursor. A store
 # changes only its own address; later addresses still hold their left values.
 def visit_run(~Element: Data,~Cursor: Data,~sample: Tree.Tree<Element> -> Cursor -> Element,~next: Cursor -> Cursor,~operation: Element -> Element -> Element,count: Nat,position: U32,cursor: Cursor,right: Tree.Tree<Element>,left: Tree.Tree<Element>) -> Tree.Tree<Element>:
-  BandCombineLeaf.readback_output(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Cursor,
+  CombineLeaf.readback_output(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Cursor,
     Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,Cursor>,
       ~Visit.model_update_step(~Tree.Tree<Element>,~Element,~Cursor,~sample,~next,~operation),count,Traversal.State{right,left,position,cursor})))
 
@@ -143,16 +142,16 @@ def combined_value(~Element: Data,~operation: Element -> Element -> Element,fast
   ready: Buffer.ContentReady<Element,Buffer.Content{left,length}>,+capacity_ok: {U32.is_le(Tree.capacity(Element,left),2147483648) == True{} : Bool},
   +room: {Nat.is_le(count,U32.to_nat(Tree.capacity(Element,left))) == True{} : Bool},+inside: {Nat.is_lt(index,count) == True{} : Bool},
   +exact: {ShapeLaws.elements(Views.axis_extents_of(source)) == count : Nat}) ->
-  {Tree.read(Element,BandCombineLeaf.readback_output(~Element,AccessLaws.combine_model(~Element,~operation,fast,count,source,0,right,left)),U32.from_nat(index)) ==
+  {Tree.read(Element,CombineLeaf.readback_output(~Element,AccessLaws.combine_model(~Element,~operation,fast,count,source,0,right,left)),U32.from_nat(index)) ==
     operation(Tree.read(Element,left,U32.from_nat(index)),Tree.read(Element,right,CopyValues.address(source,index))) : Element}:
   match fast:
     case True{}:
       Buffer.ContentReady{+depth,+balanced,+depth_ok,content_room} = ready
       %Equal.sym(U32,CopyValues.address(source,index),U32.from_nat(index),CopyValues.zero_contiguous_address(source,index,classified,
         %Equal.sym(Nat,ShapeLaws.elements(Views.axis_extents_of(source)),count,exact) : {Nat.is_lt(index,_) == True{} : Bool} inside)) :
-        {Tree.read(Element,BandCombineLeaf.run(~Element,~operation,count,0,right,left),U32.from_nat(index)) ==
+        {Tree.read(Element,CombineLeaf.run(~Element,~operation,count,0,right,left),U32.from_nat(index)) ==
           operation(Tree.read(Element,left,U32.from_nat(index)),Tree.read(Element,right,_)) : Element}
-      BandCombineLeaf.inside(~Element,~operation,count,0n,index,right,left,depth,Tree.capacity(Element,left),{==},balanced,depth_ok,capacity_ok,room,inside)
+      CombineLeaf.inside(~Element,~operation,count,0n,index,right,left,depth,Tree.capacity(Element,left),{==},balanced,depth_ok,capacity_ok,room,inside)
     case False{}:
       Buffer.ContentReady{+depth,+balanced,+depth_ok,content_room} = ready
       %CopyValues.sample_address(~Element,source,right,index) :
@@ -164,12 +163,12 @@ def combined_value(~Element: Data,~operation: Element -> Element -> Element,fast
 # The combination keeps the depth, the balance and the room of its left operand.
 def combined_ready(~Element: Data,~operation: Element -> Element -> Element,fast: Bool,+count: Nat,+source: Views.View,+right: Tree.Tree<Element>,+left: Tree.Tree<Element>,+length: Nat,
   ready: Buffer.ContentReady<Element,Buffer.Content{left,length}>) ->
-  Buffer.ContentReady<Element,Buffer.Content{BandCombineLeaf.readback_output(~Element,AccessLaws.combine_model(~Element,~operation,fast,count,source,0,right,left)),length}>:
+  Buffer.ContentReady<Element,Buffer.Content{CombineLeaf.readback_output(~Element,AccessLaws.combine_model(~Element,~operation,fast,count,source,0,right,left)),length}>:
   match fast:
     case True{}:
       Buffer.ContentReady{+depth,balanced,depth_ok,room} = ready
-      Buffer.ContentReady{depth,BandCombineLeaf.balanced(~Element,~operation,count,0,right,left,depth,balanced),depth_ok,
-        %Equal.sym(U32,Tree.capacity(Element,BandCombineLeaf.run(~Element,~operation,count,0,right,left)),Tree.capacity(Element,left),BandCombineLeaf.capacity(~Element,~operation,count,0,right,left)) :
+      Buffer.ContentReady{depth,CombineLeaf.balanced(~Element,~operation,count,0,right,left,depth,balanced),depth_ok,
+        %Equal.sym(U32,Tree.capacity(Element,CombineLeaf.run(~Element,~operation,count,0,right,left)),Tree.capacity(Element,left),CombineLeaf.capacity(~Element,~operation,count,0,right,left)) :
           {Nat.is_le(length,U32.to_nat(_)) == True{} : Bool}
         room}
     case False{}:
@@ -179,28 +178,3 @@ def combined_ready(~Element: Data,~operation: Element -> Element -> Element,fast
           visit_capacity(~Element,~CursorLaws.Coordinates,~TensorVisit.sample(~Element),~CursorLaws.next,~operation,count,0,CursorLaws.initial(source),right,left)) : {Nat.is_le(length,U32.to_nat(_)) == True{} : Bool}
         room}
 
-# The right operand is only read: the model returns it unchanged.
-def visit_reader(~Element: Data,~Cursor: Data,~sample: Tree.Tree<Element> -> Cursor -> Element,~next: Cursor -> Cursor,~operation: Element -> Element -> Element,count: Nat,+position: U32,+cursor: Cursor,+right: Tree.Tree<Element>,+left: Tree.Tree<Element>) ->
-  {CopyValues.reader_tree(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Cursor,
-    Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,Cursor>,
-      ~Visit.model_update_step(~Tree.Tree<Element>,~Element,~Cursor,~sample,~next,~operation),count,Traversal.State{right,left,position,cursor}))) == right : Tree.Tree<Element>}:
-  match count:
-    case 0n: {==}
-    case 1n+rest:
-      visit_reader(~Element,~Cursor,~sample,~next,~operation,rest,(position + 1 : U32),next(cursor),right,Tree.write(Element,left,position,operation(Tree.read(Element,left,position),sample(right,cursor))))
-
-def fast_reader(~Element: Data,~operation: Element -> Element -> Element,count: Nat,+position: U32,+right: Tree.Tree<Element>,+left: Tree.Tree<Element>) ->
-  {CopyValues.reader_tree(~Element,AccessLaws.finish_model(~Tree.Tree<Element>,~Element,~Unit,
-    Loop.run(~Traversal.State<&2,&2,Tree.Tree<Element>,Tree.Tree<Element>,Unit>,
-      ~ArrayLaws.model_update_step(~Tree.Tree<Element>,~Element,~Element,~Unit,~AccessLaws.sample_index(~Element),~operation,~Traversal.index),
-      count,Traversal.State{right,left,position,Unit{}}))) == right : Tree.Tree<Element>}:
-  match count:
-    case 0n: {==}
-    case 1n+rest:
-      fast_reader(~Element,~operation,rest,(position + 1 : U32),right,Tree.write(Element,left,position,operation(Tree.read(Element,left,position),Tree.read(Element,right,position))))
-
-def combined_reader(~Element: Data,~operation: Element -> Element -> Element,fast: Bool,+count: Nat,+source: Views.View,+right: Tree.Tree<Element>,+left: Tree.Tree<Element>) ->
-  {CopyValues.reader_tree(~Element,AccessLaws.combine_model(~Element,~operation,fast,count,source,0,right,left)) == right : Tree.Tree<Element>}:
-  match fast:
-    case True{}: fast_reader(~Element,~operation,count,0,right,left)
-    case False{}: visit_reader(~Element,~CursorLaws.Coordinates,~TensorVisit.sample(~Element),~CursorLaws.next,~operation,count,0,CursorLaws.initial(source),right,left)

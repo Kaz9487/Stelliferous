@@ -9,7 +9,6 @@ import ../../lib/storage_buffer.bend as Storage
 import ../../lib/machine_limits.bend as Machine
 import ../../lib/proofs/machine_limit_bounds.bend as Limits
 import ../../lib/proofs/storage_refinement.bend as StorageLaws
-import ../../lib/proofs/storage_shape.bend as Shape
 import ../../lib/proofs/nat_to_u32_bounds.bend as Bounds
 import ../../lib/proofs/encoded_coordinates.bend as Encoded
 import ../../lib/proofs/word_arithmetic.bend as WordArithmetic
@@ -32,6 +31,7 @@ import ./input_storage.bend as Inputs
 import ./scalar_convolution_reads.bend as ConvolutionReads
 import ./execution_storage.bend as ExecutionStorage
 import ../../lib/proofs/nat_order.bend as Order
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 type Evaluation is Data:
   Evaluation{limits: Machine.Limits,problem: ConvSpec.Problem,inputs: Inputs.Contract<problem>,pixel: OutputCoordinates.OutputPixel<problem>,
@@ -70,8 +70,8 @@ def reduction_exact(+evaluation: Evaluation,+index: MatrixSpec.Reduction,bounds:
   {U32.to_nat(U32.from_nat(reduction_index(problem(evaluation),index))) == reduction_index(problem(evaluation),index) : Nat}:
   Evaluation{+limits,+problem,inputs,pixel,+valid,+supported} = evaluation
   MatrixSpec.KIndex{+channel,+row,+column} = index
-  Shape.Both{channel_inside,spatial} = bounds
-  Shape.Both{row_inside,column_inside} = spatial
+  KernelGemm.Both{channel_inside,spatial} = bounds
+  KernelGemm.Both{row_inside,column_inside} = spatial
   Bounds.roundtrip(reduction_index(problem,index),Machine.capacity(limits),Limits.capacity_fits(limits),
     Bounds.strict_le(reduction_index(problem,index),U32.to_nat(Machine.capacity(limits)),
       Bounds.nat_trans(reduction_index(problem,index),Coordinates.inner(problem),U32.to_nat(Machine.capacity(limits)),
@@ -102,8 +102,8 @@ def input_read_decoded(+evaluation: Evaluation,+index: MatrixSpec.Reduction,+bou
   ConvSpec.Shape{+channels,+outputs,+height,+width,+kernel,+stride,+padding} = shape
   OutputCoordinates.OutputPixel{+output_channel,+output_row,+output_column,output_inside,row_inside,column_inside} = pixel
   MatrixSpec.KIndex{+input_channel,+kernel_row,+kernel_column} = index
-  Shape.Both{+channel_inside,spatial} = bounds
-  Shape.Both{+kernel_row_inside,+kernel_column_inside} = spatial
+  KernelGemm.Both{+channel_inside,spatial} = bounds
+  KernelGemm.Both{+kernel_row_inside,+kernel_column_inside} = spatial
   Coordinates.DecodedReduction{channel_exact,row_exact,column_exact} = decoded
   +address = U32.from_nat(reduction_index(problem,index))
   %Equal.sym(U32,(address / (U32.from_nat(kernel) * U32.from_nat(kernel)) : U32),U32.from_nat(input_channel),channel_exact) :
@@ -128,8 +128,8 @@ def input_read_matches(+evaluation: Evaluation,+index: MatrixSpec.Reduction,+bou
     (Inputs.input_owner(problem(evaluation),input_contract(evaluation)),MatrixSpec.patch(problem(evaluation),matrix_pixel(evaluation),index)) : Array<F32> & F32}:
   Evaluation{+limits,+problem,inputs,pixel,+valid,+supported} = evaluation
   MatrixSpec.KIndex{+channel,+row,+column} = index
-  Shape.Both{channel_inside,spatial} = bounds
-  Shape.Both{+row_inside,+column_inside} = spatial
+  KernelGemm.Both{channel_inside,spatial} = bounds
+  KernelGemm.Both{+row_inside,+column_inside} = spatial
   input_read_decoded(evaluation,index,bounds,Coordinates.decode_reduction(limits,problem,U32.from_nat(reduction_index(problem,index)),channel,row,column,
     Guards.valid(problem,valid),Support.scalar(limits,problem,supported),reduction_exact(evaluation,index,bounds),row_inside,column_inside))
 
@@ -157,11 +157,11 @@ def weight_read_matches(+evaluation: Evaluation,+index: MatrixSpec.Reduction,+bo
   Evaluation{+limits,+problem,+inputs,+pixel,+valid,+supported} = evaluation
   ConvSpec.Problem{shape,+input,+weights,+bias} = problem
   ConvSpec.Shape{+channels,+outputs,+height,+width,+kernel,+stride,+padding} = shape
-  Inputs.Contract{input_evidence,+weight_evidence,bias_evidence} = inputs
+  Inputs.Contract{input_evidence,+weight_evidence,bias_evidence,parameters} = inputs
   OutputCoordinates.OutputPixel{+output_channel,output_row,output_column,+output_inside,row_inside,column_inside} = pixel
   MatrixSpec.KIndex{+input_channel,+kernel_row,+kernel_column} = index
-  Shape.Both{+channel_inside,spatial} = bounds
-  Shape.Both{+kernel_row_inside,+kernel_column_inside} = spatial
+  KernelGemm.Both{+channel_inside,spatial} = bounds
+  KernelGemm.Both{+kernel_row_inside,+kernel_column_inside} = spatial
   +facts = Guards.valid(problem,valid)
   +support = Support.scalar(limits,problem,supported)
   +inner = Coordinates.inner(problem)
@@ -193,7 +193,7 @@ def NativeSource() -> Data:
   ReductionLaws.SampleSource<F32,F32,ScalarConv.DirectContext>
 
 def ReindexedSource() -> Data:
-  Shape.Both<MatrixOrder.TapLayout,NativeSource()>
+  KernelGemm.Both<MatrixOrder.TapLayout,NativeSource()>
 
 def input_at() -> NativeSource() -> Unit -> ReductionLaws.AddressPair -> F32:
   ReductionLaws.input_element(~F32,~F32,~ScalarConv.DirectContext,~F32,~Unit,~ExecutionStorage.direct_input_value,~ExecutionStorage.scalar_at)
@@ -212,7 +212,7 @@ def native_source(evaluation: Evaluation) -> NativeSource():
   ReductionLaws.SampleSource{Inputs.input_tree(problem,inputs),Inputs.weight_tree(problem,inputs),context(problem,pixel)}
 
 def matrix_source(+evaluation: Evaluation) -> ReindexedSource():
-  Shape.Both{MatrixOrder.TapLayout{Guards.kernel(problem(evaluation)),0n,0n},native_source(evaluation)}
+  KernelGemm.Both{MatrixOrder.TapLayout{Guards.kernel(problem(evaluation)),0n,0n},native_source(evaluation)}
 
 def output_channel(+evaluation: Evaluation) -> Nat:
   OutputCoordinates.output_channel(problem(evaluation),output_pixel(evaluation))
@@ -221,7 +221,7 @@ def SampleBounds(+evaluation: Evaluation,+index: MatrixSpec.Reduction) -> Data:
   ReductionBounds.IndexBounds(problem(evaluation),index)
 
 def SampleAgreement(+evaluation: Evaluation,+index: MatrixSpec.Reduction) -> Data:
-  Shape.Both<
+  KernelGemm.Both<
     {matrix_input()(matrix_source(evaluation),Unit{},index) == MatrixSpec.patch(problem(evaluation),matrix_pixel(evaluation),index) : F32},
     {matrix_weight()(matrix_source(evaluation),Unit{},index) == MatrixSpec.weight(problem(evaluation),output_channel(evaluation),index) : F32}>
 
@@ -248,7 +248,7 @@ def weight_matches_matrix(+evaluation: Evaluation,+index: MatrixSpec.Reduction,b
     (Inputs.weight_owner(problem,inputs),MatrixSpec.weight(problem,output_channel(evaluation),index)),weight_read_matches(evaluation,index,bounds))
 
 def samples_match(+evaluation: Evaluation,+index: MatrixSpec.Reduction,+bounds: SampleBounds(evaluation,index)) -> SampleAgreement(evaluation,index):
-  Shape.Both{input_matches_patch(evaluation,index,bounds),weight_matches_matrix(evaluation,index,bounds)}
+  KernelGemm.Both{input_matches_patch(evaluation,index,bounds),weight_matches_matrix(evaluation,index,bounds)}
 
 def ordered_dot_matches_matrix(+evaluation: Evaluation,+indices: List<&2,MatrixSpec.Reduction>,+initial: F32,
   bounds: ReductionBounds.AllBounds(problem(evaluation),indices)) ->

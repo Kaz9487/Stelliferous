@@ -24,7 +24,7 @@ import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
 import ./nat_ceiling.bend as Ceiling
 import ./nat_division_order.bend as Division
-import ./storage_shape.bend as Shape
+import ../kernel_gemm.bend as KernelGemm
 
 type Problem is Data:
   Problem{query: Chunks.Query,point: Domain.Point,
@@ -52,7 +52,7 @@ def leaf_contained(problem: Problem) -> {Nat.is_le(Nat.add(U32.to_nat(Chunks.fir
   contained
 def axes(+problem: Problem) -> Point.Axes<Chunks.geometry(query(problem)),point(problem)>:
   Problem{+query,+point,+inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{call,e,count,range,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Point.axes(call,point,inside)
@@ -70,7 +70,7 @@ def x_inside_from(+problem: Problem,evidence: Point.Axes<Chunks.geometry(query(p
   fxl
 def phase(+problem: Problem) -> Jobs.Phase:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{call,e,count,range,rp,rr} = grid
   Jobs.Phase{call,e,phase_y(problem),phase_x(problem),y_inside_from(problem,axes(problem)),x_inside_from(problem,axes(problem))}
 def row_position(+problem: Problem) -> Nat:
@@ -83,11 +83,11 @@ def column_group(+problem: Problem) -> Nat:
   Nat.div(column_position(problem),8n)
 def located_query(+problem: Problem) -> Chunks.Query:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{grid,first,target,plane,source,row,group,wb,ob} = query
-  Chunks.Query{grid,first,target,plane,source,relative_row(problem),column_group(problem),wb,ob}
+  Chunks.Query{grid,first,target,source,row,group,wb} = query
+  Chunks.Query{grid,first,target,source,relative_row(problem),column_group(problem),wb}
 def located(+problem: Problem) -> Chunks.Selection:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -97,7 +97,7 @@ def relative_row_inside(+problem: Problem) -> {Nat.is_lt(relative_row(problem),U
   Order.sub_lt(Domain.row(point),U32.to_nat(Chunks.first(query)),U32.to_nat(GeometryChunks.grid_count(Chunks.grid(query))),lower,upper)
 def phase_matches(+problem: Problem) -> {Jobs.context(phase(problem)) == Point.phase(Chunks.geometry(query(problem)),point(problem)) : Kernel.Phase}:
   Problem{+query,+point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -107,7 +107,7 @@ def phase_matches(+problem: Problem) -> {Jobs.context(phase(problem)) == Point.p
 def row_axis_inside_from(+problem: Problem,evidence: Point.Axes<Chunks.geometry(query(problem)),point(problem)>) ->
   {Nat.is_lt(row_position(problem),U32.to_nat(PhaseGeometry.axis_count(Packing.phase_y(Point.phase(Chunks.geometry(query(problem)),point(problem)))))) == True{} : Bool}:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -116,7 +116,7 @@ def row_axis_inside_from(+problem: Problem,evidence: Point.Axes<Chunks.geometry(
 def column_axis_inside_from(+problem: Problem,evidence: Point.Axes<Chunks.geometry(query(problem)),point(problem)>) ->
   {Nat.is_lt(column_position(problem),U32.to_nat(PhaseGeometry.axis_count(Packing.phase_x(Point.phase(Chunks.geometry(query(problem)),point(problem)))))) == True{} : Bool}:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -130,7 +130,7 @@ def column_axis_inside(+problem: Problem) -> {Nat.is_lt(column_position(problem)
   column_axis_inside_from(problem,axes(problem))
 def chunk_inside(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) -> Partition.Inside<GeometryChunks.query(Chunks.grid(query(problem)),relative_row(problem),column_group(problem))>:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -139,7 +139,7 @@ def chunk_inside(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.
   GeometryChunks.phase_inside(grid,phase_x(problem),x_inside_from(problem,axes(problem)),Jobs.column_active(selected_phase,active),relative_row(problem),relative_row_inside(problem),column_position(problem),column_axis_inside(problem))
 def stride_positive(+problem: Problem) -> {Nat.is_lt(0n,Domain.stride(Chunks.geometry(query(problem)))) == True{} : Bool}:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{call,e,count,range,rp,rr} = grid
   Domain.Call{g,b,l,facts} = call
   Domain.stride_positive(call)
@@ -165,7 +165,7 @@ def chunk_rows_positive(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inne
 def row_decomposition(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) ->
   {Nat.add(U32.to_nat(GeometryChunks.selected_start(Chunks.grid(query(problem)),Chunks.first(query(problem)),relative_row(problem),column_group(problem))),Nat.mod(relative_row(problem),Partition.chunk_rows(GeometryChunks.query(Chunks.grid(query(problem)),relative_row(problem),column_group(problem))))) == Domain.row(point(problem)) : Nat}:
   Problem{+query,+point,inside,+lower,upper,+contained} = problem
-  Chunks.Query{+grid,+first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,+first,target,source,row,group,wb} = query
   +relative = relative_row(problem)
   +group_index = column_group(problem)
   +pure_query = GeometryChunks.query(grid,relative,group_index)
@@ -199,14 +199,14 @@ def work(+problem: Problem) -> Jobs.Work:
 def contained(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) ->
   {Nat.is_le(Nat.add(U32.to_nat(Jobs.chunk_row(Jobs.chunk(work(problem)))),U32.to_nat(Jobs.chunk_rows(Jobs.chunk(work(problem))))),Domain.height(Jobs.geometry(Jobs.phase(work(problem))))) == True{} : Bool}:
   Problem{+query,point,inside,lower,upper,+contained} = problem
-  Chunks.Query{+grid,+first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,+first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
   GeometryChunks.selected_band_contains(grid,first,relative_row(problem),column_group(problem),chunk_inside(problem,enabled),contained)
 def word_stride_positive(+problem: Problem) -> {Nat.is_lt(0n,U32.to_nat(Domain.stride_word(Chunks.geometry(query(problem))))) == True{} : Bool}:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -214,7 +214,7 @@ def word_stride_positive(+problem: Problem) -> {Nat.is_lt(0n,U32.to_nat(Domain.s
 def band_pixel(+problem: Problem,+positive: {Nat.is_lt(0n,U32.to_nat(Domain.stride_word(Chunks.geometry(query(problem))))) == True{} : Bool}) ->
   {Bands.position(Samples.model(Jobs.row_axis(Jobs.phase(work(problem))),Domain.stride_word(Chunks.geometry(query(problem))),Jobs.chunk_row(Jobs.chunk(work(problem))),(Jobs.chunk_row(Jobs.chunk(work(problem))) + Jobs.chunk_rows(Jobs.chunk(work(problem))) : U32),positive),row_position(problem)) == Domain.row(point(problem)) : Nat}:
   Problem{+query,+point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,+h,w,+k,+s,+p,gh,gw} = g
@@ -222,9 +222,9 @@ def band_pixel(+problem: Problem,+positive: {Nat.is_lt(0n,U32.to_nat(Domain.stri
   %Equal.sym(U32,U32.from_nat(phase_y(problem)),first_word,Arithmetic.native_roundtrip(first_word)) : {Nat.add(U32.to_nat(_),Nat.mul(row_position(problem),U32.to_nat(s))) == Domain.row(point) : Nat}
   row_pixel_from(problem,axes(problem))
 def row_indices(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(Jobs.start(work(problem))),row_position(problem)) == True{} : Bool},{Nat.is_lt(row_position(problem),U32.to_nat(Jobs.end(work(problem)))) == True{} : Bool}>:
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(Jobs.start(work(problem))),row_position(problem)) == True{} : Bool},{Nat.is_lt(row_position(problem),U32.to_nat(Jobs.end(work(problem)))) == True{} : Bool}>:
   Problem{+query,location,inside,lower,upper,leaf_contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,+b,+l,facts} = call
   Kernel.Geometry{c,o,h,w,k,+s,p,gh,gw} = g
@@ -245,9 +245,9 @@ def row_indices(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.c
 def line(+problem: Problem) -> Nat:
   Nat.sub(row_position(problem),U32.to_nat(Jobs.start(work(problem))))
 def line_inside_from(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool},
-  bounds: Shape.Both<{Nat.is_le(U32.to_nat(Jobs.start(work(problem))),row_position(problem)) == True{} : Bool},{Nat.is_lt(row_position(problem),U32.to_nat(Jobs.end(work(problem)))) == True{} : Bool}>) ->
+  bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(Jobs.start(work(problem))),row_position(problem)) == True{} : Bool},{Nat.is_lt(row_position(problem),U32.to_nat(Jobs.end(work(problem)))) == True{} : Bool}>) ->
   {Nat.is_lt(line(problem),U32.to_nat(Jobs.lines(work(problem)))) == True{} : Bool}:
-  Shape.Both{+lo,+hi} = bounds
+  KernelGemm.Both{+lo,+hi} = bounds
   +first = Jobs.start(work(problem))
   +last = Jobs.end(work(problem))
   +position = row_position(problem)
@@ -266,7 +266,7 @@ def group(+problem: Problem) -> Nat:
 def group_offset_exact(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) ->
   {U32.to_nat(Jobs.chunk_group(Jobs.chunk(work(problem)))) == GeometryChunks.group_offset_natural(Chunks.grid(query(problem)),relative_row(problem),column_group(problem)) : Nat}:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -293,7 +293,7 @@ def group_local_exact(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(
   Order.subtract_shift(offset,local)
 def phase_group_inside(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) -> {Nat.is_lt(column_group(problem),U32.to_nat(Jobs.native_groups(Jobs.phase(work(problem))))) == True{} : Bool}:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -304,7 +304,7 @@ def phase_group_inside(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner
   Partition.chunks_inside(column_position(problem),count,8n,{==},column_axis_inside(problem))
 def group_inside(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) -> {Nat.is_lt(group(problem),U32.to_nat(Jobs.groups(work(problem)))) == True{} : Bool}:
   Problem{+q0,location,inside,lower,upper,leaf_contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group_index,wb,ob} = q0
+  Chunks.Query{+grid,first,target,source,row,group_index,wb} = q0
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -314,25 +314,21 @@ def group_inside(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.
     %Equal.sym(Nat,group(problem),Nat.mod(column_group(problem),Partition.chunk_groups(GeometryChunks.query(Chunks.grid(query(problem)),relative_row(problem),column_group(problem)))),group_local_exact(problem,enabled)) : {Nat.is_lt(_,U32.to_nat(width)) == True{} : Bool}
     Division.remainder_small(column_group(problem),U32.to_nat(width),chunk_groups_positive(problem,enabled)))
 def unit(+problem: Problem) -> Nat:
-  Nat.div(Domain.channel(point(problem)),4n)
-def row_in_unit(+problem: Problem) -> Nat:
-  Nat.mod(Domain.channel(point(problem)),4n)
-def lane(+problem: Problem) -> Nat:
+  Nat.div(Domain.channel(point(problem)),8n)
+def group_row(+problem: Problem) -> Nat:
   Nat.mod(column_position(problem),8n)
 def unit_inside(+problem: Problem) -> {Nat.is_lt(unit(problem),U32.to_nat(Jobs.native_units(work(problem)))) == True{} : Bool}:
   Problem{+query,+point,+inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,+e,count,range,rp,rr} = grid
   Domain.Call{+g,+b,+l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
   Domain.Inside{ii,+ci,ri,xi} = inside
-  %Equal.sym(Nat,U32.to_nat(Jobs.units(g)),Ceiling.ceiling(Domain.channels(g),4n),Jobs.units_exact(call,e)) : {Nat.is_lt(unit(problem),_) == True{} : Bool}
-  Partition.chunks_inside(Domain.channel(point),Domain.channels(g),4n,{==},ci)
+  %Equal.sym(Nat,U32.to_nat(Jobs.units(g)),Ceiling.ceiling(Domain.channels(g),8n),Jobs.units_exact(call,e)) : {Nat.is_lt(unit(problem),_) == True{} : Bool}
+  Partition.chunks_inside(Domain.channel(point),Domain.channels(g),8n,{==},ci)
 def job_inside(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context(phase(problem))),0) == False{} : Bool}) -> Jobs.Inside<work(problem),line(problem),group(problem),unit(problem)>:
   Jobs.Inside{line_inside(problem,enabled),group_inside(problem,enabled),unit_inside(problem)}
-def row_small(+problem: Problem) -> {Nat.is_lt(row_in_unit(problem),4n) == True{} : Bool}:
-  Division.remainder_small(Domain.channel(point(problem)),4n,{==})
-def lane_small(+problem: Problem) -> {Nat.is_lt(lane(problem),8n) == True{} : Bool}:
+def group_row_small(+problem: Problem) -> {Nat.is_lt(group_row(problem),8n) == True{} : Bool}:
   Division.remainder_small(column_position(problem),8n,{==})
 def reduction(+problem: Problem) -> Chunks.Reduction:
   +coordinates = Indices.values(phase(problem),0n)
@@ -341,7 +337,7 @@ def valid_from(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.co
   +fits: {Kernel.fits(Chunks.geometry(query(problem)),Machine.capacity(GeometryChunks.grid_limits(Chunks.grid(query(problem))))) == True{} : Bool},
   coordinates: GridCoordinates.Bounded<Domain.outputs(Jobs.geometry(phase(problem))),Indices.rows(phase(problem)),Indices.columns(phase(problem)),Indices.values(phase(problem),0n)>) -> Chunks.Valid<reduction(problem)>:
   Problem{+query,point,inside,lower,upper,+leaf_contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
@@ -351,8 +347,8 @@ def valid(+problem: Problem,+enabled: {U32.is_eq(Kernel.phase_inner(Jobs.context
   +fits: {Kernel.fits(Chunks.geometry(query(problem)),Machine.capacity(GeometryChunks.grid_limits(Chunks.grid(query(problem))))) == True{} : Bool}) -> Chunks.Valid<reduction(problem)>:
   valid_from(problem,enabled,fits,Indices.bounded(phase(problem),enabled,0n,PhaseBounds.phase_inner_positive(Jobs.context(phase(problem)),enabled)))
 
-# The phase fold supplies packing cursors without changing the located producer.
-def with_bases(problem: Problem,weight_base: U32,offset_base: U32) -> Problem:
+# The phase fold supplies the packing base without changing the located producer.
+def with_base(problem: Problem,weight_base: U32) -> Problem:
   Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{grid,first,target,plane,source,row,group,wb,ob} = query
-  Problem{Chunks.Query{grid,first,target,plane,source,row,group,weight_base,offset_base},point,inside,lower,upper,contained}
+  Chunks.Query{grid,first,target,source,row,group,wb} = query
+  Problem{Chunks.Query{grid,first,target,source,row,group,weight_base},point,inside,lower,upper,contained}

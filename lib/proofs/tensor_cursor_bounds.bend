@@ -7,19 +7,19 @@ import ./tensor_view_bounds.bend as ViewBounds
 import ./nat_order.bend as Order
 import ./natural_addition.bend as Addition
 import ./row_major_index.bend as RowMajor
-import ./storage_shape.bend as Shape
 import ./u32_full_range.bend as FullRange
 import ./nat_to_u32_bounds.bend as Bounds
 import ../tensor_shape.bend as Shapes
 import ./tensor_shape_refinement.bend as ShapeLaws
 import ./encoded_coordinates.bend as Encoding
+import ../kernel_gemm.bend as KernelGemm
 
 def address_bounded(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,valid: CursorLaws.Valid(axes)) ->
   {Nat.is_le(CursorModel.address(axes,offset),Nat.add(CursorModel.span(axes),offset)) == True{} : Bool}:
   match axes:
     case []: Order.reflexive(offset)
     case CursorModel.Coordinate{+extent,+coordinate,+stride} <> +tail:
-      Shape.Both{inside,tail_valid} = valid
+      KernelGemm.Both{inside,tail_valid} = valid
       %Equal.sym(Nat,Nat.add(Nat.add(Nat.mul(Nat.sub(extent,1n),stride),CursorModel.span(tail)),offset),
         Nat.add(Nat.mul(Nat.sub(extent,1n),stride),Nat.add(CursorModel.span(tail),offset)),Addition.associative(Nat.mul(Nat.sub(extent,1n),stride),CursorModel.span(tail),offset)) :
         {Nat.is_le(CursorModel.address(CursorModel.Coordinate{extent,coordinate,stride} <> tail,offset),_) == True{} : Bool}
@@ -100,53 +100,3 @@ def read_inside(+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,+length: U32
     FullRange.roundtrip(CursorModel.address(axes,offset),length,Bounds.strict_le(CursorModel.address(axes,offset),U32.to_nat(length),inside))) :
     {Nat.is_lt(_,U32.to_nat(length)) == True{} : Bool}
   inside
-
-law ReadSchedule:
-  for count: Nat
-  for axes: List<&2,CursorModel.Coordinate>
-  for offset: Nat
-  for length: U32
-  Data
-
-def ReadSchedule(count,axes,offset,length):
-  match count:
-    case 0n: Unit
-    case 1n+remaining:
-      Shape.Both<{Nat.is_lt(U32.to_nat(U32.from_nat(CursorModel.address(axes,offset))),U32.to_nat(length)) == True{} : Bool},
-        ReadSchedule(remaining,CursorModel.advance(axes),offset,length)>
-
-def read_schedule(count: Nat,+axes: List<&2,CursorModel.Coordinate>,+offset: Nat,+length: U32,+valid: CursorLaws.Valid(axes),
-  +bound: {Nat.is_lt(Nat.add(CursorModel.span(axes),offset),U32.to_nat(length)) == True{} : Bool}) -> ReadSchedule(count,axes,offset,length):
-  match count:
-    case 0n: Unit{}
-    case 1n+remaining:
-      Shape.Both{read_inside(axes,offset,length,valid,bound),read_schedule(remaining,CursorModel.advance(axes),offset,length,CursorLaws.advance_valid(axes,valid),{
-        %Equal.sym(Nat,CursorModel.span(CursorModel.advance(axes)),CursorModel.span(axes),advance_span(axes)) : {Nat.is_lt(Nat.add(_,offset),U32.to_nat(length)) == True{} : Bool}
-        bound : {Nat.is_lt(Nat.add(CursorModel.span(CursorModel.advance(axes)),offset),U32.to_nat(length)) == True{} : Bool}})}
-
-def checked_read_schedule(count: Nat,+axes: List<&2,Views.Axis>,+offset: U32,+length: U32,
-  fits: {Views.fits_nonempty(False{},Views.View{axes,offset},length) == True{} : Bool}) ->
-  ReadSchedule(count,CursorModel.prepare_axes(axes,[]),U32.to_nat(offset),length):
-  read_schedule(count,CursorModel.prepare_axes(axes,[]),U32.to_nat(offset),length,CursorLaws.prepared_valid(axes,[],Unit{}),fits_bound(axes,offset,length,fits))
-
-def selected_reads(+empty: Bool,+axes: List<&2,Views.Axis>,+offset: U32,+count: U32,+length: U32,
-  +classified: {Shapes.has_zero(Views.axis_extents(axes)) == empty : Bool},
-  counted: {Views.numel(Views.View{axes,offset}) == Some{count} : Maybe<&2,U32>},
-  fits: {Views.fits(Views.View{axes,offset},length) == True{} : Bool}) ->
-  ReadSchedule(U32.to_nat(count),CursorModel.prepare_axes(axes,[]),U32.to_nat(offset),length):
-  match empty:
-    case True{}:
-      %Equal.sym(Nat,U32.to_nat(count),0n,ShapeLaws.count_zero(count,{
-        %classified : {Shapes.count_nonempty(_,Views.axis_extents(axes)) == Some{count} : Maybe<&2,U32>}
-        counted : {Some{0} == Some{count} : Maybe<&2,U32>}})) : ReadSchedule(_,CursorModel.prepare_axes(axes,[]),U32.to_nat(offset),length)
-      Unit{}
-    case False{}:
-      checked_read_schedule(U32.to_nat(count),axes,offset,length,{
-        %classified : {Views.fits_nonempty(_,Views.View{axes,offset},length) == True{} : Bool}
-        fits : {Views.fits_nonempty(False{},Views.View{axes,offset},length) == True{} : Bool}})
-
-def checked_reads(+axes: List<&2,Views.Axis>,+offset: U32,+count: U32,+length: U32,
-  counted: {Views.numel(Views.View{axes,offset}) == Some{count} : Maybe<&2,U32>},
-  fits: {Views.fits(Views.View{axes,offset},length) == True{} : Bool}) ->
-  ReadSchedule(U32.to_nat(count),CursorModel.prepare_axes(axes,[]),U32.to_nat(offset),length):
-  selected_reads(Shapes.has_zero(Views.axis_extents(axes)),axes,offset,count,length,{==},counted,fits)

@@ -285,6 +285,10 @@ def commutative(+a: Nat,+b: Nat) -> {Nat.add(a,b) == Nat.add(b,a) : Nat}:
       %commutative(p,b) : {1n+Nat.add(p,b) == 1n+_ : Nat}
       {==}
 
+def right_le(+a: Nat,+b: Nat) -> {Nat.is_le(b,Nat.add(a,b)) == True{} : Bool}:
+  %commutative(b,a) : {Nat.is_le(b,_) == True{} : Bool}
+  le_add(b,a)
+
 def le_lt_trans(+a: Nat,+b: Nat,+c: Nat,ab: {Nat.is_le(a,b) == True{} : Bool},bc: {Nat.is_lt(b,c) == True{} : Bool}) -> {Nat.is_lt(a,
     c) == True{} : Bool}:
   match a b c:
@@ -456,8 +460,6 @@ def lt_offset(+offset: Nat,+left: Nat,+right: Nat) -> {Nat.is_lt(Nat.add(offset,
     case 0n: {==}
     case 1n+ +rest: lt_offset(rest,left,right)
 
-# A mapped interval remains image-local, including a zero interval at the
-# next image boundary. This lemma separates row geometry from stored values.
 def subtract_below(+value: Nat,+amount: Nat,inside: {Nat.is_le(value,amount) == True{} : Bool}) -> {Nat.sub(value,amount) == 0n : Nat}:
   match value amount:
     case 0n amount: zero_subtract(amount)
@@ -523,3 +525,36 @@ def difference_positive(+begin: Nat,+finish: Nat,positive: {Nat.is_lt(0n,Nat.sub
     case 0n 1n+finish: {==}
     case 1n+begin 0n: Empty.absurd({False{} == True{} : Bool},WordEncoding.false_true(positive))
     case 1n+ +begin 1n+ +finish: difference_positive(begin,finish,positive)
+
+# A word within a bound stays within a larger one.
+def word_le(+a: U32,+b: U32,+c: U32,ab: {U32.is_le(a,b) == True{} : Bool},bc: {U32.is_le(b,c) == True{} : Bool}) -> {U32.is_le(a,c) == True{} : Bool}:
+  %Equal.sym(Bool,U32.is_le(a,c),Nat.is_le(U32.to_nat(a),U32.to_nat(c)),Comparison.le(a,c)) : {_ == True{} : Bool}
+  transitive(U32.to_nat(a),U32.to_nat(b),U32.to_nat(c),Bounds.as_nat_le(a,b,ab),Bounds.as_nat_le(b,c,bc))
+
+def succ_le_lt(+a: Nat,+b: Nat,+h: {Nat.is_le(1n+a,b) == True{} : Bool}) -> {Nat.is_lt(a,b) == True{} : Bool}:
+  match a b:
+    case 0n 0n:
+      Empty.absurd({Nat.is_lt(0n,0n) == True{} : Bool},WordEncoding.false_true(h))
+    case 0n 1n+b:
+      {==}
+    case 1n+a 0n:
+      Empty.absurd({Nat.is_lt(1n+a,0n) == True{} : Bool},WordEncoding.false_true(h))
+    case 1n+ +a 1n+ +b:
+      succ_le_lt(a,b,h)
+
+def lt_le(+a: Nat,+b: Nat,+c: Nat,+ab: {Nat.is_lt(a,b) == True{} : Bool},+bc: {Nat.is_le(b,c) == True{} : Bool}) -> {Nat.is_lt(a,c) == True{} : Bool}:
+  succ_le_lt(a,c,transitive(1n+a,b,c,strict_follow(a,b,ab),bc))
+
+# Subtracting a larger amount leaves no more.
+def sub_antitone(+a: Nat,+b: Nat,+c: Nat,+ordered: {Nat.is_le(b,c) == True{} : Bool}) -> {Nat.is_le(Nat.sub(a,c),Nat.sub(a,b)) == True{} : Bool}:
+  match a b c:
+    case 0n +b +c:
+      {==}
+    case 1n+ +a 0n 0n:
+      reflexive(1n+a)
+    case 1n+ +a 0n 1n+ +c:
+      transitive(Nat.sub(a,c),a,1n+a,sub_le(a,c),successor(a,a,reflexive(a)))
+    case 1n+ +a 1n+ +b 0n:
+      Empty.absurd({Nat.is_le(Nat.sub(1n+a,0n),Nat.sub(1n+a,1n+b)) == True{} : Bool},WordEncoding.false_true(ordered))
+    case 1n+ +a 1n+ +b 1n+ +c:
+      sub_antitone(a,b,c,ordered)

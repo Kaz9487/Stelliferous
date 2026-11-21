@@ -1,5 +1,6 @@
 # A residue with no congruent kernel position has the exact positive-zero specification.
 import Base
+import ../../lib/kernel_tile.bend as Tile
 import ../../lib/kernel_input_gradient.bend as Kernel
 import ../../lib/proofs/input_gradient_tiled_producer.bend as Producer
 import ../../lib/proofs/input_gradient_tiled_chunk_reads.bend as Chunks
@@ -10,35 +11,35 @@ import ../../lib/proofs/input_gradient_phase_point.bend as Point
 import ../../lib/proofs/input_gradient_phase_bounds.bend as PhaseBounds
 import ../../lib/proofs/bounded_u32_arithmetic.bend as Arithmetic
 import ../../lib/proofs/storage_buffer_model.bend as Buffer
-import ./input_gradient_sources.bend as Sources
+import ./input_gradient_cell_sources.bend as Sources
 import ./input_gradient_order.bend as Order
 import ../input_gradient_specification.bend as Specification
 
-def flat(+problem: Producer.Problem,+image: U32,gradient: Buffer.Model<F32>,weights: Buffer.Model<F32>) -> Order.Flat:
+def flat(+problem: Producer.Problem,+image: U32,gradient: Buffer.Model<Tile.Tile8>,weights: Buffer.Model<Tile.Tile8>) -> Order.Flat:
   +point = Producer.point(problem)
-  Order.Flat{Sources.problem(Chunks.geometry(Producer.query(problem)),Sources.models_reader(gradient,weights),U32.to_nat(image)),Domain.channel(point),Domain.row(point),Domain.column(point)}
-def native_flat(+problem: Producer.Problem,+image: U32,gradient: Buffer.Model<F32>,weights: Buffer.Model<F32>) -> Order.Flat:
+  Order.Flat{Sources.problem(Chunks.geometry(Producer.query(problem)),Sources.models_reader(Chunks.geometry(Producer.query(problem)),gradient,weights),U32.to_nat(image)),Domain.channel(point),Domain.row(point),Domain.column(point)}
+def native_flat(+problem: Producer.Problem,+image: U32,gradient: Buffer.Model<Tile.Tile8>,weights: Buffer.Model<Tile.Tile8>) -> Order.Flat:
   +point = Producer.point(problem)
   +g = Chunks.geometry(Producer.query(problem))
   +s = Domain.stride_word(g)
   Sources.phase_flat(g,Point.first(Domain.row(point),s),Point.first(Domain.column(point),s),Point.local(Domain.row(point),s),Point.local(Domain.column(point),s),image,Domain.channel(point),gradient,weights)
-def flat_matches(+problem: Producer.Problem,+image: U32,+gradient: Buffer.Model<F32>,+weights: Buffer.Model<F32>) -> {native_flat(problem,image,gradient,weights) == flat(problem,image,gradient,weights) : Order.Flat}:
+def flat_matches(+problem: Producer.Problem,+image: U32,+gradient: Buffer.Model<Tile.Tile8>,+weights: Buffer.Model<Tile.Tile8>) -> {native_flat(problem,image,gradient,weights) == flat(problem,image,gradient,weights) : Order.Flat}:
   Producer.Problem{+query,+point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,+s,p,gh,gw} = g
-  +source = Sources.problem(g,Sources.models_reader(gradient,weights),U32.to_nat(image))
+  +source = Sources.problem(g,Sources.models_reader(g,gradient,weights),U32.to_nat(image))
   +channel = Domain.channel(point)
   +y = PhaseBounds.pixel(Point.first(Domain.row(point),s),s,Point.local(Domain.row(point),s))
   +x = PhaseBounds.pixel(Point.first(Domain.column(point),s),s,Point.local(Domain.column(point),s))
   Equal.trans(Order.Flat,native_flat(problem,image,gradient,weights),Order.Flat{source,channel,Domain.row(point),x},flat(problem,image,gradient,weights),
     Equal.cong(Nat,Order.Flat,row => Order.Flat{source,channel,row,x},y,Domain.row(point),Producer.row_pixel_from(problem,Producer.axes(problem))),
     Equal.cong(Nat,Order.Flat,column => Order.Flat{source,channel,Domain.row(point),column},x,Domain.column(point),Producer.column_pixel_from(problem,Producer.axes(problem))))
-def count_matches(+problem: Producer.Problem,+image: U32,+gradient: Buffer.Model<F32>,+weights: Buffer.Model<F32>) ->
+def count_matches(+problem: Producer.Problem,+image: U32,+gradient: Buffer.Model<Tile.Tile8>,+weights: Buffer.Model<Tile.Tile8>) ->
   {U32.to_nat(Kernel.phase_inner(Jobs.context(Producer.phase(problem)))) == Order.flat_count(flat(problem,image,gradient,weights)) : Nat}:
   Producer.Problem{+query,+point,+inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,+b,+l,facts} = call
   Kernel.Geometry{c,o,+h,+w,k,+s,p,gh,gw} = g
@@ -50,11 +51,11 @@ def count_matches(+problem: Producer.Problem,+image: U32,+gradient: Buffer.Model
     %Equal.sym(Kernel.Phase,Jobs.context(Producer.phase(problem)),Point.phase(g,point),Producer.phase_matches(problem)) : {U32.to_nat(Kernel.phase_inner(_)) == Order.flat_count(native_flat(problem,image,gradient,weights)) : Nat}
     Sources.phase_spec_count(call,Point.first(Domain.row(point),s),Point.first(Domain.column(point),s),Point.local(Domain.row(point),s),Point.local(Domain.column(point),s),image,Domain.channel(point),gradient,weights,Point.first_inside(Domain.row(point),h,s,l,stride_positive,yi,height_room),Point.first_inside(Domain.column(point),w,s,l,stride_positive,xi,width_room)),
     Equal.cong(Order.Flat,Nat,context => Order.flat_count(context),native_flat(problem,image,gradient,weights),flat(problem,image,gradient,weights),flat_matches(problem,image,gradient,weights)))
-def value(+problem: Producer.Problem,+image: U32,+gradient: Buffer.Model<F32>,+weights: Buffer.Model<F32>,
+def value(+problem: Producer.Problem,+image: U32,+gradient: Buffer.Model<Tile.Tile8>,+weights: Buffer.Model<Tile.Tile8>,
   +empty: {U32.is_eq(Kernel.phase_inner(Jobs.context(Producer.phase(problem))),0) == True{} : Bool}) ->
   {Specification.value(Order.flat_problem(flat(problem,image,gradient,weights)),Domain.channel(Producer.point(problem)),Domain.row(Producer.point(problem)),Domain.column(Producer.point(problem))) == (0.0 + 0.0 : F32) : F32}:
   Producer.Problem{+query,point,inside,lower,upper,contained} = problem
-  Chunks.Query{+grid,first,target,plane,source,row,group,wb,ob} = query
+  Chunks.Query{+grid,first,target,source,row,group,wb} = query
   GeometryChunks.Grid{+call,e,count,range,rp,rr} = grid
   Domain.Call{+g,+b,+l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g

@@ -13,7 +13,6 @@ python -B benchmarks/model/profile_operations.py --case bus_640 --threads 4
 python -B benchmarks/model/profile_allocations.py --case bus_640 --threads 4
 python -B benchmarks/model/profile_timeline.py --case bus_640 --threads 4 --output out/results/timeline_4t
 python -B benchmarks/model/timeline_claims.py out/results/timeline_4t
-python -B benchmarks/model/report_plans.py out/models/bus_640_cpu_4t.json --output out/results/plans_4t.json
 python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models out/results/baseline/models --output out/results/forward_4t --threads 4
 ```
 
@@ -24,7 +23,6 @@ python -B benchmarks/model/compare_forward.py --case bus_640 --baseline-models o
 | [profile_allocations.py](profile_allocations.py) | Heap requests and Array block allocations of each operation |
 | [profile_timeline.py](profile_timeline.py) | Which workers run which operation, and when |
 | [timeline_claims.py](timeline_claims.py) | From a timeline: wall time by the number of busy workers |
-| [report_plans.py](report_plans.py) | Executed handwritten convolution plans (`--handwritten --threads 1 2 4 8 --output out/results/plans.json`), or generated-model metadata replay |
 | [compare_forward.py](compare_forward.py) | Forward time of a saved C of the hand-written model against the current one |
 
 Every timing tool uses two warmups and seven samples in one process.
@@ -41,16 +39,16 @@ Counts calls, payload bytes and rounded heap bytes of `blk_new`, `blk_copy`, `bl
 
 Records grow, work and wake phases, ring claims by worker, dispatch segments and block-copy bytes.
 
+Region IDs pair runtime begin/end events. Native-call collectors use `instrument(..., external_boundaries=True)` with forward and operation begin/end hooks. Intervals crossing operations are attributed by timestamp overlap.
+
+A dispatch segment belongs to the library module that defines its entry, so each operation reports time and entries per module. Queued-task events count runtime entries, including continuations. These are executions, not unique allocations. The catalog lists every entry with its module. External collectors may mark step boundaries with event 18.
+
 - A claim says which worker holds a runtime ring, not which CPU ran.
 - Wake, copy and dispatch intervals overlap, so do not add them.
 - A dispatch segment includes the C inlined into it.
 - `--event-capacity` sets the trace size (48 bytes per event). The tool fails if the trace overflows.
 
 `timeline_claims.py --kind conv` lists every operation of one kind.
-
-## Planner report
-
-[plan_observation.bend](plan_observation.bend) calls the library's plan selectors on the shapes of a generated graph. It runs no tensor data. `--operations RESULTS.json` adds the measured time of each operation from `profile_operations.py`.
 
 ## Forward comparison
 

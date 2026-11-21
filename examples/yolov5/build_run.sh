@@ -16,7 +16,7 @@ export YOLO_LAYERS=1
 mkdir -p "$YOLO_OUTPUT"
 cp out/models/yolov5n.c.build.json "$YOLO_OUTPUT/bend_build.json"
 "$CC" --version > "$YOLO_OUTPUT/compiler.txt"
-out/models/yolov5n --threads "$threads" --gpu off | tee "$YOLO_OUTPUT/forward.txt"
+out/models/yolov5n +RTS --threads "$threads" --gpu off -RTS | tee "$YOLO_OUTPUT/forward.txt"
 # "forward N ms", with the layer copies of YOLO_LAYERS included
 milliseconds=$(sed -n 's/^forward \([0-9]*\) ms$/\1/p' "$YOLO_OUTPUT/forward.txt" | tail -1)
 printf '{"seconds":%s.%03d,"backend":"Bend native C; see build metadata for platform and compiler"}\n' "$((milliseconds / 1000))" "$((milliseconds % 1000))" > "$YOLO_OUTPUT/native_run.json"

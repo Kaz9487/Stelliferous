@@ -6,6 +6,170 @@ This file records the notable changes in each version of Stelliferous. The forma
 
 Before 1.0.0, the public API may still change between minor versions.
 
+## [0.0.4] - 2026-11-21
+
+Stelliferous 0.0.4 trains a full ResNet-20, runs a Vision Transformer, and is much faster. The main changes are
+
+- Networks with residual blocks train end to end. ResNet-20 trains on CIFAR-10 to the same accuracy as PyTorch from the same weights and batches.
+- Matrix products, layer normalization and the exact GELU run the official ViT-B/16 from its torchvision weights, in 176 ms at four threads.
+- YOLOv5n inference takes 80 ms at one thread and 35 ms at four, against 117 and 48 ms in 0.0.3.
+- A training epoch is about seven times faster than in 0.0.3, and the gap to PyTorch narrows from about 25 times to about 4.
+
+This version moves to Bend v2.0.40, and imports again on current Bend. The published 0.0.3 does not import on Bend v2.0.38 or later.
+
+### Upgrade notes
+
+- **Runtime options go between `+RTS` and `-RTS`**
+
+  Since Bend v2.0.38 a compiled program reads its runtime options only inside `+RTS ... -RTS`. Previously `./program --threads 4` set four threads. Now it passes `--threads 4` to the program itself, and the program uses every CPU. Write `./program +RTS --threads 4 --gpu off -RTS` instead.
+
+- **Batch normalization rejects an axis of length zero**
+
+  The forward pass, the backward pass and `evaluate` of a batch normalization layer now return a failed result with `InvalidShape` when any axis of the input has length zero.
+
+- **`max_pool2d` rejects tensors of rank 0 and 1**
+
+  0.0.3 accepted them. They now return a failed result.
+
+- **The internal storage of tensors has changed**
+
+  `F.Tensor()` now holds its values in cells of eight. The public functions behave as before. Programs that imported the internal modules `tensor_band*.bend` must move to the public `F` functions, because those modules are gone.
+
+- **`python run.py training` trains ResNet-20**
+
+  It used to time one epoch of a network without residual additions on one synthetic batch. It now trains ResNet-20 on CIFAR-10 and compares it bit for bit across thread counts and with PyTorch, and `--epochs E` trains E full epochs. The old `benchmarks/training/` folder is removed.
+
+### Added
+
+- **Networks and residual blocks**
+
+  `Train.Network` chains layers and residual blocks. `forward_network(x, network)` returns the output and a tape, `backward_network(dy, tape)` returns the input gradient and the network holding every layer's gradients, and `sgd_network(network, rate)` applies them. `evaluate_network` runs the network for inference. A `Train.Residual` block adds its branch and its shortcut, and its backward pass gives the input the sum of both gradients.
+
+  `save_network(folder, network)` writes the parameters, running statistics and velocities as raw FP32 files, and `restore_network(folder, network)` reads them back, so a training can continue after any epoch.
+
+- **SGD with momentum and weight decay**
+
+  `sgd_step_with(layer, rate, momentum, weight_decay)` and `sgd_network_with(network, rate, momentum, weight_decay)` follow PyTorch's SGD without dampening. The layer keeps its velocities for the next step.
+
+- **Layer normalization**
+
+  `layer_norm_layer(features)`, `layer_norm_layer_with(features, epsilon)` and `layer_norm_layer_from(gamma, beta, epsilon)` normalize over the last axis, with forward and backward passes.
+
+- **Matrix products**
+
+  `matmul(left, right)` multiplies matrices with the same leading axes, or by one shared right matrix. `linear(x, weight, bias)` reads the weight in PyTorch's `[outputs, inputs]` order. Each output adds its products in order of the inner index from +0.0, the same on any number of workers.
+
+- **More tensor functions**
+
+  `gelu` is the exact GELU, PyTorch's `approximate='none'`, with `gelu_derivative`. Over all 2³² FP32 inputs its largest error is 2.76 ULP, and 3.79 ULP for the derivative. `argmax(tensor, axis)` gives the place of the first largest element. `depthwise_conv2d` convolves each channel with its own weights. `Act.gelu()` lets convolutions and `activation_layer` use the exact GELU.
+
+- **Random values and byte files**
+
+  `random_uniform(shape, seed, stream)` and `random_below(shape, bound, seed, stream)` give the same values on any machine and any number of workers. `load_u8(path, shape)` reads one byte per value, and `read_storage(storage, index)` reads one value of a storage.
+
+- **ResNet-20 and ViT-B/16 examples**
+
+  [ResNet-20](examples/resnet20/README.md) trains on CIFAR-10 beside a PyTorch twin that uses the same initial weights and batches. `python run.py training` checks two short epochs bit for bit on 1, 2, 4 and 8 threads and after a resume.
+
+  [ViT-B/16](examples/vit_b16/README.md) runs the official torchvision weights and compares each block, the logits and the top five classes with PyTorch. `python run.py vit` builds, runs and compares it.
+
+### Fixed
+
+- **`load_checkpoint` reads saved state dicts**
+
+  The file that `torch.save(model.state_dict())` writes keeps attributes such as `_metadata` beside the entries. 0.0.3 stopped on it with `BUILD on a value that is not an object`. 0.0.4 reads the entries and leaves the attributes.
+
+### Developer tools
+
+- `python run.py dependencies` lists where each Bend declaration and file is used, the unused imports and the declarations nothing reaches.
+- The operation timeline of `benchmarks/model/profile_timeline.py` gives the time and the entries of each library module.
+- `benchmarks/checks/math_accuracy.py` also measures `gelu`.
+- The planner report of the YOLOv5n graph, `benchmarks/model/report_plans.py` and `plan_observation.bend`, is removed. `benchmarks/convolution/report_plans.py` still reports the plans of single convolution shapes.
+
+### Performance
+
+YOLOv5n single inference on a 640 × 640 input image, on the same test machine.
+
+| Version | 1 thread | 4 threads |
+| ----- | -------: | ------: |
+| 0.0.3 | 117 ms | 48 ms |
+| 0.0.4 | 80 ms | 35 ms |
+
+The two versions were measured alternately on the same machine.
+
+ViT-B/16 single inference on a 224 × 224 input image, on the same machine:
+
+| Library | 1 thread | 4 threads |
+| ----- | -------: | ------: |
+| Stelliferous 0.0.4 | 360 ms | 176 ms |
+| PyTorch 2.14 | 353 ms | 121 ms |
+
+ResNet-20 on CIFAR-10 for 160 epochs from the same initial weights and batches, at four threads on the same machine. An epoch is 390 steps of batch 128 and a test of 10,000 images.
+
+| Library | Epoch, mean | Test accuracy, last epoch |
+| ----- | -------: | ------: |
+| Stelliferous 0.0.4 | 137.5 s | 91.40% |
+| PyTorch 2.14 | 34.5 s | 91.34% |
+
+0.0.3 cannot train ResNet-20. At its release it took 767 s for 390 steps of the same shape without residual additions, on one synthetic batch. 0.0.4 takes 112 s for 390 steps of the real ResNet-20, without the test.
+
+For the full results, see the [performance document](docs/performance.md).
+
+- **A new GEMM kernel**
+
+  The GEMM of 0.0.3 computed 4 output channels by 8 positions at a time and served the forward pass and the weight gradient of convolutions. The GEMM of 0.0.4 computes blocks of 8 by 8. The forward pass, the input gradient and the weight gradient of convolutions, `matmul` and `linear` all run on it, and it writes its results straight into the storage of tensors, in cells of eight.
+
+  A 1 × 1 convolution of stride 1 reads its input in place and computes 16 output channels at a time, without rearranging the input first. When the input channels are not a multiple of 16, the rest are added on their own, with no padding and no extra products.
+
+  When the weights do not fit in the cache block, the GEMM changes its order so that the weights come from memory once, instead of once for every eight positions. The linear layers of ViT-B/16 gain the most.
+
+- **A new weight gradient**
+
+  0.0.3 computed the weight gradient with the kernel positions as rows, as [position][output channel], and transposed it to [output channel][position] at the end. 0.0.4 reads the cells of eight of the tensors directly, computes 8 input channels by 8 output channels at a time, and writes the final layout without a transpose.
+
+  The work is split over the output channels as before, and now also over the images, so layers with few output channels use every worker too. The order of the sums does not change, so the result is the same on any number of workers. The bias gradient sums eight output channels at a time.
+
+- **No conversions between layers**
+
+  Tensors keep the same storage from input to output. Element-wise functions, activations, pooling and reductions work on it directly, so layers no longer rearrange values between them.
+
+- **Fewer passes in batch normalization**
+
+  The statistics come from two reductions, and the normalization runs in one parallel pass.
+
+- **Batches on four workers**
+
+  In 0.0.3 a batch of small images with many channels ran slower on four workers than on one. A ResNet-20 epoch of batches of 128 now takes 238 s on one thread and 112 s on four.
+
+- **Even shares of work**
+
+  The work of an operation is cut into even shares that keep every worker busy in each round, so the last round no longer waits on a single worker.
+
+- **Fewer copies in convolutions and matrix products**
+
+  Matrix products read their inputs and weights in place, without a copy for each share of the work. Convolutions other than 1 × 1 transpose each input value once and build their packed tiles by shifting lanes, instead of gathering the value again for every kernel position that reads it.
+
+### Formal proofs
+
+- **New formal proofs**
+
+  `matmul`, `linear`, `depthwise_conv2d`, layer normalization, `argmax`, the random values, `one_hot`, SGD with momentum and weight decay, and the forward, backward and update of whole networks with residual blocks are proved. Every output element equals the value the specification defines. For details, see the [proofs document](docs/proofs.md).
+
+  Existing functions without a value theorem in 0.0.3 have one now: `apply`, `apply_indexed`, `arange`, `clamp`, `conv2d_custom`, `from_list`, `from_storage`, `zeros`, `ones`, `max_pool2d_with` and `pad_edge`.
+
+- **The proofs follow the faster code**
+
+  The proofs cover the new storage of tensors, the splitting of work and the new convolution kernels. The proof that the native inference equals the matrix specification keeps its statement and conditions. `python run.py proofs` checks 569 modules and 20,051 declarations with the official checker.
+
+### Known limitations
+
+- Training provides SGD only, and there is no automatic differentiation. A network is a fixed chain of layers and residual blocks.
+- The numerical errors come from measurement. There is no formal proof of an error bound.
+- The proofs are verified by the official checker with `python run.py proofs`. `bend --verdict` is not used.
+- Only the FP32 (F32) data type is supported.
+- Convolutions with many weights and few output positions, and outputs narrower than eight positions, usually gain little from more workers. See the [design document](docs/design.md#costs-that-remain).
+- Inference is still slower than PyTorch, and training about 4 times slower. See the [performance document](docs/performance.md).
+
 ## [0.0.3] - 2026-10-21
 
 Stelliferous 0.0.3 adds training, and reads PyTorch checkpoints directly in Bend. The main changes are

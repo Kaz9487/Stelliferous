@@ -13,6 +13,7 @@ import ./bounded_u32_arithmetic.bend as Arithmetic
 import ./list_storage_readback.bend as ListReadback
 import ./traversal_write_bounds.bend as WriteBounds
 import ./traversal_map_readback.bend as MapReadback
+import ../kernel_gemm.bend as KernelGemm
 
 # The writes of count elements from position on.
 def writes(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat -> Element,count: Nat,+base: Nat,+position: Nat,+part: Part) ->
@@ -106,7 +107,7 @@ def inside(~Element: Data,~Part: Data,~value: @+part: Part -> @+position: Nat ->
   match count:
     case 0n: Unit{}
     case 1n+ +rest:
-      Shape.Both{
+      KernelGemm.Both{
         MapReadback.address_inside(Nat.add(base,position),capacity,capacity_ok,Order.room_index(Nat.add(base,position),rest,U32.to_nat(capacity),
           %Equal.sym(Nat,Nat.add(Nat.add(base,position),1n+rest),Nat.add(base,Nat.add(position,1n+rest)),Addition.associative(base,position,1n+rest)) :
             {Nat.is_le(_,U32.to_nat(capacity)) == True{} : Bool}

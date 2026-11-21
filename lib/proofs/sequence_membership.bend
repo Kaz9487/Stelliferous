@@ -4,13 +4,13 @@ import ../ordered_matrix.bend as OrderedMatrix
 import ./ordered_ranges.bend as Ranges
 import ./natural_addition.bend as Addition
 import ./word_encoding.bend as WordEncoding
-import ./storage_shape.bend as Shape
 import ./nat_order.bend as Order
+import ../kernel_gemm.bend as KernelGemm
 
 def All(-Element: Data,-Property: Element -> Data,items: List<&2,Element>) -> Data:
   match items:
     case Nil{}: Unit
-    case item <> rest: Shape.Both<Property(item),All(Element,Property,rest)>
+    case item <> rest: KernelGemm.Both<Property(item),All(Element,Property,rest)>
 
 # Construct finite range evidence from a bounded pointwise rule.
 def range_all(~Context: Data,~Property: @+context: Context -> @+index: Nat -> Data,~size: Context -> Nat,
@@ -20,7 +20,7 @@ def range_all(~Context: Data,~Property: @+context: Context -> @+index: Nat -> Da
   match remaining:
     case 0n: Unit{}
     case 1n+ +rest:
-      Shape.Both{cell(context,position,Order.room_index(position,rest,size(context),room)),
+      KernelGemm.Both{cell(context,position,Order.room_index(position,rest,size(context),room)),
         range_all(~Context,~Property,~size,~cell,rest,1n+position,context,Order.advance_room(position,rest,size(context),room))}
 
 def all_concatenated(-Element: Data,-Property: Element -> Data,+left: List<&2,Element>,+right: List<&2,Element>,
@@ -28,8 +28,8 @@ def all_concatenated(-Element: Data,-Property: Element -> Data,+left: List<&2,El
   match left:
     case Nil{}: right_proof
     case +item <> +rest:
-      Shape.Both{head,tail} = left_proof
-      Shape.Both{head,all_concatenated(Element,Property,rest,right,tail,right_proof)}
+      KernelGemm.Both{head,tail} = left_proof
+      KernelGemm.Both{head,all_concatenated(Element,Property,rest,right,tail,right_proof)}
 
 def transform_all(~Element: Data,~Context: Data,~Before: @+context: Context -> @+element: Element -> Data,~After: @+context: Context -> @+element: Element -> Data,
   ~transform: @+context: Context -> @+element: Element -> @+evidence: Before(context,element) -> After(context,element),
@@ -38,8 +38,8 @@ def transform_all(~Element: Data,~Context: Data,~Before: @+context: Context -> @
   match items:
     case Nil{}: Unit{}
     case +element <> +rest:
-      Shape.Both{head,tail} = evidence
-      Shape.Both{transform(context,element,head),transform_all(~Element,~Context,~Before,~After,~transform,rest,context,tail)}
+      KernelGemm.Both{head,tail} = evidence
+      KernelGemm.Both{transform(context,element,head),transform_all(~Element,~Context,~Before,~After,~transform,rest,context,tail)}
 
 def Member(-A: Data,+value: A,values: List<&2,A>) -> Data:
   match values:
@@ -51,7 +51,7 @@ def all_member(-Element: Data,-Property: Element -> Data,+value: Element,items: 
   match items:
     case []: Empty.absurd(Property(value),member)
     case +head <> +rest:
-      Shape.Both{head_proof,tail_proof} = all
+      KernelGemm.Both{head_proof,tail_proof} = all
       match member:
         case Inl{equal}:
           %Equal.sym(Element,value,head,equal) : Property(_)

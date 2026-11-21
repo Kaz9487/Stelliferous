@@ -7,6 +7,7 @@ import ./array_tree_refinement.bend as ArrayTreeRefinement
 import ./native_array_model.bend as NativeArrayModel
 import ./address_encoding.bend as AddressEncoding
 import ../specification.bend as ConvSpec
+import ../ordered_reference.bend as OrderedReference
 
 def set(n: Nat,v: F32,xs: List<&2,F32>) -> List<&2,F32>:
   match n xs:
@@ -35,13 +36,13 @@ law set_skip:
   for +ys: List<&2,F32>
   for +i: Nat
   for +v: F32
-  {set(Nat.add(ConvSpec.length(xs),i),v,TreeIndex.cat(xs,ys)) == TreeIndex.cat(xs,set(i,v,ys)) : List<&2,F32>}
+  {set(Nat.add(ConvSpec.length(xs),i),v,OrderedReference.cat(xs,ys)) == OrderedReference.cat(xs,set(i,v,ys)) : List<&2,F32>}
 def set_skip(xs,ys,i,v):
   match xs:
     case []:
       {==}
     case +h <> +tail:
-      %set_skip(tail,ys,i,v) : {h <> set(Nat.add(ConvSpec.length(tail),i),v,TreeIndex.cat(tail,ys)) == h <> _ : List<&2,F32>}
+      %set_skip(tail,ys,i,v) : {h <> set(Nat.add(ConvSpec.length(tail),i),v,OrderedReference.cat(tail,ys)) == h <> _ : List<&2,F32>}
       {==}
 
 law replace_flatten_tail:
@@ -49,8 +50,8 @@ law replace_flatten_tail:
   for +route: TreeIndex.Routes(tree)
   for +v: F32
   for +tail: List<&2,F32>
-  {TreeIndex.cat(TreeIndex.flatten(replace(tree,route,v)),tail) == set(TreeIndex.index(tree,route),v,
-      TreeIndex.cat(TreeIndex.flatten(tree),tail)) : List<&2,F32>}
+  {OrderedReference.cat(TreeIndex.flatten(replace(tree,route,v)),tail) == set(TreeIndex.index(tree,route),v,
+      OrderedReference.cat(TreeIndex.flatten(tree),tail)) : List<&2,F32>}
 def replace_flatten_tail(tree,route,v,tail):
   match tree:
     case Tree.Leaf{x}:
@@ -59,24 +60,24 @@ def replace_flatten_tail(tree,route,v,tail):
       match route:
         case Inl{+p}:
           %ArrayTreeRefinement.cat_assoc(TreeIndex.flatten(replace(l,p,v)),TreeIndex.flatten(r),tail) : {_ == set(TreeIndex.index(l,p),v,
-              TreeIndex.cat(TreeIndex.cat(TreeIndex.flatten(l),TreeIndex.flatten(r)),tail)) : List<&2,F32>}
-          %ArrayTreeRefinement.cat_assoc(TreeIndex.flatten(l),TreeIndex.flatten(r),tail) : {TreeIndex.cat(TreeIndex.flatten(replace(l,p,
-                  v)),TreeIndex.cat(TreeIndex.flatten(r),tail)) == set(TreeIndex.index(l,p),v,_) : List<&2,F32>}
-          replace_flatten_tail(l,p,v,TreeIndex.cat(TreeIndex.flatten(r),tail))
+              OrderedReference.cat(OrderedReference.cat(TreeIndex.flatten(l),TreeIndex.flatten(r)),tail)) : List<&2,F32>}
+          %ArrayTreeRefinement.cat_assoc(TreeIndex.flatten(l),TreeIndex.flatten(r),tail) : {OrderedReference.cat(TreeIndex.flatten(replace(l,p,
+                  v)),OrderedReference.cat(TreeIndex.flatten(r),tail)) == set(TreeIndex.index(l,p),v,_) : List<&2,F32>}
+          replace_flatten_tail(l,p,v,OrderedReference.cat(TreeIndex.flatten(r),tail))
         case Inr{+p}:
           %ArrayTreeRefinement.cat_assoc(TreeIndex.flatten(l),TreeIndex.flatten(replace(r,p,v)),
             tail) : {_ == set(Nat.add(ConvSpec.length(TreeIndex.flatten(l)),TreeIndex.index(r,p)),v,
-              TreeIndex.cat(TreeIndex.cat(TreeIndex.flatten(l),TreeIndex.flatten(r)),tail)) : List<&2,F32>}
-          %ArrayTreeRefinement.cat_assoc(TreeIndex.flatten(l),TreeIndex.flatten(r),tail) : {TreeIndex.cat(TreeIndex.flatten(l),
-              TreeIndex.cat(TreeIndex.flatten(replace(r,p,v)),tail)) == set(Nat.add(ConvSpec.length(TreeIndex.flatten(l)),
+              OrderedReference.cat(OrderedReference.cat(TreeIndex.flatten(l),TreeIndex.flatten(r)),tail)) : List<&2,F32>}
+          %ArrayTreeRefinement.cat_assoc(TreeIndex.flatten(l),TreeIndex.flatten(r),tail) : {OrderedReference.cat(TreeIndex.flatten(l),
+              OrderedReference.cat(TreeIndex.flatten(replace(r,p,v)),tail)) == set(Nat.add(ConvSpec.length(TreeIndex.flatten(l)),
                 TreeIndex.index(r,p)),v,_) : List<&2,F32>}
           %Equal.sym(List<&2,F32>,set(Nat.add(ConvSpec.length(TreeIndex.flatten(l)),TreeIndex.index(r,p)),v,
-              TreeIndex.cat(TreeIndex.flatten(l),TreeIndex.cat(TreeIndex.flatten(r),tail))),TreeIndex.cat(TreeIndex.flatten(l),
-              set(TreeIndex.index(r,p),v,TreeIndex.cat(TreeIndex.flatten(r),tail))),set_skip(TreeIndex.flatten(l),
-              TreeIndex.cat(TreeIndex.flatten(r),tail),TreeIndex.index(r,p),v)) : {TreeIndex.cat(TreeIndex.flatten(l),
-              TreeIndex.cat(TreeIndex.flatten(replace(r,p,v)),tail)) == _ : List<&2,F32>}
-          %replace_flatten_tail(r,p,v,tail) : {TreeIndex.cat(TreeIndex.flatten(l),TreeIndex.cat(TreeIndex.flatten(replace(r,p,v)),
-                tail)) == TreeIndex.cat(TreeIndex.flatten(l),_) : List<&2,F32>}
+              OrderedReference.cat(TreeIndex.flatten(l),OrderedReference.cat(TreeIndex.flatten(r),tail))),OrderedReference.cat(TreeIndex.flatten(l),
+              set(TreeIndex.index(r,p),v,OrderedReference.cat(TreeIndex.flatten(r),tail))),set_skip(TreeIndex.flatten(l),
+              OrderedReference.cat(TreeIndex.flatten(r),tail),TreeIndex.index(r,p),v)) : {OrderedReference.cat(TreeIndex.flatten(l),
+              OrderedReference.cat(TreeIndex.flatten(replace(r,p,v)),tail)) == _ : List<&2,F32>}
+          %replace_flatten_tail(r,p,v,tail) : {OrderedReference.cat(TreeIndex.flatten(l),OrderedReference.cat(TreeIndex.flatten(replace(r,p,v)),
+                tail)) == OrderedReference.cat(TreeIndex.flatten(l),_) : List<&2,F32>}
           {==}
 
 law replace_flatten:
@@ -87,7 +88,7 @@ law replace_flatten:
 def replace_flatten(tree,route,v):
   %ArrayTreeRefinement.cat_nil(TreeIndex.flatten(replace(tree,route,v))) : {_ == set(TreeIndex.index(tree,route),v,
       TreeIndex.flatten(tree)) : List<&2,F32>}
-  %ArrayTreeRefinement.cat_nil(TreeIndex.flatten(tree)) : {TreeIndex.cat(TreeIndex.flatten(replace(tree,route,v)),
+  %ArrayTreeRefinement.cat_nil(TreeIndex.flatten(tree)) : {OrderedReference.cat(TreeIndex.flatten(replace(tree,route,v)),
       []) == set(TreeIndex.index(tree,route),v,_) : List<&2,F32>}
   replace_flatten_tail(tree,route,v,[])
 

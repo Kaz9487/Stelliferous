@@ -12,6 +12,7 @@ import ../scalar_kernel.bend as ScalarConv
 import ./array_fill_readback.bend as ArrayFill
 import ../../lib/proofs/u32_division.bend as U32Division
 import ../../lib/kernel_spatial_packing.bend as Packing
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def get(+xs: List<&2,F32>,+address: U32,+index: Nat,+proof: ListArrayAllocation.Ready(xs),encoded: {address == U32.from_nat(index) : U32},
   index_bound: {Nat.is_lt(index,ConvSpec.length(xs)) == True{} : Bool}) -> {Array.get(F32,ScalarConv.pack(xs),address) == (ScalarConv.pack(xs),
@@ -26,7 +27,7 @@ def get(+xs: List<&2,F32>,+address: U32,+index: Nat,+proof: ListArrayAllocation.
 # read. Discharge those checks from allocation evidence, not an assumed read.
 def length_within_capacity(+xs: List<&2,F32>,proof: ListArrayAllocation.Ready(xs)) ->
   {Nat.is_le(ConvSpec.length(xs),U32.to_nat(Tree.capacity(F32,ListStorage.representation(xs)))) == True{} : Bool}:
-  Shape.Both{limit,room} = proof
+  KernelGemm.Both{limit,room} = proof
   %Equal.sym(U32,Tree.capacity(F32,ListStorage.representation(xs)),Tree.capacity(F32,ListArrayAllocation.initial(xs)),
     ArrayFill.capacity(xs,0,ListArrayAllocation.initial(xs),ListArrayAllocation.depth(xs),
       Shape.fresh(F32,ListArrayAllocation.depth(xs),0.0))) : {Nat.is_le(ConvSpec.length(xs),U32.to_nat(_)) == True{} : Bool}
@@ -60,18 +61,18 @@ def sample_matches_masked_get(+inside: Bool,+xs: List<&2,F32>,+address: U32,+ind
   in_bounds: {inside == True{} : Bool} -> {Nat.is_lt(index,ConvSpec.length(xs)) == True{} : Bool},
   length_exact: {U32.to_nat(logical_length) == ConvSpec.length(xs) : Nat}) ->
   {ScalarConv.sample(~Array<F32>,~Storage.read_or(F32,0.0),inside,ScalarConv.pack(xs),address,logical_length) ==
-    Packing.masked(inside,Array.get(F32,ScalarConv.pack(xs),address)) : Array<F32> & F32}:
+    Packing.masked_field(~F32,inside,Packing.field_of(~F32,~Packing.identity,Array.get(F32,ScalarConv.pack(xs),address))) : Array<F32> & F32}:
   match inside:
     case False{}:
       %Equal.sym(Array<F32>,ScalarConv.pack(xs),Tree.pack(F32,ListStorage.representation(xs)),ListStorage.packed(xs)) :
-        {(_,0.0) == Packing.masked(False{},Array.get(F32,_,address)) : Array<F32> & F32}
+        {(_,0.0) == Packing.masked_field(~F32,False{},Packing.field_of(~F32,~Packing.identity,Array.get(F32,_,address))) : Array<F32> & F32}
       %Equal.sym(Array<F32> & F32,Array.get(F32,Tree.pack(F32,ListStorage.representation(xs)),address),
         (Tree.pack(F32,ListStorage.representation(xs)),Tree.read(F32,ListStorage.representation(xs),address)),
         StorageLaws.read(F32,ListStorage.representation(xs),address)) :
-        {(Tree.pack(F32,ListStorage.representation(xs)),0.0) == Packing.masked(False{},_) : Array<F32> & F32}
+        {(Tree.pack(F32,ListStorage.representation(xs)),0.0) == Packing.masked_field(~F32,False{},Packing.field_of(~F32,~Packing.identity,_)) : Array<F32> & F32}
       {==}
     case True{}:
       +bound = in_bounds({==})
       %Equal.sym(Array<F32> & F32,Array.get(F32,ScalarConv.pack(xs),address),(ScalarConv.pack(xs),ConvSpec.at(index,xs)),get(xs,address,index,proof,encoded,bound)) :
-        {Storage.read_or(F32,0.0,ScalarConv.pack(xs),address,logical_length) == Packing.masked(True{},_) : Array<F32> & F32}
+        {Storage.read_or(F32,0.0,ScalarConv.pack(xs),address,logical_length) == Packing.masked_field(~F32,True{},Packing.field_of(~F32,~Packing.identity,_)) : Array<F32> & F32}
       bounded_get(xs,address,index,logical_length,proof,encoded,bound,length_exact)

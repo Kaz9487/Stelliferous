@@ -3,8 +3,8 @@
 import Base
 import ../traversal_partition.bend as Partition
 import ./storage_tree_model.bend as Tree
-import ./storage_shape.bend as Shape
 import ./write_program.bend as Writes
+import ../kernel_gemm.bend as KernelGemm
 
 # Every part replaced by what one rule gives it; the splits stay.
 def map(~from: Quant,~to: Quant,~Before: Kind(from),~After: Kind(to),~Details: Data,~Result: Data,~Context: Data,
@@ -41,7 +41,7 @@ def All(~ownership: Quant,~Block: Kind(ownership),~Details: Data,~Context: Data,
   +context: Context,tree: Partition.Tree<ownership,Block,Details>) -> Data:
   match tree:
     case Partition.Leaf{block,+offset,+span,+details}: Part(context,offset,span,details,block)
-    case Partition.Fork{left,right}: Shape.Both<All(~ownership,~Block,~Details,~Context,~Part,context,left),All(~ownership,~Block,~Details,~Context,~Part,context,right)>
+    case Partition.Fork{left,right}: KernelGemm.Both<All(~ownership,~Block,~Details,~Context,~Part,context,left),All(~ownership,~Block,~Details,~Context,~Part,context,right)>
 
 def pack_values(~Output: Data,data: Tree.Tree<Output>) -> Array<Output>:
   Tree.pack(Output,data)

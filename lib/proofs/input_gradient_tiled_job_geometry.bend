@@ -13,7 +13,6 @@ import ./input_gradient_tiled_columns.bend as Columns
 import ./input_gradient_tiled_band_extents.bend as Bands
 import ./input_gradient_tiled_band_geometry.bend as Samples
 import ./input_gradient_tiled_leaf_execution.bend as Execution
-import ./input_gradient_tiled_lookup.bend as Lookup
 import ./nat_ceiling.bend as Ceiling
 import ./nat_order.bend as Order
 import ./nat_to_u32_bounds.bend as Bounds
@@ -28,43 +27,43 @@ import ./input_gradient_phase_bounds.bend as PhaseBounds
 import ./input_gradient_phase_packing.bend as PhasePacking
 import ./nat_division_order.bend as Division
 import ./encoded_coordinates.bend as Encoded
-import ./storage_shape.bend as Shape
 import ./u32_full_range.bend as FullRange
 import ./u32_comparison.bend as Comparison
 import ./word_encoding.bend as Words
 import ./nat_division.bend as NaturalDivision
 import ./input_gradient_tiled_bands.bend as PureBands
 import ./input_gradient_phase_geometry.bend as PhaseGeometry
+import ../kernel_gemm.bend as KernelGemm
 
 def units(+geometry: Kernel.Geometry) -> U32:
-  ((Domain.channel_word(geometry) + 3) / 4 : U32)
-def four_quarter_room(+envelope: Geometry.WordEnvelope) -> {Nat.is_le(U32.to_nat(4),U32.to_nat(Capacity.quarter(envelope))) == True{} : Bool}:
+  ((Domain.channel_word(geometry) + 7) / 8 : U32)
+def eight_quarter_room(+envelope: Geometry.WordEnvelope) -> {Nat.is_le(U32.to_nat(8),U32.to_nat(Capacity.quarter(envelope))) == True{} : Bool}:
   Geometry.WordEnvelope{maximum,half,quarter,margin,me,he,qe,re} = envelope
-  Bounds.as_nat_le(4,quarter,%Equal.sym(U32,quarter,1073741824,qe) : {U32.is_le(4,_) == True{} : Bool} {==})
+  Bounds.as_nat_le(8,quarter,%Equal.sym(U32,quarter,1073741824,qe) : {U32.is_le(8,_) == True{} : Bool} {==})
 def channels_quarter_room(+call: Domain.Call,+envelope: Geometry.WordEnvelope) ->
   {Nat.is_le(Domain.channels(Domain.geometry(call)),U32.to_nat(Capacity.quarter(envelope))) == True{} : Bool}:
   +limits = Domain.limits(call)
   Order.transitive(Domain.channels(Domain.geometry(call)),U32.to_nat(Machine.dimension(limits)),U32.to_nat(Capacity.quarter(envelope)),Domain.channels_room(call),Capacity.dimension_quarter_room(limits,envelope))
-def units_expression(+geometry: Kernel.Geometry) -> {units(geometry) == ((Domain.channel_word(geometry) + 4 - 1) / 4 : U32) : U32}:
+def units_expression(+geometry: Kernel.Geometry) -> {units(geometry) == ((Domain.channel_word(geometry) + 8 - 1) / 8 : U32) : U32}:
   +channels = Domain.channel_word(geometry)
-  Equal.cong(U32,U32,value => (value / 4 : U32),(channels + 3 : U32),(channels + 4 - 1 : U32),Equal.sym(U32,(channels + 4 - 1 : U32),(channels + (4 - 1 : U32) : U32),Arithmetic.subtract_from_sum(channels,4,1)))
+  Equal.cong(U32,U32,value => (value / 8 : U32),(channels + 7 : U32),(channels + 8 - 1 : U32),Equal.sym(U32,(channels + 8 - 1 : U32),(channels + (8 - 1 : U32) : U32),Arithmetic.subtract_from_sum(channels,8,1)))
 def units_exact(+call: Domain.Call,+envelope: Geometry.WordEnvelope) ->
-  {U32.to_nat(units(Domain.geometry(call))) == Ceiling.ceiling(Domain.channels(Domain.geometry(call)),4n) : Nat}:
+  {U32.to_nat(units(Domain.geometry(call))) == Ceiling.ceiling(Domain.channels(Domain.geometry(call)),8n) : Nat}:
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
   +geometry = Domain.geometry(call)
-  Equal.trans(Nat,U32.to_nat(units(geometry)),U32.to_nat(((Domain.channel_word(geometry) + 4 - 1) / 4 : U32)),Ceiling.ceiling(Domain.channels(geometry),4n),Equal.cong(U32,Nat,U32.to_nat,units(geometry),((Domain.channel_word(geometry) + 4 - 1) / 4 : U32),units_expression(geometry)),Chunks.ceiling_exact(Domain.channel_word(geometry),4,envelope,channels_quarter_room(call,envelope),four_quarter_room(envelope),{==}))
+  Equal.trans(Nat,U32.to_nat(units(geometry)),U32.to_nat(((Domain.channel_word(geometry) + 8 - 1) / 8 : U32)),Ceiling.ceiling(Domain.channels(geometry),8n),Equal.cong(U32,Nat,U32.to_nat,units(geometry),((Domain.channel_word(geometry) + 8 - 1) / 8 : U32),units_expression(geometry)),Chunks.ceiling_exact(Domain.channel_word(geometry),8,envelope,channels_quarter_room(call,envelope),eight_quarter_room(envelope),{==}))
 def units_room(+call: Domain.Call,+envelope: Geometry.WordEnvelope) ->
   {Nat.is_le(U32.to_nat(units(Domain.geometry(call))),Domain.channels(Domain.geometry(call))) == True{} : Bool}:
   +geometry = Domain.geometry(call)
-  %Equal.sym(Nat,U32.to_nat(units(geometry)),Ceiling.ceiling(Domain.channels(geometry),4n),units_exact(call,envelope)) : {Nat.is_le(_,Domain.channels(geometry)) == True{} : Bool} Ceiling.bounded(Domain.channels(geometry),4n,{==})
+  %Equal.sym(Nat,U32.to_nat(units(geometry)),Ceiling.ceiling(Domain.channels(geometry),8n),units_exact(call,envelope)) : {Nat.is_le(_,Domain.channels(geometry)) == True{} : Bool} Ceiling.bounded(Domain.channels(geometry),8n,{==})
 def units_positive_from(+geometry: Kernel.Geometry,+channels_positive: {Nat.is_lt(0n,Domain.channels(geometry)) == True{} : Bool}) ->
-  {Nat.is_lt(0n,Ceiling.ceiling(Domain.channels(geometry),4n)) == True{} : Bool}:
-  RowMajor.left_factor_positive(Ceiling.ceiling(Domain.channels(geometry),4n),4n,Bounds.nat_trans(0n,Domain.channels(geometry),Nat.mul(Ceiling.ceiling(Domain.channels(geometry),4n),4n),channels_positive,Ceiling.covers(Domain.channels(geometry),4n,{==})))
+  {Nat.is_lt(0n,Ceiling.ceiling(Domain.channels(geometry),8n)) == True{} : Bool}:
+  RowMajor.left_factor_positive(Ceiling.ceiling(Domain.channels(geometry),8n),8n,Bounds.nat_trans(0n,Domain.channels(geometry),Nat.mul(Ceiling.ceiling(Domain.channels(geometry),8n),8n),channels_positive,Ceiling.covers(Domain.channels(geometry),8n,{==})))
 def units_positive(+call: Domain.Call,+envelope: Geometry.WordEnvelope) ->
   {Nat.is_lt(0n,U32.to_nat(units(Domain.geometry(call)))) == True{} : Bool}:
   +geometry = Domain.geometry(call)
-  %Equal.sym(Nat,U32.to_nat(units(geometry)),Ceiling.ceiling(Domain.channels(geometry),4n),units_exact(call,envelope)) : {Nat.is_lt(0n,_) == True{} : Bool} units_positive_from(geometry,Domain.channels_positive(call))
+  %Equal.sym(Nat,U32.to_nat(units(geometry)),Ceiling.ceiling(Domain.channels(geometry),8n),units_exact(call,envelope)) : {Nat.is_lt(0n,_) == True{} : Bool} units_positive_from(geometry,Domain.channels_positive(call))
 
 # The phase's group count is bounded by the tiled maximum, even in tails.
 def phase_groups(+query: Extents.Axis,+index: Nat) -> U32:
@@ -209,10 +208,16 @@ def start(+work: Work) -> U32:
   Samples.low(indices(work))
 def end(+work: Work) -> U32:
   Samples.high(indices(work))
+def chunk_layout(chunk: Kernel.Chunk) -> Kernel.Tiling:
+  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{g,layout},first,count,target},row,rows,low,group} = chunk
+  layout
+def layout_groups(layout: Kernel.Tiling) -> U32:
+  Kernel.Tiling{groups,shifts,outputs,column_low,kernel,height,width,cg,cr} = layout
+  cg
 def lines(+work: Work) -> U32:
   Bands.difference(start(work),end(work))
 def groups(+work: Work) -> U32:
-  group_span(chunk_group(chunk(work)),native_groups(phase(work)),Lookup.layout_groups(Lookup.chunk_layout(chunk(work))))
+  group_span(chunk_group(chunk(work)),native_groups(phase(work)),layout_groups(chunk_layout(chunk(work))))
 def native_units(+work: Work) -> U32:
   units(geometry(phase(work)))
 def product_count(+work: Work) -> U32:
@@ -238,7 +243,7 @@ def end_room(+work: Work) -> {Nat.is_le(U32.to_nat(end(work)),U32.to_nat(row_cou
 def lines_room(+work: Work,+active: Active<phase(work)>) -> {Nat.is_le(U32.to_nat(lines(work)),Domain.height(geometry(phase(work)))) == True{} : Bool}:
   Order.transitive(U32.to_nat(lines(work)),U32.to_nat(end(work)),Domain.height(geometry(phase(work))),line_span_room(start(work),end(work)),Order.transitive(U32.to_nat(end(work)),U32.to_nat(row_count(phase(work))),Domain.height(geometry(phase(work))),end_room(work),row_count_room(phase(work),active)))
 def groups_room(+work: Work,+active: Active<phase(work)>) -> {Nat.is_le(U32.to_nat(groups(work)),Domain.width(geometry(phase(work)))) == True{} : Bool}:
-  Order.transitive(U32.to_nat(groups(work)),U32.to_nat(native_groups(phase(work))),Domain.width(geometry(phase(work))),group_span_room(chunk_group(chunk(work)),native_groups(phase(work)),Lookup.layout_groups(Lookup.chunk_layout(chunk(work)))),column_groups_room(phase(work),active))
+  Order.transitive(U32.to_nat(groups(work)),U32.to_nat(native_groups(phase(work))),Domain.width(geometry(phase(work))),group_span_room(chunk_group(chunk(work)),native_groups(phase(work)),layout_groups(chunk_layout(chunk(work)))),column_groups_room(phase(work),active))
 def image_room(+phase: Phase) -> {Nat.is_le(Domain.image_size(geometry(phase)),U32.to_nat(Machine.capacity(limits(phase)))) == True{} : Bool}:
   Phase{call,e,y,x,yi,xi} = phase
   Domain.image_room(call)
@@ -274,18 +279,18 @@ def count_product_case(selected: Bool,+first: U32,+last: U32,+groups: U32,+units
 def count_product(+first: U32,+last: U32,+groups: U32,+units: U32) ->
   {U32.to_nat(Bool.pick(U32,U32.is_lt(first,last),((last - first) * groups * units : U32),0)) == U32.to_nat((Bands.difference(first,last) * groups * units : U32)) : Nat}:
   count_product_case(U32.is_lt(first,last),first,last,groups,units)
-def work_count_matches(+work: Work,+wb: U32,+ob: U32) ->
-  {Execution.work_count(Execution.work(context(phase(work)),chunk(work),wb,ob)) == count(work) : Nat}:
+def work_count_matches(+work: Work,+wb: U32) ->
+  {Execution.work_count(Execution.work(context(phase(work)),chunk(work),wb)) == count(work) : Nat}:
   Work{+phase,+chunk} = work
   Phase{call,e,y,x,yi,xi} = phase
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{geometry,+layout},first,count,target,plane},row,rows,low,group} = chunk
+  Kernel.Chunk{Kernel.LeafContext{Kernel.Task{geometry,+layout},first,count,target},row,rows,low,group} = chunk
   Kernel.Tiling{layout_groups,shifts,outputs,column_low,kernel,height,width,cg,cr} = layout
   count_product(start(work),end(work),groups(work),native_units(work))
-def native_count_exact(+work: Work,+active: Active<phase(work)>,+wb: U32,+ob: U32) ->
-  {Execution.work_count(Execution.work(context(phase(work)),chunk(work),wb,ob)) == natural_count(work) : Nat}:
-  Equal.trans(Nat,Execution.work_count(Execution.work(context(phase(work)),chunk(work),wb,ob)),count(work),natural_count(work),work_count_matches(work,wb,ob),count_exact(work,active))
+def native_count_exact(+work: Work,+active: Active<phase(work)>,+wb: U32) ->
+  {Execution.work_count(Execution.work(context(phase(work)),chunk(work),wb)) == natural_count(work) : Nat}:
+  Equal.trans(Nat,Execution.work_count(Execution.work(context(phase(work)),chunk(work),wb)),count(work),natural_count(work),work_count_matches(work,wb),count_exact(work,active))
 
 # Units are innermost, then group, then phase line, as in the actual job loop.
 def job_position(+work: Work,+line: Nat,+group: Nat,+unit: Nat) -> Nat:
@@ -362,9 +367,6 @@ def encoded_coordinates_exact(+work: Work,+ordinal: Nat,+inside: {Nat.is_lt(ordi
   {job_index(work,Grid.channel(job_coordinates(work,ordinal)),Grid.row(job_coordinates(work,ordinal)),Grid.column(job_coordinates(work,ordinal))) == U32.from_nat(ordinal) : U32}:
   Equal.cong(Nat,U32,U32.from_nat,job_position(work,Grid.channel(job_coordinates(work,ordinal)),Grid.row(job_coordinates(work,ordinal)),Grid.column(job_coordinates(work,ordinal))),ordinal,Equal.sym(Nat,ordinal,job_position(work,Grid.channel(job_coordinates(work,ordinal)),Grid.row(job_coordinates(work,ordinal)),Grid.column(job_coordinates(work,ordinal))),job_coordinates_exact(work,ordinal,inside)))
 
-def plan_units(plan: Kernel.Plan) -> U32:
-  Kernel.Plan{units,groups,inner,source,row_step,group_step,target,target_row,step,plane,channels,columns,wb,ob} = plan
-  units
 def active_from_inner(+phase: Phase,
   +positive: {Nat.is_lt(0n,U32.to_nat(Kernel.phase_inner(context(phase)))) == True{} : Bool}) -> Active<phase>:
   Phase{call,e,y,x,yi,xi} = phase
@@ -387,11 +389,11 @@ def row_position(+work: Work,+line: Nat) -> Nat:
 def row_position_bounds_case(selected: Bool,+work: Work,+line: Nat,
   +same: {U32.is_lt(start(work),end(work)) == selected : Bool},
   +inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
     {Nat.is_lt(row_position(work,line),U32.to_nat(end(work))) == True{} : Bool}>:
   match selected:
     case False{}:
-      Empty.absurd(Shape.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
+      Empty.absurd(KernelGemm.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
         {Nat.is_lt(row_position(work,line),U32.to_nat(end(work))) == True{} : Bool}>,Words.false_true(
         %NaturalDivision.lt_zero(line) : {_ == True{} : Bool}
         %same : {Nat.is_lt(line,U32.to_nat(Bool.pick(U32,_,(end(work) - start(work) : U32),0))) == True{} : Bool} inside))
@@ -401,18 +403,18 @@ def row_position_bounds_case(selected: Bool,+work: Work,+line: Nat,
       +ordered = Bounds.strict_le(first,last,Bounds.as_nat_lt(start(work),end(work),same))
       +exact = FullRange.subtract(end(work),start(work),end(work),ordered,Order.sub_le(last,first))
       +local = {%same : {Nat.is_lt(line,U32.to_nat(Bool.pick(U32,_,(end(work) - start(work) : U32),0))) == True{} : Bool} inside : {Nat.is_lt(line,U32.to_nat((end(work) - start(work) : U32))) == True{} : Bool}}
-      Shape.Both{Order.le_add(first,line),
+      KernelGemm.Both{Order.le_add(first,line),
         %Order.restore_shift(first,last,ordered) : {Nat.is_lt(row_position(work,line),_) == True{} : Bool}
         Order.offset_lt(first,line,Nat.sub(last,first),%exact : {Nat.is_lt(line,_) == True{} : Bool} local)}
 def row_position_bounds(+work: Work,+line: Nat,+inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
     {Nat.is_lt(row_position(work,line),U32.to_nat(end(work))) == True{} : Bool}>:
   row_position_bounds_case(U32.is_lt(start(work),end(work)),work,line,{==},inside)
 def row_position_upper(+work: Work,+line: Nat,
-  bounds: Shape.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
+  bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
     {Nat.is_lt(row_position(work,line),U32.to_nat(end(work))) == True{} : Bool}>) ->
   {Nat.is_lt(row_position(work,line),U32.to_nat(end(work))) == True{} : Bool}:
-  Shape.Both{lo,hi} = bounds
+  KernelGemm.Both{lo,hi} = bounds
   hi
 def row_position_inside(+work: Work,+line: Nat,+inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool}) ->
   {Nat.is_lt(row_position(work,line),U32.to_nat(row_count(phase(work)))) == True{} : Bool}:
@@ -458,7 +460,7 @@ def work_phase_y_inside(+work: Work,
 
 def row_band_used_finish(+work: Work,+active: Active<phase(work)>,+line: Nat,
   +contained: {Nat.is_le(Nat.add(U32.to_nat(chunk_row(chunk(work))),U32.to_nat(chunk_rows(chunk(work)))),Domain.height(geometry(phase(work)))) == True{} : Bool},
-  bounds: Shape.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
+  bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
     {Nat.is_lt(row_position(work,line),U32.to_nat(end(work))) == True{} : Bool}>) ->
   {Bands.used(work_band(work,contained),U32.from_nat(phase_y(phase(work)))) == True{} : Bool}:
   Work{+phase,+chunk} = work
@@ -491,13 +493,13 @@ def row_selection_indices(+work: Work,+active: Active<phase(work)>,+line: Nat,
 def row_selection_bounds_finish(+work: Work,+active: Active<phase(work)>,+line: Nat,
   +contained: {Nat.is_le(Nat.add(U32.to_nat(chunk_row(chunk(work))),U32.to_nat(chunk_rows(chunk(work)))),Domain.height(geometry(phase(work)))) == True{} : Bool},
   +inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool},
-  native_bounds: Shape.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
+  native_bounds: KernelGemm.Both<{Nat.is_le(U32.to_nat(start(work)),row_position(work,line)) == True{} : Bool},
     {Nat.is_lt(row_position(work,line),U32.to_nat(end(work))) == True{} : Bool}>,
-  encoded: Shape.Both<{U32.to_nat(Samples.low(Samples.selection_indices(row_selection(work,active,line,contained,inside)))) == PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))) : Nat},
+  encoded: KernelGemm.Both<{U32.to_nat(Samples.low(Samples.selection_indices(row_selection(work,active,line,contained,inside)))) == PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))) : Nat},
     {U32.to_nat(Samples.high(Samples.selection_indices(row_selection(work,active,line,contained,inside)))) == PureBands.high(Samples.selection_model(row_selection(work,active,line,contained,inside))) : Nat}>) ->
-  Shape.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(row_native(work,line)),PureBands.high(Samples.selection_model(row_selection(work,active,line,contained,inside)))) == True{} : Bool}>:
-  Shape.Both{+lo,+hi} = native_bounds
+  KernelGemm.Both{+lo,+hi} = native_bounds
   +selected = row_selection(work,active,line,contained,inside)
   +same = row_selection_indices(work,active,line,contained,inside)
   +exact = row_native_exact(work,active,line,inside)
@@ -509,7 +511,7 @@ def row_selection_bounds_finish(+work: Work,+active: Active<phase(work)>,+line: 
 def row_selection_bounds(+work: Work,+active: Active<phase(work)>,+line: Nat,
   +contained: {Nat.is_le(Nat.add(U32.to_nat(chunk_row(chunk(work))),U32.to_nat(chunk_rows(chunk(work)))),Domain.height(geometry(phase(work)))) == True{} : Bool},
   +inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(row_native(work,line)),PureBands.high(Samples.selection_model(row_selection(work,active,line,contained,inside)))) == True{} : Bool}>:
   row_selection_bounds_finish(work,active,line,contained,inside,row_position_bounds(work,line,inside),Samples.selection_indices_exact(row_selection(work,active,line,contained,inside)))
 
@@ -533,18 +535,18 @@ def row_tapped_bounds_finish(+work: Work,+active: Active<phase(work)>,+line: Nat
   +contained: {Nat.is_le(Nat.add(U32.to_nat(chunk_row(chunk(work))),U32.to_nat(chunk_rows(chunk(work)))),Domain.height(geometry(phase(work)))) == True{} : Bool},
   +inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool},
   +tap_inside: {Nat.is_lt(U32.to_nat(tap),Samples.selection_taps(row_selection(work,active,line,contained,inside))) == True{} : Bool},
-  bounds: Shape.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
+  bounds: KernelGemm.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(row_native(work,line)),PureBands.high(Samples.selection_model(row_selection(work,active,line,contained,inside)))) == True{} : Bool}>) ->
-  Shape.Both<{U32.is_le(Bands.low_fold(work_band(work,contained)),Samples.native_tapped(row_selection(work,active,line,contained,inside),row_native(work,line),tap)) == True{} : Bool},
+  KernelGemm.Both<{U32.is_le(Bands.low_fold(work_band(work,contained)),Samples.native_tapped(row_selection(work,active,line,contained,inside),row_native(work,line),tap)) == True{} : Bool},
     {U32.is_lt(Samples.native_tapped(row_selection(work,active,line,contained,inside),row_native(work,line),tap),Bands.high_fold(work_band(work,contained))) == True{} : Bool}>:
-  Shape.Both{+lo,+hi} = bounds
+  KernelGemm.Both{+lo,+hi} = bounds
   Bands.tapped_native_bounds(work_band(work,contained),phase_y(phase(work)),work_phase_y_inside(work,contained),row_band_used(work,active,line,contained,inside),row_native(work,line),tap,
     row_selection_inside(work,active,line,contained,inside),lo,hi,tap_inside)
 def row_tapped_bounds(+work: Work,+active: Active<phase(work)>,+line: Nat,+tap: U32,
   +contained: {Nat.is_le(Nat.add(U32.to_nat(chunk_row(chunk(work))),U32.to_nat(chunk_rows(chunk(work)))),Domain.height(geometry(phase(work)))) == True{} : Bool},
   +inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool},
   +tap_inside: {Nat.is_lt(U32.to_nat(tap),Samples.selection_taps(row_selection(work,active,line,contained,inside))) == True{} : Bool}) ->
-  Shape.Both<{U32.is_le(Bands.low_fold(work_band(work,contained)),Samples.native_tapped(row_selection(work,active,line,contained,inside),row_native(work,line),tap)) == True{} : Bool},
+  KernelGemm.Both<{U32.is_le(Bands.low_fold(work_band(work,contained)),Samples.native_tapped(row_selection(work,active,line,contained,inside),row_native(work,line),tap)) == True{} : Bool},
     {U32.is_lt(Samples.native_tapped(row_selection(work,active,line,contained,inside),row_native(work,line),tap),Bands.high_fold(work_band(work,contained))) == True{} : Bool}>:
   row_tapped_bounds_finish(work,active,line,tap,contained,inside,tap_inside,row_selection_bounds(work,active,line,contained,inside))
 def row_tapped_relative(+work: Work,+active: Active<phase(work)>,+line: Nat,+tap: U32,
@@ -616,24 +618,24 @@ def row_selection_position(+work: Work,+active: Active<phase(work)>,+line: Nat,
 def physical_row_bounds_from(+work: Work,+active: Active<phase(work)>,+line: Nat,
   +contained: {Nat.is_le(Nat.add(U32.to_nat(chunk_row(chunk(work))),U32.to_nat(chunk_rows(chunk(work)))),Domain.height(geometry(phase(work)))) == True{} : Bool},
   +inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool},
-  interval: Shape.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
+  interval: KernelGemm.Both<{Nat.is_le(PureBands.low(Samples.selection_model(row_selection(work,active,line,contained,inside))),U32.to_nat(row_native(work,line))) == True{} : Bool},
     {Nat.is_lt(U32.to_nat(row_native(work,line)),PureBands.high(Samples.selection_model(row_selection(work,active,line,contained,inside)))) == True{} : Bool}>) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(chunk_row(chunk(work))),physical_row(work,line)) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(chunk_row(chunk(work))),physical_row(work,line)) == True{} : Bool},
     {Nat.is_lt(physical_row(work,line),U32.to_nat((chunk_row(chunk(work)) + chunk_rows(chunk(work)) : U32))) == True{} : Bool}>:
   Work{Phase{call,e,y,x,yi,xi},chunk_value} = work
   Domain.Call{g,b,l,facts} = call
   Kernel.Geometry{c,o,h,w,k,s,p,gh,gw} = g
-  Shape.Both{+lo,+hi} = interval
+  KernelGemm.Both{+lo,+hi} = interval
   +band = Samples.selection_model(row_selection(work,active,line,contained,inside))
   +index = U32.to_nat(row_native(work,line))
   +same = row_selection_position(work,active,line,contained,inside)
-  Shape.Both{
+  KernelGemm.Both{
     %same : {Nat.is_le(U32.to_nat(chunk_row(chunk(work))),_) == True{} : Bool} PureBands.position_lower(band,index,lo),
     %same : {Nat.is_lt(_,U32.to_nat((chunk_row(chunk(work)) + chunk_rows(chunk(work)) : U32))) == True{} : Bool} PureBands.position_upper(band,index,lo,hi)}
 def physical_row_bounds(+work: Work,+active: Active<phase(work)>,+line: Nat,
   +contained: {Nat.is_le(Nat.add(U32.to_nat(chunk_row(chunk(work))),U32.to_nat(chunk_rows(chunk(work)))),Domain.height(geometry(phase(work)))) == True{} : Bool},
   +inside: {Nat.is_lt(line,U32.to_nat(lines(work))) == True{} : Bool}) ->
-  Shape.Both<{Nat.is_le(U32.to_nat(chunk_row(chunk(work))),physical_row(work,line)) == True{} : Bool},
+  KernelGemm.Both<{Nat.is_le(U32.to_nat(chunk_row(chunk(work))),physical_row(work,line)) == True{} : Bool},
     {Nat.is_lt(physical_row(work,line),U32.to_nat((chunk_row(chunk(work)) + chunk_rows(chunk(work)) : U32))) == True{} : Bool}>:
   physical_row_bounds_from(work,active,line,contained,inside,row_selection_bounds(work,active,line,contained,inside))
 def chunk_end_exact(+work: Work,

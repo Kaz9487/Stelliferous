@@ -8,6 +8,7 @@ import ./native_array_model.bend as NativeArrayModel
 import ./address_step.bend as AddressStep
 import ../../lib/proofs/word_power_of_two.bend as Power
 import ../../lib/proofs/nat_order.bend as Order
+import ../../lib/kernel_gemm.bend as KernelGemm
 
 def Goal(+depth: Nat,+tree: Tree.Tree<F32>,+index: U32) -> Type:
   {TreeIndex.index(tree,NativeArrayModel.route(tree,Address.capacity(depth),index)) == U32.to_nat(index) : Nat}
@@ -44,7 +45,7 @@ def by_depth(depth,tree,index,balanced,limit,bound):
     case 1n+rest Tree.Leaf{value}:
       match balanced:
     case 1n+ +rest Tree.Node{+left,+right}:
-      Shape.Both{+balanced_left,+balanced_right} = balanced
+      KernelGemm.Both{+balanced_left,+balanced_right} = balanced
       +limit = limit
       +bound = bound
       %Equal.sym(U32,U32.shr(Address.capacity(1n+rest)),Address.capacity(rest),Power.native_half_power(rest,Order.lt_succ(rest,30n,Address.child_limit(rest,

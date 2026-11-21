@@ -56,14 +56,29 @@ def minimum_commutative(+left: Nat,+right: Nat) -> {Nat.min(left,right) == Nat.m
     case 1n+ +left 1n+ +right:
       Equal.cong(Nat,Nat,value => 1n+value,Nat.min(left,right),Nat.min(right,left),minimum_commutative(left,right))
 
-def minimum_split(+whole: Nat,+first: Nat,+second: Nat) ->
-  {Nat.add(Nat.min(whole,first),Nat.min(Nat.sub(whole,Nat.min(whole,first)),second)) == Nat.min(whole,Nat.add(first,second)) : Nat}:
-  match whole first:
+def maximum_when_ordered(+left: Nat,+right: Nat,ordered: {Nat.is_le(left,right) == True{} : Bool}) -> {Nat.max(left,right) == right : Nat}:
+  match left right:
+    case 0n 0n: {==}
+    case 0n 1n+right: {==}
+    case 1n+left 0n: Empty.absurd({Nat.max(1n+left,0n) == 0n : Nat},WordEncoding.false_true(ordered))
+    case 1n+ +left 1n+ +right:
+      Equal.cong(Nat,Nat,n => 1n+n,Nat.max(left,right),right,maximum_when_ordered(left,right,ordered))
+
+def maximum_commutative(+left: Nat,+right: Nat) -> {Nat.max(left,right) == Nat.max(right,left) : Nat}:
+  match left right:
     case 0n 0n: {==}
     case 0n 1n+rest: {==}
-    case 1n+whole 0n: {==}
-    case 1n+ +whole 1n+ +first:
-      Equal.cong(Nat,Nat,value => 1n+value,Nat.add(Nat.min(whole,first),Nat.min(Nat.sub(whole,Nat.min(whole,first)),second)),Nat.min(whole,Nat.add(first,second)),minimum_split(whole,first,second))
+    case 1n+rest 0n: {==}
+    case 1n+ +left 1n+ +right:
+      Equal.cong(Nat,Nat,value => 1n+value,Nat.max(left,right),Nat.max(right,left),maximum_commutative(left,right))
+
+def maximum_when_above(+left: Nat,+right: Nat,ordered: {Nat.is_le(right,left) == True{} : Bool}) -> {Nat.max(left,right) == left : Nat}:
+  match left right:
+    case 0n 0n: {==}
+    case 0n 1n+right: Empty.absurd({Nat.max(0n,1n+right) == 0n : Nat},WordEncoding.false_true(ordered))
+    case 1n+left 0n: {==}
+    case 1n+ +left 1n+ +right:
+      Equal.cong(Nat,Nat,n => 1n+n,Nat.max(left,right),left,maximum_when_above(left,right,ordered))
 
 def maximum_left(+left: Nat,+right: Nat) -> {Nat.is_le(left,Nat.max(left,right)) == True{} : Bool}:
   match left right:
@@ -113,6 +128,14 @@ def minimum_strict_lower(+left: Nat,+right: Nat,+lower: Nat,left_ok: {Nat.is_lt(
 def minimum_monotone(+left: Nat,+right: Nat,+limit: Nat,ordered: {Nat.is_le(left,right) == True{} : Bool}) ->
   {Nat.is_le(Nat.min(limit,left),Nat.min(limit,right)) == True{} : Bool}:
   minimum_lower(limit,right,Nat.min(limit,left),minimum_left(limit,left),Order.transitive(Nat.min(limit,left),left,right,minimum_right(limit,left),ordered))
+
+# Adding the same offset to two numbers adds it to their minimum.
+def minimum_offset(+offset: Nat,+left: Nat,+right: Nat) -> {Nat.min(Nat.add(offset,left),Nat.add(offset,right)) == Nat.add(offset,Nat.min(left,right)) : Nat}:
+  match offset:
+    case 0n: {==}
+    case 1n+ +previous:
+      Equal.cong(Nat,Nat,value => 1n+value,Nat.min(Nat.add(previous,left),Nat.add(previous,right)),Nat.add(previous,Nat.min(left,right)),
+        minimum_offset(previous,left,right))
 
 def clipped_end(+first: Nat,+end: Nat) -> {Nat.add(first,Nat.sub(end,first)) == Nat.max(first,end) : Nat}:
   match first end:
